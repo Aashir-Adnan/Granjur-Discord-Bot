@@ -1,0 +1,19 @@
+{
+  "pinnedMessages": {
+    "welcome-and-verify": "**Welcome** — Use **/verify** to get a code by email (OTP). After verification you will be in **Holding** until a CEO or Server Manager approves you.",
+    "rules": "**Server rules** — Read the rules above. Use **/verify** with your @granjur.com email, then wait for approval.",
+    "documentation": "**Documentation** — Use the dropdown below to **search and browse** project docs, repo READMEs, or meeting notes. Select a **repo** to view its README; select a **project** to view its stored README. You can **edit** docs with **/edit-docs**.",
+    "general-meetings": "**Meetings** — General meeting channel. Schedule meetings with **/schedule**. Upcoming meetings and reminders appear in the **upcoming-meetings** channel.",
+    "upcoming-meetings": "**Upcoming meetings** — Reminders are posted here **10 minutes** before each scheduled meeting, tagging the invited members.",
+    "casual-chat": "**Casual chat** — General conversation. Keep it friendly.",
+    "off-topic": "**Off-topic** — For non-work discussion.",
+    "pet-pics": "**Pet pictures** — Share pictures of your pets.",
+    "foodie-blog": "**Foodie blog** — Recipes and food posts.",
+    "meeting-metadata": "**Meeting metadata** — Meeting notes and metadata are archived here.",
+    "sql-dumps": "**SQL dumps** — Versioned SQL dumps per project. Use **/sql-dump** to view, search, or submit changes. All changes are tracked (who, what, when).",
+    "announcements-all": "**Announcements (all)** — Server-wide announcements.",
+    "announcements-verified": "**Announcements (verified)** — For verified members only.",
+    "announcements-leadership": "**Announcements (leadership)** — For leadership only.",
+    "admin": "**Admin** — Backlog notifications. When someone enters holding, server owner and CEOs are tagged here. Use **/backlog** to approve."
+  }
+}

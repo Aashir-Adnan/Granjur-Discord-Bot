@@ -1,0 +1,158 @@
+{
+  "commandRoles": {
+    "init": ["CEO", "Server Manager"],
+    "scrap": ["CEO", "Server Manager"],
+    "verify": [],
+    "invite": ["CEO", "Server Manager"],
+    "backlog": ["CEO", "Server Manager"],
+    "approve": ["CEO", "Server Manager"],
+    "bug": ["Verified"],
+    "ticket": ["Senior Dev", "CEO", "Server Manager"],
+    "feature": ["Verified"],
+    "fetch-my": ["Verified"],
+    "schedule": ["Verified"],
+    "project-db": ["Verified"],
+    "evaluate": ["Senior Dev", "CEO", "Server Manager"],
+    "docs": ["Verified"],
+    "faq": ["Verified"],
+    "faq-answer": ["CEO", "Server Manager"],
+    "repos": ["CEO", "Server Manager"],
+    "dashboard": ["CEO", "Server Manager"],
+    "edit-docs": ["CEO", "Server Manager", "Senior Dev"],
+    "clock-in": ["Verified"],
+    "clock-out": ["Verified"],
+    "sql-dump": ["Senior Dev", "CEO", "Server Manager"],
+    "close-feature": [],
+    "resolve-bug": []
+  },
+  "dedicatedChannels": {
+    "init": true,
+    "scrap": true,
+    "verify": true,
+    "invite": true,
+    "backlog": true,
+    "approve": true,
+    "bug": true,
+    "ticket": true,
+    "feature": true,
+    "schedule": true,
+    "project-db": true,
+    "docs": true,
+    "faq": true,
+    "repos": true,
+    "dashboard": true,
+    "edit-docs": true,
+    "clock-in": true,
+    "clock-out": true,
+    "sql-dump": true,
+    "close-feature": false,
+    "resolve-bug": false
+  },
+  "commandDescriptions": {
+    "init": {
+      "summary": "Set up server roles, channels, and verification flow.",
+      "syntax": "`/init`",
+      "detail": "Creates Onboarding, Rules, Documentation, Announcements, Meetings, and role-locked categories. Run once per server. Requires **/scrap** first if already initialized."
+    },
+    "scrap": {
+      "summary": "Reset server to bare bones (one text, one voice channel).",
+      "syntax": "`/scrap`",
+      "detail": "Removes all Granjur-created channels and roles. Use before re-running **/init**."
+    },
+    "verify": {
+      "summary": "Verify your email (OTP) and enter holding.",
+      "syntax": "`/verify`",
+      "detail": "Click **Request verification code**, enter your @granjur.com email, then enter the code sent to your email. Your nickname will be set from your email."
+    },
+    "invite": {
+      "summary": "Send a server invite to an @granjur.com email.",
+      "syntax": "`/invite`",
+      "detail": "Click **Enter email**, then submit the modal. Invite is sent by email and by DM if they are already on the server."
+    },
+    "backlog": {
+      "summary": "View incoming users in holding and approve + assign roles.",
+      "syntax": "`/backlog`",
+      "detail": "Select a user, then use the modal to enter roles (comma-separated) and optional notes. CEO/Server Manager only."
+    },
+    "approve": {
+      "summary": "Approve a user in holding (step-by-step).",
+      "syntax": "`/approve`",
+      "detail": "Step 1: Select user. Step 2: Select roles. Step 3: Confirm. Alternative to **/backlog**."
+    },
+    "bug": {
+      "summary": "Create a bug ticket.",
+      "syntax": "`/bug`",
+      "detail": "Select repo, enter title/description, optionally tag members. Creates a channel and optionally a GitHub issue."
+    },
+    "ticket": {
+      "summary": "List or manage bug tickets.",
+      "syntax": "`/ticket`",
+      "detail": "View tickets and update status. Senior Dev / CEO / Server Manager."
+    },
+    "feature": {
+      "summary": "Create a feature task.",
+      "syntax": "`/feature`",
+      "detail": "Enter title and description in the modal, then select repository or project."
+    },
+    "schedule": {
+      "summary": "Schedule a meeting.",
+      "syntax": "`/schedule`",
+      "detail": "Enter topic and when (e.g. `2025-03-01 14:00` or `in 2 days`), then optionally select invitees."
+    },
+    "project-db": {
+      "summary": "View or save project README/schema (project-level docs).",
+      "syntax": "`/project-db`",
+      "detail": "Select a project to view its schema/README, or **New project** to paste and store. Use **/sql-dump** for versioned SQL dump history."
+    },
+    "docs": {
+      "summary": "Browse documentation in bot/docs/ — open folders and view .md files.",
+      "syntax": "`/docs`",
+      "detail": "Shows a file browser for bot/docs/. Select a folder to open it or a file to view its content (formatted in an embed)."
+    },
+    "faq": {
+      "summary": "Ask or search FAQs.",
+      "syntax": "`/faq` then **Ask** or **Search**",
+      "detail": "Ask: submit a question (optional repo). Search: query existing FAQs."
+    },
+    "repos": {
+      "summary": "Add or list repositories.",
+      "syntax": "`/repos`",
+      "detail": "Add a repo with URL and optional project name. CEO/Server Manager."
+    },
+    "dashboard": {
+      "summary": "CEO/Server Manager dashboard.",
+      "syntax": "`/dashboard`",
+      "detail": "Access admin modules. CEO or Server Manager only."
+    },
+    "edit-docs": {
+      "summary": "Edit project or repo documentation (README).",
+      "syntax": "`/edit-docs`",
+      "detail": "Select a project or repo, then submit new README/content. Stored in database for projects; use GitHub for repos."
+    },
+    "clock-in": {
+      "summary": "Clock in (start tracking time).",
+      "syntax": "`/clock-in`",
+      "detail": "Records your clock-in time. Use **/clock-out** when done."
+    },
+    "clock-out": {
+      "summary": "Clock out (stop tracking time).",
+      "syntax": "`/clock-out`",
+      "detail": "Records your clock-out time and logs the session."
+    },
+    "sql-dump": {
+      "summary": "Versioned SQL dumps per project schema (history, not project-db).",
+      "syntax": "`/sql-dump`",
+      "detail": "Select a project schema, then view/search dump versions or submit a new dump. Use **/project-db** for project README/schema."
+    },
+    "close-feature": {
+      "summary": "Close a feature ticket (only in a feature ticket channel).",
+      "syntax": "`/close-feature` [doc: attachment]",
+      "detail": "Use only inside a feature ticket channel. Attach an MD file describing the feature implementation; the ticket is then closed and the doc is saved."
+    },
+    "resolve-bug": {
+      "summary": "Resolve a bug ticket (only in a bug ticket channel).",
+      "syntax": "`/resolve-bug` [doc: attachment]",
+      "detail": "Use only inside a bug ticket channel. Attach an MD file describing the solution; the ticket is then resolved and the doc is saved."
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "granjur-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord bot for Granjur dev house: roles, verification, bugs, features, meetings, FAQs",
+  "main": "bot/src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot/src/index.js",
+    "dev": "node --watch bot/src/index.js",
+    "db:init": "node bot/scripts/init-db.js",
+    "db:migrate": "node bot/scripts/run-migrations.js",
+    "db:seed": "node bot/scripts/seed-projects.js",
+    "deploy:commands": "node bot/scripts/deploy-commands.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "mysql2": "^3.11.0",
+    "node-fetch": "^3.3.2",
+    "nodemailer": "^8.0.1",
+    "uuid": "^10.0.0"
+  }
+}
