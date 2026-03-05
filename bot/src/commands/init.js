@@ -25,10 +25,6 @@ import {
   CHANNEL_CASUAL_CHAT,
   CHANNEL_OFF_TOPIC,
   CHANNEL_VOICE_LOUNGE,
-  CATEGORY_PET_PICS,
-  CHANNEL_PET_PICS,
-  CATEGORY_FOODIE,
-  CHANNEL_FOODIE_BLOG,
   CATEGORY_RULES,
   CHANNEL_RULES,
   CATEGORY_DOCUMENTATION,
@@ -50,7 +46,6 @@ import {
   CATEGORY_DATABASE,
   CHANNEL_DATABASE_CHAT,
   CHANNEL_DATABASE_VOICE,
-  INIT_PROJECT_NAMES,
   CATEGORY_COMMAND_CHANNELS,
 } from '../constants.js'
 import { EPHEMERAL } from '../constants.js'
@@ -87,9 +82,9 @@ export async function execute(interaction) {
       .setTitle('Server setup')
       .setDescription(
         'This will create:\n' +
-          '• **Onboarding**, **Rules**, **Documentation** (in-chat doc traversal), **Meetings**, **Casual**, **Pet Pictures**, **Foodie**, **Archive**\n' +
+          '• **Onboarding**, **Rules**, **Documentation** (in-chat doc traversal), **Meetings**, **Casual**, **Archive**\n' +
           '• **Announcements** (all, verified, leadership + **admin** for backlog pings)\n' +
-          '• **Frontend** / **Backend** / **Database** (role-locked) + project categories (Fittour, Edarete, Framework)\n' +
+          '• **Frontend** / **Backend** / **Database** (role-locked)\n' +
           '• **Holding** and **Verified** roles + hierarchy & discipline roles\n\n' +
           'Categories are ordered (Onboarding → Rules → Documentation → …). New members see onboarding until they verify via **/verify** (OTP). When someone enters holding, server owner and CEOs are tagged in **admin**.'
       )
@@ -204,14 +199,6 @@ export async function runInit(guild) {
     await guild.channels.create({ name: CHANNEL_OFF_TOPIC, type: ChannelType.GuildText, parent: cat.id })
     await guild.channels.create({ name: CHANNEL_VOICE_LOUNGE, type: ChannelType.GuildVoice, parent: cat.id })
   })()
-  await wrapStep('Creating Pet Pictures category', async () => {
-    const cat = await guild.channels.create({ name: CATEGORY_PET_PICS, type: ChannelType.GuildCategory })
-    await guild.channels.create({ name: CHANNEL_PET_PICS, type: ChannelType.GuildText, parent: cat.id, topic: 'Share pet pictures' })
-  })()
-  await wrapStep('Creating Foodie category', async () => {
-    const cat = await guild.channels.create({ name: CATEGORY_FOODIE, type: ChannelType.GuildCategory })
-    await guild.channels.create({ name: CHANNEL_FOODIE_BLOG, type: ChannelType.GuildText, parent: cat.id, topic: 'Foodie blogs and recipes' })
-  })()
   await wrapStep('Creating Archive category', async () => {
     const cat = await guild.channels.create({ name: CATEGORY_ARCHIVE, type: ChannelType.GuildCategory })
     await guild.channels.create({ name: CHANNEL_ARCHIVE_METADATA, type: ChannelType.GuildText, parent: cat.id, topic: 'Meeting metadata and notes' })
@@ -239,13 +226,6 @@ export async function runInit(guild) {
     await guild.channels.create({ name: CHANNEL_DATABASE_CHAT, type: ChannelType.GuildText, parent: cat.id })
     await guild.channels.create({ name: CHANNEL_DATABASE_VOICE, type: ChannelType.GuildVoice, parent: cat.id })
   })()
-  for (const projectName of INIT_PROJECT_NAMES) {
-    await wrapStep(`Creating project category: ${projectName}`, async () => {
-      const cat = await guild.channels.create({ name: `📂 ${projectName}`, type: ChannelType.GuildCategory })
-      await guild.channels.create({ name: `${projectName.toLowerCase()}-chat`, type: ChannelType.GuildText, parent: cat.id })
-      await guild.channels.create({ name: `${projectName.toLowerCase()}-voice`, type: ChannelType.GuildVoice, parent: cat.id })
-    })()
-  }
 
   await wrapStep('Creating Command channels category', async () => {
     const cat = await guild.channels.create({ name: CATEGORY_COMMAND_CHANNELS, type: ChannelType.GuildCategory })
