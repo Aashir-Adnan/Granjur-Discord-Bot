@@ -9,7 +9,7 @@
     "dev": "node --watch bot/src/index.js",
     "db:init": "node bot/scripts/init-db.js",
     "db:migrate": "node bot/scripts/run-migrations.js",
-    "db:seed": "node bot/scripts/seed-projects.js",
+    "db:seed": "node bot/scripts/seed-data.js",
     "deploy:commands": "node bot/scripts/deploy-commands.js"
   },
   "engines": {
