@@ -31,6 +31,9 @@ import * as sqlDumpCmd from './sql-dump.js'
 import * as closeFeatureCmd from './close-feature.js'
 import * as resolveBugCmd from './resolve-bug.js'
 import * as migrateCmd from './migrate.js'
+import * as updateTaskCmd from './update-task.js'
+import * as createProjectRoleCmd from './create-project-role.js'
+import * as createProjectCategoriesCmd from './create-project-categories.js'
 
 const commandModules = [
   initCmd,
@@ -38,6 +41,9 @@ const commandModules = [
   inviteCmd,
   backlogCmd,
   createTaskCmd,
+  updateTaskCmd,
+  createProjectRoleCmd,
+  createProjectCategoriesCmd,
   ticketCmd,
   fetchMyCmd,
   scheduleCmd,

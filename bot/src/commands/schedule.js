@@ -13,9 +13,30 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { EPHEMERAL } from '../constants.js'
 
+function parseWhen(whenStr) {
+  if (/^\d{4}-\d{2}-\d{2}/.test(whenStr)) return new Date(whenStr)
+  const match = whenStr.match(/in\s+(\d+)\s*(day|hour|minute)s?/i)
+  if (match) {
+    const n = parseInt(match[1], 10)
+    const unit = match[2].toLowerCase()
+    const d = new Date()
+    if (unit.startsWith('day')) d.setDate(d.getDate() + n)
+    else if (unit.startsWith('hour')) d.setHours(d.getHours() + n)
+    else d.setMinutes(d.getMinutes() + n)
+    return d
+  }
+  return new Date(whenStr)
+}
+
 export const data = new SlashCommandBuilder()
   .setName('schedule')
-  .setDescription('Schedule a meeting — step-by-step: topic & time, then pick members')
+  .setDescription('Schedule a meeting — pass topic & when in command, then pick members from list')
+  .addStringOption((o) =>
+    o.setName('topic').setDescription('Meeting topic').setRequired(false).setMaxLength(200)
+  )
+  .addStringOption((o) =>
+    o.setName('when').setDescription('When (e.g. 2025-03-01 14:00 or in 2 days)').setRequired(false)
+  )
 
 function buildScheduleModal() {
   const modal = new ModalBuilder().setCustomId('schedule_modal').setTitle('Meeting details')
@@ -47,9 +68,46 @@ export async function execute(interaction) {
 
   await getOrCreateGuildConfig(guild.id)
 
+  const topicOpt = interaction.options.getString('topic')
+  const whenOpt = interaction.options.getString('when')
+
+  if (topicOpt && whenOpt) {
+    const scheduledAt = parseWhen(whenOpt)
+    if (Number.isNaN(scheduledAt.getTime())) {
+      return interaction.editReply({
+        content: 'Invalid date. Use e.g. `2025-03-01 14:00` or `in 2 days`.',
+      }).catch(() => {})
+    }
+    flowStore.set(interaction.user.id, guild.id, 'schedule', { topic: topicOpt, scheduledAt })
+    const members = await guild.members.fetch()
+    const options = members
+      .filter((m) => !m.user.bot)
+      .slice(0, 25)
+      .map((m) => ({ label: m.user.username.slice(0, 25), value: m.id, description: m.user.tag.slice(0, 50) }))
+    const embed = new EmbedBuilder()
+      .setTitle('Schedule meeting')
+      .setDescription('Select members to invite.')
+      .addFields(
+        { name: 'Topic', value: topicOpt.slice(0, 100), inline: true },
+        { name: 'When', value: scheduledAt.toISOString(), inline: true }
+      )
+      .setColor(0x5865f2)
+      .setFooter({ text: 'Step 2 — Select invitees' })
+    const select = new StringSelectMenuBuilder()
+      .setCustomId('schedule_members')
+      .setPlaceholder('Select members (optional)')
+      .setMinValues(0)
+      .setMaxValues(Math.min(25, options.length))
+      .addOptions(options.length ? options : [{ label: 'None', value: 'none', description: 'No invitees' }])
+    return interaction.editReply({
+      embeds: [embed],
+      components: [new ActionRowBuilder().addComponents(select)],
+    }).catch(() => {})
+  }
+
   const embed = new EmbedBuilder()
     .setTitle('Schedule meeting')
-    .setDescription('Click the button below to enter the meeting topic and time.')
+    .setDescription('Click the button below to enter topic and time, or run `/schedule topic:... when:...` to skip the form.')
     .setColor(0x5865f2)
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('schedule_show_modal').setLabel('Enter meeting details').setStyle(ButtonStyle.Primary)
@@ -62,21 +120,6 @@ export async function handleShowModalButton(interaction) {
   if (!guild) return interaction.editReply({ content: 'Invalid.', components: [] }).catch(() => {})
 
   await interaction.showModal(buildScheduleModal())
-}
-
-function parseWhen(whenStr) {
-  if (/^\d{4}-\d{2}-\d{2}/.test(whenStr)) return new Date(whenStr)
-  const match = whenStr.match(/in\s+(\d+)\s*(day|hour|minute)s?/i)
-  if (match) {
-    const n = parseInt(match[1], 10)
-    const unit = match[2].toLowerCase()
-    const d = new Date()
-    if (unit.startsWith('day')) d.setDate(d.getDate() + n)
-    else if (unit.startsWith('hour')) d.setHours(d.getHours() + n)
-    else d.setMinutes(d.getMinutes() + n)
-    return d
-  }
-  return new Date(whenStr)
 }
 
 export async function handleScheduleModal(interaction) {

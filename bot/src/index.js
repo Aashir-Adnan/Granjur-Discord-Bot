@@ -7,6 +7,7 @@ import { EPHEMERAL } from './constants.js'
 import handleInteractions from './handlers/interactions.js'
 import { startMeetingReminder } from './services/meetingReminder.js'
 import { startTicketReminder } from './services/ticketReminder.js'
+import { isRateLimitError, getRetryAfter, RATE_LIMIT_MESSAGE } from './utils/rateLimit.js'
 
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true'
 function debug(...args) {
@@ -42,7 +43,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
     try {
       await interaction.deferReply({ flags: EPHEMERAL })
     } catch (e) {
-      if (e.code !== 10062) console.error('[index] deferReply error:', e)
+      if (isRateLimitError(e)) {
+        const retry = getRetryAfter(e)
+        console.warn('[index] deferReply rate limited', retry ? `retry after ${retry.seconds}s` : '')
+        await interaction.reply({ content: RATE_LIMIT_MESSAGE, flags: EPHEMERAL }).catch(() => {})
+      } else if (e.code !== 10062) console.error('[index] deferReply error:', e)
       return
     }
   }
@@ -77,11 +82,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleCommand(interaction, commands)
       debug(`handleCommand ${interaction.commandName} done (${Date.now() - t0}ms)`)
     } catch (err) {
-      console.error('[index] handleCommand error:', err)
+      const msg = isRateLimitError(err) ? RATE_LIMIT_MESSAGE : 'Something went wrong. Please try again.'
+      if (isRateLimitError(err)) {
+        const retry = getRetryAfter(err)
+        console.warn('[index] handleCommand rate limited', retry ? `retry after ${retry.seconds}s` : '')
+      } else console.error('[index] handleCommand error:', err)
       if (needsDefer && (interaction.deferred || interaction.replied)) {
-        await interaction.editReply({ content: 'Something went wrong. Please try again.' }).catch(() => {})
+        await interaction.editReply({ content: msg }).catch(() => {})
       } else if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: 'Something went wrong. Please try again.', flags: EPHEMERAL }).catch(() => {})
+        await interaction.reply({ content: msg, flags: EPHEMERAL }).catch(() => {})
       }
     }
     return
@@ -103,12 +112,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       'bug_repo',               // repo select → title/description modal (legacy, kept for ticket)
       'create_task_show_modal',  // opens details modal
       'create_task_repo',       // repo select → details modal for bug
-      // create-task: skip defer so select/next can update message immediately (avoids interaction failed)
+      // create-task: type buttons and quick steps skip defer; repo/project step defers (async DB work)
       'create_task_type_feature',
       'create_task_type_bug',
-      'create_task_select_repos',
-      'create_task_select_projects',
-      'create_task_repos_next',
       'create_task_members',
       'create_task_members_next',
       'create_task_assignees',
@@ -119,22 +125,34 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const customId = interaction.customId || ''
     const skipDefer = (interaction.isButton() || interaction.isStringSelectMenu()) &&
       noDeferComponentIds.some((id) => customId === id || customId.startsWith(id + ':'))
+    // Modals that defer inside their handler to avoid "already acknowledged" (40060)
+    const noDeferModalIds = ['create_task_modal']
+    const skipModalDefer = interaction.isModalSubmit() && noDeferModalIds.includes(customId)
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
       if (!skipDefer) {
         try {
           await interaction.deferUpdate()
         } catch (e) {
-          if (e.code !== 10062) console.error('[index] deferUpdate error:', e)
-          await interaction.reply({ content: 'Could not process that action. Please try again.', flags: EPHEMERAL }).catch(() => {})
+          if (isRateLimitError(e)) {
+            const retry = getRetryAfter(e)
+            console.warn('[index] deferUpdate rate limited', retry ? `retry after ${retry.seconds}s` : '')
+            await interaction.reply({ content: RATE_LIMIT_MESSAGE, flags: EPHEMERAL }).catch(() => {})
+          } else if (e.code !== 10062) console.error('[index] deferUpdate error:', e)
+          else await interaction.reply({ content: 'Could not process that action. Please try again.', flags: EPHEMERAL }).catch(() => {})
           return
         }
       }
-    } else if (interaction.isModalSubmit()) {
+    } else if (interaction.isModalSubmit() && !skipModalDefer) {
       try {
         await interaction.deferReply({ flags: EPHEMERAL })
       } catch (e) {
-        if (e.code !== 10062) console.error('[index] deferReply (modal) error:', e)
-        await interaction.reply({ content: 'Could not process. Please try again.', flags: EPHEMERAL }).catch(() => {})
+        if (e.code === 40060) return // already acknowledged (e.g. duplicate event or race)
+        if (isRateLimitError(e)) {
+          const retry = getRetryAfter(e)
+          console.warn('[index] deferReply (modal) rate limited', retry ? `retry after ${retry.seconds}s` : '')
+          await interaction.reply({ content: RATE_LIMIT_MESSAGE, flags: EPHEMERAL }).catch(() => {})
+        } else if (e.code !== 10062) console.error('[index] deferReply (modal) error:', e)
+        else await interaction.reply({ content: 'Could not process. Please try again.', flags: EPHEMERAL }).catch(() => {})
         return
       }
     }
@@ -143,13 +161,24 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleInteractions(interaction)
       debug(`handleInteractions ${kind} done (${Date.now() - t0}ms)`)
     } catch (err) {
-      console.error(`[index] handleInteractions ${kind} error:`, err)
+      const msg = isRateLimitError(err) ? RATE_LIMIT_MESSAGE : 'Something went wrong. Please try again.'
+      if (isRateLimitError(err)) {
+        const retry = getRetryAfter(err)
+        console.warn('[index] handleInteractions rate limited', retry ? `retry after ${retry.seconds}s` : '')
+      } else console.error(`[index] handleInteractions ${kind} error:`, err)
       if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: 'Something went wrong. Please try again.', flags: EPHEMERAL }).catch(() => {})
+        await interaction.reply({ content: msg, flags: EPHEMERAL }).catch(() => {})
       } else {
-        await interaction.editReply({ content: 'Something went wrong. Please try again.' }).catch(() => {})
+        await interaction.editReply({ content: msg }).catch(() => {})
       }
     }
+  }
+})
+
+// Log rate limits that surface as unhandled rejections (e.g. from internal discord.js requests)
+process.on('unhandledRejection', (reason) => {
+  if (reason && typeof reason === 'object' && (reason.code === 429 || (reason.message && String(reason.message).toLowerCase().includes('rate limit')))) {
+    console.warn('[index] Unhandled rate limit:', reason.message ?? reason)
   }
 })
 

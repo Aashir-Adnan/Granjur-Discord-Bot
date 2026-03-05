@@ -22,10 +22,13 @@ const FLOW_KEY = 'create_task'
 
 const SESSION_EXPIRED_MSG = 'Session expired or invalid step. Run **/create-task** again.'
 
-/** After deferUpdate() we must use update(); after deferReply() use editReply(). */
+/** After deferUpdate() we must use editReply(); after deferReply() use editReply(); only use update() when not yet acknowledged. */
 async function respond(interaction, payload) {
   const p = typeof payload === 'string' ? { content: payload, components: [], embeds: [] } : payload
   if (interaction.isMessageComponent?.()) {
+    if (interaction.replied || interaction.deferred) {
+      return interaction.editReply(p).catch((err) => console.error('[create-task] respond editReply:', err?.message ?? err))
+    }
     return interaction.update(p).catch((err) => {
       console.error('[create-task] respond update failed:', err?.message ?? err)
       return interaction.editReply(p).catch((err2) => console.error('[create-task] respond editReply failed:', err2?.message ?? err2))
@@ -43,7 +46,38 @@ const STEP_CONFIRM = 'confirm'
 
 export const data = new SlashCommandBuilder()
   .setName('create-task')
-  .setDescription('Create a task (feature or bug) — choose type, enter details, set metrics')
+  .setDescription('Create a task (feature or bug) — pass details in command, then pick repos/projects from lists')
+  .addStringOption((o) =>
+    o.setName('type').setDescription('Task type').setRequired(false).addChoices({ name: 'Feature', value: 'feature' }, { name: 'Bug', value: 'bug' })
+  )
+  .addStringOption((o) =>
+    o.setName('title').setDescription('Task title').setRequired(false).setMaxLength(200)
+  )
+  .addStringOption((o) =>
+    o.setName('description').setDescription('Task description (optional)').setRequired(false).setMaxLength(2000)
+  )
+  .addStringOption((o) =>
+    o.setName('scope').setDescription('Scope, e.g. Frontend (feature only)').setRequired(false).setMaxLength(100)
+  )
+  .addStringOption((o) =>
+    o.setName('modules').setDescription('Modules, comma-separated (feature only)').setRequired(false).setMaxLength(500)
+  )
+  .addStringOption((o) =>
+    o.setName('assignees').setDescription('Assignees: @mentions or user IDs, space-separated (feature only)').setRequired(false).setMaxLength(500)
+  )
+  .addStringOption((o) =>
+    o.setName('tagged').setDescription('Members to tag: @mentions or user IDs, space-separated (bug only)').setRequired(false).setMaxLength(500)
+  )
+
+/** Parse space-separated @mentions or Discord user IDs (17–19 digit snowflakes) into array of IDs. */
+function parseUserIds(str) {
+  if (!str || !str.trim()) return []
+  const ids = new Set()
+  const re = /<@!?(\d+)>|(\d{17,19})/g
+  let m
+  while ((m = re.exec(str)) !== null) ids.add(m[1] || m[2])
+  return [...ids]
+}
 
 export async function execute(interaction) {
   const guild = interaction.guild
@@ -58,15 +92,87 @@ export async function execute(interaction) {
     })
   }
 
-  flowStore.clear(interaction.user.id, guild.id, FLOW_KEY)
-  flowStore.set(interaction.user.id, guild.id, FLOW_KEY, { step: STEP_TYPE })
+  const typeOpt = interaction.options.getString('type')
+  const titleOpt = interaction.options.getString('title')
+  const descriptionOpt = (interaction.options.getString('description') || '').trim() || null
+  const scopeOpt = (interaction.options.getString('scope') || '').trim().slice(0, 100) || null
+  const modulesOpt = (interaction.options.getString('modules') || '').trim()
+  const assigneesOpt = interaction.options.getString('assignees')
+  const taggedOpt = interaction.options.getString('tagged')
 
+  flowStore.clear(interaction.user.id, guild.id, FLOW_KEY)
+
+  // If type + title provided in command, skip type step and modal; go to repos/project or repo step
+  if (typeOpt && titleOpt) {
+    const taskType = typeOpt
+    const moduleNames = modulesOpt ? modulesOpt.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 20) : []
+    const modules = []
+    for (const name of moduleNames) {
+      const existing = await db.guildModule.findFirst({ where: { guildConfigId: cfg.id, name } })
+      if (!existing) await db.guildModule.create({ data: { guildConfigId: cfg.id, name } })
+      modules.push(name)
+    }
+    const state = {
+      step: taskType === 'feature' ? STEP_REPOS_PROJECTS : STEP_REPO,
+      taskType,
+      title: titleOpt.trim(),
+      description: descriptionOpt,
+      scope: taskType === 'feature' ? (scopeOpt || null) : null,
+      modules: taskType === 'feature' ? modules : [],
+      assigneeIds: taskType === 'feature' ? parseUserIds(assigneesOpt || '') : undefined,
+      taggedMemberIds: taskType === 'bug' ? parseUserIds(taggedOpt || '') : undefined,
+    }
+    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, state)
+    if (taskType === 'feature') {
+      await showReposProjectsStep(interaction, state, guild)
+    } else {
+      if (!repos.length) return interaction.editReply({ content: 'No repositories. Add with **/repos** first.', components: [] })
+      const embed = new EmbedBuilder()
+        .setTitle('Create bug task')
+        .setDescription('Select the **repository** for this bug.')
+        .setColor(0xed4245)
+        .setFooter({ text: 'Step — Repository' })
+      const options = repos.slice(0, 25).map((r) => ({ label: r.name, value: r.id, description: (r.url || '').slice(0, 100) }))
+      const select = new StringSelectMenuBuilder().setCustomId('create_task_repo').setPlaceholder('Select repository').addOptions(options)
+      await interaction.editReply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(select)] })
+    }
+    return
+  }
+
+  // Otherwise: if only type provided, go to modal (feature) or repo (bug)
+  if (typeOpt) {
+    const isFeature = typeOpt === 'feature'
+    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, { step: isFeature ? STEP_MODAL : STEP_REPO, taskType: typeOpt })
+    if (isFeature) {
+      const embed = new EmbedBuilder()
+        .setTitle('Create feature task')
+        .setDescription('Click **Enter details** to open the form (title, description, scope, modules).')
+        .setColor(0x5865f2)
+        .setFooter({ text: 'Step 2 — Details' })
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('create_task_show_modal').setLabel('Enter details').setStyle(ButtonStyle.Primary)
+      )
+      await interaction.editReply({ embeds: [embed], components: [row] })
+    } else {
+      if (!repos.length) return interaction.editReply({ content: 'No repositories. Add with **/repos** first.', components: [] })
+      const embed = new EmbedBuilder()
+        .setTitle('Create bug task')
+        .setDescription('**Step 1:** Choose the repository for this bug.')
+        .setColor(0xed4245)
+        .setFooter({ text: 'Step 2 — Repository' })
+      const options = repos.slice(0, 25).map((r) => ({ label: r.name, value: r.id, description: (r.url || '').slice(0, 100) }))
+      const select = new StringSelectMenuBuilder().setCustomId('create_task_repo').setPlaceholder('Select repository').addOptions(options)
+      await interaction.editReply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(select)] })
+    }
+    return
+  }
+
+  flowStore.set(interaction.user.id, guild.id, FLOW_KEY, { step: STEP_TYPE })
   const embed = new EmbedBuilder()
     .setTitle('Create task')
-    .setDescription('Choose whether this task is a **feature** or a **bug**.')
+    .setDescription('Choose whether this task is a **feature** or a **bug**. You can also run `/create-task type:feature title:Your title description:...` to skip this.')
     .setColor(0x5865f2)
     .setFooter({ text: 'Step 1 — Type' })
-
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('create_task_type_feature').setLabel('Feature').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('create_task_type_bug').setLabel('Bug').setStyle(ButtonStyle.Danger)
@@ -164,21 +270,32 @@ export async function handleShowModalButton(interaction) {
 
 export async function handleTaskModal(interaction) {
   try {
+    // Defer here when index.js skips defer for create_task_modal (avoids 40060 already acknowledged)
+    if (!interaction.deferred && !interaction.replied) {
+      try {
+        await interaction.deferReply({ flags: EPHEMERAL })
+      } catch (e) {
+        if (e.code === 40060) return // already acknowledged (duplicate or race)
+        console.error('[create-task] handleTaskModal defer:', e?.message ?? e)
+        return
+      }
+    }
     const guild = interaction.guild
     if (!guild) {
       console.error('[create-task] handleTaskModal: no guild')
+      await respond(interaction, { content: 'Use this in a server.', components: [] }).catch(() => {})
       return
     }
     const state = flowStore.get(interaction.user.id, guild.id, FLOW_KEY)
     if (!state) {
       console.error('[create-task] handleTaskModal: no state')
-      await interaction.editReply({ content: SESSION_EXPIRED_MSG, components: [] }).catch(() => {})
+      await respond(interaction, { content: SESSION_EXPIRED_MSG, components: [] }).catch(() => {})
       return
     }
 
     const title = (interaction.fields.getTextInputValue('title') || '').trim()
     if (!title) {
-      await interaction.editReply({ content: 'Title is required.', components: [] }).catch(() => {})
+      await respond(interaction, { content: 'Title is required.', components: [] }).catch(() => {})
       return
     }
 
@@ -208,7 +325,7 @@ export async function handleTaskModal(interaction) {
   }
   } catch (e) {
     console.error('[create-task] handleTaskModal error:', e)
-    await interaction.editReply({ content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
+    await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
   }
 }
 
@@ -238,9 +355,23 @@ export async function handleRepoSelect(interaction) {
       return
     }
 
-    const nextState = { ...state, step: STEP_MODAL, repositoryId: repoId, repo }
-    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
-    await interaction.showModal(buildTaskModal(false))
+    const nextState = { ...state, repositoryId: repoId, repo }
+    // If title was already set (e.g. from command), skip modal; if tagged was also provided skip members step
+    if (state.title) {
+      if (state.taggedMemberIds?.length !== undefined) {
+        nextState.step = STEP_CONFIRM
+        flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
+        await showConfirmStep(interaction, nextState, guild)
+      } else {
+        nextState.step = STEP_MEMBERS
+        flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
+        await showMembersStep(interaction, nextState, guild)
+      }
+    } else {
+      nextState.step = STEP_MODAL
+      flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
+      await interaction.showModal(buildTaskModal(false))
+    }
   } catch (e) {
     console.error('[create-task] handleRepoSelect error:', e)
     await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
@@ -421,13 +552,10 @@ async function showConfirmStep(interaction, state, guild) {
 
     const embed = new EmbedBuilder()
     .setTitle(`Confirm ${isFeature ? 'feature' : 'bug'} task`)
-    .setDescription('Set whether **API test**, **QA test**, and **Acceptance criteria** apply. If yes, they start as "Not passed". Then click **Create**.')
+    .setDescription('Review and click **Create**. Criteria (API/QA/AC) can be updated later with **/update-task**.')
     .addFields(
       { name: 'Title', value: state.title?.slice(0, 100) || '—', inline: true },
       { name: 'Type', value: isFeature ? 'Feature' : 'Bug', inline: true },
-      { name: 'API test?', value: state.hasApiTest ? 'Yes (track)' : 'No', inline: true },
-      { name: 'QA test?', value: state.hasQaTest ? 'Yes (track)' : 'No', inline: true },
-      { name: 'AC?', value: state.hasAc ? 'Yes (track)' : 'No', inline: true },
       { name: 'Description', value: (state.description || '—').slice(0, 200), inline: false }
     )
     .setColor(isFeature ? 0x5865f2 : 0xed4245)
@@ -444,31 +572,12 @@ async function showConfirmStep(interaction, state, guild) {
     embed.addFields({ name: 'Tagged', value: tagged.length ? tagged.map((id) => `<@${id}>`).join(' ') : 'None', inline: true })
   }
 
-  const metricOptions = [{ label: 'No (N/A)', value: 'no' }, { label: 'Yes (track, default Not passed)', value: 'yes' }]
-  const row1 = new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder().setCustomId('create_task_metric_api').setPlaceholder('API test applicable?').addOptions(metricOptions),
-    new StringSelectMenuBuilder().setCustomId('create_task_metric_qa').setPlaceholder('QA test applicable?').addOptions(metricOptions),
-    new StringSelectMenuBuilder().setCustomId('create_task_metric_ac').setPlaceholder('Acceptance criteria?').addOptions(metricOptions)
+  const rowButtons = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('create_task_create').setLabel('Create task').setStyle(ButtonStyle.Success),
+    ...(isFeature ? [new ButtonBuilder().setCustomId('create_task_edit').setLabel('Edit details').setStyle(ButtonStyle.Secondary)] : []),
+    new ButtonBuilder().setCustomId('create_task_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
   )
-
-  if (isFeature) {
-    const members = Array.from((await guild.members.fetch()).values()).filter((m) => !m.user.bot).slice(0, 23)
-    const memberOptions = [{ label: 'None', value: 'none' }, ...members.map((m) => ({ label: m.user.username.slice(0, 25), value: m.id }))].slice(0, 25)
-    const assignSelect = new StringSelectMenuBuilder().setCustomId('create_task_assignees').setPlaceholder('Assignees').setMinValues(0).setMaxValues(25).addOptions(memberOptions)
-    const row0 = new ActionRowBuilder().addComponents(assignSelect)
-    const row2 = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('create_task_create').setLabel('Create task').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('create_task_edit').setLabel('Edit details').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('create_task_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
-    )
-    await respond(interaction, { embeds: [embed], components: [row0, row1, row2] })
-  } else {
-    const row2 = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('create_task_create').setLabel('Create task').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('create_task_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
-    )
-    await respond(interaction, { embeds: [embed], components: [row1, row2] })
-  }
+  await respond(interaction, { embeds: [embed], components: [rowButtons] })
   } catch (e) {
     console.error('[create-task] showConfirmStep error:', e)
     await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
@@ -554,9 +663,9 @@ export async function handleCreate(interaction) {
   const cfg = await getOrCreateGuildConfig(guild.id)
   const isFeature = state.taskType === 'feature'
 
-  const passedApiTests = state.hasApiTest ? 0 : null
-  const passedQaTests = state.hasQaTest ? 0 : null
-  const passedAcceptanceCriteria = state.hasAc ? 0 : null
+  const passedApiTests = (state.hasApiTest === true) ? 0 : null
+  const passedQaTests = (state.hasQaTest === true) ? 0 : null
+  const passedAcceptanceCriteria = (state.hasAc === true) ? 0 : null
 
   try {
     if (isFeature) {

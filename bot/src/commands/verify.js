@@ -33,6 +33,9 @@ export const data = new SlashCommandBuilder()
   .setName('verify')
   .setDescription('Verify your identity — we DM you a 6-digit code to enter here')
   .setDefaultMemberPermissions(null) // Allow everyone (including new users with no roles) to run this command
+  .addStringOption((o) =>
+    o.setName('code').setDescription('6-digit code from DM (skip the form)').setRequired(false).setMaxLength(6).setMinLength(6)
+  )
 
 export async function execute(interaction) {
   const guild = interaction.guild
@@ -40,6 +43,15 @@ export async function execute(interaction) {
 
   const cfg = await getOrCreateGuildConfig(guild.id)
   if (!cfg) return interaction.editReply({ content: 'Server not initialized. Run `/init` first.' })
+
+  const codeOpt = interaction.options.getString('code')
+  if (codeOpt && codeOpt.trim().length === 6) {
+    const fakeModalInteraction = {
+      ...interaction,
+      fields: { getTextInputValue: () => codeOpt.trim() },
+    }
+    return handleOtpModal(fakeModalInteraction)
+  }
 
   const embed = new EmbedBuilder()
     .setTitle('Verify your identity')

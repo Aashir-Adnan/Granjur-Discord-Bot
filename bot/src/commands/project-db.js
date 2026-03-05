@@ -13,13 +13,36 @@ import { EPHEMERAL } from '../constants.js'
 
 export const data = new SlashCommandBuilder()
   .setName('project-db')
-  .setDescription('View or save project database schema — select project, then view or paste schema')
+  .setDescription('View or save project database schema — select project or pass project_id + schema to skip form')
+  .addStringOption((o) =>
+    o.setName('project_id').setDescription('Project ID or name (use with schema to save without form)').setRequired(false).setMaxLength(100)
+  )
+  .addStringOption((o) =>
+    o.setName('schema').setDescription('Schema content (SQL or text) to save').setRequired(false).setMaxLength(4000)
+  )
 
 export async function execute(interaction) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
 
   const cfg = await getOrCreateGuildConfig(guild.id)
+  const projectIdOpt = interaction.options.getString('project_id')
+  const schemaOpt = interaction.options.getString('schema')
+  if (projectIdOpt && projectIdOpt.trim() && schemaOpt !== null && schemaOpt !== undefined && schemaOpt.trim()) {
+    try {
+      await db.projectSchema.upsert({
+        where: { guildConfigId_projectId: { guildConfigId: cfg.id, projectId: projectIdOpt.trim() } },
+        create: { guildConfigId: cfg.id, projectId: projectIdOpt.trim(), projectName: projectIdOpt.trim(), schemaContent: schemaOpt.trim() },
+        update: { schemaContent: schemaOpt.trim(), projectName: projectIdOpt.trim() },
+      })
+      return interaction.editReply({
+        content: `Project **${projectIdOpt.trim()}** — schema saved (${schemaOpt.trim().length} chars).`,
+      })
+    } catch (e) {
+      return interaction.editReply({ content: `Failed to save: ${e?.message ?? String(e)}` })
+    }
+  }
+
   const repos = await db.repository.findMany({ where: { guildConfigId: cfg.id } })
   const schemas = await db.projectSchema.findMany({ where: { guildConfigId: cfg.id } })
 

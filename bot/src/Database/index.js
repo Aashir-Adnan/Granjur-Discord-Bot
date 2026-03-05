@@ -162,8 +162,8 @@ async function taskFindMany({ where, orderBy, take }) {
 }
 
 async function taskFindFirst({ where }) {
-  if (where?.id) return queryOne('SELECT * FROM `Task` WHERE id = ?', [where.id])
   if (where?.id && where?.guildConfigId) return queryOne('SELECT * FROM `Task` WHERE id = ? AND guildConfigId = ?', [where.id, where.guildConfigId])
+  if (where?.id) return queryOne('SELECT * FROM `Task` WHERE id = ?', [where.id])
   if (where?.discordChannelId) return queryOne('SELECT * FROM `Task` WHERE discordChannelId = ?', [where.discordChannelId])
   return null
 }
@@ -221,6 +221,8 @@ async function taskUpdate({ where, data }) {
   if (data.externalIssueUrl !== undefined) { sets.push('externalIssueUrl = ?'); vals.push(data.externalIssueUrl) }
   if (data.externalIssueNumber !== undefined) { sets.push('externalIssueNumber = ?'); vals.push(data.externalIssueNumber) }
   if (data.assigneeIds !== undefined) { sets.push('assigneeIds = ?'); vals.push(toJson(data.assigneeIds)) }
+  if (data.title !== undefined) { sets.push('title = ?'); vals.push(data.title) }
+  if (data.description !== undefined) { sets.push('description = ?'); vals.push(data.description) }
   if (sets.length === 0) return taskFindFirst({ where: { id: where.id } })
   vals.push(where.id)
   await query(`UPDATE \`Task\` SET ${sets.join(', ')} WHERE id = ?`, vals)

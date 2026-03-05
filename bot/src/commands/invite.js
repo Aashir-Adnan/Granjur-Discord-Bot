@@ -37,6 +37,9 @@ export const data = new SlashCommandBuilder()
   .setName('invite')
   .setDescription(`Send server invite links to @${INVITE_ALLOWED_DOMAIN} emails (batch supported)`)
   .setDefaultMemberPermissions(PermissionFlagsBits.CreateInstantInvite | PermissionFlagsBits.ManageGuild)
+  .addStringOption((o) =>
+    o.setName('emails').setDescription(`Emails (comma/semicolon/newline separated, @${INVITE_ALLOWED_DOMAIN} only)`).setRequired(false).setMaxLength(2000)
+  )
 
 export async function execute(interaction) {
   try {
@@ -46,12 +49,33 @@ export async function execute(interaction) {
     const cfg = await getOrCreateGuildConfig(guild.id)
     if (!cfg) return interaction.editReply({ content: 'Server not initialized. Run **/init** first.' })
 
+    const emailsOpt = interaction.options.getString('emails')
+    if (emailsOpt && emailsOpt.trim()) {
+      const all = parseEmails(emailsOpt)
+      const valid = all.filter((e) => (e.split('@')[1] || '').toLowerCase() === INVITE_ALLOWED_DOMAIN)
+      const invalid = all.filter((e) => (e.split('@')[1] || '').toLowerCase() !== INVITE_ALLOWED_DOMAIN)
+      const toSend = valid.slice(0, MAX_BATCH_INVITES)
+      const capped = valid.length > MAX_BATCH_INVITES
+      if (invalid.length) {
+        return interaction.editReply({
+          content: `Invalid or wrong-domain: ${invalid.slice(0, 5).join(', ')}${invalid.length > 5 ? '…' : ''}. Only **@${INVITE_ALLOWED_DOMAIN}** allowed.`,
+        })
+      }
+      if (!toSend.length) {
+        return interaction.editReply({ content: `No valid **@${INVITE_ALLOWED_DOMAIN}** emails in the list.` })
+      }
+      const fakeModalInteraction = {
+        ...interaction,
+        fields: { getTextInputValue: () => emailsOpt },
+      }
+      return handleInviteModal(fakeModalInteraction)
+    }
+
     const embed = new EmbedBuilder()
       .setTitle('Invite by email (batch)')
       .setDescription(
         `Enter one or more **@${INVITE_ALLOWED_DOMAIN}** email addresses (comma, newline, or semicolon separated). ` +
-        `Invites are sent by email; if someone is already on this server with that email, they'll get a DM too. ` +
-        `Invalid or wrong-domain addresses will be reported.`
+        `Or use **/invite emails:one@${INVITE_ALLOWED_DOMAIN},two@${INVITE_ALLOWED_DOMAIN}** to skip the form.`
       )
       .setColor(0x5865f2)
       .setFooter({ text: `Only @${INVITE_ALLOWED_DOMAIN} · Up to ${MAX_BATCH_INVITES} per batch` })

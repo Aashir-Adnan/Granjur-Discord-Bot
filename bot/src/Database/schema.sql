@@ -130,6 +130,20 @@ CREATE TABLE IF NOT EXISTS feature_repositories (
   FOREIGN KEY (repository_id) REFERENCES Repository(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS ProjectSchema (
+  id VARCHAR(36) PRIMARY KEY,
+  guildConfigId VARCHAR(36) NOT NULL,
+  projectId VARCHAR(255) NOT NULL,
+  projectName VARCHAR(255),
+  schemaContent TEXT NOT NULL,
+  readme TEXT,
+  createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY (guildConfigId, projectId),
+  KEY (guildConfigId),
+  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS feature_project_schemas (
   task_id VARCHAR(36) NOT NULL,
   project_schema_id VARCHAR(36) NOT NULL,
@@ -211,20 +225,6 @@ CREATE TABLE IF NOT EXISTS ScheduledMeeting (
   KEY (guildConfigId),
   KEY (createdBy),
   KEY (scheduledAt),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS ProjectSchema (
-  id VARCHAR(36) PRIMARY KEY,
-  guildConfigId VARCHAR(36) NOT NULL,
-  projectId VARCHAR(255) NOT NULL,
-  projectName VARCHAR(255),
-  schemaContent TEXT NOT NULL,
-  readme TEXT,
-  createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
-  updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  UNIQUE KEY (guildConfigId, projectId),
-  KEY (guildConfigId),
   FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
 );
 
