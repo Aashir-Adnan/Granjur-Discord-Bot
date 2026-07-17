@@ -23,7 +23,8 @@
     "clock-out": ["Verified"],
     "sql-dump": ["Senior Dev", "CEO", "Server Manager"],
     "close-feature": [],
-    "resolve-bug": []
+    "resolve-bug": [],
+    "reconcile": ["CEO", "Server Manager"]
   },
   "dedicatedChannels": {
     "init": true,
@@ -46,7 +47,8 @@
     "clock-out": true,
     "sql-dump": true,
     "close-feature": false,
-    "resolve-bug": false
+    "resolve-bug": false,
+    "reconcile": true
   },
   "commandDescriptions": {
     "init": {
@@ -153,6 +155,11 @@
       "summary": "Resolve a bug ticket (only in a bug ticket channel).",
       "syntax": "`/resolve-bug` [doc: attachment]",
       "detail": "Use only inside a bug ticket channel. Attach an MD file describing the solution; the ticket is then resolved and the doc is saved."
+    },
+    "reconcile": {
+      "summary": "Sync members who joined while the bot was offline.",
+      "syntax": "`/reconcile`",
+      "detail": "Scans all guild members, creates DB records for any missing, assigns the holding role, and notifies them to run **/verify**. CEO/Server Manager only."
     }
   }
 }

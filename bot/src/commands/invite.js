@@ -12,8 +12,8 @@ import {
 import db, { getOrCreateGuildConfig, guildMemberFindByEmail } from '../db/index.js'
 import { sendEmail, inviteEmailHtml } from '../Mailer/sendEmail.js'
 import { setInviteUses } from '../events/inviteUsesCache.js'
-import { INVITE_ALLOWED_DOMAIN } from '../constants.js'
 import { EPHEMERAL } from '../constants.js'
+import { config, isAllowedEmail } from '../config.js'
 
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true'
 function debug(...args) {
@@ -21,6 +21,9 @@ function debug(...args) {
 }
 
 const MAX_BATCH_INVITES = 20
+
+/** Domains allowed for invite emails (from ALLOWED_EMAIL_DOMAINS env var) */
+const allowedDomains = config.allowedDomains
 
 /** Parse raw input into trimmed, lowercased, unique emails (comma / newline / semicolon separated) */
 function parseEmails(raw) {
@@ -33,12 +36,17 @@ function parseEmails(raw) {
   )]
 }
 
+/** Basic email format check */
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+}
+
 export const data = new SlashCommandBuilder()
   .setName('invite')
-  .setDescription(`Send server invite links to @${INVITE_ALLOWED_DOMAIN} emails (batch supported)`)
+  .setDescription('Send server invite links via email (batch supported)')
   .setDefaultMemberPermissions(PermissionFlagsBits.CreateInstantInvite | PermissionFlagsBits.ManageGuild)
   .addStringOption((o) =>
-    o.setName('emails').setDescription(`Emails (comma/semicolon/newline separated, @${INVITE_ALLOWED_DOMAIN} only)`).setRequired(false).setMaxLength(2000)
+    o.setName('emails').setDescription('Emails (comma/semicolon/newline separated)').setRequired(false).setMaxLength(2000)
   )
 
 export async function execute(interaction) {
@@ -52,17 +60,16 @@ export async function execute(interaction) {
     const emailsOpt = interaction.options.getString('emails')
     if (emailsOpt && emailsOpt.trim()) {
       const all = parseEmails(emailsOpt)
-      const valid = all.filter((e) => (e.split('@')[1] || '').toLowerCase() === INVITE_ALLOWED_DOMAIN)
-      const invalid = all.filter((e) => (e.split('@')[1] || '').toLowerCase() !== INVITE_ALLOWED_DOMAIN)
+      const valid = all.filter((e) => isValidEmail(e))
+      const invalid = all.filter((e) => !isValidEmail(e))
       const toSend = valid.slice(0, MAX_BATCH_INVITES)
-      const capped = valid.length > MAX_BATCH_INVITES
       if (invalid.length) {
         return interaction.editReply({
-          content: `Invalid or wrong-domain: ${invalid.slice(0, 5).join(', ')}${invalid.length > 5 ? '…' : ''}. Only **@${INVITE_ALLOWED_DOMAIN}** allowed.`,
+          content: `Invalid email format: ${invalid.slice(0, 5).join(', ')}${invalid.length > 5 ? '…' : ''}.`,
         })
       }
       if (!toSend.length) {
-        return interaction.editReply({ content: `No valid **@${INVITE_ALLOWED_DOMAIN}** emails in the list.` })
+        return interaction.editReply({ content: 'No valid emails in the list.' })
       }
       const fakeModalInteraction = {
         ...interaction,
@@ -74,11 +81,11 @@ export async function execute(interaction) {
     const embed = new EmbedBuilder()
       .setTitle('Invite by email (batch)')
       .setDescription(
-        `Enter one or more **@${INVITE_ALLOWED_DOMAIN}** email addresses (comma, newline, or semicolon separated). ` +
-        `Or use **/invite emails:one@${INVITE_ALLOWED_DOMAIN},two@${INVITE_ALLOWED_DOMAIN}** to skip the form.`
+        'Enter one or more email addresses (comma, newline, or semicolon separated). ' +
+        'Or use **/invite emails:one@example.com,two@example.com** to skip the form.'
       )
       .setColor(0x5865f2)
-      .setFooter({ text: `Only @${INVITE_ALLOWED_DOMAIN} · Up to ${MAX_BATCH_INVITES} per batch` })
+      .setFooter({ text: `Up to ${MAX_BATCH_INVITES} per batch` })
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('invite_enter_email').setLabel('Enter emails').setStyle(ButtonStyle.Primary)
@@ -100,9 +107,9 @@ export async function handleInviteButton(interaction) {
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId('emails')
-        .setLabel(`Emails (@${INVITE_ALLOWED_DOMAIN} only)`)
+        .setLabel('Emails')
         .setStyle(TextInputStyle.Paragraph)
-        .setPlaceholder(`one@${INVITE_ALLOWED_DOMAIN}\ntwo@${INVITE_ALLOWED_DOMAIN}`)
+        .setPlaceholder('one@example.com\ntwo@example.com')
         .setRequired(true)
         .setMaxLength(2000)
     )
@@ -116,8 +123,8 @@ export async function handleInviteModal(interaction) {
 
   const raw = interaction.fields.getTextInputValue('emails') || interaction.fields.getTextInputValue('email') || ''
   const all = parseEmails(raw)
-  const valid = all.filter((e) => (e.split('@')[1] || '').toLowerCase() === INVITE_ALLOWED_DOMAIN)
-  const invalid = all.filter((e) => (e.split('@')[1] || '').toLowerCase() !== INVITE_ALLOWED_DOMAIN)
+  const valid = all.filter((e) => isValidEmail(e))
+  const invalid = all.filter((e) => !isValidEmail(e))
 
   const toSend = valid.slice(0, MAX_BATCH_INVITES)
   const capped = valid.length > MAX_BATCH_INVITES
@@ -125,9 +132,9 @@ export async function handleInviteModal(interaction) {
   if (toSend.length === 0) {
     const invalidList = invalid.length ? invalid.map((e) => `• ${e}`).join('\n') : '(none)'
     return interaction.editReply({
-      content: `No valid **@${INVITE_ALLOWED_DOMAIN}** addresses to invite.`,
+      content: 'No valid email addresses to invite.',
       embeds: invalid.length
-        ? [new EmbedBuilder().setTitle('Invalid or wrong domain').setDescription(invalidList).setColor(0xed4245)]
+        ? [new EmbedBuilder().setTitle('Invalid emails').setDescription(invalidList).setColor(0xed4245)]
         : [],
     }).catch(() => {})
   }
@@ -176,15 +183,15 @@ export async function handleInviteModal(interaction) {
 
         const memberRow = await guildMemberFindByEmail(guild.id, email)
         if (memberRow?.discordId) {
-      try {
-        const user = await interaction.client.users.fetch(memberRow.discordId).catch(() => null)
-        if (user) {
-          await user.send({
-            content: `**You're invited to ${serverName}**\n\nHere’s your invite link (also sent to ${email}):\n${invite.url}\n\nLink expires in 7 days and can be used once.`,
-          }).catch(() => {})
+          try {
+            const user = await interaction.client.users.fetch(memberRow.discordId).catch(() => null)
+            if (user) {
+              await user.send({
+                content: `**You're invited to ${serverName}**\n\nHere's your invite link (also sent to ${email}):\n${invite.url}\n\nLink expires in 7 days and can be used once.`,
+              }).catch(() => {})
+            }
+          } catch (_) {}
         }
-      } catch (_) {}
-    }
 
         sent.push(email)
       } catch (err) {
@@ -203,7 +210,7 @@ export async function handleInviteModal(interaction) {
       lines.push(`**Failed to send (${failed.length}):** ${failed.map((f) => `\`${f.email}\` (${f.reason})`).join('; ')}`)
     }
     if (invalid.length) {
-      lines.push(`**Invalid / wrong domain (not sent):** ${invalid.map((e) => `\`${e}\``).join(', ')}`)
+      lines.push(`**Invalid emails (not sent):** ${invalid.map((e) => `\`${e}\``).join(', ')}`)
     }
 
     const resultEmbed = new EmbedBuilder()

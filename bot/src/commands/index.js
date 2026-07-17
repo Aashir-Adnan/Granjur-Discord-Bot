@@ -34,6 +34,7 @@ import * as migrateCmd from './migrate.js'
 import * as updateTaskCmd from './update-task.js'
 import * as createProjectRoleCmd from './create-project-role.js'
 import * as createProjectCategoriesCmd from './create-project-categories.js'
+import * as reconcileCmd from './reconcile.js'
 
 const commandModules = [
   initCmd,
@@ -63,6 +64,7 @@ const commandModules = [
   closeFeatureCmd,
   resolveBugCmd,
   migrateCmd,
+  reconcileCmd,
 ]
 
 export function getCommands() {
@@ -79,6 +81,8 @@ export async function loadCommands(client) {
   const payload = commands.map((c) => c.toJSON())
   try {
     if (config.discord.guildId) {
+      // Clear any stale global commands to prevent duplicates
+      await rest.put(Routes.applicationCommands(config.discord.clientId), { body: [] }).catch(() => {})
       await rest.put(
         Routes.applicationGuildCommands(config.discord.clientId, config.discord.guildId),
         { body: payload }

@@ -22,7 +22,17 @@ export async function handleMemberAdd(member) {
     for (const inv of invites.values()) {
       updateInviteUses(guild.id, inv.code, inv.uses)
     }
-  } catch (_) {}
+    if (pending.length > 0 && !email) {
+      const codes = [...new Set(pending.map((r) => r.inviteCode))]
+      const found = codes.filter((c) => invites.has(c)).length
+      if (found === 0) {
+        console.warn('[memberAdd] Pending invites exist but none found in guild list. Ensure the bot has **Manage Server** so it can list invites.')
+      }
+    }
+  } catch (e) {
+    // Listing invites requires "Manage Server". If this throws, we can't match invite → email.
+    console.error('[memberAdd] Could not fetch invites (bot may need Manage Server):', e?.message ?? e)
+  }
 
   if (config?.holdingRoleId) {
     try {
