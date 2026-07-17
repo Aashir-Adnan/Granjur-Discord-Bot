@@ -51,7 +51,7 @@ export async function updateGuildConfig(guildId, data) {
   if (data.clockedInRoleId !== undefined) { sets.push('clockedInRoleId = ?'); vals.push(data.clockedInRoleId) }
   if (sets.length === 0) return getGuildConfig(guildId)
   vals.push(guildId)
-  await query(`UPDATE \`GuildConfig\` SET ${sets.join(', ')} WHERE guildId = ?`, vals)
+  await query(`UPDATE \`guildconfig\` SET ${sets.join(', ')} WHERE guildId = ?`, vals)
   return getGuildConfig(guildId)
 }
 
@@ -94,7 +94,7 @@ async function guildMemberUpsert({ where, create, update }) {
   const pk = id()
   const cfg = await getOrCreateGuildConfig(create.guildId)
   await query(
-    `INSERT INTO \`GuildMember\` (id, guildConfigId, discordId, email, verifiedAt, status, roleIds)
+    `INSERT INTO \`guildmember\` (id, guildConfigId, discordId, email, verifiedAt, status, roleIds)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
       pk,
@@ -118,7 +118,7 @@ async function guildMemberUpdate({ where, data }) {
   if (data.email !== undefined) { sets.push('email = ?'); vals.push(data.email) }
   if (sets.length === 0) return guildMemberFindUnique({ where: { id: idVal } })
   vals.push(idVal)
-  await query(`UPDATE \`GuildMember\` SET ${sets.join(', ')} WHERE id = ?`, vals)
+  await query(`UPDATE \`guildmember\` SET ${sets.join(', ')} WHERE id = ?`, vals)
   return guildMemberFindUnique({ where: { id: idVal } })
 }
 
