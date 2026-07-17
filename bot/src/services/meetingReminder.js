@@ -1,6 +1,6 @@
 import db, { ensureStringArray } from '../db/index.js'
 import { ensureMeetingChannel } from './meetingListener.js'
-import { joinMeetingVoiceChannel, startMeetingAudioRecording } from './meetingAudioRecorder.js'
+import { startMeetingRecording } from './voiceCapture.js'
 
 const CHANNEL_UPCOMING_MEETINGS = 'upcoming-meetings'
 const WINDOW_MS = 10 * 60 * 1000 // 10 minutes
@@ -34,10 +34,8 @@ export function startMeetingReminder(client) {
                 const voiceChannel = guild.channels.cache.get(m.voiceChannelId)
                 if (voiceChannel?.isVoiceBased?.()) {
                   const meetingChannel = await ensureMeetingChannel(guild, m.voiceChannelId)
-                  const connection = await joinMeetingVoiceChannel(guild, voiceChannel, meetingChannel.meetingId)
-                  if (connection) {
-                    await startMeetingAudioRecording(connection, guild, meetingChannel.meetingId, m.voiceChannelId)
-                  }
+                  // Unified recording: joins voice channel + records + tracks in database
+                  await startMeetingRecording(voiceChannel, guild, meetingChannel.meetingId, m.voiceChannelId)
                 }
               } catch (_) {}
             }
