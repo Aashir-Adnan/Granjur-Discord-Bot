@@ -12,14 +12,14 @@ CREATE TABLE IF NOT EXISTS feature_repositories (
   FOREIGN KEY (repository_id) REFERENCES Repository(id) ON DELETE CASCADE
 );
 
--- Feature <-> ProjectSchema (many-to-many)
+-- Feature <-> projectschema (many-to-many)
 CREATE TABLE IF NOT EXISTS feature_project_schemas (
   feature_id VARCHAR(36) NOT NULL,
   project_schema_id VARCHAR(36) NOT NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (feature_id, project_schema_id),
   FOREIGN KEY (feature_id) REFERENCES Feature(id) ON DELETE CASCADE,
-  FOREIGN KEY (project_schema_id) REFERENCES ProjectSchema(id) ON DELETE CASCADE
+  FOREIGN KEY (project_schema_id) REFERENCES projectschema(id) ON DELETE CASCADE
 );
 
 -- Guild-defined scope list (for feature Task.scope)
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS guild_scopes (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, name),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
 -- Guild-defined module list (for feature Task.modules)
@@ -41,5 +41,5 @@ CREATE TABLE IF NOT EXISTS guild_modules (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, name),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );

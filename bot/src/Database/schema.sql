@@ -2,8 +2,8 @@
 -- Or: node bot/scripts/init-db.js (with DATABASE_URL set)
 -- Then run migrations: npm run db:migrate
 --
--- Design: guildId (Discord snowflake) is stored ONLY in GuildConfig. All other tables reference
--- the guild via guildConfigId FK to GuildConfig(id). No guildId column in any other table.
+-- Design: guildId (Discord snowflake) is stored ONLY in guildconfig. All other tables reference
+-- the guild via guildConfigId FK to guildconfig(id). No guildId column in any other table.
 
 -- Tracks which migrations have been applied (used by run-migrations.js)
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   run_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)
 );
 
-CREATE TABLE IF NOT EXISTS GuildConfig (
+CREATE TABLE IF NOT EXISTS guildconfig (
   id VARCHAR(36) PRIMARY KEY,
   guildId VARCHAR(64) NOT NULL UNIQUE,
   onboardingChannelId VARCHAR(64),
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS GuildConfig (
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 );
 
-CREATE TABLE IF NOT EXISTS GuildMember (
+CREATE TABLE IF NOT EXISTS guildmember (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   discordId VARCHAR(64) NOT NULL,
@@ -39,10 +39,10 @@ CREATE TABLE IF NOT EXISTS GuildMember (
   UNIQUE KEY (guildConfigId, discordId),
   KEY (guildConfigId),
   KEY (email),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS Repository (
+CREATE TABLE IF NOT EXISTS repository (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   name VARCHAR(255) NOT NULL,
@@ -51,11 +51,11 @@ CREATE TABLE IF NOT EXISTS Repository (
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, url),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
--- Task: unified bugs and features (is_bug / is_feature). No separate Feature/BugTicket tables.
-CREATE TABLE IF NOT EXISTS Task (
+-- task: unified bugs and features (is_bug / is_feature). No separate Feature/BugTicket tables.
+CREATE TABLE IF NOT EXISTS task (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   type VARCHAR(32) NOT NULL DEFAULT 'feature',
@@ -90,11 +90,11 @@ CREATE TABLE IF NOT EXISTS Task (
   KEY (status),
   KEY (discordChannelId),
   KEY (createdAt),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE,
-  FOREIGN KEY (repositoryId) REFERENCES Repository(id) ON DELETE SET NULL
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
+  FOREIGN KEY (repositoryId) REFERENCES repository(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS TicketDoc (
+CREATE TABLE IF NOT EXISTS ticketdoc (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   ticketType VARCHAR(32) NOT NULL,
@@ -105,11 +105,11 @@ CREATE TABLE IF NOT EXISTS TicketDoc (
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   KEY (guildConfigId),
   KEY (taskId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE,
-  FOREIGN KEY (taskId) REFERENCES Task(id) ON DELETE SET NULL
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
+  FOREIGN KEY (taskId) REFERENCES task(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS BugTicketComment (
+CREATE TABLE IF NOT EXISTS bugticketcomment (
   id VARCHAR(36) PRIMARY KEY,
   taskId VARCHAR(36) NOT NULL,
   authorId VARCHAR(64) NOT NULL,
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS BugTicketComment (
   attachmentUrls JSON DEFAULT ('[]'),
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   KEY (taskId),
-  FOREIGN KEY (taskId) REFERENCES Task(id) ON DELETE CASCADE
+  FOREIGN KEY (taskId) REFERENCES task(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS feature_repositories (
@@ -126,11 +126,11 @@ CREATE TABLE IF NOT EXISTS feature_repositories (
   repository_id VARCHAR(36) NOT NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (task_id, repository_id),
-  FOREIGN KEY (task_id) REFERENCES Task(id) ON DELETE CASCADE,
-  FOREIGN KEY (repository_id) REFERENCES Repository(id) ON DELETE CASCADE
+  FOREIGN KEY (task_id) REFERENCES task(id) ON DELETE CASCADE,
+  FOREIGN KEY (repository_id) REFERENCES repository(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS ProjectSchema (
+CREATE TABLE IF NOT EXISTS projectschema (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   projectId VARCHAR(255) NOT NULL,
@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS ProjectSchema (
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, projectId),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS feature_project_schemas (
@@ -149,8 +149,8 @@ CREATE TABLE IF NOT EXISTS feature_project_schemas (
   project_schema_id VARCHAR(36) NOT NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (task_id, project_schema_id),
-  FOREIGN KEY (task_id) REFERENCES Task(id) ON DELETE CASCADE,
-  FOREIGN KEY (project_schema_id) REFERENCES ProjectSchema(id) ON DELETE CASCADE
+  FOREIGN KEY (task_id) REFERENCES task(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_schema_id) REFERENCES projectschema(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS guild_scopes (
@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS guild_scopes (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, name),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS guild_modules (
@@ -170,7 +170,7 @@ CREATE TABLE IF NOT EXISTS guild_modules (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, name),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
 -- Assignable role names for backlog approval (per-guild; can add more)
@@ -181,10 +181,10 @@ CREATE TABLE IF NOT EXISTS guild_assignable_roles (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, name),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS Meeting (
+CREATE TABLE IF NOT EXISTS meeting (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   channelId VARCHAR(64) NOT NULL,
@@ -196,10 +196,10 @@ CREATE TABLE IF NOT EXISTS Meeting (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS MeetingChannel (
+CREATE TABLE IF NOT EXISTS meetingchannel (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   voiceChannelId VARCHAR(64) NOT NULL,
@@ -208,11 +208,11 @@ CREATE TABLE IF NOT EXISTS MeetingChannel (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE,
-  FOREIGN KEY (meetingId) REFERENCES Meeting(id)
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
+  FOREIGN KEY (meetingId) REFERENCES meeting(id)
 );
 
-CREATE TABLE IF NOT EXISTS ScheduledMeeting (
+CREATE TABLE IF NOT EXISTS scheduledmeeting (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   topic TEXT NOT NULL,
@@ -225,10 +225,10 @@ CREATE TABLE IF NOT EXISTS ScheduledMeeting (
   KEY (guildConfigId),
   KEY (createdBy),
   KEY (scheduledAt),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS Faq (
+CREATE TABLE IF NOT EXISTS faq (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   repositoryId VARCHAR(36),
@@ -243,11 +243,11 @@ CREATE TABLE IF NOT EXISTS Faq (
   KEY (guildConfigId),
   KEY (repositoryId),
   KEY (status),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE,
-  FOREIGN KEY (repositoryId) REFERENCES Repository(id)
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
+  FOREIGN KEY (repositoryId) REFERENCES repository(id)
 );
 
-CREATE TABLE IF NOT EXISTS VerificationToken (
+CREATE TABLE IF NOT EXISTS verificationtoken (
   id VARCHAR(36) PRIMARY KEY,
   token VARCHAR(255) NOT NULL UNIQUE,
   guildConfigId VARCHAR(36) NOT NULL,
@@ -257,10 +257,10 @@ CREATE TABLE IF NOT EXISTS VerificationToken (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   KEY (token),
   KEY (guildConfigId, discordId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS VerificationOtp (
+CREATE TABLE IF NOT EXISTS verificationotp (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   discordId VARCHAR(64) NOT NULL,
@@ -270,11 +270,11 @@ CREATE TABLE IF NOT EXISTS VerificationOtp (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   KEY (guildConfigId, discordId),
   KEY (email, code),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
--- Invites sent via /invite: used to set GuildMember.email when the user joins via that invite
-CREATE TABLE IF NOT EXISTS PendingInvite (
+-- Invites sent via /invite: used to set guildmember.email when the user joins via that invite
+CREATE TABLE IF NOT EXISTS pendinginvite (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   inviteCode VARCHAR(32) NOT NULL,
@@ -282,7 +282,7 @@ CREATE TABLE IF NOT EXISTS PendingInvite (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   KEY (guildConfigId),
   KEY (guildConfigId, inviteCode),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS email_log (
@@ -294,10 +294,10 @@ CREATE TABLE IF NOT EXISTS email_log (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   KEY (recipient_email),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE SET NULL
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS Project (
+CREATE TABLE IF NOT EXISTS project (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   name VARCHAR(255) NOT NULL,
@@ -307,7 +307,7 @@ CREATE TABLE IF NOT EXISTS Project (
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, name),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS project_schemas (
@@ -319,7 +319,7 @@ CREATE TABLE IF NOT EXISTS project_schemas (
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY (project_id, name),
   KEY (project_id),
-  FOREIGN KEY (project_id) REFERENCES Project(id) ON DELETE CASCADE
+  FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS dump_versions (
@@ -337,11 +337,11 @@ CREATE TABLE IF NOT EXISTS project_repos (
   repository_id VARCHAR(36) NOT NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (project_id, repository_id),
-  FOREIGN KEY (project_id) REFERENCES Project(id) ON DELETE CASCADE,
-  FOREIGN KEY (repository_id) REFERENCES Repository(id) ON DELETE CASCADE
+  FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+  FOREIGN KEY (repository_id) REFERENCES repository(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS ClockEntry (
+CREATE TABLE IF NOT EXISTS clockentry (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
   discordId VARCHAR(64) NOT NULL,
@@ -350,7 +350,7 @@ CREATE TABLE IF NOT EXISTS ClockEntry (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   KEY (guildConfigId, discordId),
   KEY (clockInAt),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 
 -- Note: project_schemas.latest_dump_id logically references dump_versions(id). No FK to keep schema idempotent (re-runnable).

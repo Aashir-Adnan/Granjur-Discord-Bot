@@ -90,7 +90,7 @@ async function run() {
       // 004_unified_task: only run on DBs that still have Feature table (pre-unified schema)
       if (name === '004_unified_task_bugs_features.sql') {
         const [rows] = await conn.query(
-          "SELECT 1 AS ok FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Feature' LIMIT 1"
+          "SELECT 1 AS ok FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'feature' LIMIT 1"
         )
         if (!rows || rows.length === 0) {
           console.log('Skip (schema already unified):', name)

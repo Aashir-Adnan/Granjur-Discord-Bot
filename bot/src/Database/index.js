@@ -5,11 +5,11 @@ export { ensureStringArray } from "./helpers.js";
 
 // ---------- GuildConfig ----------
 export async function getGuildConfig(guildId) {
-  return queryOne("SELECT * FROM `GuildConfig` WHERE guildId = ?", [guildId]);
+  return queryOne("SELECT * FROM `guildconfig` WHERE guildId = ?", [guildId]);
 }
 
 export async function getGuildConfigById(id) {
-  return queryOne("SELECT * FROM `GuildConfig` WHERE id = ?", [id]);
+  return queryOne("SELECT * FROM `guildconfig` WHERE id = ?", [id]);
 }
 
 export async function getOrCreateGuildConfig(guildId, data = {}) {
@@ -22,7 +22,7 @@ export async function getOrCreateGuildConfig(guildId, data = {}) {
         : data.allowedDomains
       : '["granjur.com"]';
     await query(
-      "INSERT INTO `GuildConfig` (id, guildId, onboardingChannelId, holdingRoleId, verifiedRoleId, adminChannelId, allowedDomains, dashboardRoleIds, seniorRoleIds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO `guildconfig` (id, guildId, onboardingChannelId, holdingRoleId, verifiedRoleId, adminChannelId, allowedDomains, dashboardRoleIds, seniorRoleIds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         pk,
         guildId,
@@ -82,19 +82,19 @@ export async function updateGuildConfig(guildId, data) {
   if (sets.length === 0) return getGuildConfig(guildId);
   vals.push(guildId);
   await query(
-    `UPDATE \`GuildConfig\` SET ${sets.join(", ")} WHERE guildId = ?`,
+    `UPDATE \`guildconfig\` SET ${sets.join(", ")} WHERE guildId = ?`,
     vals,
   );
   return getGuildConfig(guildId);
 }
 
 async function deleteGuildConfig(guildId) {
-  await query("DELETE FROM `GuildConfig` WHERE guildId = ?", [guildId]);
+  await query("DELETE FROM `guildconfig` WHERE guildId = ?", [guildId]);
 }
 
 // ---------- GuildMember ----------
 async function guildMemberFindMany({ where }) {
-  let sql = "SELECT * FROM `GuildMember` WHERE 1=1";
+  let sql = "SELECT * FROM `guildmember` WHERE 1=1";
   const params = [];
   if (where?.guildConfigId) {
     sql += " AND guildConfigId = ?";
@@ -113,12 +113,12 @@ async function guildMemberFindUnique({ where }) {
     const cfg = await getGuildConfig(where.guildId_discordId.guildId);
     if (!cfg) return null;
     return queryOne(
-      "SELECT * FROM `GuildMember` WHERE guildConfigId = ? AND discordId = ?",
+      "SELECT * FROM `guildmember` WHERE guildConfigId = ? AND discordId = ?",
       [cfg.id, where.guildId_discordId.discordId],
     );
   }
   if (where?.id)
-    return queryOne("SELECT * FROM `GuildMember` WHERE id = ?", [where.id]);
+    return queryOne("SELECT * FROM `guildmember` WHERE id = ?", [where.id]);
   return null;
 }
 
@@ -126,7 +126,7 @@ async function guildMemberUpsert({ where, create, update }) {
   const existing = await guildMemberFindUnique({ where });
   if (existing) {
     await query(
-      "UPDATE `GuildMember` SET email = ?, verifiedAt = ?, status = ?, updatedAt = CURRENT_TIMESTAMP(3) WHERE id = ?",
+      "UPDATE `guildmember` SET email = ?, verifiedAt = ?, status = ?, updatedAt = CURRENT_TIMESTAMP(3) WHERE id = ?",
       [
         update.email ?? existing.email,
         update.verifiedAt ?? existing.verifiedAt,
@@ -139,7 +139,7 @@ async function guildMemberUpsert({ where, create, update }) {
   const pk = id();
   const cfg = await getOrCreateGuildConfig(create.guildId);
   await query(
-    `INSERT INTO \`GuildMember\` (id, guildConfigId, discordId, email, verifiedAt, status, roleIds)
+    `INSERT INTO \`guildmember\` (id, guildConfigId, discordId, email, verifiedAt, status, roleIds)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
       pk,
@@ -180,7 +180,7 @@ async function guildMemberUpdate({ where, data }) {
   if (sets.length === 0) return guildMemberFindUnique({ where: { id: idVal } });
   vals.push(idVal);
   await query(
-    `UPDATE \`GuildMember\` SET ${sets.join(", ")} WHERE id = ?`,
+    `UPDATE \`guildmember\` SET ${sets.join(", ")} WHERE id = ?`,
     vals,
   );
   return guildMemberFindUnique({ where: { id: idVal } });
@@ -188,7 +188,7 @@ async function guildMemberUpdate({ where, data }) {
 
 // ---------- Repository ----------
 async function repositoryFindMany({ where }) {
-  return query("SELECT * FROM `Repository` WHERE guildConfigId = ?", [
+  return query("SELECT * FROM `repository` WHERE guildConfigId = ?", [
     where.guildConfigId,
   ]);
 }
@@ -196,13 +196,13 @@ async function repositoryFindMany({ where }) {
 async function repositoryFindFirst({ where }) {
   if (where?.id && where?.guildConfigId) {
     return queryOne(
-      "SELECT * FROM `Repository` WHERE id = ? AND guildConfigId = ?",
+      "SELECT * FROM `repository` WHERE id = ? AND guildConfigId = ?",
       [where.id, where.guildConfigId],
     );
   }
   if (where?.guildConfigId && where?.name) {
     return queryOne(
-      "SELECT * FROM `Repository` WHERE guildConfigId = ? AND LOWER(name) = LOWER(?)",
+      "SELECT * FROM `repository` WHERE guildConfigId = ? AND LOWER(name) = LOWER(?)",
       [where.guildConfigId, where.name],
     );
   }
@@ -212,15 +212,15 @@ async function repositoryFindFirst({ where }) {
 async function repositoryCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `Repository` (id, guildConfigId, name, url) VALUES (?, ?, ?, ?)",
+    "INSERT INTO `repository` (id, guildConfigId, name, url) VALUES (?, ?, ?, ?)",
     [pk, data.guildConfigId, data.name, data.url],
   );
-  return queryOne("SELECT * FROM `Repository` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `repository` WHERE id = ?", [pk]);
 }
 
 // ---------- Task (unified bugs and features: is_bug / is_feature) ----------
 async function taskFindMany({ where, orderBy, take }) {
-  let sql = "SELECT * FROM `Task` WHERE guildConfigId = ?";
+  let sql = "SELECT * FROM `task` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
   if (where?.type) {
     sql += " AND type = ?";
@@ -253,14 +253,14 @@ async function taskFindMany({ where, orderBy, take }) {
 
 async function taskFindFirst({ where }) {
   if (where?.id && where?.guildConfigId)
-    return queryOne("SELECT * FROM `Task` WHERE id = ? AND guildConfigId = ?", [
+    return queryOne("SELECT * FROM `task` WHERE id = ? AND guildConfigId = ?", [
       where.id,
       where.guildConfigId,
     ]);
   if (where?.id)
-    return queryOne("SELECT * FROM `Task` WHERE id = ?", [where.id]);
+    return queryOne("SELECT * FROM `task` WHERE id = ?", [where.id]);
   if (where?.discordChannelId)
-    return queryOne("SELECT * FROM `Task` WHERE discordChannelId = ?", [
+    return queryOne("SELECT * FROM `task` WHERE discordChannelId = ?", [
       where.discordChannelId,
     ]);
   return null;
@@ -301,7 +301,7 @@ async function taskCreate({ data }) {
       data.passedAcceptanceCriteria ?? null,
     ],
   );
-  return queryOne("SELECT * FROM `Task` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `task` WHERE id = ?", [pk]);
 }
 
 async function taskUpdate({ where, data }) {
@@ -370,7 +370,7 @@ async function taskUpdate({ where, data }) {
 }
 
 async function taskCount({ where }) {
-  let sql = "SELECT COUNT(*) AS c FROM `Task` WHERE guildConfigId = ?";
+  let sql = "SELECT COUNT(*) AS c FROM `task` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
   if (where?.type) {
     sql += " AND type = ?";
@@ -436,16 +436,16 @@ async function featureCount(opts) {
 // ---------- TicketDoc ----------
 async function ticketDocFindFirst({ where }) {
   if (where?.id)
-    return queryOne("SELECT * FROM `TicketDoc` WHERE id = ?", [where.id]);
+    return queryOne("SELECT * FROM `ticketdoc` WHERE id = ?", [where.id]);
   if (where?.taskId)
-    return queryOne("SELECT * FROM `TicketDoc` WHERE taskId = ?", [
+    return queryOne("SELECT * FROM `ticketdoc` WHERE taskId = ?", [
       where.taskId,
     ]);
   return null;
 }
 
 async function ticketDocFindMany({ where, take }) {
-  let sql = "SELECT * FROM `TicketDoc` WHERE guildConfigId = ?";
+  let sql = "SELECT * FROM `ticketdoc` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
   if (where?.ticketType) {
     sql += " AND ticketType = ?";
@@ -474,7 +474,7 @@ async function ticketDocCreate({ data }) {
       data.content ?? null,
     ],
   );
-  return queryOne("SELECT * FROM `TicketDoc` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `ticketdoc` WHERE id = ?", [pk]);
 }
 
 async function ticketDocUpdate({ where, data }) {
@@ -496,7 +496,7 @@ async function ticketDocUpdate({ where, data }) {
 
 // ---------- ScheduledMeeting ----------
 async function scheduledMeetingFindMany({ where, orderBy, take }) {
-  let sql = "SELECT * FROM `ScheduledMeeting` WHERE guildConfigId = ?";
+  let sql = "SELECT * FROM `scheduledmeeting` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
   if (where?.createdBy) {
     sql += " AND createdBy = ?";
@@ -521,12 +521,12 @@ async function scheduledMeetingCreate({ data }) {
       data.createdBy,
     ],
   );
-  return queryOne("SELECT * FROM `ScheduledMeeting` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `scheduledmeeting` WHERE id = ?", [pk]);
 }
 
 async function scheduledMeetingCount({ where }) {
   const row = await queryOne(
-    "SELECT COUNT(*) AS c FROM `ScheduledMeeting` WHERE guildConfigId = ?",
+    "SELECT COUNT(*) AS c FROM `scheduledmeeting` WHERE guildConfigId = ?",
     [where.guildConfigId],
   );
   return row?.c ?? 0;
@@ -540,13 +540,13 @@ async function scheduledMeetingUpdate(id, data) {
     vals.push(data.reminderSentAt);
   }
   if (sets.length === 0)
-    return queryOne("SELECT * FROM `ScheduledMeeting` WHERE id = ?", [id]);
+    return queryOne("SELECT * FROM `scheduledmeeting` WHERE id = ?", [id]);
   vals.push(id);
   await query(
     `UPDATE \`ScheduledMeeting\` SET ${sets.join(", ")} WHERE id = ?`,
     vals,
   );
-  return queryOne("SELECT * FROM `ScheduledMeeting` WHERE id = ?", [id]);
+  return queryOne("SELECT * FROM `scheduledmeeting` WHERE id = ?", [id]);
 }
 
 async function scheduledMeetingFindDueForReminder(
@@ -558,30 +558,30 @@ async function scheduledMeetingFindDueForReminder(
   if (!cfg) return [];
   const end = new Date(now.getTime() + windowMs);
   return query(
-    "SELECT * FROM `ScheduledMeeting` WHERE guildConfigId = ? AND scheduledAt >= ? AND scheduledAt <= ? AND reminderSentAt IS NULL ORDER BY scheduledAt ASC",
+    "SELECT * FROM `scheduledmeeting` WHERE guildConfigId = ? AND scheduledAt >= ? AND scheduledAt <= ? AND reminderSentAt IS NULL ORDER BY scheduledAt ASC",
     [cfg.id, now, end],
   );
 }
+
 async function scheduledMeetingFindDueToStart(guildId, now) {
   const cfg = await getGuildConfig(guildId);
   if (!cfg) return [];
   return query(
-    "SELECT * FROM `ScheduledMeeting` WHERE guildConfigId = ? AND scheduledAt <= ? AND autoChannelId IS NULL ORDER BY scheduledAt ASC",
+    "SELECT * FROM `scheduledmeeting` WHERE guildConfigId = ? AND scheduledAt <= ? AND autoChannelId IS NULL ORDER BY scheduledAt ASC",
     [cfg.id, now],
   );
 }
 
 async function scheduledMeetingSetChannel(id, channelId) {
   await query(
-    "UPDATE `ScheduledMeeting` SET autoChannelId = ?, channelCreatedAt = ? WHERE id = ?",
+    "UPDATE `scheduledmeeting` SET autoChannelId = ?, channelCreatedAt = ? WHERE id = ?",
     [channelId, new Date(), id],
   );
-  return queryOne("SELECT * FROM `ScheduledMeeting` WHERE id = ?", [id]);
+  return queryOne("SELECT * FROM `scheduledmeeting` WHERE id = ?", [id]);
 }
-
 // ---------- ProjectSchema ----------
 async function projectSchemaFindMany({ where }) {
-  return query("SELECT * FROM `ProjectSchema` WHERE guildConfigId = ?", [
+  return query("SELECT * FROM `projectschema` WHERE guildConfigId = ?", [
     where.guildConfigId,
   ]);
 }
@@ -589,13 +589,13 @@ async function projectSchemaFindMany({ where }) {
 async function projectSchemaFindFirst({ where }) {
   if (where?.guildConfigId && where?.projectId) {
     return queryOne(
-      "SELECT * FROM `ProjectSchema` WHERE guildConfigId = ? AND projectId = ?",
+      "SELECT * FROM `projectschema` WHERE guildConfigId = ? AND projectId = ?",
       [where.guildConfigId, where.projectId],
     );
   }
   if (where?.guildConfigId && where?.id) {
     return queryOne(
-      "SELECT * FROM `ProjectSchema` WHERE guildConfigId = ? AND id = ?",
+      "SELECT * FROM `projectschema` WHERE guildConfigId = ? AND id = ?",
       [where.guildConfigId, where.id],
     );
   }
@@ -611,7 +611,7 @@ async function projectSchemaUpsert({ where, create, update }) {
   });
   if (existing) {
     await query(
-      "UPDATE `ProjectSchema` SET schemaContent = ?, projectName = ?, readme = ? WHERE id = ?",
+      "UPDATE `projectschema` SET schemaContent = ?, projectName = ?, readme = ? WHERE id = ?",
       [
         update.schemaContent ?? existing.schemaContent,
         update.projectName ?? existing.projectName,
@@ -628,7 +628,7 @@ async function projectSchemaUpsert({ where, create, update }) {
   }
   const pk = id();
   await query(
-    "INSERT INTO `ProjectSchema` (id, guildConfigId, projectId, projectName, schemaContent, readme) VALUES (?, ?, ?, ?, ?, ?)",
+    "INSERT INTO `projectschema` (id, guildConfigId, projectId, projectName, schemaContent, readme) VALUES (?, ?, ?, ?, ?, ?)",
     [
       pk,
       create.guildConfigId,
@@ -638,21 +638,21 @@ async function projectSchemaUpsert({ where, create, update }) {
       create.readme ?? null,
     ],
   );
-  return queryOne("SELECT * FROM `ProjectSchema` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `projectschema` WHERE id = ?", [pk]);
 }
 
 // ---------- Project (new: name, readme, owner_emails) ----------
 async function projectFindMany({ where }) {
-  return query("SELECT * FROM `Project` WHERE guildConfigId = ?", [
+  return query("SELECT * FROM `project` WHERE guildConfigId = ?", [
     where.guildConfigId,
   ]);
 }
 async function projectFindFirst({ where }) {
   if (where?.id)
-    return queryOne("SELECT * FROM `Project` WHERE id = ?", [where.id]);
+    return queryOne("SELECT * FROM `project` WHERE id = ?", [where.id]);
   if (where?.guildConfigId && where?.name)
     return queryOne(
-      "SELECT * FROM `Project` WHERE guildConfigId = ? AND name = ?",
+      "SELECT * FROM `project` WHERE guildConfigId = ? AND name = ?",
       [where.guildConfigId, where.name],
     );
   return null;
@@ -660,7 +660,7 @@ async function projectFindFirst({ where }) {
 async function projectCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `Project` (id, guildConfigId, name, readme, owner_emails) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO `project` (id, guildConfigId, name, readme, owner_emails) VALUES (?, ?, ?, ?, ?)",
     [
       pk,
       data.guildConfigId,
@@ -673,7 +673,7 @@ async function projectCreate({ data }) {
         : "[]",
     ],
   );
-  return queryOne("SELECT * FROM `Project` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `project` WHERE id = ?", [pk]);
 }
 
 // ---------- project_schemas (FK project, name, latest_dump_id) ----------
@@ -736,9 +736,9 @@ async function projectReposAdd({ data }) {
 
 // ---------- Faq ----------
 async function faqFindMany({ where, take, orderBy, include }) {
-  const baseFrom = " FROM `Faq` f";
+  const baseFrom = " FROM `faq` f";
   const join = include?.repository
-    ? " LEFT JOIN `Repository` r ON f.repositoryId = r.id"
+    ? " LEFT JOIN `repository` r ON f.repositoryId = r.id"
     : "";
   const select = include?.repository
     ? "SELECT f.*, r.id AS repo_id, r.name AS repo_name, r.url AS repo_url"
@@ -782,7 +782,7 @@ async function faqFindMany({ where, take, orderBy, include }) {
 }
 
 async function faqFindFirst({ where }) {
-  let sql = "SELECT * FROM `Faq` WHERE guildConfigId = ?";
+  let sql = "SELECT * FROM `faq` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
   if (where?.id) {
     sql += " AND id = ?";
@@ -794,7 +794,7 @@ async function faqFindFirst({ where }) {
   }
   if (where?.name) {
     const repo = await queryOne(
-      "SELECT id FROM `Repository` WHERE guildConfigId = ? AND name = ?",
+      "SELECT id FROM `repository` WHERE guildConfigId = ? AND name = ?",
       [where.guildConfigId, where.name],
     );
     if (repo) {
@@ -808,7 +808,7 @@ async function faqFindFirst({ where }) {
 async function faqCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `Faq` (id, guildConfigId, repositoryId, question, askedBy, status) VALUES (?, ?, ?, ?, ?, ?)",
+    "INSERT INTO `faq` (id, guildConfigId, repositoryId, question, askedBy, status) VALUES (?, ?, ?, ?, ?, ?)",
     [
       pk,
       data.guildConfigId,
@@ -818,7 +818,7 @@ async function faqCreate({ data }) {
       data.status ?? "open",
     ],
   );
-  return queryOne("SELECT * FROM `Faq` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `faq` WHERE id = ?", [pk]);
 }
 
 async function faqUpdate({ where, data }) {
@@ -841,14 +841,14 @@ async function faqUpdate({ where, data }) {
     vals.push(data.status);
   }
   if (sets.length === 0)
-    return queryOne("SELECT * FROM `Faq` WHERE id = ?", [where.id]);
+    return queryOne("SELECT * FROM `faq` WHERE id = ?", [where.id]);
   vals.push(where.id);
   await query(`UPDATE \`Faq\` SET ${sets.join(", ")} WHERE id = ?`, vals);
-  return queryOne("SELECT * FROM `Faq` WHERE id = ?", [where.id]);
+  return queryOne("SELECT * FROM `faq` WHERE id = ?", [where.id]);
 }
 
 async function faqCount({ where }) {
-  let sql = "SELECT COUNT(*) AS c FROM `Faq` WHERE guildConfigId = ?";
+  let sql = "SELECT COUNT(*) AS c FROM `faq` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
   if (where?.status) {
     sql += " AND status = ?";
@@ -862,7 +862,7 @@ async function faqCount({ where }) {
 async function verificationTokenCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `VerificationToken` (id, token, guildConfigId, discordId, email, expiresAt) VALUES (?, ?, ?, ?, ?, ?)",
+    "INSERT INTO `verificationtoken` (id, token, guildConfigId, discordId, email, expiresAt) VALUES (?, ?, ?, ?, ?, ?)",
     [
       pk,
       data.token,
@@ -872,24 +872,24 @@ async function verificationTokenCreate({ data }) {
       data.expiresAt,
     ],
   );
-  return queryOne("SELECT * FROM `VerificationToken` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `verificationtoken` WHERE id = ?", [pk]);
 }
 
 async function verificationTokenFindUnique({ where }) {
-  return queryOne("SELECT * FROM `VerificationToken` WHERE token = ?", [
+  return queryOne("SELECT * FROM `verificationtoken` WHERE token = ?", [
     where.token,
   ]);
 }
 
 async function verificationTokenDelete({ where }) {
-  await query("DELETE FROM `VerificationToken` WHERE token = ?", [where.token]);
+  await query("DELETE FROM `verificationtoken` WHERE token = ?", [where.token]);
 }
 
 // ---------- VerificationOtp (in-Discord OTP verification) ----------
 async function verificationOtpCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `VerificationOtp` (id, guildConfigId, discordId, email, code, expiresAt) VALUES (?, ?, ?, ?, ?, ?)",
+    "INSERT INTO `verificationotp` (id, guildConfigId, discordId, email, code, expiresAt) VALUES (?, ?, ?, ?, ?, ?)",
     [
       pk,
       data.guildConfigId,
@@ -899,14 +899,14 @@ async function verificationOtpCreate({ data }) {
       data.expiresAt,
     ],
   );
-  return queryOne("SELECT * FROM `VerificationOtp` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `verificationotp` WHERE id = ?", [pk]);
 }
 
 async function verificationOtpFindValid(guildId, discordId, email, code) {
   const cfg = await getGuildConfig(guildId);
   if (!cfg) return null;
   return queryOne(
-    "SELECT * FROM `VerificationOtp` WHERE guildConfigId = ? AND discordId = ? AND email = ? AND code = ? AND expiresAt > NOW()",
+    "SELECT * FROM `verificationotp` WHERE guildConfigId = ? AND discordId = ? AND email = ? AND code = ? AND expiresAt > NOW()",
     [cfg.id, discordId, email, code],
   );
 }
@@ -916,7 +916,7 @@ async function verificationOtpFindValidByCode(guildId, discordId, code) {
   const cfg = await getGuildConfig(guildId);
   if (!cfg) return null;
   return queryOne(
-    "SELECT * FROM `VerificationOtp` WHERE guildConfigId = ? AND discordId = ? AND code = ? AND expiresAt > NOW()",
+    "SELECT * FROM `verificationotp` WHERE guildConfigId = ? AND discordId = ? AND code = ? AND expiresAt > NOW()",
     [cfg.id, discordId, code],
   );
 }
@@ -926,13 +926,13 @@ async function verificationOtpDelete({ where }) {
     const cfg = await getGuildConfig(where.guildId_discordId.guildId);
     if (!cfg) return;
     await query(
-      "DELETE FROM `VerificationOtp` WHERE guildConfigId = ? AND discordId = ?",
+      "DELETE FROM `verificationotp` WHERE guildConfigId = ? AND discordId = ?",
       [cfg.id, where.guildId_discordId.discordId],
     );
     return;
   }
   if (where?.id) {
-    await query("DELETE FROM `VerificationOtp` WHERE id = ?", [where.id]);
+    await query("DELETE FROM `verificationotp` WHERE id = ?", [where.id]);
   }
 }
 
@@ -956,21 +956,21 @@ async function emailLogCreate({ data }) {
 async function pendingInviteCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `PendingInvite` (id, guildConfigId, inviteCode, email) VALUES (?, ?, ?, ?)",
+    "INSERT INTO `pendinginvite` (id, guildConfigId, inviteCode, email) VALUES (?, ?, ?, ?)",
     [pk, data.guildConfigId, data.inviteCode, data.email],
   );
-  return queryOne("SELECT * FROM `PendingInvite` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `pendinginvite` WHERE id = ?", [pk]);
 }
 
 async function pendingInviteFindByGuild(guildConfigId) {
-  return query("SELECT * FROM `PendingInvite` WHERE guildConfigId = ?", [
+  return query("SELECT * FROM `pendinginvite` WHERE guildConfigId = ?", [
     guildConfigId,
   ]);
 }
 
 async function pendingInviteDeleteByCode(guildConfigId, inviteCode) {
   await query(
-    "DELETE FROM `PendingInvite` WHERE guildConfigId = ? AND inviteCode = ?",
+    "DELETE FROM `pendinginvite` WHERE guildConfigId = ? AND inviteCode = ?",
     [guildConfigId, inviteCode],
   );
 }
@@ -980,7 +980,7 @@ async function guildMemberFindByEmail(guildId, email) {
   const cfg = await getGuildConfig(guildId);
   if (!cfg) return null;
   return queryOne(
-    "SELECT * FROM `GuildMember` WHERE guildConfigId = ? AND LOWER(email) = LOWER(?)",
+    "SELECT * FROM `guildmember` WHERE guildConfigId = ? AND LOWER(email) = LOWER(?)",
     [cfg.id, email],
   );
 }
@@ -989,7 +989,7 @@ async function guildMemberFindByEmail(guildId, email) {
 async function meetingCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `Meeting` (id, guildConfigId, channelId, externalId, transcript, notes, projectId, repositoryUrl) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO `meeting` (id, guildConfigId, channelId, externalId, transcript, notes, projectId, repositoryUrl) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     [
       pk,
       data.guildConfigId,
@@ -1001,12 +1001,12 @@ async function meetingCreate({ data }) {
       data.repositoryUrl ?? null,
     ],
   );
-  return queryOne("SELECT * FROM `Meeting` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `meeting` WHERE id = ?", [pk]);
 }
 
 async function meetingFindUnique({ where }) {
   if (where?.id)
-    return queryOne("SELECT * FROM `Meeting` WHERE id = ?", [where.id]);
+    return queryOne("SELECT * FROM `meeting` WHERE id = ?", [where.id]);
   return null;
 }
 
@@ -1022,33 +1022,33 @@ async function meetingUpdate({ where, data }) {
     vals.push(data.notes);
   }
   if (sets.length === 0)
-    return queryOne("SELECT * FROM `Meeting` WHERE id = ?", [where.id]);
+    return queryOne("SELECT * FROM `meeting` WHERE id = ?", [where.id]);
   vals.push(where.id);
   await query(`UPDATE \`Meeting\` SET ${sets.join(", ")} WHERE id = ?`, vals);
-  return queryOne("SELECT * FROM `Meeting` WHERE id = ?", [where.id]);
+  return queryOne("SELECT * FROM `meeting` WHERE id = ?", [where.id]);
 }
 
 async function meetingChannelFindFirst({ where }) {
   return queryOne(
-    "SELECT * FROM `MeetingChannel` WHERE guildConfigId = ? AND voiceChannelId = ?",
+    "SELECT * FROM `meetingchannel` WHERE guildConfigId = ? AND voiceChannelId = ?",
     [where.guildConfigId, where.voiceChannelId],
   );
 }
 
 async function meetingChannelFindUnique({ where }) {
   if (where?.meetingId)
-    return queryOne("SELECT * FROM `MeetingChannel` WHERE meetingId = ?", [
+    return queryOne("SELECT * FROM `meetingchannel` WHERE meetingId = ?", [
       where.meetingId,
     ]);
   if (where?.id)
-    return queryOne("SELECT * FROM `MeetingChannel` WHERE id = ?", [where.id]);
+    return queryOne("SELECT * FROM `meetingchannel` WHERE id = ?", [where.id]);
   return null;
 }
 
 async function meetingChannelCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `MeetingChannel` (id, guildConfigId, voiceChannelId, textChannelId, meetingId) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO `meetingchannel` (id, guildConfigId, voiceChannelId, textChannelId, meetingId) VALUES (?, ?, ?, ?, ?)",
     [
       pk,
       data.guildConfigId,
@@ -1057,7 +1057,7 @@ async function meetingChannelCreate({ data }) {
       data.meetingId ?? null,
     ],
   );
-  return queryOne("SELECT * FROM `MeetingChannel` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `meetingchannel` WHERE id = ?", [pk]);
 }
 
 async function meetingChannelUpdate({ where, data }) {
@@ -1085,7 +1085,7 @@ async function faqSearch(guildId, queryStr, repoName, limit = 10) {
   const cfg = await getGuildConfig(guildId);
   if (!cfg) return [];
   let sql =
-    "SELECT f.*, r.name AS repo_name FROM `Faq` f LEFT JOIN `Repository` r ON f.repositoryId = r.id WHERE f.guildConfigId = ?";
+    "SELECT f.*, r.name AS repo_name FROM `faq` f LEFT JOIN `repository` r ON f.repositoryId = r.id WHERE f.guildConfigId = ?";
   const params = [cfg.id];
   if (queryStr) {
     sql += " AND (f.question LIKE ? OR f.answer LIKE ?)";
@@ -1104,7 +1104,7 @@ async function faqSearch(guildId, queryStr, repoName, limit = 10) {
 async function clockEntryCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `ClockEntry` (id, guildConfigId, discordId, clockInAt, clockOutAt) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO `clockentry` (id, guildConfigId, discordId, clockInAt, clockOutAt) VALUES (?, ?, ?, ?, ?)",
     [
       pk,
       data.guildConfigId,
@@ -1113,13 +1113,13 @@ async function clockEntryCreate({ data }) {
       data.clockOutAt ?? null,
     ],
   );
-  return queryOne("SELECT * FROM `ClockEntry` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `clockentry` WHERE id = ?", [pk]);
 }
 async function clockEntryFindActive(guildId, discordId) {
   const cfg = await getGuildConfig(guildId);
   if (!cfg) return null;
   return queryOne(
-    "SELECT * FROM `ClockEntry` WHERE guildConfigId = ? AND discordId = ? AND clockOutAt IS NULL ORDER BY clockInAt DESC LIMIT 1",
+    "SELECT * FROM `clockentry` WHERE guildConfigId = ? AND discordId = ? AND clockOutAt IS NULL ORDER BY clockInAt DESC LIMIT 1",
     [cfg.id, discordId],
   );
 }
@@ -1131,16 +1131,16 @@ async function clockEntryUpdate(id, data) {
     vals.push(data.clockOutAt);
   }
   if (sets.length === 0)
-    return queryOne("SELECT * FROM `ClockEntry` WHERE id = ?", [id]);
+    return queryOne("SELECT * FROM `clockentry` WHERE id = ?", [id]);
   vals.push(id);
   await query(
     `UPDATE \`ClockEntry\` SET ${sets.join(", ")} WHERE id = ?`,
     vals,
   );
-  return queryOne("SELECT * FROM `ClockEntry` WHERE id = ?", [id]);
+  return queryOne("SELECT * FROM `clockentry` WHERE id = ?", [id]);
 }
 async function clockEntryFindMany({ where, orderBy, take }) {
-  let sql = "SELECT * FROM `ClockEntry` WHERE guildConfigId = ?";
+  let sql = "SELECT * FROM `clockentry` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
   if (where.discordId) {
     sql += " AND discordId = ?";

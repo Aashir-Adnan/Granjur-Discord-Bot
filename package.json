@@ -10,12 +10,14 @@
     "db:init": "node bot/scripts/init-db.js",
     "db:migrate": "node bot/scripts/run-migrations.js",
     "db:seed": "node bot/scripts/seed-data.js",
-    "deploy:commands": "node bot/scripts/deploy-commands.js"
+    "deploy:commands": "node bot/scripts/deploy-commands.js",
+    "db:query": "node bot/scripts/db-query.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "@discordjs/voice": "^0.18.0",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
     "mysql2": "^3.11.0",
