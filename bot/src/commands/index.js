@@ -79,18 +79,35 @@ export async function loadCommands(client) {
   const commands = getCommands()
   const rest = new REST({ version: '10' }).setToken(config.discord.token)
   const payload = commands.map((c) => c.toJSON())
+
+  // Only re-register if commands changed (avoids rate limits on restarts)
   try {
+    let existing = []
     if (config.discord.guildId) {
-      // Clear any stale global commands to prevent duplicates
-      await rest.put(Routes.applicationCommands(config.discord.clientId), { body: [] }).catch(() => {})
-      await rest.put(
-        Routes.applicationGuildCommands(config.discord.clientId, config.discord.guildId),
-        { body: payload }
-      )
-      console.log(`Registered ${payload.length} slash commands for guild ${config.discord.guildId}`)
+      existing = await rest.get(Routes.applicationGuildCommands(config.discord.clientId, config.discord.guildId)).catch(() => [])
     } else {
-      await rest.put(Routes.applicationCommands(config.discord.clientId), { body: payload })
-      console.log(`Registered ${payload.length} slash commands globally (may take up to 1 hour to appear)`)
+      existing = await rest.get(Routes.applicationCommands(config.discord.clientId)).catch(() => [])
+    }
+
+    const existingNames = (existing || []).map((c) => c.name).sort().join(',')
+    const newNames = payload.map((c) => c.name).sort().join(',')
+    const existingHash = JSON.stringify((existing || []).map((c) => ({ name: c.name, description: c.description, options: c.options })).sort((a, b) => a.name.localeCompare(b.name)))
+    const newHash = JSON.stringify(payload.map((c) => ({ name: c.name, description: c.description, options: c.options })).sort((a, b) => a.name.localeCompare(b.name)))
+
+    if (existingHash === newHash) {
+      console.log(`Slash commands unchanged (${payload.length} commands), skipping registration`)
+    } else {
+      if (config.discord.guildId) {
+        await rest.put(Routes.applicationCommands(config.discord.clientId), { body: [] }).catch(() => {})
+        await rest.put(
+          Routes.applicationGuildCommands(config.discord.clientId, config.discord.guildId),
+          { body: payload }
+        )
+        console.log(`Registered ${payload.length} slash commands for guild ${config.discord.guildId}`)
+      } else {
+        await rest.put(Routes.applicationCommands(config.discord.clientId), { body: payload })
+        console.log(`Registered ${payload.length} slash commands globally (may take up to 1 hour to appear)`)
+      }
     }
   } catch (e) {
     console.error('Slash command registration failed:', e.message)

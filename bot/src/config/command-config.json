@@ -22,6 +22,11 @@
     "clock-in": ["Verified"],
     "clock-out": ["Verified"],
     "sql-dump": ["Senior Dev", "CEO", "Server Manager"],
+    "create-task": ["Verified"],
+    "update-task": ["Verified"],
+    "create-project-role": ["CEO", "Server Manager"],
+    "create-project-categories": ["CEO", "Server Manager"],
+    "migrate": ["CEO", "Server Manager"],
     "close-feature": [],
     "resolve-bug": [],
     "reconcile": ["CEO", "Server Manager"]
@@ -46,6 +51,11 @@
     "clock-in": true,
     "clock-out": true,
     "sql-dump": true,
+    "create-task": true,
+    "update-task": true,
+    "create-project-role": true,
+    "create-project-categories": true,
+    "migrate": false,
     "close-feature": false,
     "resolve-bug": false,
     "reconcile": true
@@ -155,6 +165,31 @@
       "summary": "Resolve a bug ticket (only in a bug ticket channel).",
       "syntax": "`/resolve-bug` [doc: attachment]",
       "detail": "Use only inside a bug ticket channel. Attach an MD file describing the solution; the ticket is then resolved and the doc is saved."
+    },
+    "create-task": {
+      "summary": "Create a bug or feature task.",
+      "syntax": "`/create-task [type] [title] [description]`",
+      "detail": "Unified command for creating bugs and features. Select type, repo/project, fill in details, assign members."
+    },
+    "update-task": {
+      "summary": "Update an existing task (status, assignees, etc.).",
+      "syntax": "`/update-task`",
+      "detail": "Modify task fields like status, assignees, modules, and test results."
+    },
+    "create-project-role": {
+      "summary": "Create a Discord role for a project.",
+      "syntax": "`/create-project-role <project>`",
+      "detail": "Creates a role named after the project. CEO/Server Manager only."
+    },
+    "create-project-categories": {
+      "summary": "Create channel categories for projects.",
+      "syntax": "`/create-project-categories [create_roles]`",
+      "detail": "Sets up category channels for each project. Optionally creates matching roles. CEO/Server Manager only."
+    },
+    "migrate": {
+      "summary": "Run pending database migrations.",
+      "syntax": "`/migrate`",
+      "detail": "Applies any unapplied SQL migration scripts. CEO/Server Manager only."
     },
     "reconcile": {
       "summary": "Sync members who joined while the bot was offline.",
