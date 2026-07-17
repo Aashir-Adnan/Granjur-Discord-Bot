@@ -6,7 +6,6 @@ import {
   isModalFirstCommand,
 } from "./commands/index.js";
 import { handleMemberAdd } from "./events/memberAdd.js";
-import { handleVoiceStateUpdate } from "./events/voiceStateUpdate.js";
 import { startVerifyServer } from "./server.js";
 import { EPHEMERAL } from "./constants.js";
 import handleInteractions from "./handlers/interactions.js";
