@@ -268,8 +268,6 @@ export async function handleMembersSelect(interaction) {
 }
 
 export async function handleConfirm(interaction) {
-  await interaction.deferUpdate();
-  
   const guild = interaction.guild;
   if (!guild) return;
   const state = flowStore.get(interaction.user.id, guild.id, "schedule");
@@ -287,8 +285,8 @@ export async function handleConfirm(interaction) {
         scheduledAt: state.scheduledAt,
         memberIds: state.memberIds || [],
         createdBy: interaction.user.id,
-        voiceChannelId: defaultVoiceChannel?.id ?? null,
-        recordingEnabled: Boolean(defaultVoiceChannel?.id),
+        voiceChannelId: null,
+        recordingEnabled: false,
       },
     });
 
@@ -316,7 +314,6 @@ export async function handleConfirm(interaction) {
 }
 
 export async function handleCancel(interaction) {
-  await interaction.deferUpdate();
   flowStore.clear(interaction.user.id, interaction.guild?.id, "schedule");
   await interaction
     .editReply({ content: "Cancelled.", components: [], embeds: [] })

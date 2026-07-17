@@ -143,6 +143,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       "feature_show_modal",
       "feature_edit", // shows input modal again
       "schedule_show_modal",
+      "schedule_confirm",
+      "schedule_cancel",
       "invite_enter_email",
       "verify_enter_otp", // Enter code → OTP modal
       "faq_ask",
