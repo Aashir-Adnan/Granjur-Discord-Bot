@@ -248,6 +248,7 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/evaluate.js")).handleUserSelect(
         interaction,
       );
+    // force redeploy check
     if (customId === "docs_browse")
       return (await import("../commands/docs.js")).handleDocsBrowse(
         interaction,
