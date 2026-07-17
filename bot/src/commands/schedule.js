@@ -271,6 +271,7 @@ export async function handleConfirm(interaction) {
   const guild = interaction.guild;
   if (!guild) return;
   const state = flowStore.get(interaction.user.id, guild.id, "schedule");
+  console.log(">>> Schedule state:", state);
   if (!state)
     return interaction
       .editReply({ content: "Session expired.", components: [] })
@@ -278,6 +279,7 @@ export async function handleConfirm(interaction) {
 
   try {
     const cfg = await getOrCreateGuildConfig(guild.id)
+    console.log(">>> Creating scheduled meeting...");
     await db.scheduledMeeting.create({
       data: {
         guildConfigId: cfg.id,
@@ -289,6 +291,7 @@ export async function handleConfirm(interaction) {
         recordingEnabled: false,
       },
     });
+    console.log(">>> Scheduled meeting created successfully");
 
     flowStore.clear(interaction.user.id, guild.id, "schedule");
     const mentions = (state.memberIds || []).map((id) => `<@${id}>`).join(" ");
