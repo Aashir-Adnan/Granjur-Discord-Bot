@@ -33,8 +33,15 @@ export async function execute(interaction) {
     where: { guildConfigId: cfg.id, status: 'holding' },
   })
   if (!holding.length) {
+    const allMembers = await db.guildMember.findMany({
+      where: { guildConfigId: cfg.id },
+    })
+    const pendingCount = allMembers.filter(m => m.status === 'pending').length
+    const extra = pendingCount
+      ? `\n\n*${pendingCount} user${pendingCount > 1 ? 's are' : ' is'} pending — they need to run **/verify** first.*`
+      : ''
     return interaction.editReply({
-      content: 'No users in holding. Users must run **/verify** and complete verification first.',
+      content: `No users in holding.${extra}`,
     })
   }
 

@@ -1,0 +1,22 @@
+name: Deploy to VM
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: 20.120.228.55
+          username: azureuser
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            cd ~/Granjur-Discord-Bot || exit 1
+            git pull origin main
+            npm install --production
+            npm run db:migrate
+            pm2 restart granjur-bot || pm2 start bot/src/index.js --name granjur-bot
