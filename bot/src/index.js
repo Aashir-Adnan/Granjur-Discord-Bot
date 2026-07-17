@@ -11,6 +11,7 @@ import { startVerifyServer } from "./server.js";
 import { EPHEMERAL } from "./constants.js";
 import handleInteractions from "./handlers/interactions.js";
 import { startMeetingReminder } from "./services/meetingReminder.js";
+import { startMeetingAutoChannels } from "./services/meetingAutoChannel.js";
 import { startTicketReminder } from "./services/ticketReminder.js";
 import {
   isRateLimitError,
@@ -41,10 +42,10 @@ client.once(Events.ClientReady, async () => {
   commands = await loadCommands(client);
   startVerifyServer(client);
   startMeetingReminder(client);
+  startMeetingAutoChannels(client);
   startTicketReminder(client);
   console.log(`Logged in as ${client.user.tag}`);
 });
-client.on(Events.VoiceStateUpdate, handleVoiceStateUpdate);
 client.on(Events.InteractionCreate, async (interaction) => {
   debug(`Interaction received ${interaction.type}`);
   // Defer slash commands first — nothing else before this so we stay under 3s
