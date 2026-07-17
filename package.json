@@ -10,7 +10,8 @@
     "db:init": "node bot/scripts/init-db.js",
     "db:migrate": "node bot/scripts/run-migrations.js",
     "db:seed": "node bot/scripts/seed-data.js",
-    "deploy:commands": "node bot/scripts/deploy-commands.js"
+    "deploy:commands": "node bot/scripts/deploy-commands.js",
+    "db:query": "node bot/scripts/db-query.js"
   },
   "engines": {
     "node": ">=18"
