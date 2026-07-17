@@ -11,7 +11,7 @@ import {
 } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
-import { EPHEMERAL } from '../constants.js'
+import { CHANNEL_MEETINGS_VOICE, EPHEMERAL } from '../constants.js'
 
 function parseWhen(whenStr) {
   if (/^\d{4}-\d{2}-\d{2}/.test(whenStr)) return new Date(whenStr)
@@ -207,6 +207,10 @@ export async function handleConfirm(interaction) {
 
   try {
     const cfg = await getOrCreateGuildConfig(guild.id)
+    const defaultVoiceChannel = guild.channels.cache.find(
+      (channel) => channel.isVoiceBased?.() && channel.name === CHANNEL_MEETINGS_VOICE
+    ) || guild.channels.cache.find((channel) => channel.isVoiceBased?.())
+
     await db.scheduledMeeting.create({
       data: {
         guildConfigId: cfg.id,
@@ -214,6 +218,8 @@ export async function handleConfirm(interaction) {
         scheduledAt: state.scheduledAt,
         memberIds: state.memberIds || [],
         createdBy: interaction.user.id,
+        voiceChannelId: defaultVoiceChannel?.id ?? null,
+        recordingEnabled: Boolean(defaultVoiceChannel?.id),
       },
     })
 
