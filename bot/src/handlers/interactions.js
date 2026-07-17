@@ -185,7 +185,10 @@ export default async function handleInteractions(interaction) {
         await import("../commands/doc-channel.js")
       ).handleDocTraversalBack(interaction);
     await interaction
-      .editReply({ content: "Unknown button.", components: [] })
+      .editReply({
+        content: `Unknown button. Received customId: "${customId}"`,
+        components: [],
+      })
       .catch(() => {});
     return;
   }
