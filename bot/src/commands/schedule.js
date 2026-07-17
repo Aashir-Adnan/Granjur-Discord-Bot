@@ -8,10 +8,10 @@ import {
   TextInputStyle,
   ButtonBuilder,
   ButtonStyle,
-} from "discord.js";
-import db, { getOrCreateGuildConfig } from "../db/index.js";
-import * as flowStore from "../flows/store.js";
-import { EPHEMERAL } from "../constants.js";
+} from 'discord.js'
+import db, { getOrCreateGuildConfig } from '../db/index.js'
+import * as flowStore from '../flows/store.js'
+import { EPHEMERAL } from '../constants.js'
 
 function parseWhen(whenStr) {
   if (/^\d{4}-\d{2}-\d{2}/.test(whenStr)) return new Date(whenStr);
@@ -277,7 +277,7 @@ export async function handleConfirm(interaction) {
       .catch(() => {});
 
   try {
-    const cfg = await getOrCreateGuildConfig(guild.id);
+    const cfg = await getOrCreateGuildConfig(guild.id)
     await db.scheduledMeeting.create({
       data: {
         guildConfigId: cfg.id,
@@ -285,6 +285,8 @@ export async function handleConfirm(interaction) {
         scheduledAt: state.scheduledAt,
         memberIds: state.memberIds || [],
         createdBy: interaction.user.id,
+        voiceChannelId: defaultVoiceChannel?.id ?? null,
+        recordingEnabled: Boolean(defaultVoiceChannel?.id),
       },
     });
 
