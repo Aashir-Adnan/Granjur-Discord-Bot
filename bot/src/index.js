@@ -1,17 +1,26 @@
-import { Client, Events, GatewayIntentBits, Partials } from 'discord.js'
-import { config } from './config.js'
-import { loadCommands, handleCommand, isModalFirstCommand } from './commands/index.js'
-import { handleMemberAdd } from './events/memberAdd.js'
-import { startVerifyServer } from './server.js'
-import { EPHEMERAL } from './constants.js'
-import handleInteractions from './handlers/interactions.js'
-import { startMeetingReminder } from './services/meetingReminder.js'
-import { startTicketReminder } from './services/ticketReminder.js'
-import { isRateLimitError, getRetryAfter, RATE_LIMIT_MESSAGE } from './utils/rateLimit.js'
+import { Client, Events, GatewayIntentBits, Partials } from "discord.js";
+import { config } from "./config.js";
+import {
+  loadCommands,
+  handleCommand,
+  isModalFirstCommand,
+} from "./commands/index.js";
+import { handleMemberAdd } from "./events/memberAdd.js";
+import { handleVoiceStateUpdate } from "./events/voiceStateUpdate.js";
+import { startVerifyServer } from "./server.js";
+import { EPHEMERAL } from "./constants.js";
+import handleInteractions from "./handlers/interactions.js";
+import { startMeetingReminder } from "./services/meetingReminder.js";
+import { startTicketReminder } from "./services/ticketReminder.js";
+import {
+  isRateLimitError,
+  getRetryAfter,
+  RATE_LIMIT_MESSAGE,
+} from "./utils/rateLimit.js";
 
-const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true'
+const DEBUG = process.env.DEBUG === "1" || process.env.DEBUG === "true";
 function debug(...args) {
-  if (DEBUG) console.log(`[${new Date().toISOString()}]`, ...args)
+  if (DEBUG) console.log(`[${new Date().toISOString()}]`, ...args);
 }
 
 const client = new Client({
@@ -24,38 +33,46 @@ const client = new Client({
     GatewayIntentBits.GuildVoiceStates,
   ],
   partials: [Partials.GuildMember],
-})
+});
 
-let commands
+let commands;
 
 client.once(Events.ClientReady, async () => {
-  commands = await loadCommands(client)
-  startVerifyServer(client)
-  startMeetingReminder(client)
-  startTicketReminder(client)
-  console.log(`Logged in as ${client.user.tag}`)
-})
-
+  commands = await loadCommands(client);
+  startVerifyServer(client);
+  startMeetingReminder(client);
+  startTicketReminder(client);
+  console.log(`Logged in as ${client.user.tag}`);
+});
+client.on(Events.VoiceStateUpdate, handleVoiceStateUpdate);
 client.on(Events.InteractionCreate, async (interaction) => {
-  debug(`Interaction received ${interaction.type}`)
+  debug(`Interaction received ${interaction.type}`);
   // Defer slash commands first — nothing else before this so we stay under 3s
-  if (interaction.isChatInputCommand() && !isModalFirstCommand(interaction.commandName)) {
+  if (
+    interaction.isChatInputCommand() &&
+    !isModalFirstCommand(interaction.commandName)
+  ) {
     try {
-      await interaction.deferReply({ flags: EPHEMERAL })
+      await interaction.deferReply({ flags: EPHEMERAL });
     } catch (e) {
       if (isRateLimitError(e)) {
-        const retry = getRetryAfter(e)
-        console.warn('[index] deferReply rate limited', retry ? `retry after ${retry.seconds}s` : '')
-        await interaction.reply({ content: RATE_LIMIT_MESSAGE, flags: EPHEMERAL }).catch(() => {})
-      } else if (e.code !== 10062) console.error('[index] deferReply error:', e)
-      return
+        const retry = getRetryAfter(e);
+        console.warn(
+          "[index] deferReply rate limited",
+          retry ? `retry after ${retry.seconds}s` : "",
+        );
+        await interaction
+          .reply({ content: RATE_LIMIT_MESSAGE, flags: EPHEMERAL })
+          .catch(() => {});
+      } else if (e.code !== 10062)
+        console.error("[index] deferReply error:", e);
+      return;
     }
-  }
-  else{
-    debug('Interaction is not a chat input command')
+  } else {
+    debug("Interaction is not a chat input command");
   }
 
-  const t0 = Date.now()
+  const t0 = Date.now();
   const kind = interaction.isChatInputCommand()
     ? `command:${interaction.commandName}`
     : interaction.isButton()
@@ -64,127 +81,192 @@ client.on(Events.InteractionCreate, async (interaction) => {
         ? `select:${interaction.customId}`
         : interaction.isModalSubmit()
           ? `modal:${interaction.customId}`
-          : 'other'
-  debug(`Interaction received ${kind}`)
+          : "other";
+  debug(`Interaction received ${kind}`);
 
   if (interaction.isChatInputCommand()) {
-    const needsDefer = !isModalFirstCommand(interaction.commandName)
-    if (needsDefer) debug(`deferReply already done (${Date.now() - t0}ms ago)`)
+    const needsDefer = !isModalFirstCommand(interaction.commandName);
+    if (needsDefer) debug(`deferReply already done (${Date.now() - t0}ms ago)`);
     if (!commands) {
       if (needsDefer) {
-        await interaction.editReply({ content: 'Bot is still starting. Please try again in a few seconds.' }).catch(() => {})
+        await interaction
+          .editReply({
+            content:
+              "Bot is still starting. Please try again in a few seconds.",
+          })
+          .catch(() => {});
       } else {
-        await interaction.reply({ content: 'Bot is still starting. Please try again in a few seconds.', flags: EPHEMERAL }).catch(() => {})
+        await interaction
+          .reply({
+            content:
+              "Bot is still starting. Please try again in a few seconds.",
+            flags: EPHEMERAL,
+          })
+          .catch(() => {});
       }
-      return
+      return;
     }
     try {
-      await handleCommand(interaction, commands)
-      debug(`handleCommand ${interaction.commandName} done (${Date.now() - t0}ms)`)
+      await handleCommand(interaction, commands);
+      debug(
+        `handleCommand ${interaction.commandName} done (${Date.now() - t0}ms)`,
+      );
     } catch (err) {
-      const msg = isRateLimitError(err) ? RATE_LIMIT_MESSAGE : 'Something went wrong. Please try again.'
+      const msg = isRateLimitError(err)
+        ? RATE_LIMIT_MESSAGE
+        : "Something went wrong. Please try again.";
       if (isRateLimitError(err)) {
-        const retry = getRetryAfter(err)
-        console.warn('[index] handleCommand rate limited', retry ? `retry after ${retry.seconds}s` : '')
-      } else console.error('[index] handleCommand error:', err)
+        const retry = getRetryAfter(err);
+        console.warn(
+          "[index] handleCommand rate limited",
+          retry ? `retry after ${retry.seconds}s` : "",
+        );
+      } else console.error("[index] handleCommand error:", err);
       if (needsDefer && (interaction.deferred || interaction.replied)) {
-        await interaction.editReply({ content: msg }).catch(() => {})
+        await interaction.editReply({ content: msg }).catch(() => {});
       } else if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: msg, flags: EPHEMERAL }).catch(() => {})
+        await interaction
+          .reply({ content: msg, flags: EPHEMERAL })
+          .catch(() => {});
       }
     }
-    return
+    return;
   }
 
-  if (interaction.isStringSelectMenu() || interaction.isButton() || interaction.isModalSubmit()) {
+  if (
+    interaction.isStringSelectMenu() ||
+    interaction.isButton() ||
+    interaction.isModalSubmit()
+  ) {
     // Do not defer components that may respond with showModal() — they must use the interaction once
     const noDeferComponentIds = [
-      'feature_show_modal',
-      'feature_edit',           // shows input modal again
-      'schedule_show_modal',
-      'invite_enter_email',
-      'verify_enter_otp',  // Enter code → OTP modal
-      'faq_ask',
-      'faq_search',
-      'backlog_select_user',    // can show role step
-      'backlog_select_roles',   // can show add-role modal
-      'backlog_approve_btn',    // shows confirm-approval modal
-      'bug_repo',               // repo select → title/description modal (legacy, kept for ticket)
-      'create_task_show_modal',  // opens details modal
-      'create_task_repo',       // repo select → details modal for bug
+      "feature_show_modal",
+      "feature_edit", // shows input modal again
+      "schedule_show_modal",
+      "invite_enter_email",
+      "verify_enter_otp", // Enter code → OTP modal
+      "faq_ask",
+      "faq_search",
+      "backlog_select_user", // can show role step
+      "backlog_select_roles", // can show add-role modal
+      "backlog_approve_btn", // shows confirm-approval modal
+      "bug_repo", // repo select → title/description modal (legacy, kept for ticket)
+      "create_task_show_modal", // opens details modal
+      "create_task_repo", // repo select → details modal for bug
       // create-task: type buttons and quick steps skip defer; repo/project step defers (async DB work)
-      'create_task_type_feature',
-      'create_task_type_bug',
-      'create_task_members',
-      'create_task_members_next',
-      'create_task_assignees',
-      'create_task_metric_api',
-      'create_task_metric_qa',
-      'create_task_metric_ac',
-    ]
-    const customId = interaction.customId || ''
-    const skipDefer = (interaction.isButton() || interaction.isStringSelectMenu()) &&
-      noDeferComponentIds.some((id) => customId === id || customId.startsWith(id + ':'))
+      "create_task_type_feature",
+      "create_task_type_bug",
+      "create_task_members",
+      "create_task_members_next",
+      "create_task_assignees",
+      "create_task_metric_api",
+      "create_task_metric_qa",
+      "create_task_metric_ac",
+    ];
+    const customId = interaction.customId || "";
+    const skipDefer =
+      (interaction.isButton() || interaction.isStringSelectMenu()) &&
+      noDeferComponentIds.some(
+        (id) => customId === id || customId.startsWith(id + ":"),
+      );
     // Modals that defer inside their handler to avoid "already acknowledged" (40060)
-    const noDeferModalIds = ['create_task_modal']
-    const skipModalDefer = interaction.isModalSubmit() && noDeferModalIds.includes(customId)
+    const noDeferModalIds = ["create_task_modal"];
+    const skipModalDefer =
+      interaction.isModalSubmit() && noDeferModalIds.includes(customId);
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
       if (!skipDefer) {
         try {
-          await interaction.deferUpdate()
+          await interaction.deferUpdate();
         } catch (e) {
           if (isRateLimitError(e)) {
-            const retry = getRetryAfter(e)
-            console.warn('[index] deferUpdate rate limited', retry ? `retry after ${retry.seconds}s` : '')
-            await interaction.reply({ content: RATE_LIMIT_MESSAGE, flags: EPHEMERAL }).catch(() => {})
-          } else if (e.code !== 10062) console.error('[index] deferUpdate error:', e)
-          else await interaction.reply({ content: 'Could not process that action. Please try again.', flags: EPHEMERAL }).catch(() => {})
-          return
+            const retry = getRetryAfter(e);
+            console.warn(
+              "[index] deferUpdate rate limited",
+              retry ? `retry after ${retry.seconds}s` : "",
+            );
+            await interaction
+              .reply({ content: RATE_LIMIT_MESSAGE, flags: EPHEMERAL })
+              .catch(() => {});
+          } else if (e.code !== 10062)
+            console.error("[index] deferUpdate error:", e);
+          else
+            await interaction
+              .reply({
+                content: "Could not process that action. Please try again.",
+                flags: EPHEMERAL,
+              })
+              .catch(() => {});
+          return;
         }
       }
     } else if (interaction.isModalSubmit() && !skipModalDefer) {
       try {
-        await interaction.deferReply({ flags: EPHEMERAL })
+        await interaction.deferReply({ flags: EPHEMERAL });
       } catch (e) {
-        if (e.code === 40060) return // already acknowledged (e.g. duplicate event or race)
+        if (e.code === 40060) return; // already acknowledged (e.g. duplicate event or race)
         if (isRateLimitError(e)) {
-          const retry = getRetryAfter(e)
-          console.warn('[index] deferReply (modal) rate limited', retry ? `retry after ${retry.seconds}s` : '')
-          await interaction.reply({ content: RATE_LIMIT_MESSAGE, flags: EPHEMERAL }).catch(() => {})
-        } else if (e.code !== 10062) console.error('[index] deferReply (modal) error:', e)
-        else await interaction.reply({ content: 'Could not process. Please try again.', flags: EPHEMERAL }).catch(() => {})
-        return
+          const retry = getRetryAfter(e);
+          console.warn(
+            "[index] deferReply (modal) rate limited",
+            retry ? `retry after ${retry.seconds}s` : "",
+          );
+          await interaction
+            .reply({ content: RATE_LIMIT_MESSAGE, flags: EPHEMERAL })
+            .catch(() => {});
+        } else if (e.code !== 10062)
+          console.error("[index] deferReply (modal) error:", e);
+        else
+          await interaction
+            .reply({
+              content: "Could not process. Please try again.",
+              flags: EPHEMERAL,
+            })
+            .catch(() => {});
+        return;
       }
     }
-    debug(`Routing component ${kind} (${Date.now() - t0}ms since receive)`)
+    debug(`Routing component ${kind} (${Date.now() - t0}ms since receive)`);
     try {
-      await handleInteractions(interaction)
-      debug(`handleInteractions ${kind} done (${Date.now() - t0}ms)`)
+      await handleInteractions(interaction);
+      debug(`handleInteractions ${kind} done (${Date.now() - t0}ms)`);
     } catch (err) {
-      const msg = isRateLimitError(err) ? RATE_LIMIT_MESSAGE : 'Something went wrong. Please try again.'
+      const msg = isRateLimitError(err)
+        ? RATE_LIMIT_MESSAGE
+        : "Something went wrong. Please try again.";
       if (isRateLimitError(err)) {
-        const retry = getRetryAfter(err)
-        console.warn('[index] handleInteractions rate limited', retry ? `retry after ${retry.seconds}s` : '')
-      } else console.error(`[index] handleInteractions ${kind} error:`, err)
+        const retry = getRetryAfter(err);
+        console.warn(
+          "[index] handleInteractions rate limited",
+          retry ? `retry after ${retry.seconds}s` : "",
+        );
+      } else console.error(`[index] handleInteractions ${kind} error:`, err);
       if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: msg, flags: EPHEMERAL }).catch(() => {})
+        await interaction
+          .reply({ content: msg, flags: EPHEMERAL })
+          .catch(() => {});
       } else {
-        await interaction.editReply({ content: msg }).catch(() => {})
+        await interaction.editReply({ content: msg }).catch(() => {});
       }
     }
   }
-})
+});
 
 // Log rate limits that surface as unhandled rejections (e.g. from internal discord.js requests)
-process.on('unhandledRejection', (reason) => {
-  if (reason && typeof reason === 'object' && (reason.code === 429 || (reason.message && String(reason.message).toLowerCase().includes('rate limit')))) {
-    console.warn('[index] Unhandled rate limit:', reason.message ?? reason)
+process.on("unhandledRejection", (reason) => {
+  if (
+    reason &&
+    typeof reason === "object" &&
+    (reason.code === 429 ||
+      (reason.message &&
+        String(reason.message).toLowerCase().includes("rate limit")))
+  ) {
+    console.warn("[index] Unhandled rate limit:", reason.message ?? reason);
   }
-})
+});
 
-client.on(Events.GuildMemberAdd, handleMemberAdd)
+client.on(Events.GuildMemberAdd, handleMemberAdd);
 
 client.login(config.discord.token).catch((err) => {
-  console.error('Login failed:', err)
-  process.exit(1)
-})
+  console.error("Login failed:", err);
+  process.exit(1);
+});
