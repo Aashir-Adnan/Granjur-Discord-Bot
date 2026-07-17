@@ -44,6 +44,16 @@ export async function execute(interaction) {
   const cfg = await getOrCreateGuildConfig(guild.id)
   if (!cfg) return interaction.editReply({ content: 'Server not initialized. Run `/init` first.' })
 
+  const existing = await db.guildMember.findUnique({
+    where: { guildId_discordId: { guildId: guild.id, discordId: interaction.user.id } },
+  })
+  if (existing && (existing.status === 'approved' || existing.status === 'holding')) {
+    const msg = existing.status === 'approved'
+      ? 'You are already verified and approved.'
+      : 'You are already verified and in **Holding** — a CEO or Server Manager will approve you shortly.'
+    return interaction.editReply({ content: msg })
+  }
+
   const codeOpt = interaction.options.getString('code')
   if (codeOpt && codeOpt.trim().length === 6) {
     const fakeModalInteraction = {
