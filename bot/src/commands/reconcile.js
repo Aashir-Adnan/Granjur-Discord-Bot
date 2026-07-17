@@ -3,9 +3,9 @@ import {
   PermissionFlagsBits,
   EmbedBuilder,
 } from 'discord.js'
-import db, { getOrCreateGuildConfig } from '../db/index.js'
+import db, { getOrCreateGuildConfig, updateGuildConfig } from '../db/index.js'
 import { query } from '../Database/connection.js'
-import { EPHEMERAL } from '../constants.js'
+import { EPHEMERAL, ROLE_HOLDING, ROLE_VERIFIED } from '../constants.js'
 
 export const data = new SlashCommandBuilder()
   .setName('reconcile')
@@ -16,10 +16,28 @@ export async function execute(interaction) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
 
-  const cfg = await getOrCreateGuildConfig(guild.id)
+  let cfg = await getOrCreateGuildConfig(guild.id)
   if (!cfg) return interaction.editReply({ content: 'Server not initialized. Run **/init** first.' })
 
   await interaction.editReply({ content: 'Scanning guild members...' })
+
+  // Fix stale role IDs — look up actual roles by name and update DB if mismatched
+  const configFixes = []
+  const holdingRole = guild.roles.cache.find((r) => r.name === ROLE_HOLDING)
+  const verifiedRole = guild.roles.cache.find((r) => r.name === ROLE_VERIFIED)
+  const updates = {}
+  if (holdingRole && cfg.holdingRoleId !== holdingRole.id) {
+    updates.holdingRoleId = holdingRole.id
+    configFixes.push(`Holding role: \`${cfg.holdingRoleId || 'NULL'}\` → \`${holdingRole.id}\``)
+  }
+  if (verifiedRole && cfg.verifiedRoleId !== verifiedRole.id) {
+    updates.verifiedRoleId = verifiedRole.id
+    configFixes.push(`Verified role: \`${cfg.verifiedRoleId || 'NULL'}\` → \`${verifiedRole.id}\``)
+  }
+  if (Object.keys(updates).length) {
+    await updateGuildConfig(guild.id, updates)
+    cfg = await getOrCreateGuildConfig(guild.id)
+  }
 
   const discordMembers = await guild.members.fetch()
 
@@ -35,10 +53,17 @@ export async function execute(interaction) {
     (m) => !m.user.bot && !trackedIds.has(m.id)
   )
 
-  if (missing.size === 0) {
+  if (missing.size === 0 && configFixes.length === 0) {
     return interaction.editReply({
-      content: 'All guild members are already tracked in the database. Nothing to reconcile.',
+      content: 'All guild members are already tracked and config is up to date. Nothing to reconcile.',
     })
+  }
+  if (missing.size === 0 && configFixes.length > 0) {
+    const embed = new EmbedBuilder()
+      .setTitle('Reconcile complete')
+      .setDescription(`**Config fixed:**\n${configFixes.join('\n')}\n\nAll guild members are already tracked.`)
+      .setColor(0x57f287)
+    return interaction.editReply({ content: null, embeds: [embed] })
   }
 
   const reconciled = []
@@ -82,6 +107,9 @@ export async function execute(interaction) {
   }
 
   const lines = []
+  if (configFixes.length) {
+    lines.push(`**Config fixed:**\n${configFixes.join('\n')}`)
+  }
   if (reconciled.length) {
     lines.push(`**Reconciled (${reconciled.length}):** ${reconciled.map((t) => `\`${t}\``).join(', ')}`)
   }
