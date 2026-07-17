@@ -48,10 +48,21 @@ export async function execute(interaction) {
     where: { guildId_discordId: { guildId: guild.id, discordId: interaction.user.id } },
   })
   if (existing && (existing.status === 'approved' || existing.status === 'holding')) {
-    const msg = existing.status === 'approved'
-      ? 'You are already verified and approved.'
-      : 'You are already verified and in **Holding** — a CEO or Server Manager will approve you shortly.'
-    return interaction.editReply({ content: msg })
+    // Check if user still has the verified role — if not, they likely left and rejoined
+    const member = await guild.members.fetch(interaction.user.id).catch(() => null)
+    const hasVerifiedRole = member && cfg.verifiedRoleId && member.roles.cache.has(cfg.verifiedRoleId)
+    const hasHoldingRole = member && cfg.holdingRoleId && member.roles.cache.has(cfg.holdingRoleId)
+    if (hasVerifiedRole || hasHoldingRole) {
+      const msg = existing.status === 'approved'
+        ? 'You are already verified and approved.'
+        : 'You are already verified and in **Holding** — a CEO or Server Manager will approve you shortly.'
+      return interaction.editReply({ content: msg })
+    }
+    // User lost their roles (left & rejoined) — reset to pending so they can re-verify
+    await db.guildMember.update({
+      where: { id: existing.id },
+      data: { status: 'pending' },
+    })
   }
 
   const codeOpt = interaction.options.getString('code')

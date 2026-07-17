@@ -160,8 +160,12 @@ export async function handleConfirm(interaction) {
         } catch (_) {}
       }
     }
-    if (cfg.holdingRoleId) await member.roles.remove(cfg.holdingRoleId).catch(() => {})
-    if (cfg.verifiedRoleId) await member.roles.add(cfg.verifiedRoleId).catch(() => {})
+    if (cfg.holdingRoleId) await member.roles.remove(cfg.holdingRoleId).catch((e) => console.warn('[approve] Could not remove holding role:', e.message))
+    if (cfg.verifiedRoleId) {
+      await member.roles.add(cfg.verifiedRoleId).catch((e) => console.error('[approve] Could not add verified role:', e.message))
+    } else {
+      console.warn('[approve] No verifiedRoleId configured — user will not see channels')
+    }
 
     const existingRoleIds = ensureStringArray(dbMember.roleIds)
     await db.guildMember.update({
