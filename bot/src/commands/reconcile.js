@@ -25,7 +25,7 @@ export async function execute(interaction) {
 
   // Get all discord IDs already tracked in the DB for this guild
   const dbRows = await query(
-    'SELECT discordId FROM `GuildMember` WHERE guildConfigId = ?',
+    'SELECT discordId FROM `guildmember` WHERE guildConfigId = ?',
     [cfg.id]
   )
   const trackedIds = new Set(dbRows.map((r) => r.discordId))

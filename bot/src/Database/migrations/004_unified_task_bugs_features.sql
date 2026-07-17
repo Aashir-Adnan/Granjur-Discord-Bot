@@ -1,9 +1,9 @@
 -- Consolidate Feature and BugTicket into Task. Task holds both with is_bug / is_feature flags.
--- Run after 001, 002, 003. Requires Feature, BugTicket, Task, TicketDoc, feature_repositories,
--- feature_project_schemas, BugTicketComment to exist.
+-- Run after 001, 002, 003. Requires Feature, BugTicket, Task, ticketdoc, feature_repositories,
+-- feature_project_schemas, bugticketcomment to exist.
 
 -- 1) Add merged columns to Task
-ALTER TABLE Task
+ALTER TABLE task
   ADD COLUMN is_bug TINYINT(1) NOT NULL DEFAULT 0,
   ADD COLUMN is_feature TINYINT(1) NOT NULL DEFAULT 0,
   ADD COLUMN title TEXT,
@@ -55,24 +55,24 @@ SET
   t.externalIssueUrl = b.externalIssueUrl,
   t.externalIssueNumber = b.externalIssueNumber;
 
--- 4) TicketDoc: add taskId and backfill
-ALTER TABLE TicketDoc ADD COLUMN taskId VARCHAR(36) NULL;
-UPDATE TicketDoc td
+-- 4) ticketdoc: add taskId and backfill
+ALTER TABLE ticketdoc ADD COLUMN taskId VARCHAR(36) NULL;
+UPDATE ticketdoc td
 INNER JOIN Task t ON (t.featureId = td.featureId AND td.featureId IS NOT NULL)
 SET td.taskId = t.id;
-UPDATE TicketDoc td
+UPDATE ticketdoc td
 INNER JOIN Task t ON (t.bugTicketId = td.bugTicketId AND td.bugTicketId IS NOT NULL)
 SET td.taskId = t.id;
 -- Drop FKs and columns (constraint names from REFERENTIAL_CONSTRAINTS)
-SET @fk = (SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'TicketDoc' AND REFERENCED_TABLE_NAME = 'Feature' LIMIT 1);
-SET @sql = IF(@fk IS NOT NULL, CONCAT('ALTER TABLE TicketDoc DROP FOREIGN KEY ', @fk), 'SELECT 1');
+SET @fk = (SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'ticketdoc' AND REFERENCED_TABLE_NAME = 'Feature' LIMIT 1);
+SET @sql = IF(@fk IS NOT NULL, CONCAT('ALTER TABLE ticketdoc DROP FOREIGN KEY ', @fk), 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @fk = (SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'TicketDoc' AND REFERENCED_TABLE_NAME = 'BugTicket' LIMIT 1);
-SET @sql = IF(@fk IS NOT NULL, CONCAT('ALTER TABLE TicketDoc DROP FOREIGN KEY ', @fk), 'SELECT 1');
+SET @fk = (SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'ticketdoc' AND REFERENCED_TABLE_NAME = 'BugTicket' LIMIT 1);
+SET @sql = IF(@fk IS NOT NULL, CONCAT('ALTER TABLE ticketdoc DROP FOREIGN KEY ', @fk), 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-ALTER TABLE TicketDoc DROP COLUMN featureId, DROP COLUMN bugTicketId;
-ALTER TABLE TicketDoc ADD KEY (taskId);
-ALTER TABLE TicketDoc ADD CONSTRAINT TicketDoc_taskId_fk FOREIGN KEY (taskId) REFERENCES Task(id) ON DELETE SET NULL;
+ALTER TABLE ticketdoc DROP COLUMN featureId, DROP COLUMN bugTicketId;
+ALTER TABLE ticketdoc ADD KEY (taskId);
+ALTER TABLE ticketdoc ADD CONSTRAINT ticketdoc_taskId_fk FOREIGN KEY (taskId) REFERENCES Task(id) ON DELETE SET NULL;
 
 -- 5) feature_repositories: add task_id and backfill
 ALTER TABLE feature_repositories ADD COLUMN task_id VARCHAR(36) NULL;
@@ -100,26 +100,26 @@ ALTER TABLE feature_project_schemas DROP COLUMN feature_id;
 ALTER TABLE feature_project_schemas ADD PRIMARY KEY (task_id, project_schema_id);
 ALTER TABLE feature_project_schemas ADD CONSTRAINT feature_project_schemas_task_fk FOREIGN KEY (task_id) REFERENCES Task(id) ON DELETE CASCADE;
 
--- 7) BugTicketComment: add taskId and backfill
-ALTER TABLE BugTicketComment ADD COLUMN taskId VARCHAR(36) NULL;
-UPDATE BugTicketComment bc
+-- 7) bugticketcomment: add taskId and backfill
+ALTER TABLE bugticketcomment ADD COLUMN taskId VARCHAR(36) NULL;
+UPDATE bugticketcomment bc
 INNER JOIN Task t ON t.bugTicketId = bc.bugTicketId
 SET bc.taskId = t.id;
-SET @fk = (SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'BugTicketComment' AND REFERENCED_TABLE_NAME = 'BugTicket' LIMIT 1);
-SET @sql = IF(@fk IS NOT NULL, CONCAT('ALTER TABLE BugTicketComment DROP FOREIGN KEY ', @fk), 'SELECT 1');
+SET @fk = (SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'bugticketcomment' AND REFERENCED_TABLE_NAME = 'BugTicket' LIMIT 1);
+SET @sql = IF(@fk IS NOT NULL, CONCAT('ALTER TABLE bugticketcomment DROP FOREIGN KEY ', @fk), 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-ALTER TABLE BugTicketComment DROP COLUMN bugTicketId;
-ALTER TABLE BugTicketComment ADD KEY (taskId);
-ALTER TABLE BugTicketComment ADD CONSTRAINT BugTicketComment_taskId_fk FOREIGN KEY (taskId) REFERENCES Task(id) ON DELETE CASCADE;
+ALTER TABLE bugticketcomment DROP COLUMN bugTicketId;
+ALTER TABLE bugticketcomment ADD KEY (taskId);
+ALTER TABLE bugticketcomment ADD CONSTRAINT bugticketcomment_taskId_fk FOREIGN KEY (taskId) REFERENCES Task(id) ON DELETE CASCADE;
 
 -- 8) Task: drop FKs and columns pointing to Feature/BugTicket
 SET @fk = (SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'Task' AND REFERENCED_TABLE_NAME = 'Feature' LIMIT 1);
-SET @sql = IF(@fk IS NOT NULL, CONCAT('ALTER TABLE Task DROP FOREIGN KEY ', @fk), 'SELECT 1');
+SET @sql = IF(@fk IS NOT NULL, CONCAT('ALTER TABLE task DROP FOREIGN KEY ', @fk), 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @fk = (SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'Task' AND REFERENCED_TABLE_NAME = 'BugTicket' LIMIT 1);
-SET @sql = IF(@fk IS NOT NULL, CONCAT('ALTER TABLE Task DROP FOREIGN KEY ', @fk), 'SELECT 1');
+SET @sql = IF(@fk IS NOT NULL, CONCAT('ALTER TABLE task DROP FOREIGN KEY ', @fk), 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-ALTER TABLE Task DROP COLUMN featureId, DROP COLUMN bugTicketId;
+ALTER TABLE task DROP COLUMN featureId, DROP COLUMN bugTicketId;
 
 -- 9) Drop Feature and BugTicket
 DROP TABLE IF EXISTS Feature;

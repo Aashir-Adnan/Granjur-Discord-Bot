@@ -8,5 +8,5 @@ CREATE TABLE IF NOT EXISTS guild_assignable_roles (
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, name),
   KEY (guildConfigId),
-  FOREIGN KEY (guildConfigId) REFERENCES GuildConfig(id) ON DELETE CASCADE
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
