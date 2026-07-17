@@ -268,12 +268,14 @@ export async function handleMembersSelect(interaction) {
 }
 
 export async function handleConfirm(interaction) {
+  await interaction.deferUpdate();
+  
   const guild = interaction.guild;
   if (!guild) return;
   const state = flowStore.get(interaction.user.id, guild.id, "schedule");
   if (!state)
     return interaction
-      .update({ content: "Session expired.", components: [] })
+      .editReply({ content: "Session expired.", components: [] })
       .catch(() => {});
 
   try {
@@ -300,11 +302,11 @@ export async function handleConfirm(interaction) {
       .setColor(0x57f287);
 
     await interaction
-      .update({ embeds: [embed], components: [] })
+      .editReply({ embeds: [embed], components: [] })
       .catch(() => {});
   } catch (e) {
     await interaction
-      .update({
+      .editReply({
         content: `Failed: ${e?.message ?? String(e)}`,
         components: [],
         embeds: [],
@@ -314,8 +316,9 @@ export async function handleConfirm(interaction) {
 }
 
 export async function handleCancel(interaction) {
+  await interaction.deferUpdate();
   flowStore.clear(interaction.user.id, interaction.guild?.id, "schedule");
   await interaction
-    .update({ content: "Cancelled.", components: [], embeds: [] })
+    .editReply({ content: "Cancelled.", components: [], embeds: [] })
     .catch(() => {});
 }
