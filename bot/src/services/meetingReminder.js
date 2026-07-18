@@ -29,16 +29,8 @@ export function startMeetingReminder(client) {
               content: `**Meeting in ~10 minutes** — **${(m.topic || 'Meeting').slice(0, 100)}** at ${at}${mentions ? `\n${mentions}` : ''}`,
             }).catch(() => {})
 
-            if (m.voiceChannelId && m.recordingEnabled) {
-              try {
-                const voiceChannel = guild.channels.cache.get(m.voiceChannelId)
-                if (voiceChannel?.isVoiceBased?.()) {
-                  const meetingChannel = await ensureMeetingChannel(guild, m.voiceChannelId)
-                  // Unified recording: joins voice channel + records + tracks in database
-                  await startMeetingRecording(voiceChannel, guild, meetingChannel.meetingId, m.voiceChannelId)
-                }
-              } catch (_) {}
-            }
+            // Reminder only; actual meeting start and recording are handled by meetingAutoChannel.js
+            // if the meeting has a configured voiceChannelId or if a new meeting channel is created.
 
             await db.scheduledMeeting.update(m.id, { reminderSentAt: now })
           }

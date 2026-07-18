@@ -2,6 +2,7 @@ import {
   SlashCommandBuilder,
   ActionRowBuilder,
   StringSelectMenuBuilder,
+  ChannelType,
   EmbedBuilder,
   ModalBuilder,
   TextInputBuilder,
@@ -44,6 +45,13 @@ export const data = new SlashCommandBuilder()
     o
       .setName("when")
       .setDescription("When (e.g. 2025-03-01 14:00 or in 2 days)")
+      .setRequired(false),
+  )
+  .addChannelOption((o) =>
+    o
+      .setName("voice_channel")
+      .setDescription("Optional existing voice channel to use for the meeting")
+      .addChannelTypes(ChannelType.GuildVoice)
       .setRequired(false),
   );
 
@@ -92,9 +100,12 @@ export async function execute(interaction) {
         })
         .catch(() => {});
     }
+    const voiceChannel = interaction.options.getChannel("voice_channel");
     flowStore.set(interaction.user.id, guild.id, "schedule", {
       topic: topicOpt,
       scheduledAt,
+      voiceChannelId: voiceChannel?.id || null,
+      recordingEnabled: Boolean(voiceChannel),
     });
     const members = await guild.members.fetch();
     const options = Array.from(members.values())
@@ -178,6 +189,8 @@ export async function handleScheduleModal(interaction) {
   flowStore.set(interaction.user.id, guild.id, "schedule", {
     topic,
     scheduledAt,
+    voiceChannelId: null,
+    recordingEnabled: false,
   });
 
   try {
@@ -248,6 +261,9 @@ export async function handleMembersSelect(interaction) {
       { name: "Topic", value: state.topic, inline: true },
       { name: "When", value: state.scheduledAt.toISOString(), inline: true },
       { name: "Invitees", value: taggedMentions, inline: false },
+      ...(state.voiceChannelId
+        ? [{ name: "Voice channel", value: `<#${state.voiceChannelId}>`, inline: false }]
+        : []),
     )
     .setColor(0x5865f2)
     .setFooter({ text: "Step 3 of 3" });
@@ -291,8 +307,8 @@ export async function handleConfirm(interaction) {
         scheduledAt: state.scheduledAt,
         memberIds: state.memberIds || [],
         createdBy: interaction.user.id,
-        voiceChannelId: null,
-        recordingEnabled: false,
+        voiceChannelId: state.voiceChannelId || null,
+        recordingEnabled: Boolean(state.voiceChannelId),
       },
     });
     console.log(">>> Scheduled meeting created successfully");
@@ -302,7 +318,7 @@ export async function handleConfirm(interaction) {
     const embed = new EmbedBuilder()
       .setTitle("Meeting scheduled")
       .setDescription(
-        `${state.topic} at ${state.scheduledAt.toISOString()}${mentions ? `\nInvited: ${mentions}` : ""}`,
+        `${state.topic} at ${state.scheduledAt.toISOString()}${mentions ? `\nInvited: ${mentions}` : ""}${state.voiceChannelId ? `\nVoice channel: <#${state.voiceChannelId}>` : ""}`,
       )
       .setColor(0x57f287);
 

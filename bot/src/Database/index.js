@@ -250,13 +250,8 @@ async function taskFindMany({ where, orderBy, take }) {
   const orderByField = orderBy ? Object.keys(orderBy)[0] : 'createdAt';
   const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'DESC';
   sql += ` ORDER BY \`${orderByField}\` ${orderByDir}`;
-  if (take) {
-    sql += " LIMIT ?";
-    params.push(take);
-  } else {
-    sql += " LIMIT ?";
-    params.push(500);
-  }
+  const limit = Number.isFinite(Number(take)) ? Number(take) : 500;
+  sql += ` LIMIT ${limit}`;
   return query(sql, params);
 }
 
@@ -525,8 +520,8 @@ async function scheduledMeetingFindMany({ where, orderBy, take }) {
   const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'ASC';
   sql += ` ORDER BY \`${orderByField}\` ${orderByDir}`;
   if (take) {
-    sql += " LIMIT ?";
-    params.push(take);
+    const limit = Number.isFinite(Number(take)) ? Number(take) : 500;
+    sql += ` LIMIT ${limit}`;
   }
   return query(sql, params);
 }
