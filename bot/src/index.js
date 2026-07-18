@@ -172,7 +172,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         (id) => customId === id || customId.startsWith(id + ":"),
       );
     // Modals that defer inside their handler to avoid "already acknowledged" (40060)
-    const noDeferModalIds = ["create_task_modal"];
+    const noDeferModalIds = ["create_task_modal", "schedule_modal"];
     const skipModalDefer =
       interaction.isModalSubmit() && noDeferModalIds.includes(customId);
     if (interaction.isButton() || interaction.isStringSelectMenu()) {

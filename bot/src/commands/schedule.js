@@ -268,7 +268,7 @@ export async function handleMembersSelect(interaction) {
       .setStyle(ButtonStyle.Secondary),
   );
 
-  await interaction.update({ embeds: [embed], components: [row] });
+  await interaction.editReply({ embeds: [embed], components: [row] }).catch(() => {});
 }
 
 export async function handleConfirm(interaction) {

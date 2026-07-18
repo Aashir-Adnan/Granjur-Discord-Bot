@@ -147,13 +147,15 @@ export default async function handleInteractions(interaction) {
     
     console.log("[BUTTON] Received:", customId);
 
-    if (customId === "schedule_confirm")
+    if (customId === "schedule_confirm") {
       console.log("[BUTTON] Entering handleConfirm");
       return scheduleCmd.handleConfirm(interaction);
+    }
 
-    if (customId === "schedule_cancel")
+    if (customId === "schedule_cancel") {
       console.log("[BUTTON] Entering handleCancel");
       return scheduleCmd.handleCancel(interaction);
+    }
 
     console.log("[BUTTON] Fell through:", customId);
 
