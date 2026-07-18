@@ -151,7 +151,7 @@ export async function handleShowModalButton(interaction) {
   const guild = interaction.guild;
   if (!guild)
     return interaction
-      .editReply({ content: "Invalid.", components: [] })
+      .reply({ content: "Invalid.", components: [], ephemeral: true })
       .catch(() => {});
 
   await interaction.showModal(buildScheduleModal());
@@ -160,6 +160,10 @@ export async function handleShowModalButton(interaction) {
 export async function handleScheduleModal(interaction) {
   const guild = interaction.guild;
   if (!guild) return;
+
+  // Defer the reply to acknowledge the interaction within 3 seconds
+  await interaction.deferReply({ ephemeral: false }).catch(() => {});
+
   const topic = interaction.fields.getTextInputValue("topic");
   const whenStr = interaction.fields.getTextInputValue("when");
   const scheduledAt = parseWhen(whenStr);
@@ -227,7 +231,7 @@ export async function handleMembersSelect(interaction) {
   const state = flowStore.get(interaction.user.id, guild.id, "schedule");
   if (!state)
     return interaction
-      .editReply({
+      .update({
         content: "Session expired. Run /schedule again.",
         components: [],
         embeds: [],
@@ -264,7 +268,7 @@ export async function handleMembersSelect(interaction) {
       .setStyle(ButtonStyle.Secondary),
   );
 
-  await interaction.editReply({ embeds: [embed], components: [row] });
+  await interaction.update({ embeds: [embed], components: [row] });
 }
 
 export async function handleConfirm(interaction) {
@@ -274,7 +278,7 @@ export async function handleConfirm(interaction) {
   console.log(">>> Schedule state:", state);
   if (!state)
     return interaction
-      .editReply({ content: "Session expired.", components: [] })
+      .update({ content: "Session expired.", components: [] })
       .catch(() => {});
 
   try {
@@ -303,11 +307,11 @@ export async function handleConfirm(interaction) {
       .setColor(0x57f287);
 
     await interaction
-      .editReply({ embeds: [embed], components: [] })
+      .update({ embeds: [embed], components: [] })
       .catch(() => {});
   } catch (e) {
     await interaction
-      .editReply({
+      .update({
         content: `Failed: ${e?.message ?? String(e)}`,
         components: [],
         embeds: [],
@@ -319,6 +323,6 @@ export async function handleConfirm(interaction) {
 export async function handleCancel(interaction) {
   flowStore.clear(interaction.user.id, interaction.guild?.id, "schedule");
   await interaction
-    .editReply({ content: "Cancelled.", components: [], embeds: [] })
+    .update({ content: "Cancelled.", components: [], embeds: [] })
     .catch(() => {});
 }
