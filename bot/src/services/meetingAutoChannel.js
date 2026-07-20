@@ -6,6 +6,26 @@ import { ensureMeetingChannel } from "./meetingListener.js";
 const INTERVAL_MS = 60 * 1000; // check every minute, same as meetingReminder.js
 
 /**
+ * Move invited members to the voice channel
+ */
+async function moveMembersToVoiceChannel(guild, voiceChannel, memberIds) {
+  if (!memberIds?.length) return;
+
+  const members = await guild.members.fetch({ user: memberIds, cache: true }).catch(() => new Map());
+
+  for (const [userId, member] of members) {
+    if (member.voice.channelId !== voiceChannel.id) {
+      try {
+        await member.voice.setChannel(voiceChannel);
+        console.log(`[meetingAutoChannel] Moved member ${userId} to voice channel ${voiceChannel.id}`);
+      } catch (e) {
+        console.warn(`[meetingAutoChannel] Failed to move member ${userId} to voice channel: ${e.message}`);
+      }
+    }
+  }
+}
+
+/**
  * Every minute: find scheduled meetings whose start time has arrived and that
  * don't have a channel yet, create a PRIVATE voice channel visible only to
  * the invited members (+ the meeting creator), move the bot in, and start
@@ -110,6 +130,9 @@ async function createMeetingChannelAndJoin(guild, meeting) {
     meetingChannel.meetingId,
     voiceChannel.id,
   );
+
+  // Move invited members to the voice channel
+  await moveMembersToVoiceChannel(guild, voiceChannel, memberIds);
 
   console.log(
     `[meetingAutoChannel] created ${channelName} for meeting ${meeting.id}, recording started`,
