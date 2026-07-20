@@ -54,6 +54,7 @@ async function runCreateTaskHandler(interaction, handlerFn) {
 }
 
 export default async function handleInteractions(interaction) {
+  console.log(">>> handleConfirm START");
   const customId = interaction.customId || "";
 
   if (interaction.isModalSubmit()) {
@@ -143,12 +144,24 @@ export default async function handleInteractions(interaction) {
     if (customId === "repos_cancel") return reposCmd.handleCancel(interaction);
     if (customId === "schedule_show_modal")
       return scheduleCmd.handleShowModalButton(interaction);
-    if (customId === "schedule_confirm")
+    
+    console.log("[BUTTON] Received:", customId);
+
+    if (customId === "schedule_confirm") {
+      console.log("[BUTTON] Entering handleConfirm");
       return scheduleCmd.handleConfirm(interaction);
-    if (customId === "schedule_cancel")
+    }
+
+    if (customId === "schedule_cancel") {
+      console.log("[BUTTON] Entering handleCancel");
       return scheduleCmd.handleCancel(interaction);
+    }
+
+    console.log("[BUTTON] Fell through:", customId);
+
     if (customId === "scrap_confirm")
       return scrapCmd.handleConfirm(interaction);
+
     if (customId === "scrap_cancel") return scrapCmd.handleCancel(interaction);
     if (customId.startsWith("dashboard_"))
       return (await import("../commands/dashboard.js")).handleModule(

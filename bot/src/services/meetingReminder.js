@@ -1,6 +1,6 @@
 import db, { ensureStringArray } from '../db/index.js'
 import { ensureMeetingChannel } from './meetingListener.js'
-import { joinMeetingVoiceChannel, startMeetingAudioRecording } from './meetingAudioRecorder.js'
+import { startMeetingRecording } from './voiceCapture.js'
 
 const CHANNEL_UPCOMING_MEETINGS = 'upcoming-meetings'
 const WINDOW_MS = 10 * 60 * 1000 // 10 minutes
@@ -29,18 +29,8 @@ export function startMeetingReminder(client) {
               content: `**Meeting in ~10 minutes** — **${(m.topic || 'Meeting').slice(0, 100)}** at ${at}${mentions ? `\n${mentions}` : ''}`,
             }).catch(() => {})
 
-            if (m.voiceChannelId && m.recordingEnabled) {
-              try {
-                const voiceChannel = guild.channels.cache.get(m.voiceChannelId)
-                if (voiceChannel?.isVoiceBased?.()) {
-                  const meetingChannel = await ensureMeetingChannel(guild, m.voiceChannelId)
-                  const connection = await joinMeetingVoiceChannel(guild, voiceChannel, meetingChannel.meetingId)
-                  if (connection) {
-                    await startMeetingAudioRecording(connection, guild, meetingChannel.meetingId, m.voiceChannelId)
-                  }
-                }
-              } catch (_) {}
-            }
+            // Reminder only; actual meeting start and recording are handled by meetingAutoChannel.js
+            // if the meeting has a configured voiceChannelId or if a new meeting channel is created.
 
             await db.scheduledMeeting.update(m.id, { reminderSentAt: now })
           }

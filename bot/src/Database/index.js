@@ -220,6 +220,7 @@ async function repositoryCreate({ data }) {
 
 // ---------- Task (unified bugs and features: is_bug / is_feature) ----------
 async function taskFindMany({ where, orderBy, take }) {
+  if (!where || !where.guildConfigId) return [];
   let sql = "SELECT * FROM `task` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
   if (where?.type) {
@@ -246,8 +247,11 @@ async function taskFindMany({ where, orderBy, take }) {
     sql += " AND createdAt >= ?";
     params.push(where.createdAtSince);
   }
-  sql += " ORDER BY createdAt DESC LIMIT ?";
-  params.push(take ?? 500);
+  const orderByField = orderBy ? Object.keys(orderBy)[0] : 'createdAt';
+  const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'DESC';
+  sql += ` ORDER BY \`${orderByField}\` ${orderByDir}`;
+  const limit = Number.isFinite(Number(take)) ? Number(take) : 500;
+  sql += ` LIMIT ${limit}`;
   return query(sql, params);
 }
 
@@ -444,7 +448,8 @@ async function ticketDocFindFirst({ where }) {
   return null;
 }
 
-async function ticketDocFindMany({ where, take }) {
+async function ticketDocFindMany({ where, take, orderBy }) {
+  if (!where || !where.guildConfigId) return [];
   let sql = "SELECT * FROM `ticketdoc` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
   if (where?.ticketType) {
@@ -455,8 +460,16 @@ async function ticketDocFindMany({ where, take }) {
     sql += " AND taskId = ?";
     params.push(where.taskId);
   }
-  sql += " ORDER BY createdAt DESC LIMIT ?";
-  params.push(take ?? 100);
+  const orderByField = orderBy ? Object.keys(orderBy)[0] : 'createdAt';
+  const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'DESC';
+  sql += ` ORDER BY \`${orderByField}\` ${orderByDir}`;
+  if (take) {
+    sql += " LIMIT ?";
+    params.push(take);
+  } else {
+    sql += " LIMIT ?";
+    params.push(100);
+  }
   return query(sql, params);
 }
 
@@ -502,16 +515,22 @@ async function scheduledMeetingFindMany({ where, orderBy, take }) {
     sql += " AND createdBy = ?";
     params.push(where.createdBy);
   }
-  sql += " ORDER BY scheduledAt ASC LIMIT ?";
-  params.push(take ?? 25);
+  // Handle orderBy parameter (e.g., { scheduledAt: 'asc' } or { createdAt: 'desc' })
+  const orderByField = orderBy ? Object.keys(orderBy)[0] : 'scheduledAt';
+  const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'ASC';
+  sql += ` ORDER BY \`${orderByField}\` ${orderByDir}`;
+  if (take) {
+    const limit = Number.isFinite(Number(take)) ? Number(take) : 500;
+    sql += ` LIMIT ${limit}`;
+  }
   return query(sql, params);
 }
 
 async function scheduledMeetingCreate({ data }) {
   const pk = id();
   await query(
-    `INSERT INTO \`ScheduledMeeting\` (id, guildConfigId, topic, scheduledAt, memberIds, createdBy)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO \`scheduledmeeting\` (id, guildConfigId, topic, scheduledAt, memberIds, createdBy, voiceChannelId, recordingEnabled, autoChannelId, channelCreatedAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       pk,
       data.guildConfigId,
@@ -519,6 +538,10 @@ async function scheduledMeetingCreate({ data }) {
       data.scheduledAt,
       toJson(data.memberIds || []),
       data.createdBy,
+      data.voiceChannelId ?? null,
+      data.recordingEnabled ?? false,
+      null,
+      null,
     ],
   );
   return queryOne("SELECT * FROM `scheduledmeeting` WHERE id = ?", [pk]);
@@ -736,6 +759,7 @@ async function projectReposAdd({ data }) {
 
 // ---------- Faq ----------
 async function faqFindMany({ where, take, orderBy, include }) {
+  if (!where || !where.guildConfigId) return [];
   const baseFrom = " FROM `faq` f";
   const join = include?.repository
     ? " LEFT JOIN `repository` r ON f.repositoryId = r.id"
@@ -759,8 +783,16 @@ async function faqFindMany({ where, take, orderBy, include }) {
     sql += " AND (f.question LIKE ? OR f.answer LIKE ?)";
     params.push("%" + q + "%", "%" + q + "%");
   }
-  sql += " ORDER BY f.createdAt DESC LIMIT ?";
-  params.push(take ?? 10);
+  const orderByField = orderBy ? Object.keys(orderBy)[0] : 'f.createdAt';
+  const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'DESC';
+  sql += ` ORDER BY ${orderByField} ${orderByDir}`;
+  if (take) {
+    sql += " LIMIT ?";
+    params.push(take);
+  } else {
+    sql += " LIMIT ?";
+    params.push(10);
+  }
   const rows = await query(sql, params);
   if (!include?.repository) return rows;
   return rows.map((r) => ({

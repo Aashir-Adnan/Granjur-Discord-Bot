@@ -1,6 +1,6 @@
 import db, { ensureStringArray, getGuildConfig } from "../db/index.js";
 import { PermissionFlagsBits, ChannelType } from "discord.js";
-import { startRecording } from "./voiceCapture.js";
+import { startMeetingRecording } from "./voiceCapture.js";
 import { ensureMeetingChannel } from "./meetingListener.js";
 
 const INTERVAL_MS = 60 * 1000; // check every minute, same as meetingReminder.js
@@ -75,27 +75,41 @@ async function createMeetingChannelAndJoin(guild, meeting) {
     })),
   ];
 
-  let voiceChannel;
-  try {
-    voiceChannel = await guild.channels.create({
-      name: channelName,
-      type: ChannelType.GuildVoice,
-      permissionOverwrites,
-    });
-  } catch (e) {
-    console.error("[meetingAutoChannel] failed to create channel:", e.message);
-    return;
+  let voiceChannel = null;
+
+  if (meeting.voiceChannelId) {
+    const existingChannel = guild.channels.cache.get(meeting.voiceChannelId);
+    if (existingChannel?.isVoiceBased?.()) {
+      voiceChannel = existingChannel;
+    }
   }
 
-  // Mark this meeting as having its channel created, so we never do this twice
+  if (!voiceChannel) {
+    try {
+      voiceChannel = await guild.channels.create({
+        name: channelName,
+        type: ChannelType.GuildVoice,
+        permissionOverwrites,
+      });
+    } catch (e) {
+      console.error("[meetingAutoChannel] failed to create channel:", e.message);
+      return;
+    }
+  }
+
+  // Mark this meeting as started/assigned to a voice channel so we don't process it again.
   await db.scheduledMeeting.setChannel(meeting.id, voiceChannel.id);
 
-  // Link this new channel into the existing Meeting/MeetingChannel DB tables
-  // (same tables meetingListener.js already uses for notes/transcript)
+  // Link this channel into the existing Meeting/MeetingChannel DB tables
   const meetingChannel = await ensureMeetingChannel(guild, voiceChannel.id);
 
   // Bot joins and starts recording each person's voice individually
-  startRecording(voiceChannel, meetingChannel.meetingId);
+  await startMeetingRecording(
+    voiceChannel,
+    guild,
+    meetingChannel.meetingId,
+    voiceChannel.id,
+  );
 
   console.log(
     `[meetingAutoChannel] created ${channelName} for meeting ${meeting.id}, recording started`,
