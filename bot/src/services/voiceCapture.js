@@ -24,8 +24,6 @@ export function startRecording(voiceChannel, meetingId) {
   });
 
   const receiver = connection.receiver;
-  // Track pending file-write promises for this meeting recording session
-  const pendingWrites = new Set();
   const recordingsDir = path.join(process.cwd(), "recordings", meetingId);
   fs.mkdirSync(recordingsDir, { recursive: true });
 
@@ -122,6 +120,8 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   fs.mkdirSync(recordingsDir, { recursive: true });
 
   const receiver = connection.receiver;
+  // Track pending file-write promises for this meeting recording session
+  const pendingWrites = new Set();
 
   // Database logging for each recording
   const finishRecording = async (userId, filePath, startedAt, endedAt, fileName) => {
