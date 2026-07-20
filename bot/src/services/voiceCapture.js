@@ -124,6 +124,8 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   // Database logging for each recording
   const finishRecording = async (userId, filePath, startedAt, endedAt, fileName) => {
     const durationSeconds = Math.max(1, Math.round((endedAt.getTime() - startedAt.getTime()) / 1000));
+
+    console.log(`[voiceCapture] duration of recording ${durationSeconds}s`)
     try {
       const result = await db.meetingRecording.create({
         data: {
@@ -148,6 +150,13 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   const endMeetingSession = async () => {
     console.log(`[voiceCapture] ending meeting session: ${meetingId}`);
     try {
+      // Wait for any in-flight file writes/DB saves to finish first.
+      try {
+        await Promise.all(Array.from(pendingWrites));
+      } catch (e) {
+        console.warn(`[voiceCapture] error while waiting for pending writes: ${e?.message || e}`);
+      }
+
       await db.meetingRecordingStatus.update({
         where: { meetingId },
         data: {
@@ -160,6 +169,8 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
       console.error(`[voiceCapture] failed to update meeting status: ${err.message}`);
     }
     connection.destroy();
+    // cleanup timers/intervals and activeConnections
+    try { cleanup(); } catch (_) {}
   };
 
   // Check if channel is empty (only bot remains)
@@ -213,17 +224,26 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     const writeStream = fs.createWriteStream(filePath);
     opusStream.pipe(writeStream);
 
+    // Create a promise that resolves once this recording has been saved to DB
+    let resolveWrite;
+    const writePromise = new Promise((resolve) => { resolveWrite = resolve; });
+    pendingWrites.add(writePromise);
+
     opusStream.on("end", () => {
       writeStream.end();
     });
 
-    writeStream.on("finish", () => {
-      finishRecording(userId, filePath, startedAt, new Date(), fileName).catch(() => {});
-    });
+    const finalize = () => {
+      finishRecording(userId, filePath, startedAt, new Date(), fileName)
+        .catch(() => {})
+        .finally(() => {
+          pendingWrites.delete(writePromise);
+          resolveWrite();
+        });
+    };
 
-    writeStream.on("error", () => {
-      finishRecording(userId, filePath, startedAt, new Date(), fileName).catch(() => {});
-    });
+    writeStream.on("finish", finalize);
+    writeStream.on("error", finalize);
   });
 
   // Update meeting recording status in database
