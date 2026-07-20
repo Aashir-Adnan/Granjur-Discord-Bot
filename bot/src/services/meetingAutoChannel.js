@@ -123,6 +123,10 @@ async function createMeetingChannelAndJoin(guild, meeting) {
   // Link this channel into the existing Meeting/MeetingChannel DB tables
   const meetingChannel = await ensureMeetingChannel(guild, voiceChannel.id);
 
+  // Move invited members to the voice channel BEFORE starting recording
+  // This ensures they're present when the empty-channel check runs (every 5s in voiceCapture.js)
+  await moveMembersToVoiceChannel(guild, voiceChannel, memberIds);
+
   // Bot joins and starts recording each person's voice individually
   await startMeetingRecording(
     voiceChannel,
@@ -130,9 +134,6 @@ async function createMeetingChannelAndJoin(guild, meeting) {
     meetingChannel.meetingId,
     voiceChannel.id,
   );
-
-  // Move invited members to the voice channel
-  await moveMembersToVoiceChannel(guild, voiceChannel, memberIds);
 
   console.log(
     `[meetingAutoChannel] created ${channelName} for meeting ${meeting.id}, recording started`,
