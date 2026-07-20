@@ -1056,7 +1056,7 @@ async function meetingUpdate({ where, data }) {
   if (sets.length === 0)
     return queryOne("SELECT * FROM `meeting` WHERE id = ?", [where.id]);
   vals.push(where.id);
-  await query(`UPDATE \`Meeting\` SET ${sets.join(", ")} WHERE id = ?`, vals);
+  await query(`UPDATE \`meeting\` SET ${sets.join(", ")} WHERE id = ?`, vals);
   return queryOne("SELECT * FROM `meeting` WHERE id = ?", [where.id]);
 }
 
@@ -1106,7 +1106,7 @@ async function meetingChannelUpdate({ where, data }) {
   if (sets.length === 0) return meetingChannelFindUnique({ where });
   vals.push(where.id);
   await query(
-    `UPDATE \`MeetingChannel\` SET ${sets.join(", ")} WHERE id = ?`,
+    `UPDATE \`meetingchannel\` SET ${sets.join(", ")} WHERE id = ?`,
     vals,
   );
   return meetingChannelFindUnique({ where: { id: where.id } });
