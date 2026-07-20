@@ -33,8 +33,12 @@ const conn = await mysql.createConnection({
 try {
   const [rows, fields] = await conn.query(sql)
 
-  if (!Array.isArray(rows)) {
-    console.log('OK —', rows.affectedRows, 'row(s) affected')
+  if (!Array.isArray(rows) || (Array.isArray(rows) && rows.length > 0 && Array.isArray(rows[0]))) {
+    // Multi-statement or non-SELECT result
+    const results = Array.isArray(rows[0]) ? rows : [rows]
+    for (const r of results) {
+      if (!Array.isArray(r)) console.log('OK —', r.affectedRows ?? 0, 'row(s) affected')
+    }
   } else if (rows.length === 0) {
     console.log('No rows returned.')
   } else if (json) {

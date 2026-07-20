@@ -298,12 +298,12 @@ export async function runInit(guild) {
         if (roleIdForCategory) {
           await ch.permissionOverwrites.edit(roleIdForCategory, { ViewChannel: true, ReadMessageHistory: true })
           if (ch.type === ChannelType.GuildVoice) {
-            await ch.permissionOverwrites.edit(roleIdForCategory, { Connect: true }).catch(() => {})
+            await ch.permissionOverwrites.edit(roleIdForCategory, { Connect: true, Speak: true }).catch(() => {})
           }
         } else {
           await ch.permissionOverwrites.edit(verifiedRole.id, { ViewChannel: true, ReadMessageHistory: true })
           if (ch.type === ChannelType.GuildVoice) {
-            await ch.permissionOverwrites.edit(verifiedRole.id, { Connect: true }).catch(() => {})
+            await ch.permissionOverwrites.edit(verifiedRole.id, { Connect: true, Speak: true }).catch(() => {})
           }
         }
       } catch (_) {}
