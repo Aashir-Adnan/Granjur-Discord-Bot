@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS `meetingrecording` (
   id VARCHAR(36) PRIMARY KEY,
-  guildConfigId VARCHAR(36) NOT NULL,
+  guildConfigId VARCHAR(36) COLLATE utf8mb4_general_ci NOT NULL,
   meetingId VARCHAR(36) NOT NULL,
   memberId VARCHAR(64) NOT NULL,
   filePath VARCHAR(512),
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS `meetingrecording` (
 
 CREATE TABLE IF NOT EXISTS `meetingrecordingstatus` (
   id VARCHAR(36) PRIMARY KEY,
-  guildConfigId VARCHAR(36) NOT NULL,
+  guildConfigId VARCHAR(36) COLLATE utf8mb4_general_ci NOT NULL,
   meetingId VARCHAR(36) NOT NULL,
   status VARCHAR(32) DEFAULT 'idle',
   voiceChannelId VARCHAR(64),
