@@ -1116,7 +1116,7 @@ async function meetingChannelUpdate({ where, data }) {
 async function meetingRecordingCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `meetingrecording` (id, guildConfigId, meetingId, memberId, filePath, fileName, audioFormat, startedAt, endedAt, durationSeconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO `MeetingRecording` (id, guildConfigId, meetingId, memberId, filePath, fileName, audioFormat, startedAt, endedAt, durationSeconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [
       pk,
       data.guildConfigId,
@@ -1130,11 +1130,11 @@ async function meetingRecordingCreate({ data }) {
       data.durationSeconds ?? 0,
     ],
   );
-  return queryOne("SELECT * FROM `meetingrecording` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `MeetingRecording` WHERE id = ?", [pk]);
 }
 
 async function meetingRecordingFindMany({ where }) {
-  let sql = "SELECT * FROM `meetingrecording` WHERE 1=1";
+  let sql = "SELECT * FROM `MeetingRecording` WHERE 1=1";
   const params = [];
   if (where?.meetingId) {
     sql += " AND meetingId = ?";
@@ -1156,7 +1156,7 @@ async function meetingRecordingFindMany({ where }) {
 async function meetingRecordingStatusCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `meetingrecordingstatus` (id, guildConfigId, meetingId, status, voiceChannelId, startedAt, endedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO `MeetingRecordingStatus` (id, guildConfigId, meetingId, status, voiceChannelId, startedAt, endedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
     [
       pk,
       data.guildConfigId,
@@ -1167,15 +1167,15 @@ async function meetingRecordingStatusCreate({ data }) {
       data.endedAt ?? null,
     ],
   );
-  return queryOne("SELECT * FROM `meetingrecordingstatus` WHERE id = ?", [pk]);
+  return queryOne("SELECT * FROM `MeetingRecordingStatus` WHERE id = ?", [pk]);
 }
 
 async function meetingRecordingStatusFindUnique({ where }) {
   if (where?.meetingId) {
-    return queryOne("SELECT * FROM `meetingrecordingstatus` WHERE meetingId = ?", [where.meetingId]);
+    return queryOne("SELECT * FROM `MeetingRecordingStatus` WHERE meetingId = ?", [where.meetingId]);
   }
   if (where?.id) {
-    return queryOne("SELECT * FROM `meetingrecordingstatus` WHERE id = ?", [where.id]);
+    return queryOne("SELECT * FROM `MeetingRecordingStatus` WHERE id = ?", [where.id]);
   }
   return null;
 }
