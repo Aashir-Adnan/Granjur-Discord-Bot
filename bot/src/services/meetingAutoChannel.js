@@ -1,26 +1,74 @@
 import db, { ensureStringArray, getGuildConfig } from "../db/index.js";
-import { PermissionFlagsBits, ChannelType } from "discord.js";
+import { PermissionFlagsBits, ChannelType, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder } from "discord.js";
 import { startMeetingRecording } from "./voiceCapture.js";
 import { ensureMeetingChannel } from "./meetingListener.js";
 
 const INTERVAL_MS = 60 * 1000; // check every minute, same as meetingReminder.js
+const GRACE_PERIOD_MS = 20000; // 20 seconds for members to join before empty check could end meeting
 
 /**
- * Move invited members to the voice channel
+ * Send meeting start notifications to invited members with a link to join the voice channel
  */
-async function moveMembersToVoiceChannel(guild, voiceChannel, memberIds) {
+async function notifyMeetingStart(guild, voiceChannel, meeting, memberIds) {
   if (!memberIds?.length) return;
 
-  const members = await guild.members.fetch({ user: memberIds, cache: true }).catch(() => new Map());
+  const shortId = meeting.id.slice(0, 8);
+  const joinUrl = `https://discord.com/channels/${guild.id}/${voiceChannel.id}`;
+  const topic = meeting.topic || "Meeting";
 
-  for (const [userId, member] of members) {
-    if (member.voice.channelId !== voiceChannel.id) {
-      try {
-        await member.voice.setChannel(voiceChannel);
-        console.log(`[meetingAutoChannel] Moved member ${userId} to voice channel ${voiceChannel.id}`);
-      } catch (e) {
-        console.warn(`[meetingAutoChannel] Failed to move member ${userId} to voice channel: ${e.message}`);
-      }
+  // Try to find a text channel to post the notification (prefer admin channel or meeting text channel)
+  let textChannel = null;
+  const cfg = await getGuildConfig(guild.id);
+  if (cfg?.adminChannelId) {
+    textChannel = guild.channels.cache.get(cfg.adminChannelId);
+  }
+
+  // If no admin channel, try to find the meeting text channel
+  if (!textChannel && voiceChannel.guild.channels.cache) {
+    // Look for a text channel with similar name
+    textChannel = guild.channels.cache.find(c =>
+      c.isTextBased() && c.name.includes(shortId)
+    );
+  }
+
+  // If still no text channel, we'll DM the members
+  const mentionList = memberIds.map(id => `<@${id}>`).join(' ');
+  const embed = new EmbedBuilder()
+    .setTitle(`🎙️ Meeting Starting: ${topic}`)
+    .setDescription(`Your meeting is starting now. Click the button below to join the voice channel.`)
+    .addFields(
+      { name: 'Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
+      { name: 'Started', value: `<t:${Math.floor(Date.now()/1000)}:R>`, inline: true }
+    )
+    .setColor(0x5865f2)
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel('Join Voice Channel')
+      .setStyle(ButtonStyle.Link)
+      .setURL(joinUrl)
+  );
+
+  // Try to send to text channel first
+  if (textChannel) {
+    try {
+      await textChannel.send({ content: mentionList, embeds: [embed], components: [row] });
+      console.log(`[meetingAutoChannel] Posted meeting start notification to #${textChannel.name}`);
+      return;
+    } catch (e) {
+      console.warn(`[meetingAutoChannel] Failed to post to text channel: ${e.message}`);
+    }
+  }
+
+  // Fallback: DM each member
+  for (const userId of memberIds) {
+    try {
+      const user = await guild.client.users.fetch(userId);
+      await user.send({ embeds: [embed], components: [row] });
+      console.log(`[meetingAutoChannel] Sent meeting start DM to ${user.tag}`);
+    } catch (e) {
+      console.warn(`[meetingAutoChannel] Failed to DM ${userId}: ${e.message}`);
     }
   }
 }
@@ -75,6 +123,7 @@ async function createMeetingChannelAndJoin(guild, meeting) {
   const channelName = `meet-${safeTopic}-${shortId}`;
 
   // Deny @everyone, allow only invited members + the bot itself
+  // Use member objects to avoid "Supplied parameter is not a cached User or Role" error
   const permissionOverwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
     {
@@ -85,15 +134,26 @@ async function createMeetingChannelAndJoin(guild, meeting) {
         PermissionFlagsBits.Speak,
       ],
     },
-    ...allowedIds.map((userId) => ({
-      id: userId,
-      allow: [
-        PermissionFlagsBits.ViewChannel,
-        PermissionFlagsBits.Connect,
-        PermissionFlagsBits.Speak,
-      ],
-    })),
   ];
+
+  // Add permissions for each allowed user (fetch to ensure they're cached)
+  for (const userId of allowedIds) {
+    try {
+      const member = await guild.members.fetch(userId).catch(() => null);
+      if (member) {
+        permissionOverwrites.push({
+          id: member.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.Connect,
+            PermissionFlagsBits.Speak,
+          ],
+        });
+      }
+    } catch (e) {
+      console.warn(`[meetingAutoChannel] Failed to fetch member ${userId}: ${e.message}`);
+    }
+  }
 
   let voiceChannel = null;
 
@@ -121,11 +181,24 @@ async function createMeetingChannelAndJoin(guild, meeting) {
   await db.scheduledMeeting.setChannel(meeting.id, voiceChannel.id);
 
   // Link this channel into the existing Meeting/MeetingChannel DB tables
-  const meetingChannel = await ensureMeetingChannel(guild, voiceChannel.id);
+  // forceNewMeeting: true ensures a NEW meeting record is created each time (not reusing old one)
+  const meetingChannel = await ensureMeetingChannel(guild, voiceChannel.id, { forceNewMeeting: true });
 
-  // Move invited members to the voice channel BEFORE starting recording
-  // This ensures they're present when the empty-channel check runs (every 5s in voiceCapture.js)
-  await moveMembersToVoiceChannel(guild, voiceChannel, memberIds);
+  // Notify invited members to join the voice channel
+  await notifyMeetingStart(guild, voiceChannel, meeting, memberIds);
+
+  // Give members a grace period to join before starting recording
+  // This prevents the empty-channel check from ending the meeting immediately
+  console.log(`[meetingAutoChannel] Waiting ${GRACE_PERIOD_MS/1000}s for members to join...`);
+  await new Promise(resolve => setTimeout(resolve, GRACE_PERIOD_MS));
+
+  // Check if anyone joined; if not, log warning but continue
+  const humanCount = voiceChannel.members.filter(m => !m.user.bot).size;
+  if (humanCount === 0) {
+    console.warn(`[meetingAutoChannel] No human members joined voice channel ${voiceChannel.id} after grace period`);
+  } else {
+    console.log(`[meetingAutoChannel] ${humanCount} human member(s) in voice channel`);
+  }
 
   // Bot joins and starts recording each person's voice individually
   await startMeetingRecording(
