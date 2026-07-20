@@ -1,6 +1,7 @@
 import {
   startRecording,
   stopRecording,
+  stopMeetingRecording,
   isRecording,
 } from "../services/voiceCapture.js";
 import { ensureMeetingChannel } from "../services/meetingListener.js";
@@ -66,9 +67,9 @@ export async function handleVoiceStateUpdate(oldState, newState) {
           leftChannel.id,
         );
         if (isRecording(meetingChannel.meetingId)) {
-          stopRecording(meetingChannel.meetingId);
+          await stopMeetingRecording(meetingChannel.meetingId);
           console.log(
-            `[voiceAutoJoin] stopped recording, ${leftChannel.name} is empty`,
+            `[voiceAutoJoin] stopped recording and ended meeting, ${leftChannel.name} is empty`,
           );
         }
       } catch (e) {

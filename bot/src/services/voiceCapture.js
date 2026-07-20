@@ -61,6 +61,35 @@ export function stopRecording(meetingId) {
   return true;
 }
 
+/**
+ * Stop meeting recording and update database status
+ */
+export async function stopMeetingRecording(meetingId) {
+  const connection = activeConnections.get(meetingId);
+  if (!connection) {
+    console.warn(`[voiceCapture] no active connection for meeting: ${meetingId}`);
+    return false;
+  }
+
+  try {
+    // Update meeting status to completed
+    await db.meetingRecordingStatus.update({
+      where: { meetingId },
+      data: {
+        status: "completed",
+        endedAt: new Date(),
+      },
+    });
+    console.log(`[voiceCapture] updated meeting status to completed: ${meetingId}`);
+  } catch (err) {
+    console.error(`[voiceCapture] failed to update meeting status: ${err.message}`);
+  }
+
+  connection.destroy();
+  activeConnections.delete(meetingId);
+  return true;
+}
+
 export function isRecording(meetingId) {
   return activeConnections.has(meetingId);
 }
@@ -68,6 +97,7 @@ export function isRecording(meetingId) {
 /**
  * Unified meeting recording: joins voice channel, records audio, and tracks in database.
  * Combines voice channel joining + audio recording + meeting record tracking.
+ * Ends recording when all human members leave the channel.
  */
 export async function startMeetingRecording(voiceChannel, guild, meetingId, voiceChannelId) {
   if (!voiceChannel || !guild || !meetingId) return null;
@@ -114,15 +144,53 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     }
   };
 
+  // End meeting session
+  const endMeetingSession = async () => {
+    console.log(`[voiceCapture] ending meeting session: ${meetingId}`);
+    try {
+      await db.meetingRecordingStatus.update({
+        where: { meetingId },
+        data: {
+          status: "completed",
+          endedAt: new Date(),
+        },
+      });
+      console.log(`[voiceCapture] updated meeting status to completed: ${meetingId}`);
+    } catch (err) {
+      console.error(`[voiceCapture] failed to update meeting status: ${err.message}`);
+    }
+    connection.destroy();
+  };
+
+  // Check if channel is empty (only bot remains)
+  const checkChannelEmpty = () => {
+    const voiceState = voiceChannel.members;
+    const humanMembers = voiceState.filter(member => !member.user.bot);
+    
+    if (humanMembers.size === 0) {
+      console.log(`[voiceCapture] channel is empty, ending meeting: ${meetingId}`);
+      endMeetingSession();
+      return true;
+    }
+    return false;
+  };
+
   // Handle cleanup
   const cleanup = () => {
     activeConnections.delete(meetingId);
     clearTimeout(timeoutHandle);
+    clearInterval(channelCheckInterval);
   };
+
+  // Monitor channel for empty state (check every 5 seconds)
+  const channelCheckInterval = setInterval(() => {
+    checkChannelEmpty();
+  }, 5000);
 
   // Auto-disconnect after max duration
   const timeoutHandle = setTimeout(() => {
-    connection.destroy();
+    console.log(`[voiceCapture] max recording duration reached, ending meeting: ${meetingId}`);
+    endMeetingSession();
   }, MAX_RECORDING_SECONDS * 1000);
 
   // Listen for disconnection/destruction
