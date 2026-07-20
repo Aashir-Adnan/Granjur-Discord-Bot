@@ -35,6 +35,7 @@ import * as updateTaskCmd from './update-task.js'
 import * as createProjectRoleCmd from './create-project-role.js'
 import * as createProjectCategoriesCmd from './create-project-categories.js'
 import * as reconcileCmd from './reconcile.js'
+import * as fixCmd from './fix.js'
 
 const commandModules = [
   initCmd,
@@ -65,6 +66,7 @@ const commandModules = [
   resolveBugCmd,
   migrateCmd,
   reconcileCmd,
+  fixCmd,
 ]
 
 export function getCommands() {
