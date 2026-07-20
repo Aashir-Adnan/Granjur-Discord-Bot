@@ -1112,6 +1112,134 @@ async function meetingChannelUpdate({ where, data }) {
   return meetingChannelFindUnique({ where: { id: where.id } });
 }
 
+// ---------- MeetingRecording (for individual user audio recordings) ----------
+async function meetingRecordingCreate({ data }) {
+  const pk = id();
+  await query(
+    "INSERT INTO `meetingrecording` (id, guildConfigId, meetingId, memberId, filePath, fileName, audioFormat, startedAt, endedAt, durationSeconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [
+      pk,
+      data.guildConfigId,
+      data.meetingId,
+      data.memberId,
+      data.filePath ?? null,
+      data.fileName ?? null,
+      data.audioFormat ?? "opus",
+      data.startedAt ?? null,
+      data.endedAt ?? null,
+      data.durationSeconds ?? 0,
+    ],
+  );
+  return queryOne("SELECT * FROM `meetingrecording` WHERE id = ?", [pk]);
+}
+
+async function meetingRecordingFindMany({ where }) {
+  let sql = "SELECT * FROM `meetingrecording` WHERE 1=1";
+  const params = [];
+  if (where?.meetingId) {
+    sql += " AND meetingId = ?";
+    params.push(where.meetingId);
+  }
+  if (where?.guildConfigId) {
+    sql += " AND guildConfigId = ?";
+    params.push(where.guildConfigId);
+  }
+  if (where?.memberId) {
+    sql += " AND memberId = ?";
+    params.push(where.memberId);
+  }
+  sql += " ORDER BY startedAt DESC";
+  return query(sql, params);
+}
+
+// ---------- MeetingRecordingStatus (for tracking recording session status) ----------
+async function meetingRecordingStatusCreate({ data }) {
+  const pk = id();
+  await query(
+    "INSERT INTO `meetingrecordingstatus` (id, guildConfigId, meetingId, status, voiceChannelId, startedAt, endedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [
+      pk,
+      data.guildConfigId,
+      data.meetingId,
+      data.status ?? "idle",
+      data.voiceChannelId ?? null,
+      data.startedAt ?? null,
+      data.endedAt ?? null,
+    ],
+  );
+  return queryOne("SELECT * FROM `meetingrecordingstatus` WHERE id = ?", [pk]);
+}
+
+async function meetingRecordingStatusFindUnique({ where }) {
+  if (where?.meetingId) {
+    return queryOne("SELECT * FROM `meetingrecordingstatus` WHERE meetingId = ?", [where.meetingId]);
+  }
+  if (where?.id) {
+    return queryOne("SELECT * FROM `meetingrecordingstatus` WHERE id = ?", [where.id]);
+  }
+  return null;
+}
+
+async function meetingRecordingStatusUpsert({ where, create, update }) {
+  const existing = await meetingRecordingStatusFindUnique({ where });
+  if (existing) {
+    const sets = [];
+    const vals = [];
+    if (update.status !== undefined) {
+      sets.push("status = ?");
+      vals.push(update.status);
+    }
+    if (update.voiceChannelId !== undefined) {
+      sets.push("voiceChannelId = ?");
+      vals.push(update.voiceChannelId);
+    }
+    if (update.startedAt !== undefined) {
+      sets.push("startedAt = ?");
+      vals.push(update.startedAt);
+    }
+    if (update.endedAt !== undefined) {
+      sets.push("endedAt = ?");
+      vals.push(update.endedAt);
+    }
+    if (sets.length === 0) return existing;
+    vals.push(existing.id);
+    await query(
+      `UPDATE \`MeetingRecordingStatus\` SET ${sets.join(", ")} WHERE id = ?`,
+      vals,
+    );
+    return meetingRecordingStatusFindUnique({ where: { id: existing.id } });
+  }
+  return meetingRecordingStatusCreate({ data: create });
+}
+
+async function meetingRecordingStatusUpdate({ where, data }) {
+  const sets = [];
+  const vals = [];
+  if (data.status !== undefined) {
+    sets.push("status = ?");
+    vals.push(data.status);
+  }
+  if (data.voiceChannelId !== undefined) {
+    sets.push("voiceChannelId = ?");
+    vals.push(data.voiceChannelId);
+  }
+  if (data.startedAt !== undefined) {
+    sets.push("startedAt = ?");
+    vals.push(data.startedAt);
+  }
+  if (data.endedAt !== undefined) {
+    sets.push("endedAt = ?");
+    vals.push(data.endedAt);
+  }
+  if (sets.length === 0) return meetingRecordingStatusFindUnique({ where });
+  vals.push(where.meetingId);
+  await query(
+    `UPDATE \`MeetingRecordingStatus\` SET ${sets.join(", ")} WHERE meetingId = ?`,
+    vals,
+  );
+  return meetingRecordingStatusFindUnique({ where: { meetingId: where.meetingId } });
+}
+
 // ---------- Faq findMany with search (faq.js search) ----------
 async function faqSearch(guildId, queryStr, repoName, limit = 10) {
   const cfg = await getGuildConfig(guildId);
@@ -1416,6 +1544,16 @@ const db = {
     findUnique: meetingChannelFindUnique,
     create: meetingChannelCreate,
     update: meetingChannelUpdate,
+  },
+  meetingRecording: {
+    create: meetingRecordingCreate,
+    findMany: meetingRecordingFindMany,
+  },
+  meetingRecordingStatus: {
+    findUnique: meetingRecordingStatusFindUnique,
+    create: meetingRecordingStatusCreate,
+    upsert: meetingRecordingStatusUpsert,
+    update: meetingRecordingStatusUpdate,
   },
   clockEntry: {
     create: clockEntryCreate,
