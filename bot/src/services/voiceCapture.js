@@ -94,8 +94,8 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   // Database logging for each recording
   const finishRecording = async (userId, filePath, startedAt, endedAt, fileName) => {
     const durationSeconds = Math.max(1, Math.round((endedAt.getTime() - startedAt.getTime()) / 1000));
-    await db.meetingRecording
-      .create({
+    try {
+      const result = await db.meetingRecording.create({
         data: {
           guildConfigId: cfg.id,
           meetingId,
@@ -107,8 +107,11 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
           endedAt,
           durationSeconds,
         },
-      })
-      .catch(() => {});
+      });
+      console.log(`[voiceCapture] saved recording to DB: ${result.id}`);
+    } catch (err) {
+      console.error(`[voiceCapture] failed to save recording: ${err.message}`, err);
+    }
   };
 
   // Handle cleanup
