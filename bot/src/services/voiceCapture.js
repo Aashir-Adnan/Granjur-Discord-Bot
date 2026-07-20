@@ -24,6 +24,8 @@ export function startRecording(voiceChannel, meetingId) {
   });
 
   const receiver = connection.receiver;
+  // Track pending file-write promises for this meeting recording session
+  const pendingWrites = new Set();
   const recordingsDir = path.join(process.cwd(), "recordings", meetingId);
   fs.mkdirSync(recordingsDir, { recursive: true });
 
