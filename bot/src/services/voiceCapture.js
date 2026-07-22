@@ -186,6 +186,17 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     }
 
     connection.destroy();
+
+    try {
+      const me = guild.members.me;
+      if (me?.voice?.channelId === voiceChannel.id) {
+        await me.voice.disconnect("Meeting ended");
+        console.log(`[voiceCapture] explicitly disconnected bot from ${voiceChannel.id}`);
+      }
+    } catch (e) {
+      console.warn(`[voiceCapture] bot disconnect fallback failed: ${e?.message || e}`);
+    }
+
     try { cleanup(); } catch (_) {}
 
     if (deleteOnEnd) {
@@ -208,16 +219,22 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     }
   };
 
-  // Check if channel is empty (only bot remains)
+  let emptyChecks = 0;
   const checkChannelEmpty = () => {
     const voiceState = voiceChannel.members;
     const humanMembers = voiceState.filter(member => !member.user.bot);
-    
+
     if (humanMembers.size === 0) {
-      console.log(`[voiceCapture] channel is empty, ending meeting: ${meetingId}`);
-      endMeetingSession();
-      return true;
+      emptyChecks += 1;
+      if (emptyChecks >= 2) {
+        console.log(`[voiceCapture] channel is empty for consecutive checks, ending meeting: ${meetingId}`);
+        endMeetingSession();
+        return true;
+      }
+      return false;
     }
+
+    emptyChecks = 0;
     return false;
   };
 
