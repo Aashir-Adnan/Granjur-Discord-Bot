@@ -1,4 +1,5 @@
 import db, { getOrCreateGuildConfig } from '../db/index.js'
+import { query } from '../Database/connection.js'
 import { appendMeetingNotes } from '../services/meetingListener.js'
 
 export async function handleMeetingMessageCreate(message) {
@@ -16,7 +17,7 @@ export async function handleMeetingMessageCreate(message) {
 
   const attachmentUrls = message.attachments?.map((attachment) => attachment.url) || []
 
-  await db.query(
+  await query(
     `INSERT INTO meetingmessage (id, guildConfigId, meetingId, channelId, authorId, authorTag, content, attachmentUrls, createdAt)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
     [
@@ -30,7 +31,9 @@ export async function handleMeetingMessageCreate(message) {
       JSON.stringify(attachmentUrls),
       new Date(),
     ],
-  ).catch(() => {})
+  ).catch((err) => {
+    console.error('[meetingMessage] failed to save message:', err.message)
+  })
 
   await appendMeetingNotes(
     meetingChannel.id,
