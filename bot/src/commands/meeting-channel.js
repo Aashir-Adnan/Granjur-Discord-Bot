@@ -60,6 +60,18 @@ export async function execute(interaction) {
     name: `${baseName}-voice`,
     type: ChannelType.GuildVoice,
     parent: category.id,
+    permissionOverwrites: [
+      {
+        id: guild.roles.everyone.id,
+        allow: [
+          'ViewChannel',
+          'Connect',
+          'Speak',
+          'UseVAD',
+          'ReadMessageHistory',
+        ],
+      },
+    ],
   })
 
   const meetingChannel = await ensureMeetingChannel(guild, voiceChannel.id, {
