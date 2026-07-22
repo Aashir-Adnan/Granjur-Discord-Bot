@@ -36,6 +36,7 @@ import * as createProjectRoleCmd from './create-project-role.js'
 import * as createProjectCategoriesCmd from './create-project-categories.js'
 import * as reconcileCmd from './reconcile.js'
 import * as fixCmd from './fix.js'
+import * as meetingChannelCmd from './meeting-channel.js'
 
 const commandModules = [
   initCmd,
@@ -67,6 +68,7 @@ const commandModules = [
   migrateCmd,
   reconcileCmd,
   fixCmd,
+  meetingChannelCmd,
 ]
 
 export function getCommands() {

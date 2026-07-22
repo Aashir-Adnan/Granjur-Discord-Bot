@@ -8,14 +8,21 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 import { config } from '../config.js'
 
 export async function ensureMeetingChannel(guild, voiceChannelId, options = {}) {
-  const { forceNewMeeting = false } = options;
+  const { forceNewMeeting = false, textChannelId } = options;
   const cfg = await getOrCreateGuildConfig(guild.id)
   const existing = await db.meetingChannel.findFirst({
     where: { guildConfigId: cfg.id, voiceChannelId },
   })
 
-  // If forceNewMeeting is true or no existing record, create a new meeting
-  if (!forceNewMeeting && existing) return existing
+  if (!forceNewMeeting && existing) {
+    if (textChannelId && existing.textChannelId !== textChannelId) {
+      return db.meetingChannel.update({
+        where: { id: existing.id },
+        data: { textChannelId },
+      })
+    }
+    return existing
+  }
 
   const meeting = await db.meeting.create({
     data: {
@@ -25,18 +32,18 @@ export async function ensureMeetingChannel(guild, voiceChannelId, options = {}) 
   })
 
   if (existing) {
-    // Update existing meetingchannel with new meetingId
     await db.meetingChannel.update({
       where: { id: existing.id },
-      data: { meetingId: meeting.id },
+      data: { meetingId: meeting.id, ...(textChannelId ? { textChannelId } : {}) },
     });
-    return { ...existing, meetingId: meeting.id };
+    return { ...existing, meetingId: meeting.id, textChannelId: textChannelId ?? existing.textChannelId };
   }
 
   const meetingChannel = await db.meetingChannel.create({
     data: {
       guildConfigId: cfg.id,
       voiceChannelId,
+      textChannelId: textChannelId ?? null,
       meetingId: meeting.id,
     },
   })

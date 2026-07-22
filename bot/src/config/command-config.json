@@ -29,7 +29,8 @@
     "migrate": ["CEO", "Server Manager"],
     "close-feature": [],
     "resolve-bug": [],
-    "reconcile": ["CEO", "Server Manager"]
+    "reconcile": ["CEO", "Server Manager"],
+    "meeting-channel": ["Verified"]
   },
   "dedicatedChannels": {
     "init": true,
@@ -58,7 +59,8 @@
     "migrate": false,
     "close-feature": false,
     "resolve-bug": false,
-    "reconcile": true
+    "reconcile": true,
+    "meeting-channel": true
   },
   "commandDescriptions": {
     "init": {
@@ -195,6 +197,11 @@
       "summary": "Sync members who joined while the bot was offline.",
       "syntax": "`/reconcile`",
       "detail": "Scans all guild members, creates DB records for any missing, assigns the holding role, and notifies them to run **/verify**. CEO/Server Manager only."
+    },
+    "meeting-channel": {
+      "summary": "Create a dedicated meeting voice + text channel pair.",
+      "syntax": "`/meeting-channel [name]`",
+      "detail": "Creates a linked voice and text channel for a meeting, and stores text messages in the meeting notes table with a user tag and timestamp."
     }
   }
 }

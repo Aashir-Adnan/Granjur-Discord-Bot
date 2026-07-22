@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS `MeetingRecording` (
   `filePath` varchar(1024) COLLATE utf8mb4_general_ci NOT NULL,
   `fileName` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
   `audioFormat` varchar(32) COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'opus',
-  `startedAt` datetime(3) DEFAULT NULL,      
+  `startedAt` datetime(3) DEFAULT NULL,
   `endedAt` datetime(3) DEFAULT NULL,
   `durationSeconds` int DEFAULT 0,
   `createdAt` datetime(3) DEFAULT CURRENT_TIMESTAMP(3),
@@ -37,4 +37,23 @@ CREATE TABLE IF NOT EXISTS `MeetingRecording` (
   KEY `memberId` (`memberId`),
   CONSTRAINT `meetingrecording_ibfk_1` FOREIGN KEY (`guildConfigId`) REFERENCES `guildconfig` (`id`) ON DELETE CASCADE,
   CONSTRAINT `meetingrecording_ibfk_2` FOREIGN KEY (`meetingId`) REFERENCES `meeting` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `meetingmessage` (
+  `id` varchar(64) COLLATE utf8mb4_general_ci NOT NULL,
+  `guildConfigId` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  `meetingId` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  `channelId` varchar(64) COLLATE utf8mb4_general_ci NOT NULL,
+  `authorId` varchar(64) COLLATE utf8mb4_general_ci NOT NULL,
+  `authorTag` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `content` text COLLATE utf8mb4_general_ci,
+  `attachmentUrls` json DEFAULT ('[]'),
+  `createdAt` datetime(3) DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `guildConfigId` (`guildConfigId`),
+  KEY `meetingId` (`meetingId`),
+  KEY `channelId` (`channelId`),
+  KEY `authorId` (`authorId`),
+  CONSTRAINT `meetingmessage_ibfk_1` FOREIGN KEY (`guildConfigId`) REFERENCES `guildconfig` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `meetingmessage_ibfk_2` FOREIGN KEY (`meetingId`) REFERENCES `meeting` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

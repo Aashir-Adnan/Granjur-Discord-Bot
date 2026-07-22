@@ -6,6 +6,7 @@ import {
   isModalFirstCommand,
 } from "./commands/index.js";
 import { handleMemberAdd } from "./events/memberAdd.js";
+import { handleMeetingMessageCreate } from "./events/messageCreate.js";
 import { startVerifyServer } from "./server.js";
 import { EPHEMERAL } from "./constants.js";
 import handleInteractions from "./handlers/interactions.js";
@@ -267,6 +268,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 client.on(Events.GuildMemberAdd, handleMemberAdd);
+client.on(Events.MessageCreate, handleMeetingMessageCreate);
 
 client.login(config.discord.token).catch((err) => {
   console.error("Login failed:", err);

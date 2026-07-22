@@ -1061,10 +1061,19 @@ async function meetingUpdate({ where, data }) {
 }
 
 async function meetingChannelFindFirst({ where }) {
-  return queryOne(
-    "SELECT * FROM `meetingchannel` WHERE guildConfigId = ? AND voiceChannelId = ?",
-    [where.guildConfigId, where.voiceChannelId],
-  );
+  if (where?.textChannelId) {
+    return queryOne(
+      "SELECT * FROM `meetingchannel` WHERE guildConfigId = ? AND textChannelId = ?",
+      [where.guildConfigId, where.textChannelId],
+    );
+  }
+  if (where?.voiceChannelId) {
+    return queryOne(
+      "SELECT * FROM `meetingchannel` WHERE guildConfigId = ? AND voiceChannelId = ?",
+      [where.guildConfigId, where.voiceChannelId],
+    );
+  }
+  return null;
 }
 
 async function meetingChannelFindUnique({ where }) {

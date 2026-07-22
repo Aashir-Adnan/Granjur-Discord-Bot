@@ -212,6 +212,24 @@ CREATE TABLE IF NOT EXISTS meetingchannel (
   FOREIGN KEY (meetingId) REFERENCES meeting(id)
 );
 
+CREATE TABLE IF NOT EXISTS meetingmessage (
+  id VARCHAR(64) PRIMARY KEY,
+  guildConfigId VARCHAR(36) NOT NULL,
+  meetingId VARCHAR(36) NOT NULL,
+  channelId VARCHAR(64) NOT NULL,
+  authorId VARCHAR(64) NOT NULL,
+  authorTag VARCHAR(255) NOT NULL,
+  content TEXT,
+  attachmentUrls JSON DEFAULT ('[]'),
+  createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  KEY (guildConfigId),
+  KEY (meetingId),
+  KEY (channelId),
+  KEY (authorId),
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
+  FOREIGN KEY (meetingId) REFERENCES meeting(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS scheduledmeeting (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
