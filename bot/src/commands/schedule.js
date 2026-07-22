@@ -46,13 +46,6 @@ export const data = new SlashCommandBuilder()
       .setName("when")
       .setDescription("When (e.g. 2025-03-01 14:00 or in 2 days)")
       .setRequired(false),
-  )
-  .addChannelOption((o) =>
-    o
-      .setName("voice_channel")
-      .setDescription("Optional existing voice channel to use for the meeting")
-      .addChannelTypes(ChannelType.GuildVoice)
-      .setRequired(false),
   );
 
 function buildScheduleModal() {
@@ -100,12 +93,11 @@ export async function execute(interaction) {
         })
         .catch(() => {});
     }
-    const voiceChannel = interaction.options.getChannel("voice_channel");
     flowStore.set(interaction.user.id, guild.id, "schedule", {
       topic: topicOpt,
       scheduledAt,
-      voiceChannelId: voiceChannel?.id || null,
-      recordingEnabled: Boolean(voiceChannel),
+      voiceChannelId: null,
+      recordingEnabled: false,
     });
     const members = await guild.members.fetch();
     const options = Array.from(members.values())
