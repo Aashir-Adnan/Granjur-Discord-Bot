@@ -6,6 +6,7 @@ import {
 import prism from "prism-media";
 import fs from "fs";
 import path from "path";
+import { once } from "node:events";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
 
 const activeConnections = new Map(); // meetingId -> connection
@@ -114,11 +115,24 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     guildId: guild.id,
     adapterCreator: guild.voiceAdapterCreator,
     selfDeaf: false,
+    selfMute: false,
   });
+
+  console.log(`[voiceCapture] joining voice channel ${voiceChannel.id} for meeting ${meetingId}`);
+
+  try {
+    await once(connection, VoiceConnectionStatus.Ready);
+    console.log(`[voiceCapture] voice connection ready for meeting ${meetingId}`);
+  } catch (e) {
+    console.error(`[voiceCapture] voice connection did not become ready for meeting ${meetingId}: ${e?.message || e}`);
+    connection.destroy();
+    return null;
+  }
 
   // Setup recording directory
   const recordingsDir = path.join(process.cwd(), "recordings", meetingId);
   fs.mkdirSync(recordingsDir, { recursive: true });
+  console.log(`[voiceCapture] recording directory ready: ${recordingsDir}`);
 
   const receiver = connection.receiver;
   // Track pending file-write promises for this meeting recording session
@@ -231,6 +245,8 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
 
   // Handle user speech and record
   receiver.speaking.on("start", (userId) => {
+    console.log(`[voiceCapture] speaking start detected for user ${userId} in meeting ${meetingId}`);
+
     const fileName = `meeting-${meetingId}-${userId}-${Date.now()}.opus`;
     const filePath = path.join(recordingsDir, fileName);
     const startedAt = new Date();
@@ -241,6 +257,8 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
         duration: 500,
       },
     });
+
+    console.log(`[voiceCapture] subscribed to voice stream for user ${userId}, writing ${filePath}`);
 
     const writeStream = fs.createWriteStream(filePath);
     opusStream.pipe(writeStream);
