@@ -12,17 +12,22 @@ import db, { getOrCreateGuildConfig } from "../db/index.js";
 
 const activeConnections = new Map(); // meetingId -> connection
 const MAX_RECORDING_SECONDS = 60 * 60 * 2; // 2 hours
+const CONNECTION_TIMEOUT_MS = 60000; // 60 seconds for voice connection to become ready (Discord can be slow)
 
 /**
  * Wait for voice connection to reach Ready state
  */
-function waitForConnectionReady(connection, timeoutMs = 10000) {
+function waitForConnectionReady(connection, timeoutMs = CONNECTION_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
+    console.log(`[voiceCapture] Waiting for voice connection... current status: ${connection.state.status}`);
+
     if (connection.state.status === VoiceConnectionStatus.Ready) {
+      console.log(`[voiceCapture] Voice connection already ready`);
       return resolve(connection);
     }
 
     const timeout = setTimeout(() => {
+      console.error(`[voiceCapture] Voice connection timed out after ${timeoutMs}ms. Final status: ${connection.state.status}`);
       cleanup();
       reject(new Error(`Voice connection timed out after ${timeoutMs}ms`));
     }, timeoutMs);
@@ -36,22 +41,25 @@ function waitForConnectionReady(connection, timeoutMs = 10000) {
     };
 
     const onReady = () => {
-      console.log(`[voiceCapture] Voice connection ready for meeting`);
+      console.log(`[voiceCapture] Voice connection ready!`);
       cleanup();
       resolve(connection);
     };
 
     const onDisconnected = () => {
+      console.error(`[voiceCapture] Voice connection disconnected before ready`);
       cleanup();
       reject(new Error("Voice connection disconnected before ready"));
     };
 
     const onDestroyed = () => {
+      console.error(`[voiceCapture] Voice connection destroyed before ready`);
       cleanup();
       reject(new Error("Voice connection destroyed before ready"));
     };
 
     const onError = (error) => {
+      console.error(`[voiceCapture] Voice connection error:`, error.message);
       cleanup();
       reject(new Error(`Voice connection error: ${error.message}`));
     };
@@ -234,6 +242,22 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   const cfg = await getOrCreateGuildConfig(guild.id);
 
   // Join voice channel
+  console.log(`[voiceCapture] Joining voice channel: ${voiceChannel.id} (${voiceChannel.name}) in guild: ${guild.id}`);
+  console.log(`[voiceCapture] Bot user ID: ${guild.client.user.id}`);
+  console.log(`[voiceCapture] Voice channel type: ${voiceChannel.type}, members: ${voiceChannel.members.size}`);
+
+  // Check bot permissions in voice channel
+  const botMember = voiceChannel.guild.members.cache.get(guild.client.user.id);
+  if (botMember) {
+    const perms = voiceChannel.permissionsFor(botMember);
+    console.log(`[voiceCapture] Bot permissions in voice channel:`, {
+      ViewChannel: perms?.has('ViewChannel'),
+      Connect: perms?.has('Connect'),
+      Speak: perms?.has('Speak'),
+      UseVAD: perms?.has('UseVAD'),
+    });
+  }
+
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
     guildId: guild.id,
@@ -301,7 +325,11 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
 
     if (deleteOnEnd) {
       try {
-        await voiceChannel.delete(`Meeting ${meetingId} ended`).catch(() => {});
+        console.log(`[voiceCapture] Deleting voice channel: ${voiceChannel.id}`);
+        // Fetch fresh channel reference in case cache is stale
+        const freshVoiceChannel = await guild.channels.fetch(voiceChannel.id).catch(() => voiceChannel);
+        await freshVoiceChannel.delete(`Meeting ${meetingId} ended`).catch(() => {});
+        console.log(`[voiceCapture] Voice channel deleted successfully`);
       } catch (e) {
         console.warn(`[voiceCapture] Failed to delete voice channel: ${e?.message || e}`);
       }
@@ -309,9 +337,13 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
 
     if (textChannelId) {
       try {
-        const textChannel = guild.channels.cache.get(textChannelId);
+        console.log(`[voiceCapture] Deleting text channel: ${textChannelId}`);
+        const textChannel = await guild.channels.fetch(textChannelId).catch(() => guild.channels.cache.get(textChannelId));
         if (textChannel?.isTextBased?.()) {
           await textChannel.delete(`Meeting ${meetingId} ended`).catch(() => {});
+          console.log(`[voiceCapture] Text channel deleted successfully`);
+        } else {
+          console.warn(`[voiceCapture] Text channel not found or not text-based: ${textChannelId}`);
         }
       } catch (e) {
         console.warn(`[voiceCapture] Failed to delete text channel: ${e?.message || e}`);
