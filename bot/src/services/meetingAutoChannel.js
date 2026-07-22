@@ -9,29 +9,11 @@ const GRACE_PERIOD_MS = 20000; // 20 seconds for members to join before empty ch
 /**
  * Send meeting start notifications to invited members with a link to join the voice channel
  */
-async function notifyMeetingStart(guild, voiceChannel, meeting, memberIds) {
+async function notifyMeetingStart(guild, voiceChannel, textChannel, meeting, memberIds) {
   if (!memberIds?.length) return;
 
-  const shortId = meeting.id.slice(0, 8);
   const joinUrl = `https://discord.com/channels/${guild.id}/${voiceChannel.id}`;
   const topic = meeting.topic || "Meeting";
-
-  // Try to find a text channel to post the notification (prefer admin channel or meeting text channel)
-  let textChannel = null;
-  const cfg = await getGuildConfig(guild.id);
-  if (cfg?.adminChannelId) {
-    textChannel = guild.channels.cache.get(cfg.adminChannelId);
-  }
-
-  // If no admin channel, try to find the meeting text channel
-  if (!textChannel && voiceChannel.guild.channels.cache) {
-    // Look for a text channel with similar name
-    textChannel = guild.channels.cache.find(c =>
-      c.isTextBased() && c.name.includes(shortId)
-    );
-  }
-
-  // If still no text channel, we'll DM the members
   const mentionList = memberIds.map(id => `<@${id}>`).join(' ');
   const embed = new EmbedBuilder()
     .setTitle(`🎙️ Meeting Starting: ${topic}`)
@@ -50,7 +32,7 @@ async function notifyMeetingStart(guild, voiceChannel, meeting, memberIds) {
       .setURL(joinUrl)
   );
 
-  // Try to send to text channel first
+  // Prefer the dedicated meeting text channel created for this room.
   if (textChannel) {
     try {
       await textChannel.send({ content: mentionList, embeds: [embed], components: [row] });
@@ -61,7 +43,23 @@ async function notifyMeetingStart(guild, voiceChannel, meeting, memberIds) {
     }
   }
 
-  // Fallback: DM each member
+  // Fallback: admin channel or DM
+  const cfg = await getGuildConfig(guild.id);
+  let fallbackChannel = null;
+  if (cfg?.adminChannelId) {
+    fallbackChannel = guild.channels.cache.get(cfg.adminChannelId);
+  }
+
+  if (fallbackChannel) {
+    try {
+      await fallbackChannel.send({ content: mentionList, embeds: [embed], components: [row] });
+      console.log(`[meetingAutoChannel] Posted meeting start notification to #${fallbackChannel.name}`);
+      return;
+    } catch (e) {
+      console.warn(`[meetingAutoChannel] Failed to post to admin channel: ${e.message}`);
+    }
+  }
+
   for (const userId of memberIds) {
     try {
       const user = await guild.client.users.fetch(userId);
@@ -107,24 +105,22 @@ export function startMeetingAutoChannels(client) {
 }
 
 async function createMeetingChannelAndJoin(guild, meeting) {
-  const cfg = await getGuildConfig(guild.id);
   const memberIds = ensureStringArray(meeting.memberIds);
-  // Everyone who should see this private channel: invitees + whoever scheduled it
   const allowedIds = Array.from(
     new Set([...memberIds, meeting.createdBy].filter(Boolean)),
   );
 
-  // Unique, readable channel name using the meeting's own id (short suffix)
   const shortId = meeting.id.slice(0, 8);
   const safeTopic = (meeting.topic || "meeting")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .slice(0, 40);
   const channelName = `meet-${safeTopic}-${shortId}`;
+  const meetingsCategory = guild.channels.cache.find(
+    (ch) => ch.type === ChannelType.GuildCategory && ch.name === '📋 Meetings',
+  );
 
-  // Deny @everyone, allow only invited members + the bot itself
-  // Use member objects to avoid "Supplied parameter is not a cached User or Role" error
-  const permissionOverwrites = [
+  const voicePermissionOverwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
     {
       id: guild.client.user.id,
@@ -135,18 +131,36 @@ async function createMeetingChannelAndJoin(guild, meeting) {
       ],
     },
   ];
+  const textPermissionOverwrites = [
+    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+    {
+      id: guild.client.user.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+      ],
+    },
+  ];
 
-  // Add permissions for each allowed user (fetch to ensure they're cached)
   for (const userId of allowedIds) {
     try {
       const member = await guild.members.fetch(userId).catch(() => null);
       if (member) {
-        permissionOverwrites.push({
+        voicePermissionOverwrites.push({
           id: member.id,
           allow: [
             PermissionFlagsBits.ViewChannel,
             PermissionFlagsBits.Connect,
             PermissionFlagsBits.Speak,
+          ],
+        });
+        textPermissionOverwrites.push({
+          id: member.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
           ],
         });
       }
@@ -156,6 +170,7 @@ async function createMeetingChannelAndJoin(guild, meeting) {
   }
 
   let voiceChannel = null;
+  let createdNewVoiceChannel = false;
 
   if (meeting.voiceChannelId) {
     const existingChannel = guild.channels.cache.get(meeting.voiceChannelId);
@@ -169,30 +184,42 @@ async function createMeetingChannelAndJoin(guild, meeting) {
       voiceChannel = await guild.channels.create({
         name: channelName,
         type: ChannelType.GuildVoice,
-        permissionOverwrites,
+        parent: meetingsCategory?.id,
+        permissionOverwrites: voicePermissionOverwrites,
       });
+      createdNewVoiceChannel = true;
     } catch (e) {
-      console.error("[meetingAutoChannel] failed to create channel:", e.message);
+      console.error("[meetingAutoChannel] failed to create voice channel:", e.message);
       return;
     }
   }
 
-  // Mark this meeting as started/assigned to a voice channel so we don't process it again.
+  let textChannel = null;
+  try {
+    textChannel = await guild.channels.create({
+      name: `${channelName}-chat`,
+      type: ChannelType.GuildText,
+      parent: meetingsCategory?.id,
+      topic: 'Meeting chat is stored in the database with the sender and timestamp.',
+      permissionOverwrites: textPermissionOverwrites,
+    });
+  } catch (e) {
+    console.error("[meetingAutoChannel] failed to create text channel:", e.message);
+    return;
+  }
+
   await db.scheduledMeeting.setChannel(meeting.id, voiceChannel.id);
 
-  // Link this channel into the existing Meeting/MeetingChannel DB tables
-  // forceNewMeeting: true ensures a NEW meeting record is created each time (not reusing old one)
-  const meetingChannel = await ensureMeetingChannel(guild, voiceChannel.id, { forceNewMeeting: true });
+  const meetingChannel = await ensureMeetingChannel(guild, voiceChannel.id, {
+    forceNewMeeting: true,
+    textChannelId: textChannel.id,
+  });
 
-  // Notify invited members to join the voice channel
-  await notifyMeetingStart(guild, voiceChannel, meeting, memberIds);
+  await notifyMeetingStart(guild, voiceChannel, textChannel, meeting, memberIds);
 
-  // Give members a grace period to join before starting recording
-  // This prevents the empty-channel check from ending the meeting immediately
   console.log(`[meetingAutoChannel] Waiting ${GRACE_PERIOD_MS/1000}s for members to join...`);
   await new Promise(resolve => setTimeout(resolve, GRACE_PERIOD_MS));
 
-  // Check if anyone joined; if not, log warning but continue
   const humanCount = voiceChannel.members.filter(m => !m.user.bot).size;
   if (humanCount === 0) {
     console.warn(`[meetingAutoChannel] No human members joined voice channel ${voiceChannel.id} after grace period`);
@@ -200,12 +227,15 @@ async function createMeetingChannelAndJoin(guild, meeting) {
     console.log(`[meetingAutoChannel] ${humanCount} human member(s) in voice channel`);
   }
 
-  // Bot joins and starts recording each person's voice individually
   await startMeetingRecording(
     voiceChannel,
     guild,
     meetingChannel.meetingId,
     voiceChannel.id,
+    {
+      deleteOnEnd: createdNewVoiceChannel,
+      textChannelId: textChannel.id,
+    },
   );
 
   console.log(

@@ -17,23 +17,27 @@ export async function handleMeetingMessageCreate(message) {
 
   const attachmentUrls = message.attachments?.map((attachment) => attachment.url) || []
 
-  await query(
-    `INSERT INTO meetingmessage (id, guildConfigId, meetingId, channelId, authorId, authorTag, content, attachmentUrls, createdAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
-    [
-      message.id,
-      cfg.id,
-      meetingChannel.meetingId,
-      message.channel.id,
-      message.author.id,
-      message.author.tag,
-      message.content || '(no text)',
-      JSON.stringify(attachmentUrls),
-      new Date(),
-    ],
-  ).catch((err) => {
+  try {
+    await query(
+      `INSERT INTO meetingmessage (id, guildConfigId, meetingId, channelId, authorId, authorTag, content, attachmentUrls, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      [
+        message.id,
+        cfg.id,
+        meetingChannel.meetingId,
+        message.channel.id,
+        message.author.id,
+        message.author.tag,
+        message.content || '(no text)',
+        JSON.stringify(attachmentUrls),
+        new Date(),
+      ],
+    )
+    console.log(`[meetingMessage] saved message ${message.id} for meeting ${meetingChannel.meetingId}`)
+  } catch (err) {
     console.error('[meetingMessage] failed to save message:', err.message)
-  })
+    return
+  }
 
   await appendMeetingNotes(
     meetingChannel.id,

@@ -99,7 +99,8 @@ export function isRecording(meetingId) {
  * Combines voice channel joining + audio recording + meeting record tracking.
  * Ends recording when all human members leave the channel.
  */
-export async function startMeetingRecording(voiceChannel, guild, meetingId, voiceChannelId) {
+export async function startMeetingRecording(voiceChannel, guild, meetingId, voiceChannelId, options = {}) {
+  const { deleteOnEnd = false, textChannelId = null } = options;
   if (!voiceChannel || !guild || !meetingId) return null;
   if (activeConnections.has(meetingId)) {
     return activeConnections.get(meetingId); // already recording
@@ -152,7 +153,6 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   const endMeetingSession = async () => {
     console.log(`[voiceCapture] ending meeting session: ${meetingId}`);
     try {
-      // Wait for any in-flight file writes/DB saves to finish first.
       try {
         await Promise.all(Array.from(pendingWrites));
       } catch (e) {
@@ -170,9 +170,28 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     } catch (err) {
       console.error(`[voiceCapture] failed to update meeting status: ${err.message}`);
     }
+
     connection.destroy();
-    // cleanup timers/intervals and activeConnections
     try { cleanup(); } catch (_) {}
+
+    if (deleteOnEnd) {
+      try {
+        await voiceChannel.delete(`Meeting ${meetingId} ended`).catch(() => {});
+      } catch (e) {
+        console.warn(`[voiceCapture] failed to delete voice channel: ${e?.message || e}`);
+      }
+    }
+
+    if (textChannelId) {
+      try {
+        const textChannel = guild.channels.cache.get(textChannelId);
+        if (textChannel?.isTextBased?.()) {
+          await textChannel.delete(`Meeting ${meetingId} ended`).catch(() => {});
+        }
+      } catch (e) {
+        console.warn(`[voiceCapture] failed to delete text channel: ${e?.message || e}`);
+      }
+    }
   };
 
   // Check if channel is empty (only bot remains)
