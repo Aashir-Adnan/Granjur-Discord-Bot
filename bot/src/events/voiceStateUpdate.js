@@ -30,14 +30,53 @@ export async function handleVoiceStateUpdate(oldState, newState) {
     if (!meetingChannel?.meetingId) return;
 
     const remainingHumans = leftChannel.members.filter((m) => !m.user.bot).size;
-    if (remainingHumans === 0 && isRecording(meetingChannel.meetingId)) {
+    if (remainingHumans === 0) {
+      // Stop recording if active
+      if (isRecording(meetingChannel.meetingId)) {
+        try {
+          await stopMeetingRecording(meetingChannel.meetingId);
+          console.log(
+            `[voiceAutoJoin] stopped recording and ended meeting, ${leftChannel.name} is empty`,
+          );
+        } catch (e) {
+          console.error("[voiceAutoJoin] failed to stop:", e.message);
+        }
+      }
+
+      // Delete the voice and text channels when meeting ends (last user leaves)
       try {
-        await stopMeetingRecording(meetingChannel.meetingId);
-        console.log(
-          `[voiceAutoJoin] stopped recording and ended meeting, ${leftChannel.name} is empty`,
-        );
+        // Delete voice channel
+        const voiceChannel = await guild.channels.fetch(leftChannel.id).catch(() => leftChannel);
+        if (voiceChannel?.isVoiceBased?.()) {
+          await voiceChannel.delete("Meeting ended - last user left").catch(() => {});
+          console.log(`[voiceAutoJoin] deleted voice channel: ${leftChannel.name}`);
+        }
+
+        // Delete associated text channel if exists
+        if (meetingChannel.textChannelId) {
+          const textChannel = await guild.channels.fetch(meetingChannel.textChannelId).catch(() => null);
+          if (textChannel?.isTextBased?.()) {
+            await textChannel.delete("Meeting ended - last user left").catch(() => {});
+            console.log(`[voiceAutoJoin] deleted text channel: ${textChannel.name}`);
+          }
+        }
+
+        // Clean up database records
+        await db.meetingChannel.deleteMany({
+          where: {
+            guildConfigId: cfg.id,
+            voiceChannelId: leftChannel.id,
+          },
+        }).catch(() => {});
+
+        // Clear the voiceChannelId from scheduledMeeting
+        await db.query(
+          "UPDATE `scheduledmeeting` SET voiceChannelId = NULL WHERE guildConfigId = ? AND voiceChannelId = ?",
+          [cfg.id, leftChannel.id]
+        ).catch(() => {});
+
       } catch (e) {
-        console.error("[voiceAutoJoin] failed to stop:", e.message);
+        console.error("[voiceAutoJoin] failed to clean up meeting channels:", e.message);
       }
     }
   }
