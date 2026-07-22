@@ -6,15 +6,14 @@ import {
 import prism from "prism-media";
 import fs from "fs";
 import path from "path";
-import { once } from "node:events";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
 
-const activeConnections = new Map(); // meetingId -> { connection, guild, voiceChannel }
+const activeConnections = new Map(); // meetingId -> connection
 const MAX_RECORDING_SECONDS = 60 * 60 * 2; // 2 hours
 
 export function startRecording(voiceChannel, meetingId) {
   if (activeConnections.has(meetingId)) {
-    return activeConnections.get(meetingId).connection; // already recording
+    return activeConnections.get(meetingId); // already recording
   }
 
   const connection = joinVoiceChannel({
@@ -50,26 +49,14 @@ export function startRecording(voiceChannel, meetingId) {
     activeConnections.delete(meetingId);
   });
 
-  activeConnections.set(meetingId, { connection, guild: voiceChannel.guild, voiceChannel });
+  activeConnections.set(meetingId, connection);
   return connection;
 }
 
-export async function stopRecording(meetingId) {
-  const recorder = activeConnections.get(meetingId);
-  if (!recorder) return false;
-  const { connection, guild, voiceChannel } = recorder;
+export function stopRecording(meetingId) {
+  const connection = activeConnections.get(meetingId);
+  if (!connection) return false;
   connection.destroy();
-
-  try {
-    const botMember = await guild.members.fetch(guild.client.user.id).catch(() => null);
-    if (botMember?.voice?.channelId === voiceChannel.id) {
-      await botMember.voice.disconnect("Meeting ended");
-      console.log(`[voiceCapture] explicit disconnect done for meeting ${meetingId}`);
-    }
-  } catch (e) {
-    console.warn(`[voiceCapture] explicit disconnect failed for meeting ${meetingId}: ${e?.message || e}`);
-  }
-
   activeConnections.delete(meetingId);
   return true;
 }
@@ -78,15 +65,14 @@ export async function stopRecording(meetingId) {
  * Stop meeting recording and update database status
  */
 export async function stopMeetingRecording(meetingId) {
-  const recorder = activeConnections.get(meetingId);
-  if (!recorder) {
+  const connection = activeConnections.get(meetingId);
+  if (!connection) {
     console.warn(`[voiceCapture] no active connection for meeting: ${meetingId}`);
     return false;
   }
 
-  const { connection, guild, voiceChannel } = recorder;
-
   try {
+    // Update meeting status to completed
     await db.meetingRecordingStatus.update({
       where: { meetingId },
       data: {
@@ -100,17 +86,6 @@ export async function stopMeetingRecording(meetingId) {
   }
 
   connection.destroy();
-
-  try {
-    const botMember = await guild.members.fetch(guild.client.user.id).catch(() => null);
-    if (botMember?.voice?.channelId === voiceChannel.id) {
-      await botMember.voice.disconnect("Meeting ended");
-      console.log(`[voiceCapture] explicit disconnect done for meeting ${meetingId}`);
-    }
-  } catch (e) {
-    console.warn(`[voiceCapture] explicit disconnect failed for meeting ${meetingId}: ${e?.message || e}`);
-  }
-
   activeConnections.delete(meetingId);
   return true;
 }
@@ -128,7 +103,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   const { deleteOnEnd = false, textChannelId = null } = options;
   if (!voiceChannel || !guild || !meetingId) return null;
   if (activeConnections.has(meetingId)) {
-    return activeConnections.get(meetingId).connection; // already recording
+    return activeConnections.get(meetingId); // already recording
   }
 
   const cfg = await getOrCreateGuildConfig(guild.id);
@@ -139,24 +114,11 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     guildId: guild.id,
     adapterCreator: guild.voiceAdapterCreator,
     selfDeaf: false,
-    selfMute: false,
   });
-
-  console.log(`[voiceCapture] joining voice channel ${voiceChannel.id} for meeting ${meetingId}`);
-
-  try {
-    await once(connection, VoiceConnectionStatus.Ready);
-    console.log(`[voiceCapture] voice connection ready for meeting ${meetingId}`);
-  } catch (e) {
-    console.error(`[voiceCapture] voice connection did not become ready for meeting ${meetingId}: ${e?.message || e}`);
-    connection.destroy();
-    return null;
-  }
 
   // Setup recording directory
   const recordingsDir = path.join(process.cwd(), "recordings", meetingId);
   fs.mkdirSync(recordingsDir, { recursive: true });
-  console.log(`[voiceCapture] recording directory ready: ${recordingsDir}`);
 
   const receiver = connection.receiver;
   // Track pending file-write promises for this meeting recording session
@@ -210,17 +172,6 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     }
 
     connection.destroy();
-
-    try {
-      const me = guild.members.me;
-      if (me?.voice?.channelId === voiceChannel.id) {
-        await me.voice.disconnect("Meeting ended");
-        console.log(`[voiceCapture] explicitly disconnected bot from ${voiceChannel.id}`);
-      }
-    } catch (e) {
-      console.warn(`[voiceCapture] bot disconnect fallback failed: ${e?.message || e}`);
-    }
-
     try { cleanup(); } catch (_) {}
 
     if (deleteOnEnd) {
@@ -243,22 +194,16 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     }
   };
 
-  let emptyChecks = 0;
+  // Check if channel is empty (only bot remains)
   const checkChannelEmpty = () => {
     const voiceState = voiceChannel.members;
     const humanMembers = voiceState.filter(member => !member.user.bot);
-
+    
     if (humanMembers.size === 0) {
-      emptyChecks += 1;
-      if (emptyChecks >= 2) {
-        console.log(`[voiceCapture] channel is empty for consecutive checks, ending meeting: ${meetingId}`);
-        endMeetingSession();
-        return true;
-      }
-      return false;
+      console.log(`[voiceCapture] channel is empty, ending meeting: ${meetingId}`);
+      endMeetingSession();
+      return true;
     }
-
-    emptyChecks = 0;
     return false;
   };
 
@@ -286,8 +231,6 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
 
   // Handle user speech and record
   receiver.speaking.on("start", (userId) => {
-    console.log(`[voiceCapture] speaking start detected for user ${userId} in meeting ${meetingId}`);
-
     const fileName = `meeting-${meetingId}-${userId}-${Date.now()}.opus`;
     const filePath = path.join(recordingsDir, fileName);
     const startedAt = new Date();
@@ -298,8 +241,6 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
         duration: 500,
       },
     });
-
-    console.log(`[voiceCapture] subscribed to voice stream for user ${userId}, writing ${filePath}`);
 
     const writeStream = fs.createWriteStream(filePath);
     opusStream.pipe(writeStream);
@@ -349,6 +290,6 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     } catch (_) {}
   }
 
-  activeConnections.set(meetingId, { connection, guild, voiceChannel });
+  activeConnections.set(meetingId, connection);
   return connection;
 }

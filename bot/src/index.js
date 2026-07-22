@@ -7,7 +7,6 @@ import {
 } from "./commands/index.js";
 import { handleMemberAdd } from "./events/memberAdd.js";
 import { handleMeetingMessageCreate } from "./events/messageCreate.js";
-import { handleVoiceStateUpdate } from "./events/voiceStateUpdate.js";
 import { startVerifyServer } from "./server.js";
 import { EPHEMERAL } from "./constants.js";
 import handleInteractions from "./handlers/interactions.js";
@@ -47,14 +46,6 @@ client.once(Events.ClientReady, async () => {
   startTicketReminder(client);
   console.log(`Logged in as ${client.user.tag}`);
 });
-client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
-  try {
-    await handleVoiceStateUpdate(oldState, newState);
-  } catch (err) {
-    console.error("[index] VoiceStateUpdate handler error:", err?.message || err);
-  }
-});
-
 client.on(Events.InteractionCreate, async (interaction) => {
   debug(`Interaction received ${interaction.type}`);
   // Defer slash commands first — nothing else before this so we stay under 3s
