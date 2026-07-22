@@ -9,12 +9,12 @@ import path from "path";
 import { once } from "node:events";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
 
-const activeConnections = new Map(); // meetingId -> connection
+const activeConnections = new Map(); // meetingId -> { connection, guild, voiceChannel }
 const MAX_RECORDING_SECONDS = 60 * 60 * 2; // 2 hours
 
 export function startRecording(voiceChannel, meetingId) {
   if (activeConnections.has(meetingId)) {
-    return activeConnections.get(meetingId); // already recording
+    return activeConnections.get(meetingId).connection; // already recording
   }
 
   const connection = joinVoiceChannel({
@@ -50,14 +50,26 @@ export function startRecording(voiceChannel, meetingId) {
     activeConnections.delete(meetingId);
   });
 
-  activeConnections.set(meetingId, connection);
+  activeConnections.set(meetingId, { connection, guild: voiceChannel.guild, voiceChannel });
   return connection;
 }
 
-export function stopRecording(meetingId) {
-  const connection = activeConnections.get(meetingId);
-  if (!connection) return false;
+export async function stopRecording(meetingId) {
+  const recorder = activeConnections.get(meetingId);
+  if (!recorder) return false;
+  const { connection, guild, voiceChannel } = recorder;
   connection.destroy();
+
+  try {
+    const botMember = await guild.members.fetch(guild.client.user.id).catch(() => null);
+    if (botMember?.voice?.channelId === voiceChannel.id) {
+      await botMember.voice.disconnect("Meeting ended");
+      console.log(`[voiceCapture] explicit disconnect done for meeting ${meetingId}`);
+    }
+  } catch (e) {
+    console.warn(`[voiceCapture] explicit disconnect failed for meeting ${meetingId}: ${e?.message || e}`);
+  }
+
   activeConnections.delete(meetingId);
   return true;
 }
@@ -66,14 +78,15 @@ export function stopRecording(meetingId) {
  * Stop meeting recording and update database status
  */
 export async function stopMeetingRecording(meetingId) {
-  const connection = activeConnections.get(meetingId);
-  if (!connection) {
+  const recorder = activeConnections.get(meetingId);
+  if (!recorder) {
     console.warn(`[voiceCapture] no active connection for meeting: ${meetingId}`);
     return false;
   }
 
+  const { connection, guild, voiceChannel } = recorder;
+
   try {
-    // Update meeting status to completed
     await db.meetingRecordingStatus.update({
       where: { meetingId },
       data: {
@@ -87,6 +100,17 @@ export async function stopMeetingRecording(meetingId) {
   }
 
   connection.destroy();
+
+  try {
+    const botMember = await guild.members.fetch(guild.client.user.id).catch(() => null);
+    if (botMember?.voice?.channelId === voiceChannel.id) {
+      await botMember.voice.disconnect("Meeting ended");
+      console.log(`[voiceCapture] explicit disconnect done for meeting ${meetingId}`);
+    }
+  } catch (e) {
+    console.warn(`[voiceCapture] explicit disconnect failed for meeting ${meetingId}: ${e?.message || e}`);
+  }
+
   activeConnections.delete(meetingId);
   return true;
 }
@@ -104,7 +128,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   const { deleteOnEnd = false, textChannelId = null } = options;
   if (!voiceChannel || !guild || !meetingId) return null;
   if (activeConnections.has(meetingId)) {
-    return activeConnections.get(meetingId); // already recording
+    return activeConnections.get(meetingId).connection; // already recording
   }
 
   const cfg = await getOrCreateGuildConfig(guild.id);
@@ -325,6 +349,6 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     } catch (_) {}
   }
 
-  activeConnections.set(meetingId, connection);
+  activeConnections.set(meetingId, { connection, guild, voiceChannel });
   return connection;
 }
