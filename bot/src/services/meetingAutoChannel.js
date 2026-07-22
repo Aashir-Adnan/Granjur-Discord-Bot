@@ -217,6 +217,10 @@ async function createMeetingChannelAndJoin(guild, meeting) {
 
   await notifyMeetingStart(guild, voiceChannel, textChannel, meeting, memberIds);
 
+  // Small delay to allow Discord to propagate channel creation before joining
+  console.log(`[meetingAutoChannel] Waiting 3s for channel propagation...`);
+  await new Promise(resolve => setTimeout(resolve, 3000));
+
   console.log(`[meetingAutoChannel] Waiting ${GRACE_PERIOD_MS/1000}s for members to join...`);
   await new Promise(resolve => setTimeout(resolve, GRACE_PERIOD_MS));
 

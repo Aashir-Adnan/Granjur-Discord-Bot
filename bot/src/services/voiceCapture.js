@@ -263,6 +263,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     guildId: guild.id,
     adapterCreator: guild.voiceAdapterCreator,
     selfDeaf: false,
+    selfMute: false,
   });
 
   // Setup recording directory
@@ -391,7 +392,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
 
   // Wait for connection to be ready, then start listening for speech
   try {
-    await waitForConnectionReady(connection, 15000);
+    await waitForConnectionReady(connection, CONNECTION_TIMEOUT_MS);
     console.log(`[voiceCapture] Voice connection ready, starting speech detection for meeting: ${meetingId}`);
   } catch (err) {
     console.error(`[voiceCapture] Failed to establish voice connection for meeting ${meetingId}:`, err.message);
