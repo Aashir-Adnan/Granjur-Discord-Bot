@@ -290,54 +290,12 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     });
   }
 
-  // Wrap adapter to debug gateway events
-  const originalAdapter = guild.voiceAdapterCreator;
-  const debugAdapter = (methods) => {
-    return originalAdapter({
-      ...methods,
-      onVoiceStateUpdate: (data) => {
-        console.log(`[voiceCapture] DEBUG: received VOICE_STATE_UPDATE`, JSON.stringify(data).slice(0, 200));
-        methods.onVoiceStateUpdate(data);
-      },
-      onVoiceServerUpdate: (data) => {
-        console.log(`[voiceCapture] DEBUG: received VOICE_SERVER_UPDATE`, JSON.stringify(data).slice(0, 200));
-        methods.onVoiceServerUpdate(data);
-      },
-    });
-  };
-
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
     guildId: guild.id,
-    adapterCreator: debugAdapter,
+    adapterCreator: guild.voiceAdapterCreator,
     selfDeaf: false,
     selfMute: false,
-  });
-
-  // Log all state transitions + networking internals
-  connection.on("stateChange", (oldState, newState) => {
-    console.log(`[voiceCapture] DEBUG: connection state ${oldState.status} -> ${newState.status}`);
-    if (newState.networking) {
-      const net = newState.networking;
-      net.on("stateChange", (oldNS, newNS) => {
-        console.log(`[voiceCapture] DEBUG: networking ${oldNS.code} -> ${newNS.code}`);
-        if (newNS.code === 6) { // Closed
-          console.log(`[voiceCapture] DEBUG: networking CLOSED, reason:`, newNS.reason || "unknown");
-        }
-        if (newNS.ws?.ping !== undefined) {
-          console.log(`[voiceCapture] DEBUG: ws ping: ${newNS.ws.ping}`);
-        }
-      });
-      net.on("error", (err) => {
-        console.log(`[voiceCapture] DEBUG: networking error:`, err.message, err.stack?.split("\n")[1]);
-      });
-      net.on("debug", (msg) => {
-        console.log(`[voiceCapture] DEBUG: networking debug:`, msg);
-      });
-      net.on("close", (code) => {
-        console.log(`[voiceCapture] DEBUG: networking close event, code:`, code);
-      });
-    }
   });
 
   // Setup recording directory
@@ -377,6 +335,12 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   const endMeetingSession = async () => {
     console.log(`[voiceCapture] Ending meeting session: ${meetingId}`);
     try {
+      // End all active user streams
+      for (const [userId, stream] of activeUserStreams) {
+        console.log(`[voiceCapture] Ending stream for user ${userId}`);
+        try { stream.opusStream.destroy(); } catch (_) {}
+      }
+
       try {
         await Promise.all(Array.from(pendingWrites));
       } catch (e) {
@@ -475,9 +439,13 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     return null;
   }
 
-  // Handle user speech and record
+  // One continuous recording per user for the entire meeting
+  const activeUserStreams = new Map(); // userId -> { opusStream, writeStream, filePath, fileName, startedAt, writePromise, resolveWrite }
+
   receiver.speaking.on("start", (userId) => {
-    console.log(`[voiceCapture] User started speaking: ${userId} in meeting: ${meetingId}`);
+    if (activeUserStreams.has(userId)) return; // already recording this user
+
+    console.log(`[voiceCapture] Started recording user: ${userId} in meeting: ${meetingId}`);
 
     const fileName = `meeting-${meetingId}-${userId}-${Date.now()}.opus`;
     const filePath = path.join(recordingsDir, fileName);
@@ -485,30 +453,28 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
 
     const opusStream = receiver.subscribe(userId, {
       end: {
-        behavior: EndBehaviorType.AfterSilence,
-        duration: 500,
+        behavior: EndBehaviorType.Manual,
       },
     });
 
     const writeStream = fs.createWriteStream(filePath);
 
-    // Handle stream errors
     opusStream.on("error", (err) => {
       console.error(`[voiceCapture] Opus stream error for user ${userId}:`, err.message);
       writeStream.destroy();
+      activeUserStreams.delete(userId);
     });
 
     writeStream.on("error", (err) => {
       console.error(`[voiceCapture] Write stream error for user ${userId}:`, err.message);
     });
 
-    // Create a promise that resolves once this recording has been saved to DB
     let resolveWrite;
     const writePromise = new Promise((resolve) => { resolveWrite = resolve; });
     pendingWrites.add(writePromise);
 
     opusStream.on("end", () => {
-      console.log(`[voiceCapture] Opus stream ended for user ${userId}`);
+      console.log(`[voiceCapture] Recording ended for user ${userId}`);
       writeStream.end();
     });
 
@@ -518,6 +484,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
         .finally(() => {
           pendingWrites.delete(writePromise);
           resolveWrite();
+          activeUserStreams.delete(userId);
         });
     };
 
@@ -525,6 +492,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     writeStream.on("error", finalize);
 
     opusStream.pipe(writeStream);
+    activeUserStreams.set(userId, { opusStream, writeStream, filePath, fileName, startedAt, writePromise, resolveWrite });
   });
 
   receiver.speaking.on("error", (err) => {
