@@ -4,7 +4,6 @@ import { startMeetingRecording } from "./voiceCapture.js";
 import { ensureMeetingChannel } from "./meetingListener.js";
 
 const INTERVAL_MS = 60 * 1000; // check every minute, same as meetingReminder.js
-const GRACE_PERIOD_MS = 60000; // 60 seconds for members to join before recording starts
 
 /**
  * Send meeting start notifications to invited members with a link to join the voice channel
@@ -215,21 +214,11 @@ async function createMeetingChannelAndJoin(guild, meeting) {
     textChannelId: textChannel.id,
   });
 
+  // Join immediately — notify in parallel, don't wait
   await notifyMeetingStart(guild, voiceChannel, textChannel, meeting, memberIds);
 
-  // Small delay to allow Discord to propagate channel creation before joining
-  console.log(`[meetingAutoChannel] Waiting 3s for channel propagation...`);
-  await new Promise(resolve => setTimeout(resolve, 3000));
-
-  console.log(`[meetingAutoChannel] Waiting ${GRACE_PERIOD_MS/1000}s for members to join...`);
-  await new Promise(resolve => setTimeout(resolve, GRACE_PERIOD_MS));
-
-  const humanCount = voiceChannel.members.filter(m => !m.user.bot).size;
-  if (humanCount === 0) {
-    console.warn(`[meetingAutoChannel] No human members joined voice channel ${voiceChannel.id} after grace period`);
-  } else {
-    console.log(`[meetingAutoChannel] ${humanCount} human member(s) in voice channel`);
-  }
+  // Brief delay for Discord to propagate channel creation
+  await new Promise(resolve => setTimeout(resolve, 2000));
 
   await startMeetingRecording(
     voiceChannel,

@@ -407,7 +407,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
 
   // Check if channel is empty (only bot remains) with 5-minute grace period
   let emptyGraceTimeout = null;
-  const EMPTY_GRACE_MS = 5 * 60 * 1000; // 5 minutes
+  const EMPTY_GRACE_MS = 2 * 60 * 1000; // 2 minutes
 
   const checkChannelEmpty = () => {
     const voiceState = voiceChannel.members;
