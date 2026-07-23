@@ -4,7 +4,7 @@ import { startMeetingRecording } from "./voiceCapture.js";
 import { ensureMeetingChannel } from "./meetingListener.js";
 
 const INTERVAL_MS = 60 * 1000; // check every minute, same as meetingReminder.js
-const GRACE_PERIOD_MS = 20000; // 20 seconds for members to join before empty check could end meeting
+const GRACE_PERIOD_MS = 60000; // 60 seconds for members to join before recording starts
 
 /**
  * Send meeting start notifications to invited members with a link to join the voice channel

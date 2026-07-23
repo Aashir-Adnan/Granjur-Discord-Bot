@@ -4,12 +4,17 @@ import {
   VoiceConnectionStatus,
   getVoiceConnection,
   AudioPlayerStatus,
+  createAudioPlayer,
+  createAudioResource,
 } from "@discordjs/voice";
 import prism from "prism-media";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
 import { OggOpusEncoder } from "../utils/oggOpusStream.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const activeConnections = new Map(); // meetingId -> connection
 const MAX_RECORDING_SECONDS = 60 * 60 * 2; // 2 hours
@@ -400,17 +405,35 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     }
   };
 
-  // Check if channel is empty (only bot remains)
+  // Check if channel is empty (only bot remains) with 5-minute grace period
+  let emptyGraceTimeout = null;
+  const EMPTY_GRACE_MS = 5 * 60 * 1000; // 5 minutes
+
   const checkChannelEmpty = () => {
     const voiceState = voiceChannel.members;
     const humanMembers = voiceState.filter(member => !member.user.bot);
 
     if (humanMembers.size === 0) {
-      console.log(`[voiceCapture] Channel is empty, ending meeting: ${meetingId}`);
-      endMeetingSession();
-      return true;
+      if (!emptyGraceTimeout) {
+        console.log(`[voiceCapture] Channel empty, starting 5-minute grace period for meeting: ${meetingId}`);
+        emptyGraceTimeout = setTimeout(() => {
+          // Re-check after grace period
+          const currentHumans = voiceChannel.members.filter(m => !m.user.bot);
+          if (currentHumans.size === 0) {
+            console.log(`[voiceCapture] Grace period expired, ending meeting: ${meetingId}`);
+            endMeetingSession();
+          } else {
+            console.log(`[voiceCapture] Members rejoined during grace period, continuing meeting: ${meetingId}`);
+            emptyGraceTimeout = null;
+          }
+        }, EMPTY_GRACE_MS);
+      }
+    } else if (emptyGraceTimeout) {
+      // Members rejoined, cancel grace period
+      console.log(`[voiceCapture] Members rejoined, cancelling grace period for meeting: ${meetingId}`);
+      clearTimeout(emptyGraceTimeout);
+      emptyGraceTimeout = null;
     }
-    return false;
   };
 
   // Handle cleanup
@@ -418,12 +441,13 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     activeConnections.delete(meetingId);
     clearTimeout(timeoutHandle);
     clearInterval(channelCheckInterval);
+    if (emptyGraceTimeout) clearTimeout(emptyGraceTimeout);
   };
 
-  // Monitor channel for empty state (check every 5 seconds)
+  // Monitor channel for empty state (check every 10 seconds)
   const channelCheckInterval = setInterval(() => {
     checkChannelEmpty();
-  }, 5000);
+  }, 10000);
 
   // Auto-disconnect after max duration
   const timeoutHandle = setTimeout(() => {
@@ -447,6 +471,30 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     connection.destroy();
     cleanup();
     return null;
+  }
+
+  // Play "Ready to Record" audio cue
+  const readyAudioPath = path.join(__dirname, "../../assets/ready-to-record.ogg");
+  if (fs.existsSync(readyAudioPath)) {
+    try {
+      const player = createAudioPlayer();
+      const resource = createAudioResource(readyAudioPath);
+      connection.subscribe(player);
+      player.play(resource);
+      await new Promise((resolve) => {
+        player.on(AudioPlayerStatus.Idle, resolve);
+        player.on("error", (err) => {
+          console.error(`[voiceCapture] Ready audio error:`, err.message);
+          resolve();
+        });
+        setTimeout(resolve, 5000); // safety timeout
+      });
+      console.log(`[voiceCapture] Played ready-to-record audio cue`);
+    } catch (e) {
+      console.warn(`[voiceCapture] Failed to play ready audio: ${e.message}`);
+    }
+  } else {
+    console.warn(`[voiceCapture] Ready audio file not found at ${readyAudioPath}`);
   }
 
 
