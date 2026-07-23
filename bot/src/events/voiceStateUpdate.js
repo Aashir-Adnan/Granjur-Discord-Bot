@@ -44,6 +44,7 @@ export async function handleVoiceStateUpdate(oldState, newState) {
       }
 
       // Delete the voice and text channels when meeting ends (last user leaves)
+      // This runs regardless of whether recording was active - cleans up orphaned meeting channels
       try {
         // Delete voice channel
         const voiceChannel = await guild.channels.fetch(leftChannel.id).catch(() => leftChannel);
@@ -68,6 +69,12 @@ export async function handleVoiceStateUpdate(oldState, newState) {
             voiceChannelId: leftChannel.id,
           },
         }).catch(() => {});
+
+        // Delete the associated meeting record to prevent "Meeting" clutter in Discord
+        if (meetingChannel?.meetingId) {
+          await db.meeting.delete({ where: { id: meetingChannel.meetingId } }).catch(() => {});
+          console.log(`[voiceAutoJoin] deleted meeting record: ${meetingChannel.meetingId}`);
+        }
 
         // Clear the voiceChannelId from scheduledMeeting
         await db.query(

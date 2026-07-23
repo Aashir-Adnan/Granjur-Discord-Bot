@@ -12,7 +12,39 @@ import db, { getOrCreateGuildConfig } from "../db/index.js";
 
 const activeConnections = new Map(); // meetingId -> connection
 const MAX_RECORDING_SECONDS = 60 * 60 * 2; // 2 hours
-const CONNECTION_TIMEOUT_MS = 60000; // 60 seconds for voice connection to become ready (Discord can be slow)
+const CONNECTION_TIMEOUT_MS = 120000; // 120 seconds for voice connection to become ready (Discord can be slow on cloud hosts)
+const MAX_CONNECTION_RETRIES = 2; // Number of connection retry attempts
+
+/**
+ * Wait for voice connection to reach Ready state with retry logic
+ */
+async function waitForConnectionReadyWithRetry(connection, timeoutMs = CONNECTION_TIMEOUT_MS, maxRetries = MAX_CONNECTION_RETRIES) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      await waitForConnectionReady(connection, timeoutMs);
+      return connection;
+    } catch (err) {
+      const isLastAttempt = attempt === maxRetries;
+      console.error(`[voiceCapture] Voice connection attempt ${attempt + 1}/${maxRetries + 1} failed: ${err.message}`);
+
+      if (isLastAttempt) {
+        throw err;
+      }
+
+      // Wait before retry with exponential backoff
+      const retryDelay = Math.min(1000 * Math.pow(2, attempt), 10000); // Max 10 seconds
+      console.log(`[voiceCapture] Retrying voice connection in ${retryDelay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+
+      // Check if connection is still valid before retrying
+      if (connection.state.status === VoiceConnectionStatus.Destroyed ||
+          connection.state.status === VoiceConnectionStatus.Disconnected) {
+        console.error(`[voiceCapture] Connection is destroyed/disconnected, cannot retry`);
+        throw new Error("Voice connection destroyed, cannot retry");
+      }
+    }
+  }
+}
 
 /**
  * Wait for voice connection to reach Ready state

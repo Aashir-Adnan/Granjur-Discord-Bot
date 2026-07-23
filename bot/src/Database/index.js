@@ -1161,6 +1161,15 @@ async function meetingRecordingFindMany({ where }) {
   return query(sql, params);
 }
 
+// ---------- Meeting Delete ----------
+async function meetingDelete({ where }) {
+  if (where?.id) {
+    await query("DELETE FROM `meeting` WHERE id = ?", [where.id]);
+    return { success: true };
+  }
+  return { success: false };
+}
+
 // ---------- MeetingRecordingStatus (for tracking recording session status) ----------
 async function meetingRecordingStatusCreate({ data }) {
   const pk = id();
@@ -1547,6 +1556,7 @@ const db = {
     findUnique: meetingFindUnique,
     create: meetingCreate,
     update: meetingUpdate,
+    delete: meetingDelete,
   },
   meetingChannel: {
     findFirst: meetingChannelFindFirst,
