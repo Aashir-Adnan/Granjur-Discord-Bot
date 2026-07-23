@@ -61,7 +61,8 @@
     "close-feature": false,
     "resolve-bug": false,
     "reconcile": true,
-    "meeting-channel": true
+    "meeting-channel": true,
+    "admin-panel": true
   },
   "commandDescriptions": {
     "init": {
@@ -203,6 +204,11 @@
       "summary": "Create a dedicated meeting voice + text channel pair.",
       "syntax": "`/meeting-channel [name]`",
       "detail": "Creates a linked voice and text channel for a meeting, and stores text messages in the meeting notes table with a user tag and timestamp."
+    },
+    "admin-panel": {
+      "summary": "Admin panel for viewing recordings, meetings, and members.",
+      "syntax": "`/admin-panel`",
+      "detail": "Opens an admin-only panel with modules: Recordings (view meeting audio clips and file status), Meetings (scheduled meetings overview), Members (status summary and list). Administrator only."
     }
   }
 }

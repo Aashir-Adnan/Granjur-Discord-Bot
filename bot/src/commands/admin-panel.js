@@ -5,7 +5,6 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
-  PermissionFlagsBits,
 } from "discord.js";
 import db, { getOrCreateGuildConfig, ensureStringArray } from "../db/index.js";
 import fs from "fs";
@@ -31,22 +30,13 @@ const PANEL_MODULES = [
 
 export const data = new SlashCommandBuilder()
   .setName("admin-panel")
-  .setDescription("(CEO/Server Manager) Open the admin panel in a private admin channel")
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+  .setDescription("(CEO/Server Manager) Open the admin panel");
 
 export async function execute(interaction) {
   const guild = interaction.guild;
   if (!guild)
     return interaction.editReply({ content: "Use this in a server." });
 
-  const member = await guild.members
-    .fetch(interaction.user.id)
-    .catch(() => null);
-  if (!member?.permissions.has("Administrator")) {
-    return interaction.editReply({
-      content: "Only administrators can use the admin panel.",
-    });
-  }
 
   const embed = new EmbedBuilder()
     .setTitle("Admin Panel")
