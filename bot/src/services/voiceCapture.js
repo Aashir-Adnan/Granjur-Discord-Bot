@@ -290,12 +290,33 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     });
   }
 
+  // Wrap adapter to debug gateway events
+  const originalAdapter = guild.voiceAdapterCreator;
+  const debugAdapter = (methods) => {
+    return originalAdapter({
+      ...methods,
+      onVoiceStateUpdate: (data) => {
+        console.log(`[voiceCapture] DEBUG: received VOICE_STATE_UPDATE`, JSON.stringify(data).slice(0, 200));
+        methods.onVoiceStateUpdate(data);
+      },
+      onVoiceServerUpdate: (data) => {
+        console.log(`[voiceCapture] DEBUG: received VOICE_SERVER_UPDATE`, JSON.stringify(data).slice(0, 200));
+        methods.onVoiceServerUpdate(data);
+      },
+    });
+  };
+
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
     guildId: guild.id,
-    adapterCreator: guild.voiceAdapterCreator,
+    adapterCreator: debugAdapter,
     selfDeaf: false,
     selfMute: false,
+  });
+
+  // Log all state transitions
+  connection.on("stateChange", (oldState, newState) => {
+    console.log(`[voiceCapture] DEBUG: connection state ${oldState.status} -> ${newState.status}`);
   });
 
   // Setup recording directory
