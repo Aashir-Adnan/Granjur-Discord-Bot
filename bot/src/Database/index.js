@@ -1258,6 +1258,51 @@ async function meetingRecordingStatusUpdate({ where, data }) {
   return meetingRecordingStatusFindUnique({ where: { meetingId: where.meetingId } });
 }
 
+// ---------- UserChannel (for /create-channel, protected from /cleanup) ----------
+async function userChannelCreate({ data }) {
+  const pk = id();
+  await query(
+    "INSERT INTO `userchannel` (id, guildConfigId, voiceChannelId, textChannelId, name, createdBy, memberIds) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [
+      pk,
+      data.guildConfigId,
+      data.voiceChannelId ?? null,
+      data.textChannelId ?? null,
+      data.name,
+      data.createdBy,
+      JSON.stringify(data.memberIds ?? []),
+    ],
+  );
+  return queryOne("SELECT * FROM `userchannel` WHERE id = ?", [pk]);
+}
+
+async function userChannelFindMany({ where }) {
+  let sql = "SELECT * FROM `userchannel` WHERE 1=1";
+  const params = [];
+  if (where?.guildConfigId) {
+    sql += " AND guildConfigId = ?";
+    params.push(where.guildConfigId);
+  }
+  if (where?.createdBy) {
+    sql += " AND createdBy = ?";
+    params.push(where.createdBy);
+  }
+  sql += " ORDER BY createdAt DESC";
+  return query(sql, params);
+}
+
+async function userChannelDelete({ where }) {
+  if (where?.id) {
+    await query("DELETE FROM `userchannel` WHERE id = ?", [where.id]);
+  }
+  if (where?.voiceChannelId) {
+    await query("DELETE FROM `userchannel` WHERE voiceChannelId = ?", [where.voiceChannelId]);
+  }
+  if (where?.textChannelId) {
+    await query("DELETE FROM `userchannel` WHERE textChannelId = ?", [where.textChannelId]);
+  }
+}
+
 // ---------- Faq findMany with search (faq.js search) ----------
 async function faqSearch(guildId, queryStr, repoName, limit = 10) {
   const cfg = await getGuildConfig(guildId);
@@ -1579,6 +1624,11 @@ const db = {
     findActive: clockEntryFindActive,
     update: clockEntryUpdate,
     findMany: clockEntryFindMany,
+  },
+  userChannel: {
+    create: userChannelCreate,
+    findMany: userChannelFindMany,
+    delete: userChannelDelete,
   },
 };
 

@@ -31,7 +31,9 @@
     "resolve-bug": [],
     "reconcile": ["CEO", "Server Manager"],
     "meeting-channel": ["Verified"],
-    "admin-panel": ["CEO", "Server Manager"]
+    "admin-panel": ["CEO", "Server Manager"],
+    "cleanup": ["CEO", "Server Manager"],
+    "create-channel": ["Verified"]
   },
   "dedicatedChannels": {
     "init": true,
@@ -62,7 +64,9 @@
     "resolve-bug": false,
     "reconcile": true,
     "meeting-channel": true,
-    "admin-panel": true
+    "admin-panel": true,
+    "cleanup": true,
+    "create-channel": true
   },
   "commandDescriptions": {
     "init": {
@@ -209,6 +213,16 @@
       "summary": "Admin panel for viewing recordings, meetings, and members.",
       "syntax": "`/admin-panel`",
       "detail": "Opens an admin-only panel with modules: Recordings (view meeting audio clips and file status), Meetings (scheduled meetings overview), Members (status summary and list). Administrator only."
+    },
+    "cleanup": {
+      "summary": "Remove leftover channels not created by /init.",
+      "syntax": "`/cleanup`",
+      "detail": "Finds and deletes orphan channels (leftover meeting channels, test channels, etc). Channels created by /init, /create-project-categories, and /create-channel are protected. CEO/Server Manager only."
+    },
+    "create-channel": {
+      "summary": "Create a private voice + text channel pair.",
+      "syntax": "`/create-channel <name> [member1] [member2] ...`",
+      "detail": "Creates a voice and text channel visible only to designated members. These channels are tracked in the database and protected from /cleanup. Any verified member can use this."
     }
   }
 }

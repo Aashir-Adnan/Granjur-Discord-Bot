@@ -314,9 +314,30 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     selfMute: false,
   });
 
-  // Log all state transitions
+  // Log all state transitions + networking internals
   connection.on("stateChange", (oldState, newState) => {
     console.log(`[voiceCapture] DEBUG: connection state ${oldState.status} -> ${newState.status}`);
+    if (newState.networking) {
+      const net = newState.networking;
+      net.on("stateChange", (oldNS, newNS) => {
+        console.log(`[voiceCapture] DEBUG: networking ${oldNS.code} -> ${newNS.code}`);
+        if (newNS.code === 6) { // Closed
+          console.log(`[voiceCapture] DEBUG: networking CLOSED, reason:`, newNS.reason || "unknown");
+        }
+        if (newNS.ws?.ping !== undefined) {
+          console.log(`[voiceCapture] DEBUG: ws ping: ${newNS.ws.ping}`);
+        }
+      });
+      net.on("error", (err) => {
+        console.log(`[voiceCapture] DEBUG: networking error:`, err.message, err.stack?.split("\n")[1]);
+      });
+      net.on("debug", (msg) => {
+        console.log(`[voiceCapture] DEBUG: networking debug:`, msg);
+      });
+      net.on("close", (code) => {
+        console.log(`[voiceCapture] DEBUG: networking close event, code:`, code);
+      });
+    }
   });
 
   // Setup recording directory

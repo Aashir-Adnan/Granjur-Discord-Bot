@@ -197,6 +197,10 @@ export default async function handleInteractions(interaction) {
       return (
         await import("../commands/doc-channel.js")
       ).handleDocTraversalBack(interaction);
+    if (customId === "cleanup_confirm")
+      return (await import("../commands/cleanup.js")).handleConfirm(interaction);
+    if (customId === "cleanup_cancel")
+      return (await import("../commands/cleanup.js")).handleCancel(interaction);
     if (customId === "admin_panel_recording_details")
       return (await import("../commands/admin-panel.js")).handleRecordingDetails(interaction);
     if (customId === "admin_panel_back")

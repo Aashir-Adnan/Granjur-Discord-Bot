@@ -38,6 +38,8 @@ import * as reconcileCmd from './reconcile.js'
 import * as fixCmd from './fix.js'
 import * as meetingChannelCmd from './meeting-channel.js'
 import * as adminPanelCmd from './admin-panel.js'
+import * as cleanupCmd from './cleanup.js'
+import * as createChannelCmd from './create-channel.js'
 
 const commandModules = [
   initCmd,
@@ -71,6 +73,8 @@ const commandModules = [
   fixCmd,
   meetingChannelCmd,
   adminPanelCmd,
+  cleanupCmd,
+  createChannelCmd,
 ]
 
 export function getCommands() {
