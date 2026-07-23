@@ -239,6 +239,7 @@ async function createMeetingChannelAndJoin(guild, meeting) {
     {
       deleteOnEnd: createdNewVoiceChannel,
       textChannelId: textChannel.id,
+      meetingTopic: meeting.topic || null,
     },
   );
 

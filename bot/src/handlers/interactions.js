@@ -297,6 +297,10 @@ export default async function handleInteractions(interaction) {
       );
     if (customId === "admin_panel_select")
       return (await import("../commands/admin-panel.js")).handlePanelSelect(interaction);
+    if (customId === "playback_select_meeting")
+      return (await import("../commands/playback.js")).handleMeetingSelect(interaction);
+    if (customId === "playback_select_recording")
+      return (await import("../commands/playback.js")).handleRecordingSelect(interaction);
     // No handler matched — we already deferred, so we must editReply or Discord shows "interaction failed"
     await interaction
       .editReply({ content: "Unknown action.", components: [] })

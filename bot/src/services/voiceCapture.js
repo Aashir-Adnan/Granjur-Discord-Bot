@@ -9,6 +9,7 @@ import prism from "prism-media";
 import fs from "fs";
 import path from "path";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
+import { OggOpusEncoder } from "../utils/oggOpusStream.js";
 
 const activeConnections = new Map(); // meetingId -> connection
 const MAX_RECORDING_SECONDS = 60 * 60 * 2; // 2 hours
@@ -257,7 +258,7 @@ export function isRecording(meetingId) {
  * Ends recording when all human members leave the channel.
  */
 export async function startMeetingRecording(voiceChannel, guild, meetingId, voiceChannelId, options = {}) {
-  const { deleteOnEnd = false, textChannelId = null } = options;
+  const { deleteOnEnd = false, textChannelId = null, meetingTopic = null } = options;
 
   if (!voiceChannel || !guild || !meetingId) {
     console.error(`[voiceCapture] Invalid parameters for startMeetingRecording`);
@@ -298,8 +299,13 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     selfMute: false,
   });
 
-  // Setup recording directory
-  const recordingsDir = path.join(process.cwd(), "recordings", meetingId);
+  // Setup recording directory — named as meetingId-topic
+  const safeTopic = (meetingTopic || "meeting")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .slice(0, 40);
+  const dirName = `${meetingId.slice(0, 8)}-${safeTopic}`;
+  const recordingsDir = path.join(process.cwd(), "recordings", dirName);
   fs.mkdirSync(recordingsDir, { recursive: true });
   console.log(`[voiceCapture] Created recordings directory: ${recordingsDir}`);
 
@@ -319,7 +325,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
           memberId: userId,
           filePath,
           fileName,
-          audioFormat: "opus",
+          audioFormat: "ogg",
           startedAt,
           endedAt,
           durationSeconds,
@@ -335,10 +341,11 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   const endMeetingSession = async () => {
     console.log(`[voiceCapture] Ending meeting session: ${meetingId}`);
     try {
-      // End all active user streams
+      // End all active user streams gracefully
       for (const [userId, stream] of activeUserStreams) {
         console.log(`[voiceCapture] Ending stream for user ${userId}`);
         try { stream.opusStream.destroy(); } catch (_) {}
+        try { stream.oggEncoder.end(); } catch (_) {}
       }
 
       try {
@@ -440,14 +447,25 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   }
 
   // One continuous recording per user for the entire meeting
-  const activeUserStreams = new Map(); // userId -> { opusStream, writeStream, filePath, fileName, startedAt, writePromise, resolveWrite }
+  const activeUserStreams = new Map();
 
-  receiver.speaking.on("start", (userId) => {
+  receiver.speaking.on("start", async (userId) => {
     if (activeUserStreams.has(userId)) return; // already recording this user
 
-    console.log(`[voiceCapture] Started recording user: ${userId} in meeting: ${meetingId}`);
+    // Look up user email for file naming
+    let userLabel = userId;
+    try {
+      const member = await db.guildMember.findUnique({
+        where: { guildId_discordId: { guildId: guild.id, discordId: userId } },
+      });
+      if (member?.email) {
+        userLabel = member.email.split("@")[0].replace(/[^a-z0-9._-]/gi, "_");
+      }
+    } catch (_) {}
 
-    const fileName = `meeting-${meetingId}-${userId}-${Date.now()}.opus`;
+    console.log(`[voiceCapture] Started recording user: ${userLabel} (${userId}) in meeting: ${meetingId}`);
+
+    const fileName = `${userLabel}.ogg`;
     const filePath = path.join(recordingsDir, fileName);
     const startedAt = new Date();
 
@@ -457,12 +475,19 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
       },
     });
 
+    const oggEncoder = new OggOpusEncoder({ sampleRate: 48000, channels: 2 });
     const writeStream = fs.createWriteStream(filePath);
 
     opusStream.on("error", (err) => {
       console.error(`[voiceCapture] Opus stream error for user ${userId}:`, err.message);
+      oggEncoder.destroy();
       writeStream.destroy();
       activeUserStreams.delete(userId);
+    });
+
+    oggEncoder.on("error", (err) => {
+      console.error(`[voiceCapture] OGG encoder error for user ${userId}:`, err.message);
+      writeStream.destroy();
     });
 
     writeStream.on("error", (err) => {
@@ -475,7 +500,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
 
     opusStream.on("end", () => {
       console.log(`[voiceCapture] Recording ended for user ${userId}`);
-      writeStream.end();
+      oggEncoder.end();
     });
 
     const finalize = () => {
@@ -491,8 +516,8 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     writeStream.on("finish", finalize);
     writeStream.on("error", finalize);
 
-    opusStream.pipe(writeStream);
-    activeUserStreams.set(userId, { opusStream, writeStream, filePath, fileName, startedAt, writePromise, resolveWrite });
+    opusStream.pipe(oggEncoder).pipe(writeStream);
+    activeUserStreams.set(userId, { opusStream, oggEncoder, writeStream, filePath, fileName, startedAt, writePromise, resolveWrite });
   });
 
   receiver.speaking.on("error", (err) => {

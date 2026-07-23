@@ -40,6 +40,7 @@ import * as meetingChannelCmd from './meeting-channel.js'
 import * as adminPanelCmd from './admin-panel.js'
 import * as cleanupCmd from './cleanup.js'
 import * as createChannelCmd from './create-channel.js'
+import * as playbackCmd from './playback.js'
 
 const commandModules = [
   initCmd,
@@ -75,6 +76,7 @@ const commandModules = [
   adminPanelCmd,
   cleanupCmd,
   createChannelCmd,
+  playbackCmd,
 ]
 
 export function getCommands() {

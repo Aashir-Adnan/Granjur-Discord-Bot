@@ -33,7 +33,8 @@
     "meeting-channel": ["Verified"],
     "admin-panel": ["CEO", "Server Manager"],
     "cleanup": ["CEO", "Server Manager"],
-    "create-channel": ["Verified"]
+    "create-channel": ["Verified"],
+    "playback": ["CEO", "Server Manager"]
   },
   "dedicatedChannels": {
     "init": true,
@@ -66,7 +67,8 @@
     "meeting-channel": true,
     "admin-panel": true,
     "cleanup": true,
-    "create-channel": true
+    "create-channel": true,
+    "playback": true
   },
   "commandDescriptions": {
     "init": {
@@ -223,6 +225,11 @@
       "summary": "Create a private voice + text channel pair.",
       "syntax": "`/create-channel <name> [member1] [member2] ...`",
       "detail": "Creates a voice and text channel visible only to designated members. These channels are tracked in the database and protected from /cleanup. Any verified member can use this."
+    },
+    "playback": {
+      "summary": "Play back a meeting recording in a voice channel.",
+      "syntax": "`/playback`",
+      "detail": "Select a meeting, then a recording to play in your current voice channel. CEO/Server Manager only."
     }
   }
 }
