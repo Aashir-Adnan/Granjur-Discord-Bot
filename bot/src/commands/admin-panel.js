@@ -174,9 +174,11 @@ async function showMeetings(interaction, cfg) {
     }),
   ]);
 
-  const recordedMeetingIds = new Set(
-    (recordings || []).map((r) => r.meetingId),
-  );
+  // scheduledMeeting.id != meeting.id (recordings use meeting.id)
+  // Link via voiceChannelId: scheduledMeeting.voiceChannelId -> meetingchannel.voiceChannelId -> meeting.id -> recording.meetingId
+  // For a simpler check, count total recordings per guild
+  const totalRecordings = (recordings || []).length;
+  const uniqueRecordedMeetings = new Set((recordings || []).map((r) => r.meetingId)).size;
 
   const pad = (s, n) => String(s ?? "—").slice(0, n).padEnd(n);
   const lines = (scheduled || []).map((m) => {
@@ -185,8 +187,8 @@ async function showMeetings(interaction, cfg) {
       : "—";
     const topic = (m.topic || "—").slice(0, 30);
     const members = ensureStringArray(m.memberIds).length;
-    const hasRecording = recordedMeetingIds.has(m.id) ? "Yes" : "No";
-    return `${pad(date, 16)} | ${pad(topic, 30)} | ${pad(members + " members", 12)} | Recorded: ${hasRecording}`;
+    const hasChannel = m.voiceChannelId ? "Yes" : "No";
+    return `${pad(date, 16)} | ${pad(topic, 30)} | ${pad(members + " members", 12)} | Channel: ${hasChannel}`;
   });
 
   const desc = lines.length
@@ -196,11 +198,12 @@ async function showMeetings(interaction, cfg) {
       pad("Topic", 30) +
       " | " +
       pad("Members", 12) +
-      " | Recorded\n" +
+      " | Channel\n" +
       "—".repeat(75) +
       "\n" +
       lines.join("\n") +
-      "\n```"
+      "\n```" +
+      `\n\n**Recording stats:** ${totalRecordings} clip(s) across ${uniqueRecordedMeetings} meeting(s). Use the **Recordings** module for details.`
     : "No scheduled meetings found.";
 
   const embed = new EmbedBuilder()
