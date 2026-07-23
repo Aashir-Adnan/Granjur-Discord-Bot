@@ -197,6 +197,10 @@ export default async function handleInteractions(interaction) {
       return (
         await import("../commands/doc-channel.js")
       ).handleDocTraversalBack(interaction);
+    if (customId === "admin_panel_recording_details")
+      return (await import("../commands/admin-panel.js")).handleRecordingDetails(interaction);
+    if (customId === "admin_panel_back")
+      return (await import("../commands/admin-panel.js")).handleBack(interaction);
     await interaction
       .editReply({
         content: `Unknown button. Received customId: "${customId}"`,
@@ -287,6 +291,8 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/edit-docs.js")).handleEditDocsSelect(
         interaction,
       );
+    if (customId === "admin_panel_select")
+      return (await import("../commands/admin-panel.js")).handlePanelSelect(interaction);
     // No handler matched — we already deferred, so we must editReply or Discord shows "interaction failed"
     await interaction
       .editReply({ content: "Unknown action.", components: [] })

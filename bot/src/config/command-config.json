@@ -30,7 +30,8 @@
     "close-feature": [],
     "resolve-bug": [],
     "reconcile": ["CEO", "Server Manager"],
-    "meeting-channel": ["Verified"]
+    "meeting-channel": ["Verified"],
+    "admin-panel": ["CEO", "Server Manager"]
   },
   "dedicatedChannels": {
     "init": true,
