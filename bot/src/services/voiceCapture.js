@@ -337,6 +337,9 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     }
   };
 
+  // Track one continuous stream per user
+  const activeUserStreams = new Map();
+
   // End meeting session
   const endMeetingSession = async () => {
     console.log(`[voiceCapture] Ending meeting session: ${meetingId}`);
@@ -446,8 +449,6 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     return null;
   }
 
-  // One continuous recording per user for the entire meeting
-  const activeUserStreams = new Map();
 
   receiver.speaking.on("start", async (userId) => {
     if (activeUserStreams.has(userId)) return; // already recording this user
