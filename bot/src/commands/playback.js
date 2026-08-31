@@ -21,6 +21,54 @@ export const data = new SlashCommandBuilder()
 
 const activePlayers = new Map(); // guildId -> { player, connection }
 
+// Resolve a human-friendly name for a Discord member id.
+// Tries the guild member display name, then their stored email local-part, then the raw id.
+async function resolveDisplayName(guild, memberId) {
+  try {
+    const gm = await guild.members.fetch(memberId);
+    if (gm?.displayName) return gm.displayName;
+  } catch (_) {}
+  try {
+    const record = await db.guildMember.findUnique({
+      where: { guildId_discordId: { guildId: guild.id, discordId: memberId } },
+    });
+    if (record?.email) return record.email.split("@")[0];
+  } catch (_) {}
+  return memberId;
+}
+
+// Derive a readable meeting name from the recordings directory
+// (voiceCapture names it "<meetingId8>-<topic-slug>"), falling back to the id.
+function deriveMeetingName(filePath, meetingId) {
+  try {
+    if (filePath) {
+      const dir = path.basename(path.dirname(filePath));
+      const slug = dir.replace(/^[0-9a-f]{6,8}-/i, "").trim();
+      if (slug && slug.toLowerCase() !== "meeting") {
+        return slug
+          .split(/[-_\s]+/)
+          .filter(Boolean)
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" ");
+      }
+    }
+  } catch (_) {}
+  return `Meeting ${String(meetingId).slice(0, 8)}`;
+}
+
+function formatMeetingDate(value) {
+  if (!value) return "date unknown";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "date unknown";
+  return d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export async function execute(interaction) {
   const guild = interaction.guild;
   if (!guild)
@@ -41,17 +89,28 @@ export async function execute(interaction) {
     (byMeeting[r.meetingId] = byMeeting[r.meetingId] || []).push(r);
   }
 
-  const meetingIds = Object.keys(byMeeting).slice(0, 25);
+  // Most recent meetings first (recordings are returned newest-first from the DB)
+  const meetingIds = Object.keys(byMeeting)
+    .sort((a, b) => {
+      const ta = new Date(byMeeting[a][0]?.startedAt || 0).getTime();
+      const tb = new Date(byMeeting[b][0]?.startedAt || 0).getTime();
+      return tb - ta;
+    })
+    .slice(0, 25);
+
   const options = meetingIds.map((mid) => {
     const recs = byMeeting[mid];
-    const date = recs[0]?.startedAt
-      ? new Date(recs[0].startedAt).toISOString().slice(0, 16).replace("T", " ")
-      : "unknown";
-    const fileNames = recs.map((r) => r.fileName?.replace(".ogg", "")).join(", ");
+    // Earliest recording = when the meeting started
+    const startedAt = recs
+      .map((r) => r.startedAt)
+      .filter(Boolean)
+      .sort((a, b) => new Date(a) - new Date(b))[0];
+    const name = deriveMeetingName(recs[0]?.filePath, mid);
+    const date = formatMeetingDate(startedAt);
     return {
-      label: `${mid.slice(0, 8)}... (${date})`,
+      label: `${name} — ${date}`.slice(0, 100),
       value: mid,
-      description: `${recs.length} recording(s): ${fileNames}`.slice(0, 100),
+      description: `${recs.length} recording(s)`.slice(0, 100),
     };
   });
 
@@ -90,14 +149,20 @@ export async function handleMeetingSelect(interaction) {
     });
   }
 
-  const options = recordings
+  const playable = recordings
     .filter((r) => r.filePath && fs.existsSync(r.filePath))
-    .slice(0, 25)
-    .map((r) => ({
-      label: r.fileName || r.memberId,
-      value: r.id,
-      description: `${r.durationSeconds || 0}s — ${r.memberId}`.slice(0, 100),
-    }));
+    .slice(0, 25);
+
+  const options = await Promise.all(
+    playable.map(async (r) => {
+      const name = await resolveDisplayName(guild, r.memberId);
+      return {
+        label: `${name} Recording`.slice(0, 100),
+        value: r.id,
+        description: `${r.durationSeconds || 0}s`.slice(0, 100),
+      };
+    }),
+  );
 
   if (options.length === 0) {
     return interaction.editReply({
@@ -195,8 +260,9 @@ export async function handleRecordingSelect(interaction) {
       activePlayers.delete(guild.id);
     });
 
+    const speakerName = await resolveDisplayName(guild, recording.memberId);
     await interaction.editReply({
-      content: `Playing **${recording.fileName}** in <#${voiceChannel.id}>`,
+      content: `Playing **${speakerName} Recording** in <#${voiceChannel.id}>`,
       embeds: [],
       components: [],
     });
