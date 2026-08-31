@@ -9,12 +9,13 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 (scheduledmeeting.cancelled). Run `npm run db:migrate`. Until then `/setup timezone`,
 `/meetings` cancel, and the cancelled-row filters will error on the missing columns.
 
-## Confirm ffmpeg-static finished downloading
-The `npm install` stalled once mid-download (slow GitHub link) and produced a
-truncated `node_modules/ffmpeg-static/ffmpeg.exe`. A clean reinstall was started.
-Verify: `node -e "require('child_process').spawnSync(require('ffmpeg-static'),['-version'],{stdio:'inherit'})"`
-should print a version. Playback still plays from the start without it, but the
-rewind/forward buttons stay disabled until ffmpeg works.
+## ffmpeg-static — approve install script on fresh deploys
+DONE locally: `node_modules/ffmpeg-static/ffmpeg.exe` = 82 MB, `ffmpeg -version`
+returns 0, prism-media detects it, package.json + package-lock.json both updated.
+BUT this npm has `allowScripts` gating — `npm install` warns ffmpeg-static's
+`install: node install.js` is "not yet covered". On a clean prod/CI install run
+`npm approve-scripts ffmpeg-static` (or `--allow-scripts`) or the binary won't
+download and the seek buttons stay disabled.
 
 ## `/meetings` — manager filter is name-based
 `isManager()` matches role names `CEO` / `Server Manager` (plus owner / ManageGuild).

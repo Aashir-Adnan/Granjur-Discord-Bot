@@ -21,10 +21,13 @@ migrations `010`/`011`.
   the offset-solve loop in `zonedWallTimeToDate`.
 - `timezone.js` helpers tested inline.
 
+## Verified after the fact
+- ffmpeg-static: 82 MB binary, `ffmpeg -version` exit 0, prism-media detects it,
+  package.json + package-lock.json in sync. (Note: `allowScripts` gating — fresh
+  installs need `npm approve-scripts ffmpeg-static`.)
+
 ## NOT verified (needs live env)
 - Migrations 010/011 not run here (no DB). `npm run db:migrate` required.
-- ffmpeg-static download stalled once (truncated exe), clean reinstall was running in
-  background at end of session — confirm it finished.
 - No live Discord run.
 
 ## Open follow-ups → backlog.md
