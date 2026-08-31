@@ -100,7 +100,7 @@ export async function execute(interaction) {
   if (!guild) return interaction.editReply({ content: "Use this in a server." });
 
   const cfg = await getOrCreateGuildConfig(guild.id);
-  const zone = guildZone(cfg);
+  const zone = guildZone(await getGuildConfig(interaction.guildId).catch(() => null));
 
   const topic = interaction.options.getString("topic");
   const whenStr = interaction.options.getString("when");
