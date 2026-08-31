@@ -2,178 +2,126 @@ import {
   SlashCommandBuilder,
   ActionRowBuilder,
   StringSelectMenuBuilder,
-  ChannelType,
   EmbedBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
   ButtonBuilder,
   ButtonStyle,
-} from 'discord.js'
-import db, { getOrCreateGuildConfig } from '../db/index.js'
-import * as flowStore from '../flows/store.js'
-import { EPHEMERAL } from '../constants.js'
+} from "discord.js";
+import db, { getOrCreateGuildConfig, getGuildConfig } from "../db/index.js";
+import * as flowStore from "../flows/store.js";
+import { parseWhen } from "../utils/parseWhen.js";
+import { discordDateTime, plainDateTime } from "../utils/discordTime.js";
+import { guildZone, zoneLabel } from "../utils/timezone.js";
 
-function parseWhen(whenStr) {
-  if (/^\d{4}-\d{2}-\d{2}/.test(whenStr)) return new Date(whenStr);
-  const match = whenStr.match(/in\s+(\d+)\s*(day|hour|minute)s?/i);
-  if (match) {
-    const n = parseInt(match[1], 10);
-    const unit = match[2].toLowerCase();
-    const d = new Date();
-    if (unit.startsWith("day")) d.setDate(d.getDate() + n);
-    else if (unit.startsWith("hour")) d.setHours(d.getHours() + n);
-    else d.setMinutes(d.getMinutes() + n);
-    return d;
-  }
-  return new Date(whenStr);
-}
+const WHEN_EXAMPLES =
+  '`tomorrow 3pm`, `next mon 14:00`, `in 90 minutes`, `2025-03-01 14:00`';
+
+const MIN_LEAD_MS = 60 * 1000; // must be at least a minute in the future
 
 export const data = new SlashCommandBuilder()
   .setName("schedule")
-  .setDescription(
-    "Schedule a meeting — pass topic & when in command, then pick members from list",
-  )
+  .setDescription("Schedule a meeting")
   .addStringOption((o) =>
     o
       .setName("topic")
       .setDescription("Meeting topic")
-      .setRequired(false)
+      .setRequired(true)
       .setMaxLength(200),
   )
   .addStringOption((o) =>
     o
       .setName("when")
-      .setDescription("When (e.g. 2025-03-01 14:00 or in 2 days)")
-      .setRequired(false),
+      .setDescription('When — e.g. "tomorrow 3pm", "next mon 14:00", "in 90 minutes"')
+      .setRequired(true)
+      .setAutocomplete(true),
   );
 
-function buildScheduleModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("schedule_modal")
-    .setTitle("Meeting details");
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId("topic")
-        .setLabel("Topic")
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder("e.g. Sprint planning")
-        .setRequired(true)
-        .setMaxLength(200),
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId("when")
-        .setLabel("When (e.g. 2025-03-01 14:00 or in 2 days)")
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder("2025-03-01 14:00")
-        .setRequired(true),
-    ),
-  );
-  return modal;
+/** Short plain-text relative phrase for autocomplete labels (no Discord markdown there). */
+function relativePhrase(date, now = new Date()) {
+  let s = Math.round((date.getTime() - now.getTime()) / 1000);
+  const past = s < 0;
+  s = Math.abs(s);
+  const units = [
+    ["day", 86400],
+    ["hour", 3600],
+    ["minute", 60],
+  ];
+  for (const [name, secs] of units) {
+    if (s >= secs) {
+      const n = Math.floor(s / secs);
+      const phrase = `${n} ${name}${n === 1 ? "" : "s"}`;
+      return past ? `${phrase} ago` : `in ${phrase}`;
+    }
+  }
+  return past ? "just now" : "in under a minute";
+}
+
+/** Autocomplete for the `when` option — previews the resolved date as the user types. */
+export async function autocomplete(interaction) {
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "when") return interaction.respond([]).catch(() => {});
+
+  const q = (focused.value || "").trim();
+  const now = new Date();
+  const zone = guildZone(await getGuildConfig(interaction.guildId).catch(() => null));
+
+  if (!q) {
+    const presets = ["in 30 minutes", "tomorrow 09:00", "tomorrow 14:00", "next monday 10:00"];
+    return interaction
+      .respond(
+        presets.map((p) => {
+          const d = parseWhen(p, now, zone);
+          return {
+            name: d ? `${p}  →  ${plainDateTime(d, zone)}`.slice(0, 100) : p,
+            value: p,
+          };
+        }),
+      )
+      .catch(() => {});
+  }
+
+  const parsed = parseWhen(q, now, zone);
+  const choices = [];
+  if (parsed) {
+    const future = parsed.getTime() > now.getTime() + MIN_LEAD_MS;
+    choices.push({
+      name: `${future ? "" : "⚠ in the past — "}${plainDateTime(parsed, zone)} (${relativePhrase(parsed, now)})`.slice(0, 100),
+      value: parsed.toISOString(),
+    });
+  } else {
+    choices.push({
+      name: `🤔 Couldn't read "${q}" — try: tomorrow 3pm`.slice(0, 100),
+      value: q,
+    });
+  }
+  // Always let them submit exactly what they typed.
+  choices.push({ name: `Use exactly: "${q}"`.slice(0, 100), value: q.slice(0, 100) });
+
+  return interaction.respond(choices).catch(() => {});
 }
 
 export async function execute(interaction) {
   const guild = interaction.guild;
-  if (!guild)
-    return interaction.editReply({ content: "Use this in a server." });
+  if (!guild) return interaction.editReply({ content: "Use this in a server." });
 
-  await getOrCreateGuildConfig(guild.id);
+  const cfg = await getOrCreateGuildConfig(guild.id);
+  const zone = guildZone(cfg);
 
-  const topicOpt = interaction.options.getString("topic");
-  const whenOpt = interaction.options.getString("when");
+  const topic = interaction.options.getString("topic");
+  const whenStr = interaction.options.getString("when");
+  const now = new Date();
+  const scheduledAt = parseWhen(whenStr, now, zone);
 
-  if (topicOpt && whenOpt) {
-    const scheduledAt = parseWhen(whenOpt);
-    if (Number.isNaN(scheduledAt.getTime())) {
-      return interaction
-        .editReply({
-          content: "Invalid date. Use e.g. `2025-03-01 14:00` or `in 2 days`.",
-        })
-        .catch(() => {});
-    }
-    flowStore.set(interaction.user.id, guild.id, "schedule", {
-      topic: topicOpt,
-      scheduledAt,
-      voiceChannelId: null,
-      recordingEnabled: false,
-    });
-    const members = await guild.members.fetch();
-    const options = Array.from(members.values())
-      .filter((m) => !m.user.bot)
-      .slice(0, 25)
-      .map((m) => ({
-        label: m.user.username.slice(0, 25),
-        value: m.id,
-        description: m.user.tag.slice(0, 50),
-      }));
-    const embed = new EmbedBuilder()
-      .setTitle("Schedule meeting")
-      .setDescription("Select members to invite.")
-      .addFields(
-        { name: "Topic", value: topicOpt.slice(0, 100), inline: true },
-        { name: "When", value: scheduledAt.toISOString(), inline: true },
-      )
-      .setColor(0x5865f2)
-      .setFooter({ text: "Step 2 — Select invitees" });
-    const select = new StringSelectMenuBuilder()
-      .setCustomId("schedule_members")
-      .setPlaceholder("Select members (optional)")
-      .setMinValues(0)
-      .setMaxValues(Math.min(25, options.length))
-      .addOptions(
-        options.length
-          ? options
-          : [{ label: "None", value: "none", description: "No invitees" }],
-      );
+  if (!scheduledAt || Number.isNaN(scheduledAt.getTime())) {
     return interaction
       .editReply({
-        embeds: [embed],
-        components: [new ActionRowBuilder().addComponents(select)],
+        content: `I couldn't understand **"${whenStr}"**. Try one of: ${WHEN_EXAMPLES}`,
       })
       .catch(() => {});
   }
-
-  const embed = new EmbedBuilder()
-    .setTitle("Schedule meeting")
-    .setDescription(
-      "Click the button below to enter topic and time, or run `/schedule topic:... when:...` to skip the form.",
-    )
-    .setColor(0x5865f2);
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("schedule_show_modal")
-      .setLabel("Enter meeting details")
-      .setStyle(ButtonStyle.Primary),
-  );
-  await interaction.editReply({ embeds: [embed], components: [row] });
-}
-
-export async function handleShowModalButton(interaction) {
-  const guild = interaction.guild;
-  if (!guild)
-    return interaction
-      .reply({ content: "Invalid.", components: [], ephemeral: true })
-      .catch(() => {});
-
-  await interaction.showModal(buildScheduleModal());
-}
-
-export async function handleScheduleModal(interaction) {
-  const guild = interaction.guild;
-  if (!guild) return;
-
-  // Defer the reply to acknowledge the interaction within 3 seconds
-  await interaction.deferReply({ ephemeral: false }).catch(() => {});
-
-  const topic = interaction.fields.getTextInputValue("topic");
-  const whenStr = interaction.fields.getTextInputValue("when");
-  const scheduledAt = parseWhen(whenStr);
-  if (Number.isNaN(scheduledAt.getTime())) {
+  if (scheduledAt.getTime() < now.getTime() + MIN_LEAD_MS) {
     return interaction
       .editReply({
-        content: "Invalid date. Use e.g. `2025-03-01 14:00` or `in 2 days`.",
+        content: `That time (${discordDateTime(scheduledAt)}) is in the past. Pick a future time.`,
       })
       .catch(() => {});
   }
@@ -185,49 +133,45 @@ export async function handleScheduleModal(interaction) {
     recordingEnabled: false,
   });
 
-  try {
-    const members = await guild.members.fetch();
-    const options = Array.from(members.values())
-      .filter((m) => !m.user.bot)
-      .slice(0, 25)
-      .map((m) => ({
-        label: m.user.username.slice(0, 25),
-        value: m.id,
-        description: m.user.tag.slice(0, 50),
-      }));
+  const members = await guild.members.fetch();
+  const options = Array.from(members.values())
+    .filter((m) => !m.user.bot)
+    .sort((a, b) => a.displayName.localeCompare(b.displayName))
+    .slice(0, 25)
+    .map((m) => ({
+      label: m.displayName.slice(0, 100),
+      value: m.id,
+      description: `@${m.user.username}`.slice(0, 100),
+    }));
 
-    const embed = new EmbedBuilder()
-      .setTitle("Schedule meeting")
-      .setDescription("**Step 2:** Select members to invite.")
-      .addFields(
-        { name: "Topic", value: topic.slice(0, 100), inline: true },
-        { name: "When", value: scheduledAt.toISOString(), inline: true },
-      )
-      .setColor(0x5865f2)
-      .setFooter({ text: "Step 2 of 3" });
+  const embed = new EmbedBuilder()
+    .setTitle("Schedule meeting")
+    .setDescription("**Step 2 of 3** — select members to invite.")
+    .addFields(
+      { name: "Topic", value: topic.slice(0, 200), inline: false },
+      { name: "When", value: discordDateTime(scheduledAt), inline: false },
+      { name: "Server timezone", value: zoneLabel(zone, scheduledAt), inline: false },
+    )
+    .setColor(0x5865f2)
+    .setFooter({ text: "Times shown in your local timezone. Change the server zone with /setup." });
 
-    const select = new StringSelectMenuBuilder()
-      .setCustomId("schedule_members")
-      .setPlaceholder("Select members (optional)")
-      .setMinValues(0)
-      .setMaxValues(Math.min(25, options.length))
-      .addOptions(
-        options.length
-          ? options
-          : [{ label: "None", value: "none", description: "No invitees" }],
-      );
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("schedule_members")
+    .setPlaceholder("Select members (optional)")
+    .setMinValues(0)
+    .setMaxValues(Math.min(25, options.length || 1))
+    .addOptions(
+      options.length
+        ? options
+        : [{ label: "None", value: "none", description: "No invitees" }],
+    );
 
-    await interaction
-      .editReply({
-        embeds: [embed],
-        components: [new ActionRowBuilder().addComponents(select)],
-      })
-      .catch(() => {});
-  } catch (e) {
-    await interaction
-      .editReply({ content: `Failed: ${e?.message ?? String(e)}` })
-      .catch(() => {});
-  }
+  return interaction
+    .editReply({
+      embeds: [embed],
+      components: [new ActionRowBuilder().addComponents(select)],
+    })
+    .catch(() => {});
 }
 
 export async function handleMembersSelect(interaction) {
@@ -248,22 +192,15 @@ export async function handleMembersSelect(interaction) {
 
   const embed = new EmbedBuilder()
     .setTitle("Confirm meeting")
-    .setDescription("Create this scheduled meeting?")
+    .setDescription("**Step 3 of 3** — create this scheduled meeting?")
     .addFields(
-      { name: "Topic", value: state.topic, inline: true },
-      { name: "When", value: state.scheduledAt.toISOString(), inline: true },
+      { name: "Topic", value: state.topic, inline: false },
+      { name: "When", value: discordDateTime(new Date(state.scheduledAt)), inline: false },
       { name: "Invitees", value: taggedMentions, inline: false },
-      ...(state.voiceChannelId
-        ? [{ name: "Voice channel", value: `<#${state.voiceChannelId}>`, inline: false }]
-        : []),
     )
-    .setColor(0x5865f2)
-    .setFooter({ text: "Step 3 of 3" });
+    .setColor(0x5865f2);
 
-  flowStore.set(interaction.user.id, guild.id, "schedule", {
-    ...state,
-    memberIds,
-  });
+  flowStore.set(interaction.user.id, guild.id, "schedule", { ...state, memberIds });
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -283,40 +220,36 @@ export async function handleConfirm(interaction) {
   const guild = interaction.guild;
   if (!guild) return;
   const state = flowStore.get(interaction.user.id, guild.id, "schedule");
-  console.log(">>> Schedule state:", state);
   if (!state)
     return interaction
-      .update({ content: "Session expired.", components: [] })
+      .update({ content: "Session expired. Run /schedule again.", components: [], embeds: [] })
       .catch(() => {});
 
   try {
-    const cfg = await getOrCreateGuildConfig(guild.id)
-    console.log(">>> Creating scheduled meeting...");
+    const cfg = await getOrCreateGuildConfig(guild.id);
+    const scheduledAt = new Date(state.scheduledAt);
     await db.scheduledMeeting.create({
       data: {
         guildConfigId: cfg.id,
         topic: state.topic,
-        scheduledAt: state.scheduledAt,
+        scheduledAt,
         memberIds: state.memberIds || [],
         createdBy: interaction.user.id,
         voiceChannelId: state.voiceChannelId || null,
         recordingEnabled: Boolean(state.voiceChannelId),
       },
     });
-    console.log(">>> Scheduled meeting created successfully");
 
     flowStore.clear(interaction.user.id, guild.id, "schedule");
     const mentions = (state.memberIds || []).map((id) => `<@${id}>`).join(" ");
     const embed = new EmbedBuilder()
       .setTitle("Meeting scheduled")
       .setDescription(
-        `${state.topic} at ${state.scheduledAt.toISOString()}${mentions ? `\nInvited: ${mentions}` : ""}${state.voiceChannelId ? `\nVoice channel: <#${state.voiceChannelId}>` : ""}`,
+        `**${state.topic}**\n${discordDateTime(scheduledAt)}${mentions ? `\nInvited: ${mentions}` : ""}`,
       )
       .setColor(0x57f287);
 
-    await interaction
-      .update({ embeds: [embed], components: [] })
-      .catch(() => {});
+    await interaction.update({ embeds: [embed], components: [] }).catch(() => {});
   } catch (e) {
     await interaction
       .update({

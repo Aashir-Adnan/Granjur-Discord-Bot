@@ -1,6 +1,7 @@
 import db, { ensureStringArray } from '../db/index.js'
 import { ensureMeetingChannel } from './meetingListener.js'
 import { startMeetingRecording } from './voiceCapture.js'
+import { discordTime, discordRelative } from '../utils/discordTime.js'
 
 const CHANNEL_UPCOMING_MEETINGS = 'upcoming-meetings'
 const WINDOW_MS = 10 * 60 * 1000 // 10 minutes
@@ -24,9 +25,9 @@ export function startMeetingReminder(client) {
           for (const m of meetings) {
             const memberIds = ensureStringArray(m.memberIds)
             const mentions = memberIds.map((id) => `<@${id}>`).join(' ')
-            const at = new Date(m.scheduledAt).toLocaleString()
+            const at = new Date(m.scheduledAt)
             await channel.send({
-              content: `**Meeting in ~10 minutes** — **${(m.topic || 'Meeting').slice(0, 100)}** at ${at}${mentions ? `\n${mentions}` : ''}`,
+              content: `**Meeting ${discordRelative(at)}** — **${(m.topic || 'Meeting').slice(0, 100)}** at ${discordTime(at, 'F')}${mentions ? `\n${mentions}` : ''}`,
             }).catch(() => {})
 
             // Reminder only; actual meeting start and recording are handled by meetingAutoChannel.js

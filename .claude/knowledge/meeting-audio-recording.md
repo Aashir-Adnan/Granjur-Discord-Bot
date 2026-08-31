@@ -20,15 +20,15 @@ Two recorders exist:
   deletes the voice/text channels (`deleteOnEnd`, `textChannelId`).
 - Each finished file → `db.meetingRecording.create({ audioFormat: "ogg", ... })`.
 
-### `bot/src/services/meetingAudioRecorder.js` — `startMeetingAudioRecording()` (legacy/suspect)
-- Similar, but writes **raw Opus** to `bot/recordings/meeting-<id>-<user>-<ts>.opus`
-  with `audioFormat: "opus"` and a **new file every speaking burst**.
-- Raw Opus with no container is NOT directly playable by `createAudioResource` /
-  VLC / ffmpeg. Likely dead code. Confirm callers before relying on either.
+### `bot/src/services/meetingAudioRecorder.js` — DELETED 2026-08-31
+Was dead code (no importers), wrote raw headerless Opus. Removed. `audioFormat`
+default in `meetingRecordingCreate` is now `"ogg"`.
 
-Legacy `startRecording()` in `voiceCapture.js` (used by `/record` slash command)
-writes decoded **`.pcm`** per burst under `recordings/<meetingId>/` — raw PCM, also
-not directly playable without specifying input format.
+### Legacy `/record` → `startRecording()` in `voiceCapture.js`
+Writes decoded **`.pcm`** per burst under `recordings/<meetingId>/`. Does **not**
+insert into `MeetingRecording`, so these files never surface in `/playback`
+(playback reads from the DB). Isolated legacy path — leave it or migrate it to
+`OggOpusEncoder` if `/record` is ever revived.
 
 ## Database tables (`bot/src/Database/migrations/007_meeting_records.sql`, `schema.sql`)
 
@@ -79,10 +79,26 @@ the `<meetingId8>-<topic-slug>` recordings dir → Title Case; falls back to
   recordings directory path (or `scheduledmeeting.topic` matched loosely by
   `voiceChannelId`).
 
-### Limitations / bugs
-- **No transport controls.** Plays a single file front-to-back; only implicit "stop"
-  is starting another playback.
+### Transport controls (added 2026-08-31)
+After `handleRecordingSelect` starts playback it posts a button row:
+`playback_rewind` (⏪10s), `playback_toggle` (▶️/⏸️), `playback_forward` (⏩10s),
+`playback_stop` (⏹️) → all routed to `playback.handleControl`.
+
+- Per-guild state in `activePlayers` Map: `{ player, connection, ff, resource,
+  filePath, speakerName, channelId, durationSec, offsetSec, paused, ended, ixn }`.
+- **Seek** = kill the ffmpeg child, respawn `new prism.FFmpeg({ args: ['-ss', N,
+  '-i', file, '-f','s16le','-ar','48000','-ac','2'] })`, `createAudioResource(ff,
+  { inputType: StreamType.Raw })`, `player.play()`. Needs **ffmpeg-static** (dep;
+  prism-media 1.3.5 auto-detects `require('ffmpeg-static')`).
+- Position = `offsetSec + resource.playbackDuration/1000`. Pause/resume is native
+  (`player.pause()/.unpause()`), which freezes `playbackDuration`.
+- The AudioPlayer briefly hits `Idle` between resources during a seek — the Idle
+  handler ignores it unless `currentPos >= durationSec - 1.5`.
+
+### Remaining limitations
 - Plays one speaker's file, not a mixed meeting track. No mixing step exists.
+- `ixn.editReply` on the ephemeral message works for ~15 min (interaction token TTL);
+  very long recordings could outlast it.
 
 ## Can we add play / pause / skip 10s / rewind 10s?
 

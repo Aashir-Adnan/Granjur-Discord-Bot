@@ -2,23 +2,31 @@
 
 **Date:** 2026-08-31
 
-## Goal
-- Stand up the `.claude/` memory scaffold + root `CLAUDE.md`.
-- Answer questions about meeting audio: on-disk playback, user↔recording relations,
-  and feasibility of a playback UI with play/pause/±10s controls.
+## Goal (done)
+Work the whole backlog: playback transport controls, `/schedule` items 4/5/7,
+`displayName` in `/create-task`, and the playback format/dead-code cleanup.
+Timezone chosen as per-guild via a new `/setup` command (user decision).
 
-## Status: done
+## Shipped — see completed.md 2026-08-31 top entry + knowledge/schedule-meetings.md
++ knowledge/meeting-audio-recording.md (transport controls + format sections).
 
-## Knowledge / skills in use
-- `.claude/knowledge/meeting-audio-recording.md` (created this session)
+New files: `bot/src/commands/{setup,meetings}.js`, `bot/src/utils/timezone.js`,
+migrations `010`/`011`.
 
-## Findings (see knowledge file for detail)
-- Recordings ARE played back today via `/playback` (join VC, stream one file).
-- User↔recording relation exists: `MeetingRecording.memberId` (Discord user id) +
-  `meetingId` + `guildConfigId`.
-- Transport controls (play/pause/skip/rewind) are feasible but NOT with a modal —
-  needs a button row + ffmpeg-based seek. Filed in backlog.
+## Verification done
+- `node --check` + dynamic `import()` pass on every touched file.
+- `getCommands().map(toJSON)` builds all 36 commands; `setup`/`meetings` present;
+  autocomplete on `schedule.when` + `setup.timezone`.
+- `parseWhen` tested inline across zones + DST (EST/EDT) — all correct after fixing
+  the offset-solve loop in `zonedWallTimeToDate`.
+- `timezone.js` helpers tested inline.
 
-## Open questions
-- Is `bot/src/services/meetingAudioRecorder.js` dead code vs
-  `voiceCapture.startMeetingRecording`? (format mismatch — see backlog)
+## NOT verified (needs live env)
+- Migrations 010/011 not run here (no DB). `npm run db:migrate` required.
+- ffmpeg-static download stalled once (truncated exe), clean reinstall was running in
+  background at end of session — confirm it finished.
+- No live Discord run.
+
+## Open follow-ups → backlog.md
+Migration run, ffmpeg download check, manager-role-name fragility, mixed-track
+playback, per-user tz, voice-channel picker.

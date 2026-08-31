@@ -3,6 +3,7 @@ import { config } from "./config.js";
 import {
   loadCommands,
   handleCommand,
+  handleAutocomplete,
   isModalFirstCommand,
 } from "./commands/index.js";
 import { handleMemberAdd } from "./events/memberAdd.js";
@@ -49,6 +50,19 @@ client.once(Events.ClientReady, async () => {
 });
 client.on(Events.InteractionCreate, async (interaction) => {
   debug(`Interaction received ${interaction.type}`);
+
+  // Autocomplete must be answered directly (never deferred) and within 3s.
+  if (interaction.isAutocomplete()) {
+    if (!commands) return interaction.respond([]).catch(() => {});
+    try {
+      await handleAutocomplete(interaction, commands);
+    } catch (err) {
+      console.error("[index] handleAutocomplete error:", err);
+      await interaction.respond([]).catch(() => {});
+    }
+    return;
+  }
+
   // Defer slash commands first — nothing else before this so we stay under 3s
   if (
     interaction.isChatInputCommand() &&
@@ -144,9 +158,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const noDeferComponentIds = [
       "feature_show_modal",
       "feature_edit", // shows input modal again
-      "schedule_show_modal",
       "schedule_confirm",
       "schedule_cancel",
+      "meetings_reschedule",
       "invite_enter_email",
       "verify_enter_otp", // Enter code → OTP modal
       "faq_ask",
@@ -174,7 +188,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         (id) => customId === id || customId.startsWith(id + ":"),
       );
     // Modals that defer inside their handler to avoid "already acknowledged" (40060)
-    const noDeferModalIds = ["create_task_modal", "schedule_modal"];
+    const noDeferModalIds = ["create_task_modal"];
     const skipModalDefer =
       interaction.isModalSubmit() && noDeferModalIds.includes(customId);
     if (interaction.isButton() || interaction.isStringSelectMenu()) {

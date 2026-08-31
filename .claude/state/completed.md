@@ -4,6 +4,50 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-08-31 — Backlog sweep: playback controls, /setup timezone, /meetings, cleanup
+- **Playback transport controls**: `/playback` now shows ⏪10s / ▶️⏸️ / ⏩10s / ⏹️
+  buttons (`playback.handleControl`). Seek respawns ffmpeg with `-ss`; added
+  **ffmpeg-static** dep (prism-media auto-detects it). Graceful degradation: without
+  ffmpeg it plays from start with seek buttons disabled. State in `activePlayers` Map.
+- **Timezone model** (`bot/src/utils/timezone.js`, zero-dep, Intl-based): `/schedule`
+  now interprets + `/setup` configures `guildConfig.timezone` (per-guild only).
+  `parseWhen` reworked to be zone-aware. Migration `010_guild_timezone.sql`.
+- **`/setup`** command (new) — CEO/Server Manager; `timezone` option w/ autocomplete;
+  no-arg shows current settings.
+- **`/meetings`** command (new) — list your upcoming meetings, reschedule (modal) or
+  cancel. Managers see everyone's. `db.scheduledMeeting.findUpcoming/findById`,
+  `update()` extended (scheduledAt/topic/memberIds/cancelled). Migration
+  `011_scheduled_meeting_cancelled.sql`.
+- **Flood guard**: `findDueToStart` now bounded to `now-30min .. now` and skips
+  cancelled; `findDueForReminder` / `findMany` / `count` skip cancelled.
+- **Dead code**: deleted `bot/src/services/meetingAudioRecorder.js`; default
+  `audioFormat` → `"ogg"`.
+- **Nicknames**: `/create-task` member picker uses `displayName` + `@username`.
+Files: `bot/src/commands/{playback,setup,meetings,schedule,create-task,index}.js`,
+`bot/src/handlers/interactions.js`, `bot/src/index.js`, `bot/src/Database/index.js`,
+`bot/src/Database/schema.sql`, `bot/src/Database/migrations/010,011`,
+`bot/src/utils/{timezone,parseWhen,discordTime}.js`, `bot/src/config/command-config.json`,
+`package.json`.
+
+## 2026-08-31 — `/schedule` time UX overhaul (items 1-3, 6) + nickname picker
+- **Discord timestamps everywhere** (`<t:UNIX:style>`, renders in viewer's own tz):
+  new `bot/src/utils/discordTime.js`; updated schedule embeds, `meetingReminder.js`,
+  `fetch-my.js`, `dashboard.js`.
+- **NL time parser** `bot/src/utils/parseWhen.js` (zero-dep): "tomorrow 3pm",
+  "next mon 14:00", "in 90 minutes", "in 1h30m", ISO, weekdays, month/day, bare times.
+- **`when` autocomplete** previewing the resolved date; first autocomplete command in
+  the repo — routing added in `bot/src/index.js` + `handleAutocomplete` in
+  `bot/src/commands/index.js`.
+- **Structured options**: `topic` + `when` both required; removed the button→modal
+  path (`buildScheduleModal`/`handleScheduleModal`/`handleShowModalButton` and their
+  routes in `interactions.js` / `index.js` noDefer lists).
+- **Resolved-time echo** + past-time rejection in `execute`.
+- **Nicknames**: member select now uses `member.displayName` + `@username`, sorted.
+Files: `bot/src/commands/schedule.js`, `bot/src/utils/{parseWhen,discordTime}.js`,
+`bot/src/{index.js,commands/index.js,handlers/interactions.js}`,
+`bot/src/services/meetingReminder.js`, `bot/src/commands/{fetch-my,dashboard}.js`,
+`.claude/knowledge/schedule-meetings.md`
+
 ## 2026-08-31 — Human-readable `/playback` menu labels
 Meeting dropdown now shows `"<Meeting Name> — <formatted date>"` (name derived from
 the recordings dir, date via `toLocaleString`), sorted newest first. Recording

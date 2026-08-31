@@ -174,7 +174,7 @@ export async function handleModuleSelect(interaction) {
     embed = new EmbedBuilder()
       .setTitle('Dashboard — Meetings')
       .setDescription(
-        meetings.map((m) => `• ${m.scheduledAt.toISOString().slice(0, 16)} — ${m.topic.slice(0, 50)}`).join('\n') || 'None.'
+        meetings.map((m) => `• <t:${Math.floor(new Date(m.scheduledAt).getTime() / 1000)}:f> — ${m.topic.slice(0, 50)}`).join('\n') || 'None.'
       )
       .addFields({ name: 'Total', value: String(meetingCount), inline: true })
       .setColor(0x57f287)

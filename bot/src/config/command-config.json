@@ -34,7 +34,9 @@
     "admin-panel": ["CEO", "Server Manager"],
     "cleanup": ["CEO", "Server Manager"],
     "create-channel": ["Verified"],
-    "playback": ["CEO", "Server Manager"]
+    "playback": ["CEO", "Server Manager"],
+    "setup": ["CEO", "Server Manager"],
+    "meetings": ["Verified"]
   },
   "dedicatedChannels": {
     "init": true,
@@ -68,7 +70,9 @@
     "admin-panel": true,
     "cleanup": true,
     "create-channel": true,
-    "playback": true
+    "playback": true,
+    "setup": true,
+    "meetings": true
   },
   "commandDescriptions": {
     "init": {
@@ -229,7 +233,17 @@
     "playback": {
       "summary": "Play back a meeting recording in a voice channel.",
       "syntax": "`/playback`",
-      "detail": "Select a meeting, then a recording to play in your current voice channel. CEO/Server Manager only."
+      "detail": "Select a meeting, then a recording to play in your current voice channel. Playback has Play/Pause, rewind 10s, forward 10s, and Stop controls. CEO/Server Manager only."
+    },
+    "setup": {
+      "summary": "Configure server settings (timezone, ...).",
+      "syntax": "`/setup [timezone:<IANA zone>]`",
+      "detail": "Run `/setup` with no options to view current settings. Set `timezone` (e.g. `America/New_York`, `Asia/Karachi`) so `/schedule` interprets meeting times correctly. CEO/Server Manager only."
+    },
+    "meetings": {
+      "summary": "List, reschedule, or cancel your scheduled meetings.",
+      "syntax": "`/meetings`",
+      "detail": "Shows your upcoming meetings. Select one to reschedule (new time) or cancel it. CEO/Server Manager can manage everyone's."
     }
   }
 }

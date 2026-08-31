@@ -478,8 +478,11 @@ export async function handleReposNext(interaction) {
 async function showMembersStep(interaction, state, guild) {
   try {
     const membersCollection = await guild.members.fetch()
-    const members = Array.from(membersCollection.values()).filter((m) => !m.user.bot).slice(0, 24)
-    const options = members.map((m) => ({ label: m.user.username.slice(0, 25), value: m.id, description: m.user.tag?.slice(0, 50) }))
+    const members = Array.from(membersCollection.values())
+      .filter((m) => !m.user.bot)
+      .sort((a, b) => a.displayName.localeCompare(b.displayName))
+      .slice(0, 24)
+    const options = members.map((m) => ({ label: m.displayName.slice(0, 100), value: m.id, description: `@${m.user.username}`.slice(0, 100) }))
 
     const embed = new EmbedBuilder()
     .setTitle('Create bug task')

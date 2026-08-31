@@ -3,6 +3,8 @@ import {
   ActionRowBuilder,
   StringSelectMenuBuilder,
   EmbedBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } from "discord.js";
 import {
   joinVoiceChannel,
@@ -10,10 +12,30 @@ import {
   createAudioResource,
   AudioPlayerStatus,
   VoiceConnectionStatus,
+  StreamType,
 } from "@discordjs/voice";
+import prism from "prism-media";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
 import fs from "fs";
 import path from "path";
+
+const SEEK_STEP = 10; // seconds for rewind/forward
+
+// Seek needs ffmpeg (via ffmpeg-static, auto-detected by prism-media). If it's
+// missing we still play from the start and just disable the seek buttons.
+let _ffmpegOk = null;
+function ffmpegAvailable() {
+  if (_ffmpegOk === null) {
+    try {
+      prism.FFmpeg.getInfo();
+      _ffmpegOk = true;
+    } catch (_) {
+      _ffmpegOk = false;
+      console.warn("[playback] ffmpeg not found — rewind/forward disabled. Install ffmpeg-static.");
+    }
+  }
+  return _ffmpegOk;
+}
 
 export const data = new SlashCommandBuilder()
   .setName("playback")
@@ -190,6 +212,110 @@ export async function handleMeetingSelect(interaction) {
   });
 }
 
+// ---------- transport controls ----------
+
+function fmtTime(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const m = Math.floor(sec / 60);
+  return `${m}:${String(sec % 60).padStart(2, "0")}`;
+}
+
+function progressBar(pos, dur, width = 18) {
+  if (!dur || dur <= 0) return "▬".repeat(width);
+  const i = Math.min(width - 1, Math.max(0, Math.round((pos / dur) * (width - 1))));
+  return "▬".repeat(i) + "🔘" + "▬".repeat(width - 1 - i);
+}
+
+function currentPos(state) {
+  const played = state.resource ? state.resource.playbackDuration / 1000 : 0;
+  const p = state.offsetSec + played;
+  return state.durationSec ? Math.min(state.durationSec, p) : p;
+}
+
+function controlsRow(paused) {
+  const canSeek = ffmpegAvailable();
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("playback_rewind").setEmoji("⏪").setLabel("10s").setStyle(ButtonStyle.Secondary).setDisabled(!canSeek),
+    new ButtonBuilder().setCustomId("playback_toggle").setEmoji(paused ? "▶️" : "⏸️").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("playback_forward").setEmoji("⏩").setLabel("10s").setStyle(ButtonStyle.Secondary).setDisabled(!canSeek),
+    new ButtonBuilder().setCustomId("playback_stop").setEmoji("⏹️").setStyle(ButtonStyle.Danger),
+  );
+}
+
+function nowPlayingEmbed(state, { ended = false } = {}) {
+  const pos = ended ? state.durationSec : currentPos(state);
+  const label = ended ? "Finished" : state.paused ? "Paused" : "Playing";
+  return new EmbedBuilder()
+    .setTitle(`${label} — ${state.speakerName} Recording`)
+    .setDescription(
+      `${progressBar(pos, state.durationSec)}\n\`${fmtTime(pos)} / ${fmtTime(state.durationSec)}\` · <#${state.channelId}>`,
+    )
+    .setColor(ended ? 0x99aab5 : state.paused ? 0xfaa61a : 0x57f287);
+}
+
+function startFfmpeg(filePath, seconds) {
+  const args = [
+    "-ss", String(Math.max(0, seconds)),
+    "-i", filePath,
+    "-analyzeduration", "0",
+    "-loglevel", "0",
+    "-f", "s16le",
+    "-ar", "48000",
+    "-ac", "2",
+  ];
+  const ff = new prism.FFmpeg({ args });
+  const resource = createAudioResource(ff, { inputType: StreamType.Raw });
+  return { ff, resource };
+}
+
+function playFrom(state, seconds, paused) {
+  try { state.ff?.destroy(); } catch (_) {}
+  seconds = Math.max(0, seconds);
+  let resource;
+  let ff = null;
+  if (seconds === 0 && !ffmpegAvailable()) {
+    // No ffmpeg — play the file directly (prism demuxes the OGG). No seeking.
+    resource = createAudioResource(state.filePath);
+  } else {
+    ({ ff, resource } = startFfmpeg(state.filePath, seconds));
+  }
+  state.ff = ff;
+  state.resource = resource;
+  state.offsetSec = seconds;
+  state.paused = !!paused;
+  state.player.play(resource);
+  if (paused) state.player.pause();
+}
+
+async function editControlMessage(state, { ended = false } = {}) {
+  if (!state.ixn) return;
+  await state.ixn
+    .editReply({
+      content: "",
+      embeds: [nowPlayingEmbed(state, { ended })],
+      components: ended ? [] : [controlsRow(state.paused)],
+    })
+    .catch(() => {});
+}
+
+function teardown(guildId, announceIxn) {
+  const state = activePlayers.get(guildId);
+  if (!state) return;
+  activePlayers.delete(guildId);
+  try { state.ff?.destroy(); } catch (_) {}
+  try { state.player.stop(); } catch (_) {}
+  try { state.connection.destroy(); } catch (_) {}
+  if (announceIxn) {
+    announceIxn
+      .editReply({
+        content: `Stopped **${state.speakerName} Recording**.`,
+        embeds: [],
+        components: [],
+      })
+      .catch(() => {});
+  }
+}
+
 export async function handleRecordingSelect(interaction) {
   const guild = interaction.guild;
   if (!guild) return;
@@ -210,7 +336,6 @@ export async function handleRecordingSelect(interaction) {
     });
   }
 
-  // User must be in a voice channel
   const member = await guild.members.fetch(interaction.user.id).catch(() => null);
   const voiceChannel = member?.voice?.channel;
   if (!voiceChannel) {
@@ -221,13 +346,7 @@ export async function handleRecordingSelect(interaction) {
     });
   }
 
-  // Stop any existing playback
-  const existing = activePlayers.get(guild.id);
-  if (existing) {
-    try { existing.player.stop(); } catch (_) {}
-    try { existing.connection.destroy(); } catch (_) {}
-    activePlayers.delete(guild.id);
-  }
+  teardown(guild.id); // stop any existing playback
 
   try {
     const connection = joinVoiceChannel({
@@ -238,40 +357,105 @@ export async function handleRecordingSelect(interaction) {
     });
 
     const player = createAudioPlayer();
-    const resource = createAudioResource(recording.filePath);
-
-    player.play(resource);
     connection.subscribe(player);
 
-    activePlayers.set(guild.id, { player, connection });
+    const state = {
+      guildId: guild.id,
+      player,
+      connection,
+      ff: null,
+      resource: null,
+      filePath: recording.filePath,
+      speakerName: await resolveDisplayName(guild, recording.memberId),
+      channelId: voiceChannel.id,
+      durationSec: recording.durationSeconds || 0,
+      offsetSec: 0,
+      paused: false,
+      ended: false,
+      ixn: interaction,
+    };
+    activePlayers.set(guild.id, state);
 
     player.on(AudioPlayerStatus.Idle, () => {
-      connection.destroy();
-      activePlayers.delete(guild.id);
+      const s = activePlayers.get(guild.id);
+      if (!s || s.paused || s.ended) return;
+      // Ignore the brief Idle that happens between resources during a seek.
+      if (s.durationSec && currentPos(s) < s.durationSec - 1.5) return;
+      s.ended = true;
+      editControlMessage(s, { ended: true }).finally(() => {
+        setTimeout(() => teardown(guild.id), 1500);
+      });
     });
 
     player.on("error", (err) => {
       console.error(`[playback] Player error:`, err.message);
-      connection.destroy();
-      activePlayers.delete(guild.id);
+      teardown(guild.id);
     });
 
     connection.on(VoiceConnectionStatus.Destroyed, () => {
       activePlayers.delete(guild.id);
     });
 
-    const speakerName = await resolveDisplayName(guild, recording.memberId);
+    playFrom(state, 0, false);
+
     await interaction.editReply({
-      content: `Playing **${speakerName} Recording** in <#${voiceChannel.id}>`,
-      embeds: [],
-      components: [],
+      content: "",
+      embeds: [nowPlayingEmbed(state)],
+      components: [controlsRow(false)],
     });
   } catch (err) {
     console.error(`[playback] Failed to play:`, err.message);
+    teardown(guild.id);
     await interaction.editReply({
       content: `Failed to play recording: ${err.message}`,
       embeds: [],
       components: [],
     });
   }
+}
+
+export async function handleControl(interaction) {
+  const guild = interaction.guild;
+  const state = guild && activePlayers.get(guild.id);
+  if (!state) {
+    return interaction
+      .editReply({ content: "Playback has ended.", embeds: [], components: [] })
+      .catch(() => {});
+  }
+  state.ixn = interaction;
+  const id = interaction.customId;
+
+  if (id === "playback_stop") {
+    teardown(guild.id, interaction);
+    return;
+  }
+  if (state.ended) return editControlMessage(state, { ended: true });
+
+  if ((id === "playback_rewind" || id === "playback_forward") && !ffmpegAvailable()) {
+    return editControlMessage(state);
+  }
+
+  if (id === "playback_toggle") {
+    if (state.paused) {
+      state.player.unpause();
+      state.paused = false;
+    } else {
+      state.player.pause();
+      state.paused = true;
+    }
+  } else if (id === "playback_rewind") {
+    playFrom(state, Math.max(0, currentPos(state) - SEEK_STEP), state.paused);
+  } else if (id === "playback_forward") {
+    const target = currentPos(state) + SEEK_STEP;
+    if (state.durationSec && target >= state.durationSec - 1) {
+      state.ended = true;
+      try { state.player.stop(); } catch (_) {}
+      await editControlMessage(state, { ended: true });
+      setTimeout(() => teardown(guild.id), 1500);
+      return;
+    }
+    playFrom(state, target, state.paused);
+  }
+
+  await editControlMessage(state);
 }

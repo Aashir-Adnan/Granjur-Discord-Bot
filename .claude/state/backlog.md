@@ -4,20 +4,27 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
-## Meeting recording playback with transport controls (modal/buttons)
-**Context:** `/playback` currently only does select-menu → join VC → play one file
-start-to-finish. No pause/resume, no ±10s seek. Discord modals cannot host live
-transport controls; this needs a **button ActionRow** (Play/Pause, ⏪ 10s, ⏩ 10s,
-Stop) on the reply message, backed by an `AudioPlayer` with seek implemented by
-recreating the `AudioResource` at a byte/time offset (needs ffmpeg `-ss`, since
-`@discordjs/voice` has no native seek).
-**Relevant:** `.claude/knowledge/meeting-audio-recording.md`,
-`bot/src/commands/playback.js`, `bot/src/handlers/interactions.js`
+## Verify migrations 010 + 011 applied on the live DB
+`010_guild_timezone.sql` (guildconfig.timezone), `011_scheduled_meeting_cancelled.sql`
+(scheduledmeeting.cancelled). Run `npm run db:migrate`. Until then `/setup timezone`,
+`/meetings` cancel, and the cancelled-row filters will error on the missing columns.
 
-## Fix format mismatch in playback.js
-**Context:** `playback.js` does `r.fileName?.replace(".ogg", "")` but
-`meetingAudioRecorder.js` writes `.opus` (raw Opus, no container — not playable).
-`voiceCapture.js` writes real `.ogg` via `OggOpusEncoder`. Decide on one recorder +
-one format. `meetingAudioRecorder.js` appears to be dead/legacy alongside
-`voiceCapture.startMeetingRecording`.
-**Relevant:** `.claude/knowledge/meeting-audio-recording.md`
+## Confirm ffmpeg-static finished downloading
+The `npm install` stalled once mid-download (slow GitHub link) and produced a
+truncated `node_modules/ffmpeg-static/ffmpeg.exe`. A clean reinstall was started.
+Verify: `node -e "require('child_process').spawnSync(require('ffmpeg-static'),['-version'],{stdio:'inherit'})"`
+should print a version. Playback still plays from the start without it, but the
+rewind/forward buttons stay disabled until ffmpeg works.
+
+## `/meetings` — manager filter is name-based
+`isManager()` matches role names `CEO` / `Server Manager` (plus owner / ManageGuild).
+If those role names ever change, managers silently lose the all-meetings view. Consider
+reusing `guildConfig` role-id lists instead.
+
+## Mixed meeting playback track
+`/playback` still plays one speaker's file at a time. No step mixes the per-speaker
+`.ogg` files into a single meeting track. Would need ffmpeg `amix` / `amerge`.
+
+## `/schedule` — still open
+- Per-user timezone override (deliberately skipped — per-guild only for now).
+- Voice-channel picker step (currently `voiceChannelId` is always null).

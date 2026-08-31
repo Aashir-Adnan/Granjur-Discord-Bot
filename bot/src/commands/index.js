@@ -41,6 +41,8 @@ import * as adminPanelCmd from './admin-panel.js'
 import * as cleanupCmd from './cleanup.js'
 import * as createChannelCmd from './create-channel.js'
 import * as playbackCmd from './playback.js'
+import * as setupCmd from './setup.js'
+import * as meetingsCmd from './meetings.js'
 
 const commandModules = [
   initCmd,
@@ -77,6 +79,8 @@ const commandModules = [
   cleanupCmd,
   createChannelCmd,
   playbackCmd,
+  setupCmd,
+  meetingsCmd,
 ]
 
 export function getCommands() {
@@ -135,6 +139,19 @@ const MODAL_FIRST_COMMANDS = new Set([])
 
 export function isModalFirstCommand(name) {
   return MODAL_FIRST_COMMANDS.has(name)
+}
+
+export async function handleAutocomplete(interaction, commands) {
+  const cmd = commands?.get(interaction.commandName)
+  if (!cmd?.autocomplete) {
+    return interaction.respond([]).catch(() => {})
+  }
+  try {
+    await cmd.autocomplete(interaction)
+  } catch (err) {
+    console.error(`Autocomplete ${interaction.commandName}:`, err)
+    await interaction.respond([]).catch(() => {})
+  }
 }
 
 export async function handleCommand(interaction, commands) {

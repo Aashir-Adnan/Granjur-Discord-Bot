@@ -63,8 +63,6 @@ export default async function handleInteractions(interaction) {
         createTaskCmd.handleTaskModal(i),
       );
     if (customId === "repos_modal") return reposCmd.handleAddModal(interaction);
-    if (customId === "schedule_modal")
-      return scheduleCmd.handleScheduleModal(interaction);
     if (customId === "faq_ask_modal")
       return (await import("../commands/faq.js")).handleFaqAskModal(
         interaction,
@@ -95,6 +93,10 @@ export default async function handleInteractions(interaction) {
       );
     if (customId === "edit_docs_modal")
       return (await import("../commands/edit-docs.js")).handleEditDocsModal(
+        interaction,
+      );
+    if (customId.startsWith("meetings_reschedule_modal:"))
+      return (await import("../commands/meetings.js")).handleRescheduleModal(
         interaction,
       );
     return;
@@ -142,9 +144,6 @@ export default async function handleInteractions(interaction) {
     if (customId === "repos_confirm_add")
       return reposCmd.handleConfirmAdd(interaction);
     if (customId === "repos_cancel") return reposCmd.handleCancel(interaction);
-    if (customId === "schedule_show_modal")
-      return scheduleCmd.handleShowModalButton(interaction);
-    
     console.log("[BUTTON] Received:", customId);
 
     if (customId === "schedule_confirm") {
@@ -156,6 +155,18 @@ export default async function handleInteractions(interaction) {
       console.log("[BUTTON] Entering handleCancel");
       return scheduleCmd.handleCancel(interaction);
     }
+
+    if (customId.startsWith("meetings_cancel:"))
+      return (await import("../commands/meetings.js")).handleCancelButton(interaction);
+    if (customId.startsWith("meetings_reschedule:"))
+      return (await import("../commands/meetings.js")).handleRescheduleButton(interaction);
+    if (
+      customId === "playback_toggle" ||
+      customId === "playback_rewind" ||
+      customId === "playback_forward" ||
+      customId === "playback_stop"
+    )
+      return (await import("../commands/playback.js")).handleControl(interaction);
 
     console.log("[BUTTON] Fell through:", customId);
 
@@ -266,6 +277,8 @@ export default async function handleInteractions(interaction) {
       return ticketCmd.handleStatusSelect(interaction);
     if (customId === "schedule_members")
       return scheduleCmd.handleMembersSelect(interaction);
+    if (customId === "meetings_select")
+      return (await import("../commands/meetings.js")).handleSelect(interaction);
     if (customId === "project_db_select")
       return projectDbCmd.handleProjectSelect(interaction);
     if (customId === "evaluate_user")

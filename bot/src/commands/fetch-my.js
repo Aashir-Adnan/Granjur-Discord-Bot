@@ -91,7 +91,7 @@ export async function handleFetchSelect(interaction) {
   if (schedules.length) {
     fields.push({
       name: 'Your meeting schedules',
-      value: schedules.map((s) => `• ${s.scheduledAt.toISOString().slice(0, 16)} — ${s.topic.slice(0, 50)}`).join('\n').slice(0, 1024),
+      value: schedules.map((s) => `• <t:${Math.floor(new Date(s.scheduledAt).getTime() / 1000)}:f> — ${s.topic.slice(0, 50)}`).join('\n').slice(0, 1024),
       inline: false,
     })
   }

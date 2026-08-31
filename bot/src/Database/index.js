@@ -79,6 +79,10 @@ export async function updateGuildConfig(guildId, data) {
     sets.push("clockedInRoleId = ?");
     vals.push(data.clockedInRoleId);
   }
+  if (data.timezone !== undefined) {
+    sets.push("timezone = ?");
+    vals.push(data.timezone);
+  }
   if (sets.length === 0) return getGuildConfig(guildId);
   vals.push(guildId);
   await query(
@@ -515,6 +519,9 @@ async function scheduledMeetingFindMany({ where, orderBy, take }) {
     sql += " AND createdBy = ?";
     params.push(where.createdBy);
   }
+  if (!where?.includeCancelled) {
+    sql += " AND cancelled = FALSE";
+  }
   // Handle orderBy parameter (e.g., { scheduledAt: 'asc' } or { createdAt: 'desc' })
   const orderByField = orderBy ? Object.keys(orderBy)[0] : 'scheduledAt';
   const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'ASC';
@@ -549,7 +556,7 @@ async function scheduledMeetingCreate({ data }) {
 
 async function scheduledMeetingCount({ where }) {
   const row = await queryOne(
-    "SELECT COUNT(*) AS c FROM `scheduledmeeting` WHERE guildConfigId = ?",
+    "SELECT COUNT(*) AS c FROM `scheduledmeeting` WHERE guildConfigId = ? AND cancelled = FALSE",
     [where.guildConfigId],
   );
   return row?.c ?? 0;
@@ -562,14 +569,47 @@ async function scheduledMeetingUpdate(id, data) {
     sets.push("reminderSentAt = ?");
     vals.push(data.reminderSentAt);
   }
+  if (data.scheduledAt !== undefined) {
+    sets.push("scheduledAt = ?");
+    vals.push(data.scheduledAt);
+  }
+  if (data.topic !== undefined) {
+    sets.push("topic = ?");
+    vals.push(data.topic);
+  }
+  if (data.memberIds !== undefined) {
+    sets.push("memberIds = ?");
+    vals.push(toJson(data.memberIds));
+  }
+  if (data.cancelled !== undefined) {
+    sets.push("cancelled = ?");
+    vals.push(data.cancelled ? 1 : 0);
+  }
   if (sets.length === 0)
     return queryOne("SELECT * FROM `scheduledmeeting` WHERE id = ?", [id]);
   vals.push(id);
   await query(
-    `UPDATE \`ScheduledMeeting\` SET ${sets.join(", ")} WHERE id = ?`,
+    `UPDATE \`scheduledmeeting\` SET ${sets.join(", ")} WHERE id = ?`,
     vals,
   );
   return queryOne("SELECT * FROM `scheduledmeeting` WHERE id = ?", [id]);
+}
+
+async function scheduledMeetingFindById(id) {
+  return queryOne("SELECT * FROM `scheduledmeeting` WHERE id = ?", [id]);
+}
+
+/** Upcoming, non-cancelled meetings for a guild (optionally filtered to one creator). */
+async function scheduledMeetingFindUpcoming({ guildConfigId, createdBy } = {}) {
+  let sql =
+    "SELECT * FROM `scheduledmeeting` WHERE guildConfigId = ? AND cancelled = FALSE AND scheduledAt >= ?";
+  const params = [guildConfigId, new Date()];
+  if (createdBy) {
+    sql += " AND createdBy = ?";
+    params.push(createdBy);
+  }
+  sql += " ORDER BY scheduledAt ASC LIMIT 25";
+  return query(sql, params);
 }
 
 async function scheduledMeetingFindDueForReminder(
@@ -581,17 +621,22 @@ async function scheduledMeetingFindDueForReminder(
   if (!cfg) return [];
   const end = new Date(now.getTime() + windowMs);
   return query(
-    "SELECT * FROM `scheduledmeeting` WHERE guildConfigId = ? AND scheduledAt >= ? AND scheduledAt <= ? AND reminderSentAt IS NULL ORDER BY scheduledAt ASC",
+    "SELECT * FROM `scheduledmeeting` WHERE guildConfigId = ? AND scheduledAt >= ? AND scheduledAt <= ? AND reminderSentAt IS NULL AND cancelled = FALSE ORDER BY scheduledAt ASC",
     [cfg.id, now, end],
   );
 }
 
+// Meetings whose start time has arrived. Bounded below by MISSED_GRACE_MS so a
+// long bot downtime doesn't spawn a channel for every meeting missed while offline.
+const MISSED_GRACE_MS = 30 * 60 * 1000;
+
 async function scheduledMeetingFindDueToStart(guildId, now) {
   const cfg = await getGuildConfig(guildId);
   if (!cfg) return [];
+  const floor = new Date(now.getTime() - MISSED_GRACE_MS);
   return query(
-    "SELECT * FROM `scheduledmeeting` WHERE guildConfigId = ? AND scheduledAt <= ? AND autoChannelId IS NULL ORDER BY scheduledAt ASC",
-    [cfg.id, now],
+    "SELECT * FROM `scheduledmeeting` WHERE guildConfigId = ? AND scheduledAt <= ? AND scheduledAt >= ? AND autoChannelId IS NULL AND cancelled = FALSE ORDER BY scheduledAt ASC",
+    [cfg.id, now, floor],
   );
 }
 
@@ -1133,7 +1178,7 @@ async function meetingRecordingCreate({ data }) {
       data.memberId,
       data.filePath ?? null,
       data.fileName ?? null,
-      data.audioFormat ?? "opus",
+      data.audioFormat ?? "ogg",
       data.startedAt ?? null,
       data.endedAt ?? null,
       data.durationSeconds ?? 0,
@@ -1542,6 +1587,8 @@ const db = {
   },
   scheduledMeeting: {
     findMany: scheduledMeetingFindMany,
+    findById: scheduledMeetingFindById,
+    findUpcoming: scheduledMeetingFindUpcoming,
     create: scheduledMeetingCreate,
     count: scheduledMeetingCount,
     update: scheduledMeetingUpdate,
