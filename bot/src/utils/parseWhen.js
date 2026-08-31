@@ -121,16 +121,16 @@ export function parseWhen(input, now = new Date(), zone = localZone()) {
   const tz = nowInZone(zone, now);
   const today = { year: tz.year, month: tz.month, day: tz.day };
 
-  // 1. ISO-ish
+  // 1. ISO-ish  (…date[ T]HH:MM[:SS][.fff][Z|±HH:MM])
   const isoM = lower.match(
-    /^(\d{4})-(\d{2})-(\d{2})(?:[ t](\d{1,2}):(\d{2})(?::\d{2})?(z|[+-]\d{2}:?\d{2})?)?/,
+    /^(\d{4})-(\d{2})-(\d{2})(?:[ t](\d{1,2}):(\d{2})(?::\d{2})?(?:\.\d+)?\s*(z|[+-]\d{2}:?\d{2})?)?/,
   );
   if (isoM) {
     if (!isoM[4]) {
       return build({ year: +isoM[1], month: +isoM[2] - 1, day: +isoM[3] }, null);
     }
-    if (isoM[6]) {
-      // explicit offset/Z -> absolute
+    if (isoM[6] || /\d[zZ]$|[+-]\d{2}:?\d{2}$/.test(raw)) {
+      // explicit offset / Z -> absolute instant, ignore the target zone
       const d = new Date(raw.replace(" ", "T"));
       if (!Number.isNaN(d.getTime())) return d;
     }

@@ -4,6 +4,15 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-08-31 — Fix: `/schedule` autocomplete ISO round-trip lost the `Z`
+`parseWhen`'s ISO regex didn't allow fractional seconds, so `.000Z` fell through the
+offset group and the timestamp was re-read as wall-clock in the guild zone — a
+`toISOString()` value from autocomplete came back shifted by the zone offset ("in 5
+minutes" → "5 hours ago" on Asia/Karachi). Fixed the regex (`(?:\.\d+)?` + trailing
+`Z`/offset check). Also changed `schedule.autocomplete` to return the user's raw
+phrase as the choice value (not an ISO snapshot), so `execute()` re-parses fresh at
+submit time. Files: `bot/src/utils/parseWhen.js`, `bot/src/commands/schedule.js`.
+
 ## 2026-08-31 — Backlog sweep: playback controls, /setup timezone, /meetings, cleanup
 - **Playback transport controls**: `/playback` now shows ⏪10s / ▶️⏸️ / ⏩10s / ⏹️
   buttons (`playback.handleControl`). Seek respawns ffmpeg with `-ss`; added

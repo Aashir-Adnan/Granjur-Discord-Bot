@@ -79,24 +79,20 @@ export async function autocomplete(interaction) {
       .catch(() => {});
   }
 
+  // The value is always the user's own phrase — execute() re-parses it fresh at
+  // submit time (so "in 5 minutes" stays relative to *then*, not to now). The
+  // label just previews where it lands.
+  const value = q.slice(0, 100);
   const parsed = parseWhen(q, now, zone);
-  const choices = [];
+  let name;
   if (parsed) {
     const future = parsed.getTime() > now.getTime() + MIN_LEAD_MS;
-    choices.push({
-      name: `${future ? "" : "⚠ in the past — "}${plainDateTime(parsed, zone)} (${relativePhrase(parsed, now)})`.slice(0, 100),
-      value: parsed.toISOString(),
-    });
+    name = `${future ? "" : "⚠ past — "}${q} → ${plainDateTime(parsed, zone)} (${relativePhrase(parsed, now)})`;
   } else {
-    choices.push({
-      name: `🤔 Couldn't read "${q}" — try: tomorrow 3pm`.slice(0, 100),
-      value: q,
-    });
+    name = `🤔 "${q}" — not understood yet — try: tomorrow 3pm`;
   }
-  // Always let them submit exactly what they typed.
-  choices.push({ name: `Use exactly: "${q}"`.slice(0, 100), value: q.slice(0, 100) });
 
-  return interaction.respond(choices).catch(() => {});
+  return interaction.respond([{ name: name.slice(0, 100), value }]).catch(() => {});
 }
 
 export async function execute(interaction) {
