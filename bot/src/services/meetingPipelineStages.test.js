@@ -132,3 +132,71 @@ test('analyzing/generating_tasks/assigning store their results on dataJson', asy
   assert.deepEqual(job.dataJson.roster[0].ref, '11')
   assert.notEqual(out.block, true)
 })
+
+function reviewJob() {
+  return {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      title: 'T',
+      tasks: [{ task_id: 'a', goal_of_task: 'A' }],
+      assignments: [{ task_id: 'a', assignee_ref: '11' }],
+      roster: [{ ref: '11', displayName: 'Ali', aliases: [] }],
+    },
+  }
+}
+
+test('awaiting_review posts a message and blocks', async () => {
+  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
+  const sent = []
+  const channel = { send: async (payload) => { sent.push(payload); return { id: 'msg1' } } }
+  const fetched = []
+  const client = { channels: { fetch: async (id) => { fetched.push(id); return channel } } }
+  const csaasClient = { fetchNotes: async () => ({ notes: 'Notes body', html: '<html></html>' }) }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1', createdAt: '2026-01-01' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    meetingRecording: { findMany: async () => [] },
+  }
+  const out = await stageRunners.awaiting_review({ job: reviewJob(), db, csaasClient, client })
+  assert.equal(out.block, true)
+  assert.equal(out.patch.reviewMessageId, 'msg1')
+  assert.equal(sent.length, 1)
+  assert.equal(fetched[0], 'tc1')
+  assert.equal(typeof out.patch.dataJson.review, 'object')
+  assert.ok(Array.isArray(out.patch.dataJson.review.tasks))
+  assert.equal(out.patch.dataJson.notes, 'Notes body')
+})
+
+test('awaiting_review posts even without html report', async () => {
+  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
+  const sent = []
+  const channel = { send: async (payload) => { sent.push(payload); return { id: 'msg2' } } }
+  const client = { channels: { fetch: async () => channel } }
+  const csaasClient = { fetchNotes: async () => ({ notes: 'Only notes' }) }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    meetingRecording: { findMany: async () => [] },
+  }
+  const out = await stageRunners.awaiting_review({ job: reviewJob(), db, csaasClient, client })
+  assert.equal(out.block, true)
+  assert.equal(out.patch.reviewMessageId, 'msg2')
+  assert.equal(sent.length, 1)
+  const desc = sent[0].embeds[0].data.description
+  assert.ok(!/Full report:/.test(desc))
+})
+
+test('awaiting_review still blocks when channel resolution fails', async () => {
+  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
+  const client = { channels: { fetch: async () => { throw new Error('no channel') } } }
+  const csaasClient = { fetchNotes: async () => ({ notes: 'N', html: '<html></html>' }) }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => null },
+    meetingRecording: { findMany: async () => [] },
+  }
+  const out = await stageRunners.awaiting_review({ job: reviewJob(), db, csaasClient, client })
+  assert.equal(out.block, true)
+  assert.equal(out.patch.reviewMessageId, undefined)
+  assert.equal(typeof out.patch.dataJson.review, 'object')
+})

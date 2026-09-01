@@ -4,9 +4,11 @@
 // - advance: when false, the job stays on the same stage (e.g. polling)
 // - block:   when true, status becomes 'blocked' instead of 'pending'/'done'
 import fs from 'node:fs/promises'
+import path from 'node:path'
 import { getGuildConfigById } from '../Database/index.js'
 import { buildRoster } from './meetingRoster.js'
 import { deriveMeetingName, formatMeetingDate } from '../commands/playback.js'
+import { initReviewState, buildReviewMessage } from './meetingReviewUI.js'
 
 async function guildIdFor(guildConfigId) {
   const cfg = await getGuildConfigById(guildConfigId)
@@ -110,6 +112,81 @@ async function assigningStage({ job, csaasClient }) {
   return { patch: { dataJson: { ...(job.dataJson || {}), assignments: assignments || [] } } }
 }
 
+// Resolve the Discord channel to post the meeting review UI into.
+// Preference: dedicated meeting text channel -> the voice channel's own id.
+// Returns the fetched channel object, or null when nothing resolves/sends.
+// Extracted for reuse (Task 17).
+export async function resolveMeetingChannel(client, db, job) {
+  const meeting = await db.meeting.findUnique({ where: { id: job.meetingId } })
+  const candidates = []
+
+  try {
+    const mc = await db.meetingChannel.findFirst({
+      where: { guildConfigId: job.guildConfigId, voiceChannelId: meeting?.channelId },
+    })
+    if (mc?.textChannelId) candidates.push(mc.textChannelId)
+  } catch (e) {
+    console.warn('[meetingPipeline] meetingChannel lookup failed:', e?.message || e)
+  }
+  if (meeting?.channelId) candidates.push(meeting.channelId)
+
+  for (const id of candidates) {
+    try {
+      const channel = await client.channels.fetch(id)
+      if (channel && typeof channel.send === 'function') return channel
+    } catch (e) {
+      console.warn(`[meetingPipeline] channel fetch failed for ${id}:`, e?.message || e)
+    }
+  }
+  return null
+}
+
+// awaiting_review: fetch notes, write the HTML report to disk (best-effort),
+// post the Discord review UI, and block the job for human review.
+async function awaitingReviewStage({ job, db, client, csaasClient }) {
+  const data = { ...(job.dataJson || {}) }
+  const tasks = data.tasks || []
+  const assignments = data.assignments || []
+  const roster = data.roster || []
+
+  const { notes, html } = await csaasClient.fetchNotes(job.csaasMeetingId)
+
+  let reportPath = null
+  if (html) {
+    try {
+      const dir = process.env.MEETING_REPORTS_DIR || 'bot/meeting-reports'
+      await fs.mkdir(dir, { recursive: true })
+      const file = path.resolve(dir, `${job.meetingId}.html`)
+      await fs.writeFile(file, html)
+      reportPath = file
+    } catch (e) {
+      console.warn('[meetingPipeline] failed to write meeting report:', e?.message || e)
+      reportPath = null
+    }
+  }
+
+  const state = initReviewState(tasks, assignments)
+  data.notes = notes ?? null
+  data.review = state
+
+  const patch = { dataJson: data }
+
+  const channel = await resolveMeetingChannel(client, db, job)
+  if (channel) {
+    try {
+      const payload = buildReviewMessage({ job: { ...job, dataJson: data }, notes, reportPath, state, roster })
+      const msg = await channel.send(payload)
+      patch.reviewMessageId = msg.id
+    } catch (e) {
+      console.warn('[meetingPipeline] failed to post review message:', e?.message || e)
+    }
+  } else {
+    console.warn(`[meetingPipeline] no channel resolved for meeting ${job.meetingId}; /meeting-review can re-post`)
+  }
+
+  return { block: true, patch }
+}
+
 // APPEND one key per task; never delete a sibling key.
 export const stageRunners = {
   created: createdStage,
@@ -117,4 +194,5 @@ export const stageRunners = {
   analyzing: analyzingStage,
   generating_tasks: generatingTasksStage,
   assigning: assigningStage,
+  awaiting_review: awaitingReviewStage,
 }
