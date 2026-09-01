@@ -288,6 +288,27 @@ CREATE TABLE IF NOT EXISTS MeetingRecording (
   FOREIGN KEY (meetingId) REFERENCES Meeting(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS meeting_pipeline_job (
+  id              VARCHAR(36) PRIMARY KEY,
+  guildConfigId   VARCHAR(36) NOT NULL,
+  meetingId       VARCHAR(36) NOT NULL,
+  csaasMeetingId  VARCHAR(64) DEFAULT NULL,
+  stage           VARCHAR(32) NOT NULL DEFAULT 'created',
+  status          VARCHAR(16) NOT NULL DEFAULT 'pending',
+  attempts        INT NOT NULL DEFAULT 0,
+  nextAttemptAt   DATETIME(3) DEFAULT NULL,
+  lastError       TEXT DEFAULT NULL,
+  reviewMessageId VARCHAR(64) DEFAULT NULL,
+  dataJson        JSON DEFAULT NULL,
+  createdAt       DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  updatedAt       DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uniq_meeting (meetingId),
+  KEY idx_status (status),
+  KEY idx_next (nextAttemptAt),
+  CONSTRAINT mpj_guild_fk FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
+  CONSTRAINT mpj_meeting_fk FOREIGN KEY (meetingId) REFERENCES meeting(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 CREATE TABLE IF NOT EXISTS faq (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,

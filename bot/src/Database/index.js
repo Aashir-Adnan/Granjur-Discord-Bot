@@ -1303,6 +1303,60 @@ async function meetingRecordingStatusUpdate({ where, data }) {
   return meetingRecordingStatusFindUnique({ where: { meetingId: where.meetingId } });
 }
 
+// ---------- meeting_pipeline_job ----------
+function _mpjRow(row) {
+  if (!row) return null;
+  let dataJson = null;
+  try {
+    dataJson = row.dataJson ? (typeof row.dataJson === "string" ? JSON.parse(row.dataJson) : row.dataJson) : null;
+  } catch {
+    dataJson = null;
+  }
+  return { ...row, dataJson };
+}
+
+async function meetingPipelineJobCreate({ data }) {
+  const existing = await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE meetingId = ?", [data.meetingId]);
+  if (existing) return _mpjRow(existing);
+  const pk = id();
+  await query(
+    "INSERT INTO `meeting_pipeline_job` (id, guildConfigId, meetingId) VALUES (?, ?, ?)",
+    [pk, data.guildConfigId, data.meetingId],
+  );
+  return _mpjRow(await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE id = ?", [pk]));
+}
+
+async function meetingPipelineJobFindByMeeting(meetingId) {
+  return _mpjRow(await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE meetingId = ?", [meetingId]));
+}
+
+async function meetingPipelineJobFindById(jobId) {
+  return _mpjRow(await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE id = ?", [jobId]));
+}
+
+async function meetingPipelineJobClaimBatch(limit = 3) {
+  const rows = await query(
+    "SELECT * FROM `meeting_pipeline_job` WHERE status = 'pending' AND (nextAttemptAt IS NULL OR nextAttemptAt <= NOW(3)) ORDER BY updatedAt ASC LIMIT ?",
+    [limit],
+  );
+  return rows.map(_mpjRow);
+}
+
+async function meetingPipelineJobUpdate(jobId, patch) {
+  const cols = ["stage", "status", "csaasMeetingId", "attempts", "nextAttemptAt", "lastError", "reviewMessageId", "dataJson"];
+  const sets = [];
+  const vals = [];
+  for (const c of cols) {
+    if (patch[c] === undefined) continue;
+    sets.push(`\`${c}\` = ?`);
+    vals.push(c === "dataJson" && patch[c] !== null && typeof patch[c] === "object" ? JSON.stringify(patch[c]) : patch[c]);
+  }
+  if (!sets.length) return meetingPipelineJobFindById(jobId);
+  vals.push(jobId);
+  await query(`UPDATE \`meeting_pipeline_job\` SET ${sets.join(", ")} WHERE id = ?`, vals);
+  return meetingPipelineJobFindById(jobId);
+}
+
 // ---------- UserChannel (for /create-channel, protected from /cleanup) ----------
 async function userChannelCreate({ data }) {
   const pk = id();
@@ -1665,6 +1719,13 @@ const db = {
     create: meetingRecordingStatusCreate,
     upsert: meetingRecordingStatusUpsert,
     update: meetingRecordingStatusUpdate,
+  },
+  meetingPipelineJob: {
+    create: meetingPipelineJobCreate,
+    findByMeeting: meetingPipelineJobFindByMeeting,
+    findById: meetingPipelineJobFindById,
+    claimBatch: meetingPipelineJobClaimBatch,
+    update: meetingPipelineJobUpdate,
   },
   clockEntry: {
     create: clockEntryCreate,
