@@ -43,6 +43,7 @@ import * as createChannelCmd from './create-channel.js'
 import * as playbackCmd from './playback.js'
 import * as setupCmd from './setup.js'
 import * as meetingsCmd from './meetings.js'
+import * as meetingReviewCmd from './meetingReview.js'
 
 const commandModules = [
   initCmd,
@@ -81,16 +82,24 @@ const commandModules = [
   playbackCmd,
   setupCmd,
   meetingsCmd,
+  meetingReviewCmd,
 ]
 
+// A module's `data` may be a single SlashCommandBuilder or an array of them
+// (one module can back several slash commands, e.g. meetingReview).
+function moduleBuilders(m) {
+  if (!m.data) return []
+  return Array.isArray(m.data) ? m.data : [m.data]
+}
+
 export function getCommands() {
-  return commandModules.map((m) => m.data).filter(Boolean)
+  return commandModules.flatMap(moduleBuilders)
 }
 
 export async function loadCommands(client) {
   const map = new Map()
   for (const m of commandModules) {
-    if (m.data) map.set(m.data.name, m)
+    for (const b of moduleBuilders(m)) map.set(b.name, m)
   }
   const commands = getCommands()
   const rest = new REST({ version: '10' }).setToken(config.discord.token)

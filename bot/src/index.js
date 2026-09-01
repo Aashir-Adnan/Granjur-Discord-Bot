@@ -153,6 +153,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   if (
     interaction.isStringSelectMenu() ||
+    interaction.isUserSelectMenu?.() ||
     interaction.isButton() ||
     interaction.isModalSubmit()
   ) {
@@ -186,9 +187,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const customId = interaction.customId || "";
     const skipDefer =
       (interaction.isButton() || interaction.isStringSelectMenu()) &&
-      noDeferComponentIds.some(
-        (id) => customId === id || customId.startsWith(id + ":"),
-      );
+      (customId.startsWith("mtg_") ||
+        noDeferComponentIds.some(
+          (id) => customId === id || customId.startsWith(id + ":"),
+        ));
     // Modals that defer inside their handler to avoid "already acknowledged" (40060)
     const noDeferModalIds = ["create_task_modal"];
     const skipModalDefer =

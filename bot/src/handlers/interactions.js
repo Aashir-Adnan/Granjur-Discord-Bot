@@ -103,6 +103,8 @@ export default async function handleInteractions(interaction) {
   }
 
   if (interaction.isButton()) {
+    if (customId.startsWith("mtg_"))
+      return (await import("../commands/meetingReview.js")).route(interaction);
     if (customId === "init_confirm") {
       debug("init_confirm: calling handleConfirm");
       return initCmd.handleConfirm(interaction);
@@ -225,7 +227,15 @@ export default async function handleInteractions(interaction) {
     return;
   }
 
+  if (interaction.isUserSelectMenu?.()) {
+    if (customId.startsWith("mtg_"))
+      return (await import("../commands/meetingReview.js")).route(interaction);
+    return;
+  }
+
   if (interaction.isStringSelectMenu()) {
+    if (customId.startsWith("mtg_"))
+      return (await import("../commands/meetingReview.js")).route(interaction);
     const value = interaction.values?.[0];
     if (customId === "create_task_repo")
       return runCreateTaskHandler(interaction, (i) =>
