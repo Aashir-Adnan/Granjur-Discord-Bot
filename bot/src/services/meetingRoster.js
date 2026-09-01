@@ -17,10 +17,12 @@ export function aliasesFor(member, email) {
 
 // Verified members who were present in the meeting (have a MeetingRecording row),
 // falling back to all verified members if none matched.
-export async function buildRoster({ guild, guildConfigId, meetingId }) {
-  const members = await db.guildMember.findMany({ where: { guildConfigId, status: 'verified' } })
+export async function buildRoster({ guild, guildConfigId, meetingId, db: dbArg = db }) {
+  const members = await dbArg.guildMember.findMany({
+    where: { guildConfigId, verifiedAt: { not: null }, all: true },
+  })
   const recs = meetingId
-    ? await db.meetingRecording.findMany({ where: { meetingId } })
+    ? await dbArg.meetingRecording.findMany({ where: { meetingId } })
     : []
   const present = new Set(recs.map((r) => r.memberId))
 

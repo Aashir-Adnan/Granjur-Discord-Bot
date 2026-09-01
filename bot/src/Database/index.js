@@ -109,7 +109,11 @@ async function guildMemberFindMany({ where }) {
     sql += " AND status = ?";
     params.push(where.status);
   }
-  sql += " ORDER BY createdAt ASC LIMIT 25";
+  if (where?.verifiedAt && typeof where.verifiedAt === "object" && "not" in where.verifiedAt && where.verifiedAt.not === null) {
+    sql += " AND verifiedAt IS NOT NULL";
+  }
+  sql += " ORDER BY createdAt ASC";
+  if (!where?.all) sql += " LIMIT 25";
   return query(sql, params);
 }
 

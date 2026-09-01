@@ -9,7 +9,8 @@ import { deriveMeetingName, formatMeetingDate } from '../commands/playback.js'
 
 async function guildIdFor(guildConfigId) {
   const cfg = await getGuildConfigById(guildConfigId)
-  return cfg?.guildId
+  if (!cfg?.guildId) throw new Error('created stage: no guildConfig for ' + guildConfigId)
+  return cfg.guildId
 }
 
 // created: create the CSaaS meeting, snapshot the roster and title onto the job.
@@ -23,6 +24,7 @@ async function createdStage({ job, db, csaasClient, client }) {
     guild,
     guildConfigId: job.guildConfigId,
     meetingId: job.meetingId,
+    db,
   })
 
   const title =
