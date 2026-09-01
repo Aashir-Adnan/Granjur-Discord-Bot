@@ -51,7 +51,16 @@ localhost; encryption is a tracked hardening follow-up. Note: every CSAAS meetin
 handler calls `requireMeetingPermission` (throws 403 without a URDD holding
 `add_meetings`/`run_meeting_ai`/`update_meetings`), so that URDD must exist / be
 seeded on the CSAAS side.
-Awaiting user review of the spec → then writing-plans skill.
+Spec approved. Implementation plan WRITTEN + committed:
+`docs/superpowers/plans/2026-09-01-meeting-to-tasks-integration.md` — 17 tasks in
+5 phases (P0 ubs_doc/`/docs`; P1 CSAAS: skip_github + /assign + /issuesync filter;
+P2 csaasClient; P3 job table + task cols + worker skeleton; P4 the 8 pipeline
+stages + review UI + interaction handlers + mirroring + issue sync + failure alerts).
+Bot test runner introduced: `node:test` (`npm test` = `node --test`), no new deps.
+User will provide the `CSAAS_ACTOR_URDD` (holds add_meetings/run_meeting_ai/update_meetings).
+
+Branch: `design/meeting-to-tasks-integration`.
+Next: execute the plan (subagent-driven per task, or inline).
 
 ## Open questions still to resolve in the spec
 - Exact roster payload fields for `/assign` (ref = discordId? email?).
