@@ -1,5 +1,6 @@
 import { query, queryOne } from "./connection.js";
 import { id, ensureStringArray, toJson } from "./helpers.js";
+import { buildTaskInsertValues } from "./taskInsert.helpers.js";
 
 export { ensureStringArray } from "./helpers.js";
 
@@ -271,16 +272,22 @@ async function taskFindFirst({ where }) {
     return queryOne("SELECT * FROM `task` WHERE discordChannelId = ?", [
       where.discordChannelId,
     ]);
+  if (where?.externalId)
+    return queryOne("SELECT * FROM `task` WHERE externalId = ?", [
+      where.externalId,
+    ]);
   return null;
 }
 
 async function taskCreate({ data }) {
   const pk = id();
+  const taskExternalValues = buildTaskInsertValues(data);
   await query(
     `INSERT INTO \`Task\` (id, guildConfigId, type, is_bug, is_feature, title, description, status, createdBy, assigneeIds, taggedMemberIds,
      repositoryId, projectId, projectName, discordChannelId, discordThreadId, externalIssueUrl, externalIssueNumber,
-     modules, handlerId, scope, implementationStatus, passedApiTests, passedQaTests, passedAcceptanceCriteria)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     modules, handlerId, scope, implementationStatus, passedApiTests, passedQaTests, passedAcceptanceCriteria,
+     externalId, meetingId)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       pk,
       data.guildConfigId,
@@ -307,6 +314,8 @@ async function taskCreate({ data }) {
       data.passedApiTests ?? null,
       data.passedQaTests ?? null,
       data.passedAcceptanceCriteria ?? null,
+      taskExternalValues.externalId,
+      taskExternalValues.meetingId,
     ],
   );
   return queryOne("SELECT * FROM `task` WHERE id = ?", [pk]);

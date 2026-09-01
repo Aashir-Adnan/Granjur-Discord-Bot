@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS task (
   passedApiTests TINYINT(1),
   passedQaTests TINYINT(1),
   passedAcceptanceCriteria TINYINT(1),
+  externalId VARCHAR(128) DEFAULT NULL,
+  meetingId VARCHAR(36) DEFAULT NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   KEY (guildConfigId),
@@ -91,6 +93,8 @@ CREATE TABLE IF NOT EXISTS task (
   KEY (status),
   KEY (discordChannelId),
   KEY (createdAt),
+  KEY idx_task_externalId (externalId),
+  KEY idx_task_meetingId (meetingId),
   FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
   FOREIGN KEY (repositoryId) REFERENCES repository(id) ON DELETE SET NULL
 );
