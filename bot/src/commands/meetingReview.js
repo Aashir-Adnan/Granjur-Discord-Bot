@@ -96,7 +96,9 @@ async function handleReject(interaction, jobId) {
 /** Router used by handlers/interactions.js for any `mtg_`-prefixed component. */
 export async function route(interaction) {
   const { kind, jobId, taskId } = parseReviewCustomId(interaction.customId || '')
-  if (!KINDS.has(kind) || !jobId) return
+  if (!KINDS.has(kind) || !jobId) {
+    return interaction.reply({ content: 'This review is no longer active.', ephemeral: true }).catch(() => {})
+  }
   if (kind === 'mtg_approve') return handleApprove(interaction, jobId)
   if (kind === 'mtg_reject') return handleReject(interaction, jobId)
   return handleComponentAction(interaction, kind, jobId, taskId)

@@ -36,6 +36,24 @@ CSAAS backend lives at `C:\Users\adnan\VS_Code\Clones\CSAAS\Backend`, runs on th
   `generateGithubIssue` (no-LLM formatter). All via `claudeAgent.js` → `claudeClient.js`
   (`CLAUDE_MODEL`, default `claude-sonnet-4-6`).
 
+## Status — IMPLEMENTED (2026-09-02)
+
+The gaps below are now **built**. CSAAS branch `feat/meeting-workflow-assign`:
+plaintext transport + `actionPerformerURDD`, `skip_github` on `/approve`, the
+`/assign` endpoint + `extractAssignments` agent + `meeting_task_assignees` table,
+and an `/issuesync` `task_ids` filter. Bot side: `bot/src/services/csaasClient.js`
+(AES envelope + `isConfigured`), `meeting_pipeline_job` table
+(`bot/src/Database/meetingPipelineJob*.js`, migration 012),
+`bot/src/services/meetingPipelineWorker.js` (`runTick` 60s loop, backoff,
+`MAX_ATTEMPTS`, stage timeout, `notifyFailure`),
+`bot/src/services/meetingPipelineStages.js` (10 stage runners +
+`resolveMeetingChannel`), review UI (`bot/src/services/meetingReviewUI.js` +
+`bot/src/commands/meetingReview.js`, `/meeting-review` `/meeting-retry`), `task`
+mirroring with `externalId`/`meetingId` (migration 013), and the ubs_doc `/docs`
+root via `UBS_DOC_PATH`. Manual E2E runbook:
+`docs/meeting-pipeline-e2e-checklist.md`. Remaining follow-ups are in
+`.claude/state/backlog.md` (live E2E run, enqueue hook, `findLatest`, env truthiness).
+
 ## Gaps that must be built for this integration
 
 1. **Auth / encryption on the meeting endpoints.** `step()` (`meetingWorkflow.js:64`)
@@ -68,7 +86,7 @@ CSAAS: `meetings.meeting_id`, `status` enum (`pending`→`transcribed`→`analyz
 `meeting_stage_costs`. The bot's `meeting` row stays a thin local record; CSAAS
 `meeting_id` is the pipeline key, stored on the bot-side pipeline job.
 
-## Bot-side shape (planned — not yet built)
+## Bot-side shape (IMPLEMENTED — file pointers above)
 
 - `csaasClient.js` — CryptoJS-compatible encrypted HTTP client + service URDD; env
   `CSAAS_API_URL`, `CSAAS_PLATFORM_KEY`/secret, `CSAAS_SERVICE_URDD`.

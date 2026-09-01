@@ -1,7 +1,7 @@
 import db from '../db/index.js'
 import * as csaasClient from './csaasClient.js'
 import { backoffMs, MAX_ATTEMPTS } from '../Database/meetingPipelineJob.helpers.js'
-import { stageRunners as defaultRunners } from './meetingPipelineStages.js'
+import { stageRunners as defaultRunners, resolveMeetingChannel } from './meetingPipelineStages.js'
 
 export const STAGE_ORDER = [
   'created', 'transcribing', 'analyzing', 'generating_tasks', 'assigning',
@@ -25,10 +25,14 @@ function withTimeout(promise, ms, label) {
     )
     timer.unref?.()
   })
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+  // If the runner promise loses the race (timeout wins) and later rejects, that
+  // rejection would be unhandled. Attach a noop catch to the losing path.
+  const guarded = Promise.resolve(promise)
+  guarded.catch(() => {})
+  return Promise.race([guarded, timeout]).finally(() => clearTimeout(timer))
 }
 
-export async function runTick({ db, stageRunners, client, now = () => new Date() }) {
+export async function runTick({ db, stageRunners, client, now = () => new Date(), notify = notifyFailure }) {
   const jobs = await db.meetingPipelineJob.claimBatch(3)
   for (const job of jobs) {
     const runner = stageRunners[job.stage]
@@ -59,14 +63,24 @@ export async function runTick({ db, stageRunners, client, now = () => new Date()
         lastError: String(err?.message || err).slice(0, 2000),
         nextAttemptAt: failed ? null : new Date(now().getTime() + backoffMs(attempts)),
       })
-      if (failed) await notifyFailure(client, job, err).catch(() => {})
+      if (failed) await notify(client, job, err).catch(() => {})
     }
   }
 }
 
-// Task 17 fills this in. Noop-safe stub for now.
-async function notifyFailure(client, job, err) {
-  return undefined
+// Best-effort channel alert when a job exhausts its retries. Never throws.
+export async function notifyFailure(client, job, err, resolve = resolveMeetingChannel) {
+  try {
+    const channel = await resolve(client, db, job)
+    if (!channel || typeof channel.send !== 'function') return
+    const reason = String(err?.message || err).slice(0, 300)
+    await channel.send(
+      '⚠️ Meeting pipeline failed at **' + job.stage + '** — `' + reason +
+      '`. Retry with `/meeting-retry ' + job.meetingId + '`.',
+    )
+  } catch (e) {
+    console.warn('[meetingPipeline] notifyFailure failed:', e?.message || e)
+  }
 }
 
 let started = false

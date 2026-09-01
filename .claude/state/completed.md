@@ -4,6 +4,34 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-02 — Meeting → tasks integration with CSAAS (feature complete)
+Full pipeline: a recorded Discord voice meeting is transcribed/analyzed by CSAAS,
+turned into proposed tasks + assignees, reviewed by a human in Discord, then mirrored
+into the bot's `task` table with optional per-task GitHub `[Agent Call]` issue push.
+- **CSAAS side** (branch `feat/meeting-workflow-assign`): plaintext transport +
+  `actionPerformerURDD` on MeetingWorkflow endpoints; `skip_github` on `/approve`;
+  new `/assign` endpoint + `extractAssignments` agent + `meeting_task_assignees`
+  table; `/issuesync` `task_ids` filter; `STT_PROVIDER=soniox`.
+- **Bot side**: `csaasClient.js` (AES envelope + `isConfigured`); `meeting_pipeline_job`
+  table (migration 012) + `meetingPipelineWorker.js` (`runTick` 60s loop, backoff,
+  `MAX_ATTEMPTS`, stage timeout, `notifyFailure` channel alert); 10 stage runners in
+  `meetingPipelineStages.js` (`created`→`transcribing`→`analyzing`→`generating_tasks`
+  →`assigning`→`awaiting_review`→`approved`→`mirrored`→`issue_syncing`→`done`) +
+  `resolveMeetingChannel`; roster build; review UI (`meetingReviewUI.js` builders +
+  `applyReviewAction`, `commands/meetingReview.js` handlers + `/meeting-review`
+  `/meeting-retry`); task mirroring + `externalId`/`meetingId` on `task` (migration
+  013); ubs_doc clone mounted as a second `/docs` root via `UBS_DOC_PATH`.
+- **Task 17 wrap-up**: real `notifyFailure` (best-effort channel alert on final
+  failure, exported + injectable resolver, tested); `route()` fall-through now acks
+  with an ephemeral "no longer active" reply; timeout race losing-path `.catch`ed to
+  kill unhandledRejection; `bot/.env.example` consolidated; manual E2E runbook at
+  `docs/meeting-pipeline-e2e-checklist.md`.
+Files: `bot/src/services/{csaasClient,meetingPipelineWorker,meetingPipelineStages,
+meetingReviewUI}.js`, `bot/src/commands/meetingReview.js`,
+`bot/src/Database/meetingPipelineJob*.js`, `bot/src/Database/migrations/012,013`,
+`bot/.env.example`, `docs/meeting-pipeline-e2e-checklist.md`,
+`.claude/knowledge/csaas-meeting-workflow-integration.md`.
+
 ## 2026-08-31 — Fix: `/schedule` autocomplete ISO round-trip lost the `Z`
 `parseWhen`'s ISO regex didn't allow fractional seconds, so `.000Z` fell through the
 offset group and the timestamp was re-read as wall-clock in the guild zone — a

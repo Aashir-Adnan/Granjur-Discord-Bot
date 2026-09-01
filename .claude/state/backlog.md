@@ -4,22 +4,18 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
-## Meeting → tasks integration with CSAAS backend  (DESIGN PHASE — 2026-09-01)
-Big feature. Bot records meeting → CSAAS transcribes/analyzes/generates tasks → bot
-assigns tasks to Discord users (GitHub push optional per task). Full context, locked
-decisions, and gaps: `.claude/knowledge/csaas-meeting-workflow-integration.md` +
-`.claude/state/session.md`. Estimate ~19–31 dev-days for v1.
-Next: user approves architecture → write spec at
-`docs/superpowers/specs/2026-09-01-meeting-to-tasks-integration-design.md` → writing-plans.
-Sub-tasks (CSAAS side): flip `step()` encryption/token flags on MeetingWorkflow
-endpoints; provision service URDD; add `skip_github` to `/approve`; new `/assign`
-endpoint + `extractAssignments` agent + `meeting_task_assignees` table; set
-`STT_PROVIDER=soniox` + `SONIOX_API_KEY`.
-Sub-tasks (bot side): `csaasClient.js` (CryptoJS AES-256-ECB envelope); `meeting_pipeline_job`
-table + 60s worker; trigger on `MeetingRecordingStatus→completed`; segment-upload each
-`.ogg`; Discord review UI (notes + report link + per-task assignee select + GitHub
-toggle + approve/reject); mirror approved tasks into `task` table; `git clone` ubs_doc
-+ `UBS_DOC_PATH` + mount in `/docs`.
+## Meeting → tasks integration — post-implementation follow-ups
+Feature shipped 2026-09-02 (see `completed.md`). Remaining:
+- **Live E2E run pending** — blocked on the user providing a real `CSAAS_ACTOR_URDD`
+  (a URDD with `add_meetings`+`run_meeting_ai`+`update_meetings`). Runbook:
+  `docs/meeting-pipeline-e2e-checklist.md`.
+- **`/meeting-review latest` unsupported** — no `db.meetingPipelineJob.findLatest`;
+  the command needs an explicit meetingId.
+- **`stopMeetingRecording` completion path not hooked** — nothing calls
+  `db.meetingPipelineJob.enqueue` when `MeetingRecordingStatus→completed`. Pipeline
+  jobs must currently be created manually / by another path.
+- **Env truthiness** — `MEETING_PIPELINE_ENABLED="false"` is truthy; the worker gate
+  is `!process.env.MEETING_PIPELINE_ENABLED`. Only unset/empty disables it.
 
 ## Verify migrations 010 + 011 applied on the live DB
 `010_guild_timezone.sql` (guildconfig.timezone), `011_scheduled_meeting_cancelled.sql`

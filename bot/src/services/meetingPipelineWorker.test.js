@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runTick, nextStage } from './meetingPipelineWorker.js'
+import { runTick, nextStage, notifyFailure } from './meetingPipelineWorker.js'
 
 function fakeDb(job) {
   const store = { ...job }
@@ -33,9 +33,37 @@ test('successful stage advances stage and clears error', async () => {
 test('throwing stage increments attempts and backs off; fails after MAX', async () => {
   const db = fakeDb({ id: 'j1', stage: 'analyzing', status: 'pending', attempts: 5, dataJson: {} })
   const stageRunners = { analyzing: async () => { throw new Error('nope') } }
-  await runTick({ db, stageRunners, client: {}, now: () => new Date('2026-01-01') })
+  await runTick({ db, stageRunners, client: {}, now: () => new Date('2026-01-01'), notify: async () => {} })
   assert.equal(db._store.status, 'failed')
   assert.match(db._store.lastError, /nope/)
+})
+
+test('job that fails after MAX attempts sends one channel alert', async () => {
+  const db = fakeDb({ id: 'j1', meetingId: 'mtg-7', stage: 'analyzing', status: 'pending', attempts: 5, dataJson: {} })
+  const stageRunners = { analyzing: async () => { throw new Error('boom') } }
+  const notifyCalls = []
+  const client = { tag: 'c' }
+  await runTick({
+    db, stageRunners, client, now: () => new Date('2026-01-01'),
+    notify: async (...args) => { notifyCalls.push(args) },
+  })
+  assert.equal(db._store.status, 'failed')
+  assert.equal(notifyCalls.length, 1)
+  assert.equal(notifyCalls[0][0], client)
+  assert.equal(notifyCalls[0][1].id, 'j1')
+  assert.match(notifyCalls[0][2].message, /boom/)
+
+  // Message formatting: exercise notifyFailure directly with an injected resolver.
+  const sent = []
+  const fakeChannel = { id: 'c1', send: async (m) => { sent.push(m) } }
+  await notifyFailure({}, db._store, new Error('boom'), async () => fakeChannel)
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /failed at \*\*analyzing\*\*/)
+  assert.match(sent[0], /\/meeting-retry mtg-7/)
+})
+
+test('notifyFailure never throws when no channel resolves', async () => {
+  await notifyFailure({}, { stage: 'x', meetingId: 'm' }, new Error('e'), async () => null)
 })
 
 test('stage that returns {block:true} sets status blocked', async () => {
