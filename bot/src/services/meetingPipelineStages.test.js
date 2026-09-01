@@ -52,6 +52,8 @@ test('issue_syncing happy path syncs issues and updates tasks by externalId', as
   assert.equal(updates[0].data.externalIssueNumber, 7)
   assert.notEqual(out.advance, false)
   assert.deepEqual(out.patch.dataJson.issueSyncErrors, [])
+  assert.equal(out.patch.dataJson.mirrored[0].externalIssueUrl, 'https://github.com/granjur/bot/issues/7')
+  assert.equal(out.patch.dataJson.mirrored[0].externalIssueNumber, 7)
 })
 
 test('issue_syncing records an error for a project with no resolvable repo', async () => {

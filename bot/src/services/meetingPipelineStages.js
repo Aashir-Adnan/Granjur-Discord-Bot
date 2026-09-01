@@ -362,6 +362,10 @@ async function issueSyncingStage({ job, db, csaasClient }) {
       if (!match) continue
       const url = issue.url ?? issue.github_issue_url ?? null
       const number = issue.number ?? issue.github_issue_number ?? null
+      // mutate the mirrored entry in place so `done` can render issue links
+      // (entries hold the same object refs as dataJson.mirrored)
+      match.externalIssueUrl = url
+      match.externalIssueNumber = number
       try {
         await db.task.update({
           where: { externalId: 'csaas:' + csaasTaskId },
@@ -380,7 +384,8 @@ async function issueSyncingStage({ job, db, csaasClient }) {
 // done: rewrite the review message into a final summary embed, then terminate.
 async function doneStage({ job, db, client }) {
   const dataJson = job.dataJson || {}
-  const summary = summarizeApproval(dataJson.review || { tasks: [] }, dataJson.tasks || [])
+  const review = job.dataJson?.review?.tasks ? job.dataJson.review : { tasks: [] }
+  const summary = summarizeApproval(review, dataJson.tasks || [])
   const mirrored = Array.isArray(dataJson.mirrored) ? dataJson.mirrored : []
   const issueSyncErrors = Array.isArray(dataJson.issueSyncErrors) ? dataJson.issueSyncErrors : []
 
