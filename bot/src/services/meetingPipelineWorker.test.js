@@ -2,11 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runTick, nextStage, notifyFailure } from './meetingPipelineWorker.js'
 
-function fakeDb(job) {
+function fakeDb(job, { claim } = {}) {
   const store = { ...job }
   return {
     meetingPipelineJob: {
       claimBatch: async () => [store],
+      claim: claim || (async () => true),
       update: async (id, patch) => Object.assign(store, patch),
       findById: async () => store,
     },
@@ -28,6 +29,30 @@ test('successful stage advances stage and clears error', async () => {
   assert.equal(db._store.status, 'pending')
   assert.equal(db._store.csaasMeetingId, 'm9')
   assert.equal(db._store.lastError, null)
+})
+
+test('runTick skips a job whose claim fails (another worker took it)', async () => {
+  const db = fakeDb(
+    { id: 'j1', stage: 'created', status: 'pending', attempts: 0, dataJson: {} },
+    { claim: async () => false },
+  )
+  let ran = false
+  const stageRunners = { created: async () => { ran = true; return { patch: {} } } }
+  await runTick({ db, stageRunners, client: {}, now: () => new Date('2026-01-01') })
+  assert.equal(ran, false)
+  assert.equal(db._store.stage, 'created')
+})
+
+test('runTick runs the stage when the claim succeeds', async () => {
+  let claimedId = null
+  const db = fakeDb(
+    { id: 'j1', stage: 'created', status: 'pending', attempts: 0, dataJson: {} },
+    { claim: async (id) => { claimedId = id; return true } },
+  )
+  const stageRunners = { created: async () => ({ patch: { csaasMeetingId: 'm9' } }) }
+  await runTick({ db, stageRunners, client: {}, now: () => new Date('2026-01-01') })
+  assert.equal(claimedId, 'j1')
+  assert.equal(db._store.stage, 'transcribing')
 })
 
 test('throwing stage increments attempts and backs off; fails after MAX', async () => {

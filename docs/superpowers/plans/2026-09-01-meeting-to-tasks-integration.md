@@ -17,7 +17,9 @@
 - **Bot DB access** goes through the `db` object from `bot/src/db/index.js` (re-exports `bot/src/Database/index.js`). New models are plain `async function`s registered in the `db = { ... }` object at `bot/src/Database/index.js:1523`.
 - **Bot migrations:** numbered `NNN_name.sql` in `bot/src/Database/migrations/`, applied in filename order by `npm run db:migrate`. Every migration must be idempotent (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN` guarded). Also mirror the change into `bot/src/Database/schema.sql` (the from-scratch DDL).
 - **CSAAS is CommonJS**, Jest (`npm test` in `CSAAS/Backend`). Migrations: `.sql` in `CSAAS/Backend/data/migrations/` (auto-run on startup).
-- **CSAAS auth:** every meeting handler calls `requireMeetingPermission(req, dp, "<verb>", meetingId)`. The bot passes `actionPerformerURDD: <CSAAS_ACTOR_URDD>` (env, provided by the user) in every request body — a URDD holding `add_meetings` + `run_meeting_ai` + `update_meetings`.
+- **CSAAS auth:** every meeting handler calls `requireMeetingPermission(req, dp, "<verb>", meetingId)`. The bot passes `actionPerformerURDD: <CSAAS_ACTOR_URDD>` (env, provided by the user) in every request body — a URDD holding `add_meetings` + `run_meeting_ai` + `update_meetings` + `view_meetings`
+(the union across `/create`, `/transcribe`, `/analyze`, `/tasks`, `/assign`, `/notes`,
+`/meeting`, `/approve`, `/issuesync`).
 - **CSAAS Claude calls** go through `runClaudeAgent({ system, user, maxTokens })` from `Services/SysScripts/AIScripts/claudeAgent.js`, which returns parsed JSON with `__usage` / `__model` attached. Log cost with `logStageCost` from `Services/SysFunctions/logStageCost.js`.
 - **Stage names** (exact, used across tasks): `created`, `transcribing`, `analyzing`, `generating_tasks`, `assigning`, `awaiting_review`, `approved`, `mirrored`, `issue_syncing`, `done`, `failed`.
 - **customId scheme** for review UI (exact): `mtg_assignee:<jobId>:<taskId>`, `mtg_gh:<jobId>:<taskId>`, `mtg_taskreject:<jobId>:<taskId>`, `mtg_approve:<jobId>`, `mtg_reject:<jobId>`, `mtg_page:<jobId>:<n>`.

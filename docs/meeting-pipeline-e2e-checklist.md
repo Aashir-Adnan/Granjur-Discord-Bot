@@ -7,8 +7,9 @@ any change to the meeting pipeline, CSAAS meeting-workflow endpoints, or the rev
 
 - [ ] Deploy the `feat/meeting-workflow-assign` branch of the CSAAS backend.
 - [ ] Set `STT_PROVIDER=soniox` and a valid `SONIOX_API_KEY` in the CSAAS env.
-- [ ] Ensure a URDD exists with permissions `add_meetings`, `run_meeting_ai`, and
-      `update_meetings`. Record its id: `__________` (this is the bot's `CSAAS_ACTOR_URDD`).
+- [ ] Ensure a URDD exists with permissions `add_meetings`, `run_meeting_ai`,
+      `update_meetings`, and `view_meetings` (the last is required by `/notes` and
+      `/meeting`). Record its id: `__________` (this is the bot's `CSAAS_ACTOR_URDD`).
 - [ ] Confirm the CSAAS API is reachable at the URL the bot will use
       (default `http://127.0.0.1:3000/api`).
 

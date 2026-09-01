@@ -349,7 +349,8 @@ test('mirrored creates a task per non-rejected review task and pings assignees',
     meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
     meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
     repository: { findFirst: async ({ where }) => (where.name === 'granjur' ? { id: 'r1' } : null) },
-    task: { create: async ({ data }) => { created.push(data); return { id: `db${created.length}` } } },
+    task: { findFirst: async () => null, create: async ({ data }) => { created.push(data); return { id: `db${created.length}` } } },
+    meetingPipelineJob: { update: async () => ({}) },
   }
   const job = {
     id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
@@ -378,6 +379,37 @@ test('mirrored creates a task per non-rejected review task and pings assignees',
   assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\*/)
 })
 
+test('mirrored is idempotent on re-run: reuses existing task, no re-ping when pinged', async () => {
+  const created = []
+  const sent = []
+  const channel = { id: 'tc1', send: async (m) => { sent.push(m); return { id: 'x' } } }
+  const client = { user: { id: 'bot' }, channels: { fetch: async () => channel } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findFirst: async () => null },
+    task: {
+      findFirst: async ({ where }) =>
+        where.externalId === 'csaas:a' ? { id: 'existing1' } : null,
+      create: async ({ data }) => { created.push(data); return { id: 'new' } },
+    },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      pinged: true,
+      tasks: [{ task_id: 'a', goal_of_task: 'Do A' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: '11', rejected: false }] },
+    },
+  }
+  const out = await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(created.length, 0) // existing row reused
+  assert.equal(out.patch.dataJson.mirrored.length, 1)
+  assert.equal(out.patch.dataJson.mirrored[0].dbTaskId, 'existing1')
+  assert.equal(sent.length, 0) // already pinged -> no re-ping
+})
+
 test('mirrored posts an unassigned summary line', async () => {
   const sent = []
   const channel = { id: 'tc1', send: async (m) => { sent.push(m); return { id: 'x' } } }
@@ -386,7 +418,8 @@ test('mirrored posts an unassigned summary line', async () => {
     meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
     meetingChannel: { findFirst: async () => null },
     repository: { findFirst: async () => null },
-    task: { create: async () => ({ id: 'db1' }) },
+    task: { findFirst: async () => null, create: async () => ({ id: 'db1' }) },
+    meetingPipelineJob: { update: async () => ({}) },
   }
   const job = {
     id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',

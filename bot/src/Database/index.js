@@ -1353,12 +1353,37 @@ async function meetingPipelineJobFindById(jobId) {
   return _mpjRow(await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE id = ?", [jobId]));
 }
 
+function _mpjStaleSeconds() {
+  return Math.max(1, Math.round((Number(process.env.MEETING_STAGE_TIMEOUT_MS) || 360000) / 1000));
+}
+
 async function meetingPipelineJobClaimBatch(limit = 3) {
+  // Pick up pending jobs, plus jobs stuck in 'working' past the stage timeout
+  // (crashed/killed process left them mid-transition — the claim will re-take them).
   const rows = await query(
-    "SELECT * FROM `meeting_pipeline_job` WHERE status = 'pending' AND (nextAttemptAt IS NULL OR nextAttemptAt <= NOW(3)) ORDER BY updatedAt ASC LIMIT ?",
-    [limit],
+    `SELECT * FROM \`meeting_pipeline_job\`
+     WHERE (
+       (status = 'pending' AND (nextAttemptAt IS NULL OR nextAttemptAt <= NOW(3)))
+       OR (status = 'working' AND updatedAt < NOW(3) - INTERVAL ? SECOND)
+     )
+     ORDER BY updatedAt ASC LIMIT ?`,
+    [_mpjStaleSeconds(), limit],
   );
   return rows.map(_mpjRow);
+}
+
+// Conditional claim: flip pending -> working (or re-take a stale 'working') for
+// exactly one worker. Returns true only when this call won the row.
+async function meetingPipelineJobClaim(jobId) {
+  const result = await query(
+    `UPDATE \`meeting_pipeline_job\` SET status = 'working', updatedAt = NOW(3)
+     WHERE id = ? AND (
+       status = 'pending'
+       OR (status = 'working' AND updatedAt < NOW(3) - INTERVAL ? SECOND)
+     )`,
+    [jobId, _mpjStaleSeconds()],
+  );
+  return result?.affectedRows === 1;
 }
 
 async function meetingPipelineJobUpdate(jobId, patch) {
@@ -1374,6 +1399,32 @@ async function meetingPipelineJobUpdate(jobId, patch) {
   vals.push(jobId);
   await query(`UPDATE \`meeting_pipeline_job\` SET ${sets.join(", ")} WHERE id = ?`, vals);
   return meetingPipelineJobFindById(jobId);
+}
+
+// Guarded update: apply `patch` only when the row still matches `cond` (column
+// equality). Returns true iff exactly one row was updated. Used to make the
+// review approve/reject buttons safe against double-clicks and races.
+async function meetingPipelineJobUpdateIf(jobId, patch, cond = {}) {
+  const cols = ["stage", "status", "csaasMeetingId", "attempts", "nextAttemptAt", "lastError", "reviewMessageId", "dataJson"];
+  const sets = [];
+  const vals = [];
+  for (const c of cols) {
+    if (patch[c] === undefined) continue;
+    sets.push(`\`${c}\` = ?`);
+    vals.push(c === "dataJson" && patch[c] !== null && typeof patch[c] === "object" ? JSON.stringify(patch[c]) : patch[c]);
+  }
+  if (!sets.length) return false;
+  const whereParts = ["id = ?"];
+  const whereVals = [jobId];
+  for (const [k, v] of Object.entries(cond)) {
+    whereParts.push(`\`${k}\` = ?`);
+    whereVals.push(v);
+  }
+  const result = await query(
+    `UPDATE \`meeting_pipeline_job\` SET ${sets.join(", ")} WHERE ${whereParts.join(" AND ")}`,
+    [...vals, ...whereVals],
+  );
+  return result?.affectedRows === 1;
 }
 
 // ---------- UserChannel (for /create-channel, protected from /cleanup) ----------
@@ -1744,7 +1795,9 @@ const db = {
     findByMeeting: meetingPipelineJobFindByMeeting,
     findById: meetingPipelineJobFindById,
     claimBatch: meetingPipelineJobClaimBatch,
+    claim: meetingPipelineJobClaim,
     update: meetingPipelineJobUpdate,
+    updateIf: meetingPipelineJobUpdateIf,
   },
   clockEntry: {
     create: clockEntryCreate,

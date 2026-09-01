@@ -81,7 +81,7 @@ Full map: `CSAAS/Backend/docs/meeting-workflow-flow.md`. Salient points:
 - **Every handler calls `requireMeetingPermission(req, dp, "<verb>", meetingId)`**
   (`meetingAuthz.js`) which throws 403 unless the acting URDD
   (`dp.actionPerformerURDD` / `req.body.actionPerformerURDD`) holds the verb permission
-  (`add_meetings`, `run_meeting_ai`, `update_meetings`, `list_meetings`).
+  (`add_meetings`, `run_meeting_ai`, `update_meetings`, `view_meetings`, `list_meetings`).
 - `step()` (`meetingWorkflow.js:64`) sets `communication.encryption:false`,
   `verification.accessToken:false` — so **transport is plaintext today**; the auth
   that exists is the app-level `requireMeetingPermission` verb check + tenant/repo
@@ -146,7 +146,7 @@ Per decision, **no new auth system and no platform encryption for now.**
   ideally bound to localhost).
 - Each request body includes `actionPerformerURDD: <CSAAS_ACTOR_URDD>` — a **single
   pre-existing URDD id**, configured in bot env, belonging to a CSAAS user/role that
-  holds `add_meetings`, `run_meeting_ai`, and `update_meetings` and has tenant + repo
+  holds `add_meetings`, `run_meeting_ai`, `update_meetings`, and `view_meetings` and has tenant + repo
   scope covering the tracked repos (or `seesAll`). No code change on CSAAS for this —
   the field is already read from `req.body`.
 - **CSAAS change required:** none for transport. If that URDD does not exist yet it
@@ -490,7 +490,7 @@ No other schema changes. CSAAS `meetings.meeting_id` is the pipeline key, held i
 **Bot `.env` (new):**
 ```
 CSAAS_API_URL=http://127.0.0.1:<csaas-port>/api
-CSAAS_ACTOR_URDD=<existing CSAAS URDD id with add_meetings + run_meeting_ai + update_meetings>
+CSAAS_ACTOR_URDD=<existing CSAAS URDD id with add_meetings + run_meeting_ai + update_meetings + view_meetings>
 UBS_DOC_PATH=../UBS_Doc/docs
 MEETING_PIPELINE_ENABLED=true          # kill switch; worker no-ops when false
 MEETING_REPORTS_DIR=bot/meeting-reports # where fetched HTML reports are written

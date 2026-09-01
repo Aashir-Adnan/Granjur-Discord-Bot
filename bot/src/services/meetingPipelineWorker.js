@@ -1,6 +1,6 @@
 import db from '../db/index.js'
 import * as csaasClient from './csaasClient.js'
-import { backoffMs, MAX_ATTEMPTS } from '../Database/meetingPipelineJob.helpers.js'
+import { backoffMs, MAX_ATTEMPTS, meetingPipelineEnabled } from '../Database/meetingPipelineJob.helpers.js'
 import { stageRunners as defaultRunners, resolveMeetingChannel } from './meetingPipelineStages.js'
 
 export const STAGE_ORDER = [
@@ -35,6 +35,15 @@ function withTimeout(promise, ms, label) {
 export async function runTick({ db, stageRunners, client, now = () => new Date(), notify = notifyFailure }) {
   const jobs = await db.meetingPipelineJob.claimBatch(3)
   for (const job of jobs) {
+    // Claim the job (pending -> working) before running its stage. If another
+    // worker already took it, skip. 'working' is transient: the stage's own
+    // update(...) sets the next real status; a crash leaves it stale for the
+    // claimBatch reaper to re-pick.
+    const claimed = db.meetingPipelineJob.claim
+      ? await db.meetingPipelineJob.claim(job.id)
+      : true
+    if (!claimed) continue
+
     const runner = stageRunners[job.stage]
     if (!runner) {
       await db.meetingPipelineJob.update(job.id, {
@@ -87,7 +96,7 @@ let started = false
 export function startMeetingPipelineWorker(client) {
   if (started) return
   started = true
-  if (!process.env.MEETING_PIPELINE_ENABLED || !csaasClient.isConfigured()) {
+  if (!meetingPipelineEnabled() || !csaasClient.isConfigured()) {
     console.log('[meetingPipeline] disabled (MEETING_PIPELINE_ENABLED unset or CSAAS not configured)')
     return
   }

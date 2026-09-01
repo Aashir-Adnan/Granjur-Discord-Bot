@@ -65,7 +65,12 @@ root via `UBS_DOC_PATH`. Manual E2E runbook:
 2. **Service identity.** Handlers run a tenancy layer keyed on `actionPerformerURDD`
    (`getActorUrdd`, `actorScope` → `resolveProjectScope`; `meetingAuthz.js`,
    `meetingHierarchy.js`, `ProjectTenancy/projectScope.js`). The bot needs a **service
-   URDD** with tenant + repo scope, passed on every call.
+   URDD** with tenant + repo scope, passed on every call. Required permission set
+   (union over the endpoints the bot hits — `/create`, `/transcribe`, `/analyze`,
+   `/tasks` POST, `/assign`, `/notes`, `/meeting`, `/approve`, `/issuesync` POST):
+   `add_meetings` (`/create`), `run_meeting_ai` (`/transcribe`, `/analyze`,
+   `/tasks` POST, `/assign`), `update_meetings` (`/approve`, `/issuesync` POST),
+   `view_meetings` (`/notes`, `/meeting`).
 3. **`skip_github` flag on `/approve`** — currently the only way to not push is to
    unset the global `GITHUB_PAT`. Need a per-call opt-out so the bot approves tasks,
    assigns them to Discord users, and only pushes the ones the operator toggled.

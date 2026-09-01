@@ -7,15 +7,17 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 ## Meeting → tasks integration — post-implementation follow-ups
 Feature shipped 2026-09-02 (see `completed.md`). Remaining:
 - **Live E2E run pending** — blocked on the user providing a real `CSAAS_ACTOR_URDD`
-  (a URDD with `add_meetings`+`run_meeting_ai`+`update_meetings`). Runbook:
+  (a URDD with `add_meetings`+`run_meeting_ai`+`update_meetings`+`view_meetings`). Runbook:
   `docs/meeting-pipeline-e2e-checklist.md`.
 - **`/meeting-review latest` unsupported** — no `db.meetingPipelineJob.findLatest`;
   the command needs an explicit meetingId.
-- **`stopMeetingRecording` completion path not hooked** — nothing calls
-  `db.meetingPipelineJob.enqueue` when `MeetingRecordingStatus→completed`. Pipeline
-  jobs must currently be created manually / by another path.
-- **Env truthiness** — `MEETING_PIPELINE_ENABLED="false"` is truthy; the worker gate
-  is `!process.env.MEETING_PIPELINE_ENABLED`. Only unset/empty disables it.
+- **`stopMeetingRecording` in `voiceCapture.js` is dead code (no callers)** — the
+  pipeline enqueue actually fires from `endMeetingSession` (empty-channel grace
+  timer + max-duration timer, the real meeting-end paths). `stopMeetingRecording`
+  is exported but unused — delete it or wire it in for symmetry.
+- **Live E2E `CSAAS_ACTOR_URDD` permission set** — must hold `add_meetings` +
+  `run_meeting_ai` + `update_meetings` + `view_meetings` (the last for
+  `/notes` + `/meeting`).
 
 ## Verify migrations 010 + 011 applied on the live DB
 `010_guild_timezone.sql` (guildconfig.timezone), `011_scheduled_meeting_cancelled.sql`

@@ -76,7 +76,12 @@ async function handleApprove(interaction, jobId) {
   if (!job || job.status !== 'blocked') {
     return interaction.reply({ content: 'Already processed.', ephemeral: true })
   }
-  await db.meetingPipelineJob.update(jobId, { stage: 'approved', status: 'pending' })
+  const ok = await db.meetingPipelineJob.updateIf(
+    jobId, { stage: 'approved', status: 'pending' }, { status: 'blocked' },
+  )
+  if (!ok) {
+    return interaction.reply({ content: 'This review was already processed.', ephemeral: true })
+  }
   return interaction.update({ content: '✅ Approved — assigning tasks…', embeds: [], components: [] })
 }
 
@@ -85,11 +90,18 @@ async function handleReject(interaction, jobId) {
   if (!job || job.status !== 'blocked') {
     return interaction.reply({ content: 'Already processed.', ephemeral: true })
   }
-  await db.meetingPipelineJob.update(jobId, {
-    dataJson: { ...job.dataJson, review: { ...job.dataJson.review, meetingRejected: true } },
-    stage: 'approved',
-    status: 'pending',
-  })
+  const ok = await db.meetingPipelineJob.updateIf(
+    jobId,
+    {
+      dataJson: { ...job.dataJson, review: { ...job.dataJson.review, meetingRejected: true } },
+      stage: 'approved',
+      status: 'pending',
+    },
+    { status: 'blocked' },
+  )
+  if (!ok) {
+    return interaction.reply({ content: 'This review was already processed.', ephemeral: true })
+  }
   return interaction.update({ content: '❌ Meeting rejected — no tasks created.', embeds: [], components: [] })
 }
 

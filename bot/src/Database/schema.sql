@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS task (
   KEY (status),
   KEY (discordChannelId),
   KEY (createdAt),
-  KEY idx_task_externalId (externalId),
+  UNIQUE KEY uq_task_externalId (externalId),
   KEY idx_task_meetingId (meetingId),
   FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
   FOREIGN KEY (repositoryId) REFERENCES repository(id) ON DELETE SET NULL

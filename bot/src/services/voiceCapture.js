@@ -12,6 +12,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
+import { meetingPipelineEnabled } from "../Database/meetingPipelineJob.helpers.js";
 import { OggOpusEncoder } from "../utils/oggOpusStream.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -373,7 +374,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
 
       try {
         const recs = await db.meetingRecording.findMany({ where: { meetingId } });
-        if (recs.length && process.env.MEETING_PIPELINE_ENABLED) {
+        if (recs.length && meetingPipelineEnabled()) {
           await db.meetingPipelineJob.create({ data: { guildConfigId: cfg.id, meetingId } });
           console.log(`[meetingPipeline] enqueued job for meeting ${meetingId}`);
         }

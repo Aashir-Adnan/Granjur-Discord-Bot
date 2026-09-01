@@ -5,3 +5,9 @@ export function backoffMs(attempt) {
 }
 
 export const MAX_ATTEMPTS = 6
+
+// Strict truthiness for the pipeline kill switch: only 1/true/yes/on enable it.
+// MEETING_PIPELINE_ENABLED="false" / "0" / "" -> disabled.
+export function meetingPipelineEnabled() {
+  return /^(1|true|yes|on)$/i.test(String(process.env.MEETING_PIPELINE_ENABLED ?? '').trim())
+}

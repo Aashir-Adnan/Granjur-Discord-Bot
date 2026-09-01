@@ -245,19 +245,39 @@ async function mirroredStage({ job, db, client, csaasClient }) {
       botUserId,
       repositoryId,
     })
-    const created = await db.task.create({ data: row })
+
+    // Idempotency: a retry after a partial mirror must not double-create rows.
+    let taskRow = null
+    try {
+      taskRow = await db.task.findFirst({ where: { externalId: row.externalId } })
+    } catch (e) {
+      console.warn('[meetingPipeline] task.findFirst (mirror) failed:', e?.message || e)
+      taskRow = null
+    }
+    if (!taskRow) taskRow = await db.task.create({ data: row })
+
     mirrored.push({
-      dbTaskId: created.id,
+      dbTaskId: taskRow.id,
       csaasTaskId: csaasTask.task_id,
       assigneeRef: reviewTask.assigneeRef,
       github: !!reviewTask.github,
       title: row.title,
     })
+
+    // Persist progress after each task so a retry resumes where it stopped.
+    dataJson.mirrored = mirrored
+    if (db.meetingPipelineJob?.update) {
+      try {
+        await db.meetingPipelineJob.update(job.id, { dataJson: { ...dataJson } })
+      } catch (e) {
+        console.warn('[meetingPipeline] mirror progress persist failed:', e?.message || e)
+      }
+    }
   }
 
   dataJson.mirrored = mirrored
 
-  if (channel) {
+  if (channel && !dataJson.pinged) {
     const byRef = new Map()
     let unassigned = 0
     for (const m of mirrored) {
@@ -286,6 +306,7 @@ async function mirroredStage({ job, db, client, csaasClient }) {
         console.warn('[meetingPipeline] unassigned summary send failed:', e?.message || e)
       }
     }
+    dataJson.pinged = true
   }
 
   return { patch: { dataJson } }
