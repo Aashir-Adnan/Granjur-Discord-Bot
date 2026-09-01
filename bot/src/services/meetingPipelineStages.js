@@ -90,8 +90,31 @@ async function transcribingStage({ job, db, csaasClient }) {
   return { patch: { dataJson: data } }
 }
 
+// analyzing: one CSaaS call, store the analysis blob on dataJson.
+async function analyzingStage({ job, csaasClient }) {
+  const { analysis } = await csaasClient.analyze(job.csaasMeetingId)
+  return { patch: { dataJson: { ...(job.dataJson || {}), analysis } } }
+}
+
+// generating_tasks: one CSaaS call, store the generated task list on dataJson.
+async function generatingTasksStage({ job, csaasClient }) {
+  const res = await csaasClient.generateTasks(job.csaasMeetingId)
+  return { patch: { dataJson: { ...(job.dataJson || {}), tasks: res.tasks || [] } } }
+}
+
+// assigning: one CSaaS call using the roster snapshot; store assignments.
+// Advances normally — the awaiting_review runner (Task 13) posts the UI and blocks.
+async function assigningStage({ job, csaasClient }) {
+  const roster = (job.dataJson && job.dataJson.roster) || []
+  const { assignments } = await csaasClient.assign(job.csaasMeetingId, roster)
+  return { patch: { dataJson: { ...(job.dataJson || {}), assignments: assignments || [] } } }
+}
+
 // APPEND one key per task; never delete a sibling key.
 export const stageRunners = {
   created: createdStage,
   transcribing: transcribingStage,
+  analyzing: analyzingStage,
+  generating_tasks: generatingTasksStage,
+  assigning: assigningStage,
 }

@@ -106,3 +106,29 @@ test('transcribing throws when every file is missing', async () => {
 test('stageRunners still exposes the created stage', () => {
   assert.equal(typeof stageRunners.created, 'function')
 })
+
+test('analyzing/generating_tasks/assigning store their results on dataJson', async () => {
+  const csaasClient = {
+    analyze: async () => ({ analysis: { summary: 's' } }),
+    generateTasks: async () => ({ tasks: [{ task_id: 't1', goal_of_task: 'g' }] }),
+    assign: async () => ({ assignments: [{ task_id: 't1', assignee_ref: '11', quote: 'q', confidence: 0.9 }] }),
+  }
+  const db = { meetingRecording: { findMany: async () => [] } }
+  let job = { id: 'j', meetingId: 'M', csaasMeetingId: 'm', dataJson: { roster: [{ ref: '11', displayName: 'Ali', aliases: ['Ali'] }] } }
+
+  let out = await stageRunners.analyzing({ job, db, csaasClient, client: {} })
+  Object.assign(job.dataJson, out.patch.dataJson)
+  assert.equal(job.dataJson.analysis.summary, 's')
+
+  out = await stageRunners.generating_tasks({ job, db, csaasClient, client: {} })
+  Object.assign(job.dataJson, out.patch.dataJson)
+  assert.equal(job.dataJson.tasks[0].task_id, 't1')
+
+  out = await stageRunners.assigning({ job, db, csaasClient, client: {} })
+  Object.assign(job.dataJson, out.patch.dataJson)
+  assert.equal(job.dataJson.assignments[0].assignee_ref, '11')
+
+  // prior keys survive, assigning does not block
+  assert.deepEqual(job.dataJson.roster[0].ref, '11')
+  assert.notEqual(out.block, true)
+})
