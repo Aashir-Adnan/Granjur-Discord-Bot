@@ -25,6 +25,7 @@ test('transcribing uploads only not-yet-uploaded files, idempotent', async () =>
   const job = { id: 'j', csaasMeetingId: 'm', dataJson: { uploaded: ['r1'] } }
   const out = await stageRunners.transcribing({ job, db, csaasClient, client: {} })
   assert.deepEqual(uploaded.map((u) => u.filename), ['sara.ogg'])
+  assert.equal(uploaded[0].segmentIndex, 1) // uploaded.length was 1
   assert.deepEqual(out.patch.dataJson.uploaded.sort(), ['r1', 'r2'])
 })
 
@@ -83,7 +84,7 @@ test('transcribing records unreadable files in missing, keeps segment indexes co
   // missing file skipped in same tick, second file uploaded
   assert.deepEqual(out.patch.dataJson.missing, ['r1'])
   assert.deepEqual(out.patch.dataJson.uploaded, ['r2'])
-  assert.equal(calls[0].segmentIndex, 1) // index = uploaded + missing count
+  assert.equal(calls[0].segmentIndex, 0) // missing files do not consume an index — first success is index 0
   assert.equal(out.advance, false)
 })
 

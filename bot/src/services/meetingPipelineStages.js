@@ -62,11 +62,13 @@ async function transcribingStage({ job, db, csaasClient }) {
   for (const rec of recs) {
     if (done.has(rec.id) || data.missing.includes(rec.id)) continue
 
-    const index = data.uploaded.length + data.missing.length
+    // missing files do not consume a CSAAS segment index — first successful upload is always index 0 (overwrite)
+    const index = data.uploaded.length
     let buffer
     try {
       buffer = await fs.readFile(rec.filePath)
     } catch {
+      // note: a rec id in `missing` is terminal — not retried on later ticks
       data.missing.push(rec.id)
       continue
     }
