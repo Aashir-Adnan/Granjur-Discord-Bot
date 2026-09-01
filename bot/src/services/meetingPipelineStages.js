@@ -202,11 +202,9 @@ async function approvedStage({ job, csaasClient }) {
     }
     return { advance: false, patch: { stage: 'done', status: 'done' } }
   }
-  try {
-    await csaasClient.approve(job.csaasMeetingId, { decision: 'approved', skipGithub: true })
-  } catch (e) {
-    console.warn('[meetingPipeline] csaas approve(approved) failed:', e?.message || e)
-  }
+  // Let an approve failure propagate: runTick's retry/backoff must handle it, or
+  // we'd mirror tasks for a meeting CSaaS was never told was approved.
+  await csaasClient.approve(job.csaasMeetingId, { decision: 'approved', skipGithub: true })
   return { patch: {} }
 }
 
@@ -252,6 +250,7 @@ async function mirroredStage({ job, db, client, csaasClient }) {
       csaasTaskId: csaasTask.task_id,
       assigneeRef: reviewTask.assigneeRef,
       github: !!reviewTask.github,
+      title: row.title,
     })
   }
 
@@ -261,11 +260,9 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     const byRef = new Map()
     let unassigned = 0
     for (const m of mirrored) {
-      const ct = csaasTasks.find((t) => t.task_id === m.csaasTaskId)
-      const title = mapMeetingTaskToRow(ct || { task_id: m.csaasTaskId }, {}, {}).title
       if (m.assigneeRef) {
         if (!byRef.has(m.assigneeRef)) byRef.set(m.assigneeRef, [])
-        byRef.get(m.assigneeRef).push(title)
+        byRef.get(m.assigneeRef).push(m.title)
       } else {
         unassigned++
       }

@@ -221,6 +221,15 @@ test('approved happy path approves with skipGithub and advances', async () => {
   assert.deepEqual(out.patch, {})
 })
 
+test('approved happy path lets an approve error propagate for retry', async () => {
+  const csaasClient = { approve: async () => { throw new Error('csaas down') } }
+  const job = { id: 'j', csaasMeetingId: 'm', dataJson: { review: { tasks: [] } } }
+  await assert.rejects(
+    () => stageRunners.approved({ job, db: {}, client: {}, csaasClient }),
+    /csaas down/,
+  )
+})
+
 test('mirrored creates a task per non-rejected review task and pings assignees', async () => {
   const created = []
   const sent = []
@@ -254,6 +263,7 @@ test('mirrored creates a task per non-rejected review task and pings assignees',
   assert.equal(created[0].discordChannelId, 'tc1')
   assert.equal(out.patch.dataJson.mirrored.length, 1)
   assert.equal(out.patch.dataJson.mirrored[0].dbTaskId, 'db1')
+  assert.equal(out.patch.dataJson.mirrored[0].title, 'Do A')
   assert.equal(sent.length, 1)
   assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\*/)
 })

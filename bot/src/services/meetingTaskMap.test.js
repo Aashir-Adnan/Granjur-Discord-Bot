@@ -45,3 +45,21 @@ test('empty task yields null description and empty collections', () => {
   assert.equal(row.createdBy, null)
   assert.equal(row.discordChannelId, null)
 })
+
+test('title is capped at 200 chars', () => {
+  const row = mapMeetingTaskToRow(
+    { task_id: 'ct3', goal_of_task: 'x'.repeat(500) },
+    { taskId: 'ct3', rejected: false },
+    { guildConfigId: 'g', meetingId: 'M' },
+  )
+  assert.equal(row.title.length, 200)
+})
+
+test('description is capped at 4000 chars', () => {
+  const row = mapMeetingTaskToRow(
+    { task_id: 'ct4', intended_actions: ['y'.repeat(3000), 'z'.repeat(3000)] },
+    { taskId: 'ct4', rejected: false },
+    { guildConfigId: 'g', meetingId: 'M' },
+  )
+  assert.equal(row.description.length, 4000)
+})
