@@ -1,35 +1,54 @@
 # Current Session
 
-**Date:** 2026-08-31
+**Date:** 2026-09-01
 
-## Goal (done)
-Work the whole backlog: playback transport controls, `/schedule` items 4/5/7,
-`displayName` in `/create-task`, and the playback format/dead-code cleanup.
-Timezone chosen as per-guild via a new `/setup` command (user decision).
+## Goal
+Scope + design the "meeting → transcription → notes → tasks → assign to Discord
+users" feature, bridging this bot to the CSAAS backend meeting workflow. Also:
+`git clone` ubs_doc onto the VM and expose its markdown in `/docs`.
 
-## Shipped — see completed.md 2026-08-31 top entry + knowledge/schedule-meetings.md
-+ knowledge/meeting-audio-recording.md (transport controls + format sections).
+## Status: DESIGN / SPIKE — not yet approved, no code written
 
-New files: `bot/src/commands/{setup,meetings}.js`, `bot/src/utils/timezone.js`,
-migrations `010`/`011`.
+User decisions locked in:
+1. Approved meeting-tasks become **real rows in the bot `task` table** (assignees,
+   `externalId=csaas:<meeting_task_id>`); CSAAS `meeting_tasks` stays pipeline
+   source-of-truth.
+2. **No bot-side project index** — CSAAS `tracked_projects` + `REPOS_CLONE_BASE_DIR`
+   is the single index; codebase search stays server-side. Bot only needs `UBS_DOC_PATH`.
+3. **Assignment = explicit transcript statements only** ("X will do Y" → assign to Y).
+   No capacity/skill/auto-balance logic. Unmatched → unassigned.
+4. When a task IS pushed to GitHub, use the `[Agent Call]` marker so CSAAS's existing
+   autonomous issue→PR agent picks it up.
+5. Bot↔CSAAS uses CSAAS **platform encryption** (`aes.js`, AES-256-ECB CryptoJS).
 
-## Verification done
-- `node --check` + dynamic `import()` pass on every touched file.
-- `getCommands().map(toJSON)` builds all 36 commands; `setup`/`meetings` present;
-  autocomplete on `schedule.when` + `setup.timezone`.
-- `parseWhen` tested inline across zones + DST (EST/EDT) — all correct after fixing
-  the offset-solve loop in `zonedWallTimeToDate`.
-- `timezone.js` helpers tested inline.
+Orchestration decision: **Approach A** — persisted `meeting_pipeline_job` table +
+60s interval worker (pattern of `meetingReminder.js`), one stage/tick, idempotent,
+restart-safe.
 
-## Verified after the fact
-- ffmpeg-static: 82 MB binary, `ffmpeg -version` exit 0, prism-media detects it,
-  package.json + package-lock.json in sync. (Note: `allowScripts` gating — fresh
-  installs need `npm approve-scripts ffmpeg-static`.)
+## Key findings (full detail: knowledge/csaas-meeting-workflow-integration.md)
+- CSAAS pipeline is **already fully API-exposed** (~22 endpoints) and Soniox is
+  **already wired** (`STT_PROVIDER=soniox`). GitHub push already gated on `GITHUB_PAT`.
+- Real gaps: meeting endpoints have `encryption:false`/`accessToken:false` in `step()`
+  → must flip for platform encryption; handlers need a **service URDD** (tenancy layer);
+  add `skip_github` flag to `/approve`; build new `/assign` endpoint + `extractAssignments`
+  agent + `meeting_task_assignees` table.
+- Bot has audio capture done (per-speaker `.ogg` + `MeetingRecording` rows), a `task`
+  table with `assigneeIds`/`externalId`, `guildmember.email` (same join key CSAAS uses),
+  `createIssue()`, and a `/docs` markdown traversal with a path-traversal guard to reuse.
+- Bot has **no Anthropic client** — not needed, AI stays in CSAAS.
 
-## NOT verified (needs live env)
-- Migrations 010/011 not run here (no DB). `npm run db:migrate` required.
-- No live Discord run.
+## Effort estimate
+~19–31 working days (~4–6 weeks) for a solid v1, one dev. Thin happy-path demo
+~6–9 days. Dominant cost = Discord review/approval UX + orchestration + integration
+testing (not the AI pipeline).
 
-## Open follow-ups → backlog.md
-Migration run, ffmpeg download check, manager-role-name fragility, mixed-track
-playback, per-user tz, voice-channel picker.
+## Next step
+Await user approval of the architecture, then write cross-repo design doc at
+`docs/superpowers/specs/2026-09-01-meeting-to-tasks-integration-design.md`, then
+writing-plans.
+
+## Open questions still to resolve in the spec
+- Exact roster payload fields for `/assign` (ref = discordId? email?).
+- How the bot obtains/holds its service URDD + tenant scope in CSAAS.
+- Whether `/report` HTML is written to a bot-readable path or fetched via `/notes`.
+- Segment upload ordering / how speaker labels ride along with `segment_index`.

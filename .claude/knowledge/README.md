@@ -5,3 +5,9 @@
 - [schedule-meetings.md](schedule-meetings.md) — `/schedule`, `/meetings`, `/setup`;
   the timezone model, `parseWhen` NL time parser, Discord-timestamp helpers, and the
   autocomplete plumbing.
+- [csaas-meeting-workflow-integration.md](csaas-meeting-workflow-integration.md) —
+  planned feature: bot → CSAAS backend meeting pipeline (transcribe → analyze → tasks
+  → assign to Discord users, GitHub push optional). What CSAAS already exposes, the
+  gaps (endpoint auth/encryption, service URDD, `skip_github`, new `/assign` agent),
+  schema differences, and the bot-side orchestration shape. ubs_doc = git clone +
+  `UBS_DOC_PATH` mounted read-only in `/docs`.
