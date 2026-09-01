@@ -370,6 +370,16 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
         },
       });
       console.log(`[voiceCapture] Updated meeting status to completed: ${meetingId}`);
+
+      try {
+        const recs = await db.meetingRecording.findMany({ where: { meetingId } });
+        if (recs.length && process.env.MEETING_PIPELINE_ENABLED) {
+          await db.meetingPipelineJob.create({ data: { guildConfigId: cfg.id, meetingId } });
+          console.log(`[meetingPipeline] enqueued job for meeting ${meetingId}`);
+        }
+      } catch (e) {
+        console.error('[meetingPipeline] enqueue failed:', e?.message || e);
+      }
     } catch (err) {
       console.error(`[voiceCapture] Failed to update meeting status: ${err.message}`);
     }

@@ -61,7 +61,7 @@ async function resolveDisplayName(guild, memberId) {
 
 // Derive a readable meeting name from the recordings directory
 // (voiceCapture names it "<meetingId8>-<topic-slug>"), falling back to the id.
-function deriveMeetingName(filePath, meetingId) {
+export function deriveMeetingName(filePath, meetingId) {
   try {
     if (filePath) {
       const dir = path.basename(path.dirname(filePath));
@@ -78,7 +78,7 @@ function deriveMeetingName(filePath, meetingId) {
   return `Meeting ${String(meetingId).slice(0, 8)}`;
 }
 
-function formatMeetingDate(value) {
+export function formatMeetingDate(value) {
   if (!value) return "date unknown";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "date unknown";
