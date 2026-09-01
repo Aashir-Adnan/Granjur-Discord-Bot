@@ -3,6 +3,7 @@
 // - patch:   shallow-merged into the job row on success
 // - advance: when false, the job stays on the same stage (e.g. polling)
 // - block:   when true, status becomes 'blocked' instead of 'pending'/'done'
+import fs from 'node:fs/promises'
 import { getGuildConfigById } from '../Database/index.js'
 import { buildRoster } from './meetingRoster.js'
 import { deriveMeetingName, formatMeetingDate } from '../commands/playback.js'
@@ -45,7 +46,50 @@ async function createdStage({ job, db, csaasClient, client }) {
   }
 }
 
+// transcribing: idempotent per-speaker segment upload to CSaaS.
+// One successful upload per tick (advance:false) so each upload is short and
+// independently retryable; advances only once every rec is uploaded-or-missing.
+async function transcribingStage({ job, db, csaasClient }) {
+  const recs = (await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } }))
+    .slice()
+    .sort((a, b) => new Date(a.startedAt || 0) - new Date(b.startedAt || 0))
+
+  const data = { uploaded: [], missing: [], ...(job.dataJson || {}) }
+  data.uploaded = [...(data.uploaded || [])]
+  data.missing = [...(data.missing || [])]
+  const done = new Set(data.uploaded)
+
+  for (const rec of recs) {
+    if (done.has(rec.id) || data.missing.includes(rec.id)) continue
+
+    const index = data.uploaded.length + data.missing.length
+    let buffer
+    try {
+      buffer = await fs.readFile(rec.filePath)
+    } catch {
+      data.missing.push(rec.id)
+      continue
+    }
+
+    const label = (rec.fileName || `speaker-${index}`).replace(/\.ogg$/i, '')
+    await csaasClient.transcribeSegment(job.csaasMeetingId, {
+      buffer,
+      filename: `${label}.ogg`,
+      segmentIndex: index,
+    })
+    data.uploaded.push(rec.id)
+    done.add(rec.id)
+    return { advance: false, patch: { dataJson: data } }
+  }
+
+  if (data.uploaded.length === 0) {
+    throw new Error('all meeting recording files missing on disk')
+  }
+  return { patch: { dataJson: data } }
+}
+
 // APPEND one key per task; never delete a sibling key.
 export const stageRunners = {
   created: createdStage,
+  transcribing: transcribingStage,
 }
