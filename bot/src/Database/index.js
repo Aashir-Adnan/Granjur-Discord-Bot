@@ -326,6 +326,12 @@ async function taskCreate({ data }) {
 }
 
 async function taskUpdate({ where, data }) {
+  let id = where?.id;
+  if (id == null && where?.externalId != null) {
+    const existing = await taskFindFirst({ where: { externalId: where.externalId } });
+    id = existing?.id ?? null;
+  }
+  if (id == null) return null;
   const sets = [];
   const vals = [];
   if (data.modules !== undefined) {
@@ -384,10 +390,10 @@ async function taskUpdate({ where, data }) {
     sets.push("description = ?");
     vals.push(data.description);
   }
-  if (sets.length === 0) return taskFindFirst({ where: { id: where.id } });
-  vals.push(where.id);
+  if (sets.length === 0) return taskFindFirst({ where: { id } });
+  vals.push(id);
   await query(`UPDATE \`Task\` SET ${sets.join(", ")} WHERE id = ?`, vals);
-  return taskFindFirst({ where: { id: where.id } });
+  return taskFindFirst({ where: { id } });
 }
 
 async function taskCount({ where }) {

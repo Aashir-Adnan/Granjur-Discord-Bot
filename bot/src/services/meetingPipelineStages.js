@@ -5,10 +5,11 @@
 // - block:   when true, status becomes 'blocked' instead of 'pending'/'done'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { EmbedBuilder } from 'discord.js'
 import { getGuildConfigById } from '../Database/index.js'
 import { buildRoster } from './meetingRoster.js'
 import { deriveMeetingName, formatMeetingDate } from '../commands/playback.js'
-import { initReviewState, buildReviewMessage } from './meetingReviewUI.js'
+import { initReviewState, buildReviewMessage, summarizeApproval } from './meetingReviewUI.js'
 import { mapMeetingTaskToRow } from './meetingTaskMap.js'
 
 async function guildIdFor(guildConfigId) {
@@ -290,6 +291,133 @@ async function mirroredStage({ job, db, client, csaasClient }) {
   return { patch: { dataJson } }
 }
 
+// resolveRepoSlug: parse a repository row's `url` into { owner, repo }.
+// Pure. Handles `git@github.com:owner/repo.git` and `https://github.com/owner/repo`.
+// Returns null when empty or no github.com match.
+export function resolveRepoSlug(repositoryRow) {
+  const url = repositoryRow && typeof repositoryRow.url === 'string' ? repositoryRow.url.trim() : ''
+  if (!url) return null
+  const m = url.match(/github\.com[:/]+([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i)
+  if (!m) return null
+  return { owner: m[1], repo: m[2] }
+}
+
+// issue_syncing: for mirrored tasks flagged github, group by the CSAAS task's
+// project -> resolved owner/repo, call csaasClient.issueSync per repo, and write
+// the returned issue url/number back onto the bot task rows. Best-effort:
+// failures land in dataJson.issueSyncErrors. Always advances to `done`.
+async function issueSyncingStage({ job, db, csaasClient }) {
+  const gh = (job.dataJson?.mirrored || []).filter((m) => m.github)
+  if (gh.length === 0) return { patch: {} }
+
+  const dataJson = { ...(job.dataJson || {}) }
+  const csaasTasks = Array.isArray(dataJson.tasks) ? dataJson.tasks : []
+  const errors = []
+
+  let repos = []
+  try {
+    repos = await db.repository.findMany({ where: { guildConfigId: job.guildConfigId } })
+  } catch (e) {
+    console.warn('[meetingPipeline] repository.findMany failed:', e?.message || e)
+    repos = []
+  }
+  const slugByName = new Map()
+  for (const r of repos || []) {
+    const slug = resolveRepoSlug(r)
+    if (r?.name && slug) slugByName.set(r.name, slug)
+  }
+
+  // group gh entries by `owner/repo`
+  const groups = new Map() // key -> { owner, repo, entries: [] }
+  for (const entry of gh) {
+    const csaasTask = csaasTasks.find((t) => t.task_id === entry.csaasTaskId)
+    const project = csaasTask?.project
+    const slug = project ? slugByName.get(project) : null
+    if (!slug) {
+      errors.push({ csaasTaskId: entry.csaasTaskId, reason: `no repo for project ${project ?? '(none)'}` })
+      continue
+    }
+    const key = `${slug.owner}/${slug.repo}`
+    if (!groups.has(key)) groups.set(key, { owner: slug.owner, repo: slug.repo, entries: [] })
+    groups.get(key).entries.push(entry)
+  }
+
+  for (const { owner, repo, entries } of groups.values()) {
+    let issues = []
+    try {
+      const res = await csaasClient.issueSync(job.csaasMeetingId, {
+        owner,
+        repo,
+        taskIds: entries.map((g) => g.csaasTaskId),
+      })
+      issues = Array.isArray(res?.issues) ? res.issues : []
+    } catch (e) {
+      errors.push({ owner, repo, error: e?.message || String(e) })
+      continue
+    }
+
+    for (const issue of issues) {
+      const csaasTaskId = issue.task_id ?? issue.taskId
+      const match = entries.find((g) => g.csaasTaskId === csaasTaskId)
+      if (!match) continue
+      const url = issue.url ?? issue.github_issue_url ?? null
+      const number = issue.number ?? issue.github_issue_number ?? null
+      try {
+        await db.task.update({
+          where: { externalId: 'csaas:' + csaasTaskId },
+          data: { externalIssueUrl: url, externalIssueNumber: number },
+        })
+      } catch (e) {
+        console.warn('[meetingPipeline] task.update (issue sync) failed:', e?.message || e)
+      }
+    }
+  }
+
+  dataJson.issueSyncErrors = errors
+  return { patch: { dataJson } }
+}
+
+// done: rewrite the review message into a final summary embed, then terminate.
+async function doneStage({ job, db, client }) {
+  const dataJson = job.dataJson || {}
+  const summary = summarizeApproval(dataJson.review || { tasks: [] }, dataJson.tasks || [])
+  const mirrored = Array.isArray(dataJson.mirrored) ? dataJson.mirrored : []
+  const issueSyncErrors = Array.isArray(dataJson.issueSyncErrors) ? dataJson.issueSyncErrors : []
+
+  const lines = [
+    `✅ ${summary.approved.length} task(s) created`,
+    `${summary.rejectedCount} rejected`,
+    `${summary.githubCount} pushed to GitHub`,
+  ]
+  const issueLinks = []
+  for (const m of mirrored) {
+    if (m.externalIssueUrl) issueLinks.push(`• [${m.title || m.csaasTaskId}](${m.externalIssueUrl})`)
+  }
+  if (issueLinks.length) lines.push('', '**GitHub issues:**', ...issueLinks)
+  if (issueSyncErrors.length) {
+    lines.push('', `⚠️ ${issueSyncErrors.length} issue-sync problem(s):`)
+    for (const err of issueSyncErrors) {
+      lines.push(`• ${err.reason || err.error || 'unknown error'}`)
+    }
+  }
+
+  const summaryEmbed = new EmbedBuilder()
+    .setTitle(`Meeting review complete — ${dataJson.title || 'Meeting'}`)
+    .setDescription(lines.join('\n'))
+
+  try {
+    const channel = await resolveMeetingChannel(client, db, job)
+    if (channel && job.reviewMessageId) {
+      const msg = await channel.messages.fetch(job.reviewMessageId).catch(() => null)
+      if (msg) await msg.edit({ embeds: [summaryEmbed], components: [] }).catch(() => {})
+    }
+  } catch (e) {
+    console.warn('[meetingPipeline] done stage message edit failed:', e?.message || e)
+  }
+
+  return { advance: false, patch: { status: 'done' } }
+}
+
 // APPEND one key per task; never delete a sibling key.
 export const stageRunners = {
   created: createdStage,
@@ -300,4 +428,6 @@ export const stageRunners = {
   awaiting_review: awaitingReviewStage,
   approved: approvedStage,
   mirrored: mirroredStage,
+  issue_syncing: issueSyncingStage,
+  done: doneStage,
 }

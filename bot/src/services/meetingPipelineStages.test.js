@@ -3,7 +3,115 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { stageRunners } from './meetingPipelineStages.js'
+import { stageRunners, resolveRepoSlug } from './meetingPipelineStages.js'
+
+test('resolveRepoSlug parses ssh + https', () => {
+  assert.deepEqual(resolveRepoSlug({ url: 'git@github.com:granjur/bot.git' }), { owner: 'granjur', repo: 'bot' })
+  assert.deepEqual(resolveRepoSlug({ url: 'https://github.com/granjur/bot' }), { owner: 'granjur', repo: 'bot' })
+  assert.equal(resolveRepoSlug({ url: '' }), null)
+  assert.equal(resolveRepoSlug(null), null)
+  assert.equal(resolveRepoSlug({ url: 'https://gitlab.com/a/b' }), null)
+})
+
+test('issue_syncing advances with no github-flagged mirrored tasks', async () => {
+  let called = false
+  const csaasClient = { issueSync: async () => { called = true; return { issues: [] } } }
+  const db = { repository: { findMany: async () => [] } }
+  const job = { id: 'j', csaasMeetingId: 'm', guildConfigId: 'g', dataJson: { mirrored: [{ csaasTaskId: 'a', github: false }], tasks: [] } }
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient })
+  assert.equal(called, false)
+  assert.notEqual(out.advance, false)
+  assert.deepEqual(out.patch, {})
+})
+
+test('issue_syncing happy path syncs issues and updates tasks by externalId', async () => {
+  const updates = []
+  const syncArgs = []
+  const csaasClient = {
+    issueSync: async (mid, opts) => {
+      syncArgs.push([mid, opts])
+      return { issues: [{ task_id: 'a', url: 'https://github.com/granjur/bot/issues/7', number: 7 }] }
+    },
+  }
+  const db = {
+    repository: { findMany: async () => [{ name: 'granjur', url: 'https://github.com/granjur/bot' }] },
+    task: { update: async (opts) => { updates.push(opts); return {} } },
+  }
+  const job = {
+    id: 'j', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 'a', project: 'granjur' }],
+      mirrored: [{ csaasTaskId: 'a', dbTaskId: 'db1', github: true }],
+    },
+  }
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient })
+  assert.equal(syncArgs[0][0], 'm')
+  assert.deepEqual(syncArgs[0][1], { owner: 'granjur', repo: 'bot', taskIds: ['a'] })
+  assert.equal(updates[0].where.externalId, 'csaas:a')
+  assert.equal(updates[0].data.externalIssueUrl, 'https://github.com/granjur/bot/issues/7')
+  assert.equal(updates[0].data.externalIssueNumber, 7)
+  assert.notEqual(out.advance, false)
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [])
+})
+
+test('issue_syncing records an error for a project with no resolvable repo', async () => {
+  let called = false
+  const csaasClient = { issueSync: async () => { called = true; return { issues: [] } } }
+  const db = { repository: { findMany: async () => [] }, task: { update: async () => ({}) } }
+  const job = {
+    id: 'j', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 'a', project: 'ghost' }],
+      mirrored: [{ csaasTaskId: 'a', github: true }],
+    },
+  }
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient })
+  assert.equal(called, false)
+  assert.equal(out.patch.dataJson.issueSyncErrors.length, 1)
+  assert.match(out.patch.dataJson.issueSyncErrors[0].reason, /no repo for project ghost/)
+  assert.notEqual(out.advance, false)
+})
+
+test('done edits the review message and terminates', async () => {
+  let edited = null
+  const msg = { edit: async (p) => { edited = p } }
+  const channel = { id: 'tc1', send: async () => ({}), messages: { fetch: async () => msg } }
+  const client = { channels: { fetch: async () => channel }, user: { id: 'bot' } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g', reviewMessageId: 'rm1',
+    dataJson: {
+      tasks: [{ task_id: 'a', goal_of_task: 'A' }],
+      review: { tasks: [{ taskId: 'a', rejected: false, github: true }] },
+      mirrored: [{ csaasTaskId: 'a', github: true, title: 'A' }],
+      issueSyncErrors: [],
+    },
+  }
+  const out = await stageRunners.done({ job, db, client, csaasClient: {} })
+  assert.equal(out.advance, false)
+  assert.deepEqual(out.patch, { status: 'done' })
+  assert.ok(edited)
+  assert.ok(Array.isArray(edited.embeds))
+  assert.deepEqual(edited.components, [])
+})
+
+test('done does not throw when no channel resolves', async () => {
+  const client = { channels: { fetch: async () => { throw new Error('no channel') } } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => null },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', guildConfigId: 'g', reviewMessageId: 'rm1',
+    dataJson: { tasks: [], review: { tasks: [] }, mirrored: [] },
+  }
+  const out = await stageRunners.done({ job, db, client, csaasClient: {} })
+  assert.equal(out.advance, false)
+  assert.deepEqual(out.patch, { status: 'done' })
+})
 
 test('transcribing uploads only not-yet-uploaded files, idempotent', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-'))
