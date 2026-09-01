@@ -43,9 +43,15 @@ restart-safe.
 testing (not the AI pipeline).
 
 ## Next step
-Await user approval of the architecture, then write cross-repo design doc at
-`docs/superpowers/specs/2026-09-01-meeting-to-tasks-integration-design.md`, then
-writing-plans.
+Design doc WRITTEN + committed on branch `design/meeting-to-tasks-integration`:
+`docs/superpowers/specs/2026-09-01-meeting-to-tasks-integration-design.md`.
+Adjustment from user: **no authenticated/encrypted APIs for v1** — bot passes an
+existing `actionPerformerURDD` (env `CSAAS_ACTOR_URDD`) as a plain body field over
+localhost; encryption is a tracked hardening follow-up. Note: every CSAAS meeting
+handler calls `requireMeetingPermission` (throws 403 without a URDD holding
+`add_meetings`/`run_meeting_ai`/`update_meetings`), so that URDD must exist / be
+seeded on the CSAAS side.
+Awaiting user review of the spec → then writing-plans skill.
 
 ## Open questions still to resolve in the spec
 - Exact roster payload fields for `/assign` (ref = discordId? email?).
