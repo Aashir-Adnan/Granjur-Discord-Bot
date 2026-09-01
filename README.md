@@ -87,6 +87,22 @@ Without these, the bot will log in with "Used disallowed intents" and exit.
 | `VERIFY_PAGE_PORT` | Port for the verify page server (default 3080) |
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 Web client ID (for verify page Sign in with Google) |
 | `GITHUB_TOKEN` | (Optional) For creating issues from /bug and /docs, /evaluate (repo contents, commits) |
+| `UBS_DOC_PATH` | (Optional) Path to a cloned `ubs_doc` checkout's `docs/` folder; when set and present, `/docs` exposes it as a second root "UBS Knowledge Base" |
+
+### UBS docs
+
+`/docs` always browses the bot's own `bot/docs/`. To also browse the UBS knowledge base,
+clone the `ubs_doc` repo on the VM next to the bot and point `UBS_DOC_PATH` at its
+`docs/` folder:
+
+```bash
+git clone <ubs_doc remote> ../UBS_Doc
+# in .env:
+UBS_DOC_PATH=../UBS_Doc/docs
+```
+
+When `UBS_DOC_PATH` is unset or the directory is missing, `/docs` silently falls back
+to the single bot-docs root.
 
 ## Database
 

@@ -1,6 +1,4 @@
 import fs from 'fs'
-import path from 'path'
-import { fileURLToPath } from 'url'
 import {
   SlashCommandBuilder,
   ActionRowBuilder,
@@ -9,28 +7,23 @@ import {
 } from 'discord.js'
 import { getOrCreateGuildConfig } from '../db/index.js'
 import { EPHEMERAL } from '../constants.js'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DOCS_ROOT = path.join(__dirname, '..', '..', 'docs')
+import { listRoots, resolveDocPath, rootByKey } from '../services/docRoots.js'
 
 const EMBED_DESC_MAX = 4096
 const EMBED_FIELD_VALUE_MAX = 1024
 const SELECT_OPTIONS_MAX = 25
 const LABEL_MAX = 100
 
-/** Resolve and ensure path is under DOCS_ROOT (no path traversal). */
-function resolveDocsPath(relativePath) {
-  if (!relativePath || relativePath.trim() === '') return DOCS_ROOT
-  const normalized = path.normalize(relativePath).replace(/^(\.\.(\/|\\|$))+/, '')
-  const full = path.join(DOCS_ROOT, normalized)
-  const resolved = path.resolve(full)
-  if (!resolved.startsWith(path.resolve(DOCS_ROOT))) return null
-  return resolved
+/** Human-readable location for embed footers. */
+function footerFor(rootKey, relativePath) {
+  const root = rootByKey(rootKey)
+  const base = root ? root.label : rootKey
+  return relativePath ? `${base}/${relativePath}` : base
 }
 
-/** List direct children of docs/(relativePath): dirs and .md/.mdx files. */
-function listDocsDir(relativePath) {
-  const dirPath = resolveDocsPath(relativePath)
+/** List direct children of <root>/(relativePath): dirs and .md/.mdx files. */
+function listDocsDir(rootKey, relativePath) {
+  const dirPath = resolveDocPath(rootKey, relativePath)
   if (!dirPath || !fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
     return { dirs: [], files: [] }
   }
@@ -54,16 +47,16 @@ function listDocsDir(relativePath) {
   return { dirs, files }
 }
 
-/** Build select menu options for a given path (back + folders + files), max 25. */
-function buildBrowseOptions(relativePath) {
-  const { dirs, files } = listDocsDir(relativePath)
+/** Build select menu options for a given root+path (back + folders + files), max 25. */
+function buildBrowseOptions(rootKey, relativePath) {
+  const { dirs, files } = listDocsDir(rootKey, relativePath)
   const options = []
 
   if (relativePath) {
     const parent = relativePath.includes('/') ? relativePath.split('/').slice(0, -1).join('/') : ''
     options.push({
       label: '← Back',
-      value: `back:${relativePath}`,
+      value: `back:${rootKey}:${relativePath}`,
       description: parent ? `Back to ${parent}` : 'Back to root',
     })
   }
@@ -72,7 +65,7 @@ function buildBrowseOptions(relativePath) {
     if (options.length >= SELECT_OPTIONS_MAX) break
     options.push({
       label: `📁 ${d.name}`.slice(0, LABEL_MAX),
-      value: `dir:${d.value}`,
+      value: `dir:${rootKey}:${d.value}`,
       description: `Open folder`,
     })
   }
@@ -80,8 +73,8 @@ function buildBrowseOptions(relativePath) {
     if (options.length >= SELECT_OPTIONS_MAX) break
     options.push({
       label: `📄 ${f.name}`.slice(0, LABEL_MAX),
-      value: `file:${f.value}`,
-      description: f.value,
+      value: `file:${rootKey}:${f.value}`,
+      description: f.value.slice(0, LABEL_MAX),
     })
   }
 
@@ -116,9 +109,9 @@ function chunkForEmbed(content) {
   return chunks
 }
 
-/** Read file from docs and return formatted content or null. */
-function readDocFile(relativePath) {
-  const filePath = resolveDocsPath(relativePath)
+/** Read file from a doc root and return formatted content or null. */
+function readDocFile(rootKey, relativePath) {
+  const filePath = resolveDocPath(rootKey, relativePath)
   if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return null
   try {
     const raw = fs.readFileSync(filePath, 'utf8')
@@ -130,7 +123,7 @@ function readDocFile(relativePath) {
 
 export const data = new SlashCommandBuilder()
   .setName('docs')
-  .setDescription('Browse documentation — open folders and view .md files from bot/docs/')
+  .setDescription('Browse documentation — open folders and view .md files')
 
 export async function execute(interaction) {
   const guild = interaction.guild
@@ -139,19 +132,37 @@ export async function execute(interaction) {
   const cfg = await getOrCreateGuildConfig(guild.id)
   if (!cfg) return interaction.editReply({ content: 'Server not initialized. Run `/init` first.' })
 
-  const options = buildBrowseOptions('')
+  const roots = listRoots()
+
+  let options
+  let description
+  let footerText
+  if (roots.length > 1) {
+    options = roots.map((r) => ({
+      label: `📚 ${r.label}`.slice(0, LABEL_MAX),
+      value: `dir:${r.key}:`,
+      description: 'Open documentation root',
+    }))
+    description = 'Select a **documentation source** to browse.'
+    footerText = 'Documentation'
+  } else {
+    options = buildBrowseOptions(roots[0].key, '')
+    description = 'Select a **folder** to open it or a **file** to view its content.'
+    footerText = footerFor(roots[0].key, '')
+  }
+
   if (options.length === 0) {
     return interaction.editReply({
-      content: 'No documentation folders or .md/.mdx files found in `bot/docs/`.',
+      content: 'No documentation folders or .md/.mdx files found.',
       flags: EPHEMERAL,
     })
   }
 
   const embed = new EmbedBuilder()
     .setTitle('📚 Documentation')
-    .setDescription('Select a **folder** to open it or a **file** to view its content.')
+    .setDescription(description)
     .setColor(0x5865f2)
-    .setFooter({ text: 'bot/docs/' })
+    .setFooter({ text: footerText })
 
   const select = new StringSelectMenuBuilder()
     .setCustomId('docs_browse')
@@ -172,9 +183,12 @@ export async function handleDocsBrowse(interaction) {
   const value = interaction.values?.[0]
   if (!value) return
 
-  if (value.startsWith('file:')) {
-    const relPath = value.slice(5).trim()
-    const content = readDocFile(relPath)
+  // Values are `<kind>:<root>:<relpath>`; split on the first two `:` only.
+  const [kind, root, ...restParts] = value.split(':')
+  const rest = restParts.join(':').trim()
+
+  if (kind === 'file') {
+    const content = readDocFile(root, rest)
     if (content == null) {
       return interaction.editReply({
         content: 'Could not read that file.',
@@ -185,9 +199,9 @@ export async function handleDocsBrowse(interaction) {
 
     const chunks = chunkForEmbed(content)
     const embed = new EmbedBuilder()
-      .setTitle(`📄 ${relPath}`)
+      .setTitle(`📄 ${rest}`)
       .setColor(0x5865f2)
-      .setFooter({ text: 'bot/docs/' })
+      .setFooter({ text: footerFor(root, rest) })
 
     const descChunk = chunks.find(c => c.type === 'description')
     if (descChunk) embed.setDescription(descChunk.text)
@@ -204,10 +218,9 @@ export async function handleDocsBrowse(interaction) {
     }).catch(() => {})
   }
 
-  if (value.startsWith('back:')) {
-    const fromPath = value.slice(5).trim()
-    const parent = fromPath.includes('/') ? fromPath.split('/').slice(0, -1).join('/') : ''
-    const options = buildBrowseOptions(parent)
+  if (kind === 'back') {
+    const parent = rest.includes('/') ? rest.split('/').slice(0, -1).join('/') : ''
+    const options = buildBrowseOptions(root, parent)
     if (options.length === 0) {
       return interaction.editReply({
         content: 'No items here.',
@@ -219,7 +232,7 @@ export async function handleDocsBrowse(interaction) {
       .setTitle('📚 Documentation')
       .setDescription(parent ? `**${parent}** — Select a folder or file.` : 'Select a **folder** or **file**.')
       .setColor(0x5865f2)
-      .setFooter({ text: parent ? `bot/docs/${parent}` : 'bot/docs/' })
+      .setFooter({ text: footerFor(root, parent) })
     const select = new StringSelectMenuBuilder()
       .setCustomId('docs_browse')
       .setPlaceholder('Choose a folder or file…')
@@ -230,9 +243,8 @@ export async function handleDocsBrowse(interaction) {
     }).catch(() => {})
   }
 
-  if (value.startsWith('dir:')) {
-    const dirPath = value.slice(4).trim()
-    const options = buildBrowseOptions(dirPath)
+  if (kind === 'dir') {
+    const options = buildBrowseOptions(root, rest)
     if (options.length === 0) {
       return interaction.editReply({
         content: 'This folder is empty or has no .md/.mdx files.',
@@ -242,9 +254,9 @@ export async function handleDocsBrowse(interaction) {
     }
     const embed = new EmbedBuilder()
       .setTitle('📚 Documentation')
-      .setDescription(`**${dirPath}** — Select a folder or file.`)
+      .setDescription(rest ? `**${rest}** — Select a folder or file.` : 'Select a **folder** or **file**.')
       .setColor(0x5865f2)
-      .setFooter({ text: `bot/docs/${dirPath}` })
+      .setFooter({ text: footerFor(root, rest) })
     const select = new StringSelectMenuBuilder()
       .setCustomId('docs_browse')
       .setPlaceholder('Choose a folder or file…')
