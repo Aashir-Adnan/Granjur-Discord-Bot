@@ -6,6 +6,18 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ## Meeting → tasks integration — post-implementation follow-ups
 Feature shipped 2026-09-02 (see `completed.md`). Remaining:
+- **Live E2E run is merge-gating** — never run end to end; blocked on the user
+  providing a real `CSAAS_ACTOR_URDD`. Runbook: `docs/meeting-pipeline-e2e-checklist.md`.
+  During it, smoke-test the `meeting_pipeline_job` `claim`/`claimBatch` SQL against a
+  live DB (only fake-db tested).
+- **Migration 014 leaves a redundant plain `idx_task_externalId`** on fresh installs
+  (013 adds the plain key, 014 no-ops because the unique key from `schema.sql` is
+  already present). Harmless; tidy `013` to skip when a unique key exists.
+- **Stale-`working` reaper threshold == `MEETING_STAGE_TIMEOUT_MS`** with no margin
+  (`bot/src/Database/index.js` `claim`/`claimBatch`). Fine single-process; give it a
+  2x multiplier before running multiple worker processes.
+- `.claude/state/session.md` still lists the old 3-permission `CSAAS_ACTOR_URDD` set
+  (superseded — it's 4 now incl. `view_meetings`; spec/knowledge/backlog are correct).
 - **Live E2E run pending** — blocked on the user providing a real `CSAAS_ACTOR_URDD`
   (a URDD with `add_meetings`+`run_meeting_ai`+`update_meetings`+`view_meetings`). Runbook:
   `docs/meeting-pipeline-e2e-checklist.md`.
