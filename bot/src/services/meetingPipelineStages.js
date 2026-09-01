@@ -9,6 +9,7 @@ import { getGuildConfigById } from '../Database/index.js'
 import { buildRoster } from './meetingRoster.js'
 import { deriveMeetingName, formatMeetingDate } from '../commands/playback.js'
 import { initReviewState, buildReviewMessage } from './meetingReviewUI.js'
+import { mapMeetingTaskToRow } from './meetingTaskMap.js'
 
 async function guildIdFor(guildConfigId) {
   const cfg = await getGuildConfigById(guildConfigId)
@@ -187,6 +188,111 @@ async function awaitingReviewStage({ job, db, client, csaasClient }) {
   return { block: true, patch }
 }
 
+// approved: tell CSaaS the human decision. On meeting-level reject, terminate the
+// job. Otherwise approve (skipping CSaaS's own GitHub sync — the bot mirrors tasks
+// itself) and advance to `mirrored`. The returned tasks are ignored: the bot
+// already holds dataJson.tasks.
+async function approvedStage({ job, csaasClient }) {
+  const meetingRejected = !!job.dataJson?.review?.meetingRejected
+  if (meetingRejected) {
+    try {
+      await csaasClient.approve(job.csaasMeetingId, { decision: 'rejected' })
+    } catch (e) {
+      console.warn('[meetingPipeline] csaas approve(rejected) failed:', e?.message || e)
+    }
+    return { advance: false, patch: { stage: 'done', status: 'done' } }
+  }
+  try {
+    await csaasClient.approve(job.csaasMeetingId, { decision: 'approved', skipGithub: true })
+  } catch (e) {
+    console.warn('[meetingPipeline] csaas approve(approved) failed:', e?.message || e)
+  }
+  return { patch: {} }
+}
+
+// mirrored: create a bot task row for each non-rejected reviewed task, record the
+// mapping on dataJson.mirrored, and ping assignees in the review channel.
+async function mirroredStage({ job, db, client, csaasClient }) {
+  const dataJson = { ...(job.dataJson || {}) }
+  const review = dataJson.review || {}
+  const reviewTasks = Array.isArray(review.tasks) ? review.tasks : []
+  const csaasTasks = Array.isArray(dataJson.tasks) ? dataJson.tasks : []
+
+  const channel = await resolveMeetingChannel(client, db, job)
+  const discordChannelId = channel?.id || null
+  const botUserId = client?.user?.id
+
+  const mirrored = []
+  for (const reviewTask of reviewTasks) {
+    if (reviewTask.rejected) continue
+    const csaasTask = csaasTasks.find((t) => t.task_id === reviewTask.taskId)
+    if (!csaasTask) continue
+
+    let repositoryId = null
+    try {
+      const repo = await db.repository.findFirst({
+        where: { guildConfigId: job.guildConfigId, name: csaasTask.project },
+      })
+      repositoryId = repo?.id || null
+    } catch (e) {
+      console.warn('[meetingPipeline] repository lookup failed:', e?.message || e)
+      repositoryId = null
+    }
+
+    const row = mapMeetingTaskToRow(csaasTask, reviewTask, {
+      guildConfigId: job.guildConfigId,
+      meetingId: job.meetingId,
+      discordChannelId,
+      botUserId,
+      repositoryId,
+    })
+    const created = await db.task.create({ data: row })
+    mirrored.push({
+      dbTaskId: created.id,
+      csaasTaskId: csaasTask.task_id,
+      assigneeRef: reviewTask.assigneeRef,
+      github: !!reviewTask.github,
+    })
+  }
+
+  dataJson.mirrored = mirrored
+
+  if (channel) {
+    const byRef = new Map()
+    let unassigned = 0
+    for (const m of mirrored) {
+      const ct = csaasTasks.find((t) => t.task_id === m.csaasTaskId)
+      const title = mapMeetingTaskToRow(ct || { task_id: m.csaasTaskId }, {}, {}).title
+      if (m.assigneeRef) {
+        if (!byRef.has(m.assigneeRef)) byRef.set(m.assigneeRef, [])
+        byRef.get(m.assigneeRef).push(title)
+      } else {
+        unassigned++
+      }
+    }
+    for (const [ref, titles] of byRef) {
+      try {
+        await channel.send(
+          `<@${ref}> you've been assigned: ${titles.map((t) => `**${t}**`).join(', ')} — /update-task for details`,
+        )
+      } catch (e) {
+        console.warn('[meetingPipeline] assignee ping failed:', e?.message || e)
+      }
+    }
+    if (unassigned > 0) {
+      try {
+        await channel.send(
+          `${unassigned} task(s) from this meeting are unassigned — assign with /update-task`,
+        )
+      } catch (e) {
+        console.warn('[meetingPipeline] unassigned summary send failed:', e?.message || e)
+      }
+    }
+  }
+
+  return { patch: { dataJson } }
+}
+
 // APPEND one key per task; never delete a sibling key.
 export const stageRunners = {
   created: createdStage,
@@ -195,4 +301,6 @@ export const stageRunners = {
   generating_tasks: generatingTasksStage,
   assigning: assigningStage,
   awaiting_review: awaitingReviewStage,
+  approved: approvedStage,
+  mirrored: mirroredStage,
 }

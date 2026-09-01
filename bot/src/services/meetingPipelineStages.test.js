@@ -200,3 +200,82 @@ test('awaiting_review still blocks when channel resolution fails', async () => {
   assert.equal(out.patch.reviewMessageId, undefined)
   assert.equal(typeof out.patch.dataJson.review, 'object')
 })
+
+test('approved reject path calls csaas approve(rejected) and terminates', async () => {
+  const calls = []
+  const csaasClient = { approve: async (mid, opts) => { calls.push([mid, opts]); return { tasks: [] } } }
+  const job = { id: 'j', csaasMeetingId: 'm', dataJson: { review: { meetingRejected: true } } }
+  const out = await stageRunners.approved({ job, db: {}, client: {}, csaasClient })
+  assert.deepEqual(calls, [['m', { decision: 'rejected' }]])
+  assert.equal(out.advance, false)
+  assert.deepEqual(out.patch, { stage: 'done', status: 'done' })
+})
+
+test('approved happy path approves with skipGithub and advances', async () => {
+  const calls = []
+  const csaasClient = { approve: async (mid, opts) => { calls.push([mid, opts]); return { tasks: [] } } }
+  const job = { id: 'j', csaasMeetingId: 'm', dataJson: { review: { tasks: [] } } }
+  const out = await stageRunners.approved({ job, db: {}, client: {}, csaasClient })
+  assert.deepEqual(calls, [['m', { decision: 'approved', skipGithub: true }]])
+  assert.notEqual(out.advance, false)
+  assert.deepEqual(out.patch, {})
+})
+
+test('mirrored creates a task per non-rejected review task and pings assignees', async () => {
+  const created = []
+  const sent = []
+  const channel = { id: 'tc1', send: async (m) => { sent.push(m); return { id: 'x' } } }
+  const client = { user: { id: 'bot' }, channels: { fetch: async () => channel } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findFirst: async ({ where }) => (where.name === 'granjur' ? { id: 'r1' } : null) },
+    task: { create: async ({ data }) => { created.push(data); return { id: `db${created.length}` } } },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [
+        { task_id: 'a', goal_of_task: 'Do A', project: 'granjur' },
+        { task_id: 'b', goal_of_task: 'Do B' },
+      ],
+      review: {
+        tasks: [
+          { taskId: 'a', assigneeRef: '11', github: true, rejected: false },
+          { taskId: 'b', assigneeRef: '11', rejected: true },
+        ],
+      },
+    },
+  }
+  const out = await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(created.length, 1)
+  assert.equal(created[0].externalId, 'csaas:a')
+  assert.equal(created[0].repositoryId, 'r1')
+  assert.equal(created[0].discordChannelId, 'tc1')
+  assert.equal(out.patch.dataJson.mirrored.length, 1)
+  assert.equal(out.patch.dataJson.mirrored[0].dbTaskId, 'db1')
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\*/)
+})
+
+test('mirrored posts an unassigned summary line', async () => {
+  const sent = []
+  const channel = { id: 'tc1', send: async (m) => { sent.push(m); return { id: 'x' } } }
+  const client = { user: { id: 'bot' }, channels: { fetch: async () => channel } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => null },
+    repository: { findFirst: async () => null },
+    task: { create: async () => ({ id: 'db1' }) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 'a', goal_of_task: 'Do A' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: null, rejected: false }] },
+    },
+  }
+  await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /1 task\(s\) from this meeting are unassigned/)
+})
