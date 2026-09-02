@@ -36,11 +36,15 @@
 - Consumes: nothing
 - Produces: `npm test` runs `node --test bot/test/`, so every later task has somewhere to put tests.
 
-- [ ] **Step 1: Create the working branch**
+- [ ] **Step 1: Confirm you are on the working branch**
+
+The branch already exists — it carries this plan and the spec.
 
 ```bash
-git checkout -b feat/project-docs
+git branch --show-current
 ```
+
+Expected: `feat/project-docs`. If it prints anything else, run `git checkout feat/project-docs` before continuing. Never work on `main`.
 
 - [ ] **Step 2: Add the test script**
 
@@ -584,6 +588,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Produces, on `db`:
   - `docPage.listIndex({ guildConfigId }): Promise<Row[]>` — every row **without** `content`: `{ id, path, docId, section, projectId, title, source }`
   - `docPage.findByDocId({ guildConfigId, docId }): Promise<Row|null>` — full row including `content`
+  - `docPage.findById({ guildConfigId, id }): Promise<Row|null>` — full row; this is how Discord components address a page, because a `docId` can be up to 103 characters and Discord caps a custom_id, an option value, and an autocomplete value at 100
   - `docPage.search({ guildConfigId, q, limit }): Promise<Row[]>` — no `content`
   - `docPage.upsert({ data }): Promise<void>` — `data` is `{ guildConfigId, path, docId, section, projectId, title, content, source, blobSha, size }`
   - `docPage.deleteRepoPathsNotIn({ guildConfigId, paths }): Promise<number>`
@@ -710,6 +715,15 @@ async function docPageFindByDocId({ guildConfigId, docId }) {
   ]);
 }
 
+// Discord component values and custom_ids cap at 100 characters and the longest
+// docId in the corpus is 103, so components address a page by primary key.
+async function docPageFindById({ guildConfigId, id: rowId }) {
+  return queryOne("SELECT * FROM `docpage` WHERE guildConfigId = ? AND id = ?", [
+    guildConfigId,
+    rowId,
+  ]);
+}
+
 async function docPageSearch({ guildConfigId, q, limit = 25 }) {
   const term = String(q || "").trim();
   // mysql2 `execute` uses prepared statements, where a bound LIMIT parameter is
@@ -818,6 +832,7 @@ Then register them on the exported `db` object, immediately after the `ticketDoc
   docPage: {
     listIndex: docPageListIndex,
     findByDocId: docPageFindByDocId,
+    findById: docPageFindById,
     search: docPageSearch,
     upsert: docPageUpsert,
     deleteRepoPathsNotIn: docPageDeleteRepoPathsNotIn,
@@ -1377,7 +1392,8 @@ The pure logic behind the browse menus, split out of the command so it can be te
 - Consumes: nothing (operates on the plain index rows from `db.docPage.listIndex`)
 - Produces:
   - `rootOptions(index, projects): Array<{label, value, description}>` — values are `proj:<projectId>` and `sec:<section>`
-  - `childOptions(index, { scope, prefix, page }): { options, hasMore, total }` — values are `dir:<prefix>`, `doc:<docId>`, `back:<prefix>`, `more:<prefix>:<page>`
+  - `childOptions(index, { scope, prefix, page }): { options, hasMore, total }` — values are `dir:<prefix>`, `doc:<docpage row id>`, `back:<prefix>`, `more:<prefix>:<page>`.
+    A doc option carries the row's **primary key**, never its `docId`: Discord caps an option value at 100 characters and the longest `docId` in the corpus is 103. Every index row therefore needs its `id`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1389,11 +1405,11 @@ import assert from 'node:assert/strict'
 import { rootOptions, childOptions } from '../src/utils/docTree.js'
 
 const INDEX = [
-  { path: 'docs/api/overview.md', docId: 'api/overview', section: 'api', projectId: null, title: 'Overview', source: 'repo' },
-  { path: 'docs/api/permissions.md', docId: 'api/permissions', section: 'api', projectId: null, title: 'Permissions', source: 'repo' },
-  { path: 'docs/hms-documentation/admin-apis/rooms.md', docId: 'hms-documentation/admin-apis/rooms', section: 'hms-documentation', projectId: 'p1', title: 'Rooms', source: 'repo' },
-  { path: 'docs/projects/badar-hms/Opera_Config.md', docId: 'projects/badar-hms/Opera_Config', section: 'projects', projectId: 'p1', title: 'Opera Config', source: 'repo' },
-  { path: 'docs/projects/badar-hms/notes.md', docId: 'projects/badar-hms/notes', section: 'projects', projectId: 'p1', title: 'Notes', source: 'local' },
+  { id: 'd1', path: 'docs/api/overview.md', docId: 'api/overview', section: 'api', projectId: null, title: 'Overview', source: 'repo' },
+  { id: 'd2', path: 'docs/api/permissions.md', docId: 'api/permissions', section: 'api', projectId: null, title: 'Permissions', source: 'repo' },
+  { id: 'd3', path: 'docs/hms-documentation/admin-apis/rooms.md', docId: 'hms-documentation/admin-apis/rooms', section: 'hms-documentation', projectId: 'p1', title: 'Rooms', source: 'repo' },
+  { id: 'd4', path: 'docs/projects/badar-hms/Opera_Config.md', docId: 'projects/badar-hms/Opera_Config', section: 'projects', projectId: 'p1', title: 'Opera Config', source: 'repo' },
+  { id: 'd5', path: 'docs/projects/badar-hms/notes.md', docId: 'projects/badar-hms/notes', section: 'projects', projectId: 'p1', title: 'Notes', source: 'local' },
 ]
 
 const PROJECTS = [{ id: 'p1', name: 'Badar HMS' }, { id: 'p2', name: 'CSAAS' }]
@@ -1424,25 +1440,26 @@ test('childOptions on a project lists its immediate directories and files', () =
 test('childOptions descends into a directory and lists files', () => {
   const { options } = childOptions(INDEX, { scope: 'proj:p1', prefix: 'projects/badar-hms' })
   const values = options.map((o) => o.value)
-  assert.ok(values.includes('doc:projects/badar-hms/Opera_Config'))
-  assert.ok(values.includes('doc:projects/badar-hms/notes'))
+  assert.ok(values.includes('doc:d4'))
+  assert.ok(values.includes('doc:d5'))
   assert.equal(values[0].startsWith('back:'), true, 'first option goes back')
 })
 
 test('childOptions marks local docs', () => {
   const { options } = childOptions(INDEX, { scope: 'proj:p1', prefix: 'projects/badar-hms' })
-  const notes = options.find((o) => o.value === 'doc:projects/badar-hms/notes')
+  const notes = options.find((o) => o.value === 'doc:d5')
   assert.match(notes.label, /📝/)
 })
 
 test('childOptions on a section scopes to that section only', () => {
   const { options } = childOptions(INDEX, { scope: 'sec:api', prefix: '' })
   const values = options.map((o) => o.value)
-  assert.deepEqual(values.sort(), ['doc:api/overview', 'doc:api/permissions'])
+  assert.deepEqual(values.sort(), ['doc:d1', 'doc:d2'])
 })
 
 test('childOptions pages when there are more than 25 entries', () => {
   const many = Array.from({ length: 60 }, (_, i) => ({
+    id: `m${i}`,
     path: `docs/api/f${i}.md`,
     docId: `api/f${i}`,
     section: 'api',
@@ -1456,6 +1473,22 @@ test('childOptions pages when there are more than 25 entries', () => {
   assert.equal(first.options[24].value, 'more:api:1')
   const second = childOptions(many, { scope: 'sec:api', prefix: '', page: 1 })
   assert.equal(second.options[0].value.startsWith('doc:'), true)
+})
+
+test('every option value stays inside Discord's 100 character cap', () => {
+  const longId = 'hms-documentation/major-implementations/landmarks-cities-regions-hotels/landmarks-cities-regions-hotels'
+  const index = [
+    { id: 'abc123', path: `docs/${longId}.md`, docId: longId, section: 'hms-documentation', projectId: 'p1', title: 'Landmarks', source: 'repo' },
+  ]
+  const { options } = childOptions(index, {
+    scope: 'proj:p1',
+    prefix: 'hms-documentation/major-implementations/landmarks-cities-regions-hotels',
+  })
+  for (const o of options) {
+    assert.ok(o.value.length <= 100, `value too long (${o.value.length}): ${o.value}`)
+    assert.ok(o.label.length <= 100)
+    assert.ok((o.description || '').length <= 100)
+  }
 })
 ```
 
@@ -1554,9 +1587,11 @@ export function childOptions(index, { scope, prefix = '', page = 0 }) {
   for (const f of files.sort((a, b) => a.title.localeCompare(b.title))) {
     const mark = f.source === 'local' ? '📝' : '📄'
     entries.push({
+      // The row id, not the docId: Discord caps an option value at 100 chars
+      // and the longest docId in this corpus is 103.
       label: `${mark} ${f.title}`.slice(0, LABEL_MAX),
-      value: `doc:${f.docId}`,
-      description: f.docId.slice(0, 100),
+      value: `doc:${f.id}`,
+      description: f.docId.slice(-100),
     })
   }
 
@@ -1593,7 +1628,7 @@ export function childOptions(index, { scope, prefix = '', page = 0 }) {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npm test`
-Expected: PASS — 35 tests total.
+Expected: PASS — 36 tests total.
 
 - [ ] **Step 5: Commit**
 
@@ -1619,7 +1654,8 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
   - `autocomplete(interaction)`
   - `execute(interaction)`
   - `handleDocsBrowse(interaction)` — select `docs_browse`
-  - `handleDocsPage(interaction)` — buttons `docs_page_prev:<docId>:<n>` and `docs_page_next:<docId>:<n>`
+  - `handleDocsPage(interaction)` — buttons `docs_page_prev:<docpage id>:<n>` and `docs_page_next:<docpage id>:<n>`.
+    Components address a page by row id, never by `docId`: the longest `docId` here is 103 characters and Discord caps a custom_id, an option value, and an autocomplete choice value at 100. `docId` is still what builds the site URL and what the footer shows.
 
 - [ ] **Step 1: Rewrite the command**
 
@@ -1665,8 +1701,9 @@ export async function autocomplete(interaction) {
   try {
     const cfg = await getOrCreateGuildConfig(interaction.guild.id)
     const rows = await db.docPage.search({ guildConfigId: cfg.id, q: focused.value, limit: 25 })
+    // The choice value is the row id — an autocomplete value also caps at 100.
     return interaction
-      .respond(rows.map((r) => ({ name: r.title.slice(0, 100), value: r.docId.slice(0, 100) })))
+      .respond(rows.map((r) => ({ name: r.title.slice(0, 100), value: r.id })))
       .catch(() => {})
   } catch {
     return interaction.respond([]).catch(() => {})
@@ -1689,12 +1726,12 @@ function docPayload(row, source, page) {
   if (pages.length > 1) {
     buttons.push(
       new ButtonBuilder()
-        .setCustomId(`docs_page_prev:${row.docId}:${n}`)
+        .setCustomId(`docs_page_prev:${row.id}:${n}`)
         .setLabel('◀')
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(n === 0),
       new ButtonBuilder()
-        .setCustomId(`docs_page_next:${row.docId}:${n}`)
+        .setCustomId(`docs_page_next:${row.id}:${n}`)
         .setLabel('▶')
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(n >= pages.length - 1)
@@ -1758,10 +1795,12 @@ export async function execute(interaction) {
 
   const q = interaction.options.getString('query')
   if (q) {
-    let row = await db.docPage.findByDocId({ guildConfigId: cfg.id, docId: q })
+    // Picking an autocomplete suggestion sends a row id; typing free text and
+    // pressing enter sends whatever was typed, so fall back to a search.
+    let row = await db.docPage.findById({ guildConfigId: cfg.id, id: q })
     if (!row) {
       const hits = await db.docPage.search({ guildConfigId: cfg.id, q, limit: 1 })
-      if (hits.length) row = await db.docPage.findByDocId({ guildConfigId: cfg.id, docId: hits[0].docId })
+      if (hits.length) row = await db.docPage.findById({ guildConfigId: cfg.id, id: hits[0].id })
     }
     if (!row) {
       return interaction.editReply({ content: `No documentation found for **${q}**.` }).catch(() => {})
@@ -1801,8 +1840,7 @@ export async function handleDocsBrowse(interaction) {
     return interaction.editReply(await browsePayload(cfg, scopeFromId, prefix, page)).catch(() => {})
   }
   if (value.startsWith('doc:')) {
-    const docId = value.slice(4)
-    const row = await db.docPage.findByDocId({ guildConfigId: cfg.id, docId })
+    const row = await db.docPage.findById({ guildConfigId: cfg.id, id: value.slice(4) })
     if (!row) {
       const src = await db.docSource.get({ guildConfigId: cfg.id })
       const when = src?.lastSyncedAt ? ` (last synced <t:${Math.floor(new Date(src.lastSyncedAt).getTime() / 1000)}:R>)` : ''
@@ -1819,10 +1857,11 @@ export async function handleDocsBrowse(interaction) {
 export async function handleDocsPage(interaction) {
   if (!interaction.guild) return
   const { cfg, source } = await context(interaction)
-  const [action, ...rest] = interaction.customId.split(':')
-  const page = Number(rest.pop())
-  const docId = rest.join(':')
-  const row = await db.docPage.findByDocId({ guildConfigId: cfg.id, docId })
+  // customId is `docs_page_(prev|next):<row id>:<current page>` — a row id
+  // never contains a colon, so a plain split is safe.
+  const [action, rowId, pageStr] = interaction.customId.split(':')
+  const page = Number(pageStr) || 0
+  const row = await db.docPage.findById({ guildConfigId: cfg.id, id: rowId })
   if (!row) return interaction.editReply({ content: 'That page is no longer available.' }).catch(() => {})
   const next = action === 'docs_page_next' ? page + 1 : page - 1
   return interaction.editReply(docPayload(row, source, next)).catch(() => {})
@@ -1887,7 +1926,7 @@ Expected: a title, several dozen pages, **max page length at or below 3800**, an
 - [ ] **Step 5: Run the full test suite**
 
 Run: `npm test`
-Expected: PASS — 35 tests.
+Expected: PASS — 36 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -1907,7 +1946,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Modify: `bot/src/commands/index.js` (import + register)
 - Modify: `bot/src/handlers/interactions.js` (route the new components)
 - Modify: `bot/src/commands/repos.js:160` (write the project and the join row)
-- Modify: `bot/src/Database/index.js` (extend `projectCreate`, add `projectFindByName`, `projectRepos.add`)
+- Modify: `bot/src/Database/index.js` (extend `projectCreate`, add `projectFindByName`)
 - Modify: `bot/src/config/command-config.json` (restrict `/projects` to CEO / Server Manager)
 
 **Interfaces:**
@@ -1915,7 +1954,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Produces:
   - `db.project.findByName({ guildConfigId, name })`
   - `db.project.create({ data })` extended with `docsSlug` and `docsPaths`
-  - `db.projectRepos.add({ projectId, repositoryId })`
+  - (existing, unchanged) `db.projectRepos.add({ data: { project_id, repository_id } })`
   - `projectsCmd.execute`, `projectsCmd.handleAddButton`, `projectsCmd.handleAddModal`, `projectsCmd.handleLinkRepo`, `projectsCmd.handleLinkProject`
 
 - [ ] **Step 1: Extend the database surface**
@@ -1947,15 +1986,11 @@ async function projectFindByName({ guildConfigId, name }) {
   ]);
 }
 
-async function projectReposAdd({ projectId, repositoryId }) {
-  await query(
-    "INSERT IGNORE INTO `project_repos` (project_id, repository_id) VALUES (?, ?)",
-    [projectId, repositoryId],
-  );
-}
 ```
 
-Add `findByName: projectFindByName,` to the `project` block on `db`, and add `add: projectReposAdd,` to the existing `projectRepos` block.
+Add `findByName: projectFindByName,` to the `project` block on `db`.
+
+**Do not add a `projectReposAdd` function** — one already exists at `bot/src/Database/index.js:798` and is already exposed as `db.projectRepos.add`. Its signature is `add({ data: { project_id, repository_id } })`, and every call site in this task must use that shape. Declaring a second one is a SyntaxError.
 
 - [ ] **Step 2: Create the command**
 
@@ -2110,7 +2145,7 @@ export async function handleLinkProjectSelect(interaction) {
   if (!state?.repositoryId) {
     return interaction.editReply({ content: 'That selection expired — start again with /projects.', components: [] }).catch(() => {})
   }
-  await db.projectRepos.add({ projectId: interaction.values[0], repositoryId: state.repositoryId })
+  await db.projectRepos.add({ data: { project_id: interaction.values[0], repository_id: state.repositoryId } })
   flowStore.clear(interaction.user.id, interaction.guild.id, 'projects_link')
   return interaction.editReply({ content: 'Linked.', components: [] }).catch(() => {})
 }
@@ -2194,7 +2229,7 @@ In `bot/src/commands/repos.js`, in the confirm handler, replace the `db.reposito
         })
       }
       if (project?.id && repo?.id) {
-        await db.projectRepos.add({ projectId: project.id, repositoryId: repo.id })
+        await db.projectRepos.add({ data: { project_id: project.id, repository_id: repo.id } })
       }
     }
 ```
@@ -2217,7 +2252,7 @@ Expected: `count: 37 | projects present: true`
 - [ ] **Step 8: Run the tests**
 
 Run: `npm test`
-Expected: PASS — 35 tests.
+Expected: PASS — 36 tests.
 
 - [ ] **Step 9: Commit**
 
@@ -2235,7 +2270,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Modify (rewrite): `bot/src/commands/edit-docs.js`
 - Modify: `bot/src/services/docTraversal.js`
-- Modify: `bot/src/handlers/interactions.js` (route the new attachment path if the custom ids change)
+- Modify: `bot/src/index.js` (add `edit_docs_select` to `noDeferComponentIds`)
 
 **Interfaces:**
 - Consumes: `db.docPage.upsert / listIndex`, `db.project.findMany`, `slugify`
@@ -2360,6 +2395,16 @@ export async function handleEditDocsModal(interaction) {
     })
     .catch(() => {})
 }
+```
+
+- [ ] **Step 1b: Stop the bot deferring the select that opens a modal**
+
+`handleEditDocsSelect` calls `interaction.showModal(...)`, but `bot/src/index.js` calls `deferUpdate()` on every select whose customId is not in `noDeferComponentIds` — and `edit_docs_select` is not in that list. A deferred interaction cannot then show a modal, so `/edit-docs` fails at step two. This is a pre-existing bug on `main`, not one this task introduces, and this is the only task that can fix it without a stray commit.
+
+In `bot/src/index.js`, add to the `noDeferComponentIds` array:
+
+```js
+      "edit_docs_select", // project select → new-page modal
 ```
 
 - [ ] **Step 2: Repoint the `#documentation` channel traversal**
@@ -2493,7 +2538,7 @@ Expected: PASS, `commands: 37`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add bot/src/commands/edit-docs.js bot/src/commands/doc-channel.js bot/src/services/docTraversal.js
+git add bot/src/commands/edit-docs.js bot/src/commands/doc-channel.js bot/src/services/docTraversal.js bot/src/index.js
 git commit -m "feat: repoint /edit-docs and the documentation channel at docpage
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
