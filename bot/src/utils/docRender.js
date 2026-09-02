@@ -8,11 +8,19 @@
  * button on the embed is for.
  */
 
+import { encodePathSegments } from './docPath.js'
+
 const ADMONITION_TYPES = ['note', 'tip', 'info', 'warning', 'caution', 'danger']
 
-/** Build the published URL for a doc id. */
+/**
+ * Build the published URL for a doc id. Each path segment is encoded and the
+ * slashes between them are kept: an unencoded space or `)` produces a URL
+ * discord.js accepts and the Discord API rejects, and that rejection is
+ * swallowed by the caller's `.catch(() => {})`, leaving the user on a reply
+ * that never resolves.
+ */
 export function docUrl(siteUrl, docId) {
-  return `${String(siteUrl || '').replace(/\/+$/, '')}/docs/${docId}`
+  return `${String(siteUrl || '').replace(/\/+$/, '')}/docs/${encodePathSegments(docId)}`
 }
 
 function stripFrontmatter(text) {

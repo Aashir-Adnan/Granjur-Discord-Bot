@@ -9,6 +9,21 @@ test('docUrl builds a site route from a docId', () => {
   assert.equal(docUrl(SITE + '/', 'api/overview'), 'https://ubs-doc.vercel.app/docs/api/overview')
 })
 
+test('docUrl encodes a space, and keeps the slashes between segments', () => {
+  assert.equal(
+    docUrl(SITE, 'projects/badar-hms/Opera Config'),
+    'https://ubs-doc.vercel.app/docs/projects/badar-hms/Opera%20Config'
+  )
+})
+
+test('docUrl encodes parentheses, which would otherwise end a markdown link early', () => {
+  // The documentation channel emits `[title](docUrl(...))`, so a bare ")" in
+  // the docId truncates the href.
+  const url = docUrl(SITE, 'api/limits (draft)')
+  assert.equal(url, 'https://ubs-doc.vercel.app/docs/api/limits%20%28draft%29')
+  assert.equal(url.includes(')'), false)
+})
+
 test('renderForDiscord strips frontmatter', () => {
   const out = renderForDiscord('---\ntitle: X\n---\n\nBody text\n', { siteUrl: SITE })
   assert.equal(out, 'Body text')

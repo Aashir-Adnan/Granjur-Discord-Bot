@@ -12,6 +12,7 @@ import {
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { slugify } from '../utils/docPath.js'
+import { reattributeGuildDocs } from '../services/docsSync.js'
 
 export const data = new SlashCommandBuilder()
   .setName('projects')
@@ -105,9 +106,18 @@ export async function handleAddModal(interaction) {
     data: { guildConfigId: cfg.id, name, docsSlug: slug, docsPaths: paths },
   })
 
+  // Already-mirrored pages match this project by path prefix, and nothing about
+  // the repository changed, so a sync would short-circuit and never notice.
+  // Re-run attribution here instead — it is a read of the index plus one write
+  // per page that actually moved.
+  const attributed = await reattributeGuildDocs(cfg.id).catch(() => 0)
+  const note = attributed
+    ? ` **${attributed}** already-synced page(s) now appear under it in **/docs**.`
+    : ' No synced pages match those paths yet — they will be attributed as the documentation repository grows, or run **/setup** → **Sync docs now**.'
+
   return interaction
     .editReply({
-      content: `Added **${name}** (docs folder \`docs/projects/${slug}/\`${paths.length ? `, plus ${paths.map((p) => `\`${p}\``).join(', ')}` : ''}). Run **/setup** → **Sync docs now** to attribute its pages.`,
+      content: `Added **${name}** (docs folder \`docs/projects/${slug}/\`${paths.length ? `, plus ${paths.map((p) => `\`${p}\``).join(', ')}` : ''}).${note}`,
     })
     .catch(() => {})
 }

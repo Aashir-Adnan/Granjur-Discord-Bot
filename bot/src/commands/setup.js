@@ -117,11 +117,17 @@ export async function handleDocsSync(interaction) {
   await interaction
     .editReply({ content: "Syncing documentation…", embeds: [], components: [] })
     .catch(() => {});
-  const res = await syncGuildNow(guild.id);
+  // The button forces a full pass: it is the documented recovery route, and
+  // reporting "already up to date" is useless in exactly the states — a wiped
+  // or mis-attributed mirror — that make someone press it. The 15-minute
+  // background loop keeps its head-sha short-circuit.
+  const res = await syncGuildNow(guild.id, { force: true });
   const text = res.failed
     ? `Sync failed: \`${res.error}\``
-    : res.skipped
-      ? "Already up to date — no changes since the last sync."
-      : `Synced. ${res.upserted} page(s) added or updated, ${res.deleted} removed.`;
+    : `Synced. ${res.upserted} page(s) added or updated, ${res.deleted} removed, ${res.reattributed} re-assigned to a project.${
+        res.failedFiles
+          ? `\n\n${res.failedFiles} file(s) could not be downloaded, so nothing was removed and the next sync will retry them.`
+          : ""
+      }`;
   return interaction.editReply({ content: text }).catch(() => {});
 }

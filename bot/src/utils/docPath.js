@@ -25,6 +25,24 @@ export function sectionOf(path) {
   return path.slice(DOCS_PREFIX.length).split('/')[0]
 }
 
+/**
+ * Percent-encode every segment of a slash-separated path to RFC 3986, keeping
+ * the slashes between them. `encodeURIComponent` leaves `!'()*` alone, and a
+ * `)` ends a markdown link early, so those are encoded too. A path made only of
+ * unreserved characters comes back byte-identical.
+ */
+export function encodePathSegments(path) {
+  return String(path ?? '')
+    .split('/')
+    .map((segment) =>
+      encodeURIComponent(segment).replace(
+        /[!'()*]/g,
+        (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+      )
+    )
+    .join('/')
+}
+
 /** 'Badar HMS' -> 'badar-hms'. Used to derive a project's default docsSlug. */
 export function slugify(name) {
   return String(name || '')

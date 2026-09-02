@@ -3,12 +3,13 @@ import assert from 'node:assert/strict'
 import { syncOnce, fetchHeadSha, fetchTree, __resetGhTokenState } from '../src/services/docsSync.js'
 
 function makeDb(existing = []) {
-  const calls = { upserts: [], deletedNotIn: null, sync: null, error: null }
+  const calls = { upserts: [], deletedNotIn: null, sync: null, error: null, attributed: [] }
   return {
     calls,
     docPage: {
       listIndexFull: async () => existing,
       upsert: async ({ data }) => calls.upserts.push(data),
+      setProjectId: async (a) => calls.attributed.push(a),
       deleteRepoPathsNotIn: async ({ paths }) => {
         calls.deletedNotIn = paths
         return existing.filter((r) => r.source === 'repo' && !paths.includes(r.path)).length
@@ -166,6 +167,181 @@ test('a fetch failure records the error and does not throw', async () => {
   assert.equal(res.failed, true)
   assert.match(db.calls.error.message, /rate limited/)
   assert.equal(db.calls.sync, null)
+})
+
+// --- Refusing to act on an incomplete picture of the repository ---
+
+test('a truncated tree fails the cycle: no delete pass and no head sha recorded', async () => {
+  const db = makeDb([{ id: 'r1', path: 'docs/api/overview.md', blobSha: 'sha-a', source: 'repo' }])
+  const res = await syncOnce({
+    guildConfigId: 'g1',
+    source: SOURCE,
+    projects: PROJECTS,
+    deps: {
+      db,
+      fetchHeadSha: async () => 'new-sha',
+      // fetchTree throws on json.truncated; syncOnce must not paper over it.
+      fetchTree: async () => {
+        throw new Error('GitHub tree response was truncated — refusing to sync a partial tree')
+      },
+      fetchRaw: async () => '# T\n',
+    },
+  })
+  assert.equal(res.failed, true)
+  assert.equal(db.calls.deletedNotIn, null)
+  assert.equal(db.calls.sync, null)
+  assert.match(db.calls.error.message, /truncated/)
+})
+
+test('fetchTree throws rather than returning a truncated tree', async () => {
+  const fetchImpl = async () => fakeResponse(200, { truncated: true, tree: [{ path: 'docs/a.md' }] })
+  await assert.rejects(() => fetchTree(SOURCE, { fetchImpl }), /truncated/)
+})
+
+test('an empty document list never runs the delete pass', async () => {
+  const db = makeDb([{ id: 'r1', path: 'docs/api/overview.md', blobSha: 'sha-a', source: 'repo' }])
+  const res = await syncOnce({
+    guildConfigId: 'g1',
+    source: SOURCE,
+    projects: PROJECTS,
+    deps: {
+      db,
+      fetchHeadSha: async () => 'new-sha',
+      // A branch with no docs/ at all, or a tree that came back wrong.
+      fetchTree: async () => [{ path: 'README.md', type: 'blob', sha: 'z', size: 1 }],
+      fetchRaw: async () => '# T\n',
+    },
+  })
+  assert.equal(res.failed, true)
+  assert.equal(db.calls.deletedNotIn, null)
+  assert.equal(db.calls.sync, null)
+  assert.match(db.calls.error.message, /no documentation files/)
+})
+
+test('one failing file does not abandon the rest, delete, or record the head sha', async () => {
+  const db = makeDb()
+  const res = await syncOnce({
+    guildConfigId: 'g1',
+    source: SOURCE,
+    projects: PROJECTS,
+    deps: {
+      db,
+      fetchHeadSha: async () => 'new-sha',
+      fetchTree: async () => TREE,
+      fetchRaw: async (path) => {
+        if (path === 'docs/api/overview.md') throw new Error('raw 404 for docs/api/overview.md')
+        return '# T\n'
+      },
+    },
+  })
+  // The other document still landed.
+  assert.equal(res.upserted, 1)
+  assert.equal(res.failedFiles, 1)
+  assert.deepEqual(
+    db.calls.upserts.map((u) => u.path),
+    ['docs/projects/badar-hms/Opera_Config.md']
+  )
+  // The tree was complete but the mirror is not: nothing is deleted and the
+  // next cycle must still retry.
+  assert.equal(db.calls.deletedNotIn, null)
+  assert.equal(db.calls.sync, null)
+  assert.match(db.calls.error.message, /failed to download/)
+})
+
+test('a path held by a local page is left alone, not overwritten', async () => {
+  const db = makeDb([
+    { id: 'r1', path: 'docs/projects/badar-hms/Opera_Config.md', blobSha: null, source: 'local', projectId: 'p1' },
+  ])
+  const fetched = []
+  const res = await syncOnce({
+    guildConfigId: 'g1',
+    source: SOURCE,
+    projects: PROJECTS,
+    deps: {
+      db,
+      fetchHeadSha: async () => 'new-sha',
+      fetchTree: async () => TREE,
+      fetchRaw: async (path) => {
+        fetched.push(path)
+        return '# Repo version\n'
+      },
+    },
+  })
+  // Never downloaded, never upserted, and still listed as present so the delete
+  // pass leaves the repository sibling alone too.
+  assert.deepEqual(fetched, ['docs/api/overview.md'])
+  assert.deepEqual(
+    db.calls.upserts.map((u) => u.path),
+    ['docs/api/overview.md']
+  )
+  assert.equal(res.conflicts, 1)
+})
+
+// --- Attribution is independent of the blob diff ---
+
+test('attribution is recomputed on the cycle that short-circuits', async () => {
+  const db = makeDb([
+    { id: 'r1', path: 'docs/projects/badar-hms/Opera_Config.md', blobSha: 'sha-b', source: 'repo', projectId: null },
+    { id: 'r2', path: 'docs/hms-documentation/setup.md', blobSha: 'sha-x', source: 'repo', projectId: null },
+  ])
+  const res = await syncOnce({
+    guildConfigId: 'g1',
+    source: SOURCE,
+    projects: PROJECTS,
+    deps: {
+      db,
+      fetchHeadSha: async () => 'old-sha',
+      fetchTree: async () => TREE,
+      fetchRaw: async () => '',
+    },
+  })
+  assert.equal(res.skipped, true)
+  assert.equal(res.reattributed, 2)
+  assert.deepEqual(db.calls.attributed, [
+    { guildConfigId: 'g1', id: 'r1', projectId: 'p1' },
+    { guildConfigId: 'g1', id: 'r2', projectId: 'p1' },
+  ])
+})
+
+test('re-attribution writes only the rows whose project actually changed', async () => {
+  const db = makeDb([
+    { id: 'r1', path: 'docs/projects/badar-hms/Opera_Config.md', blobSha: 'sha-b', source: 'repo', projectId: 'p1' },
+    { id: 'r2', path: 'docs/api/overview.md', blobSha: 'sha-a', source: 'repo', projectId: null },
+    // A Discord-authored page keeps the projectId /edit-docs gave it.
+    { id: 'r3', path: 'docs/notes/mine.md', blobSha: null, source: 'local', projectId: 'p1' },
+  ])
+  const res = await syncOnce({
+    guildConfigId: 'g1',
+    source: SOURCE,
+    projects: PROJECTS,
+    deps: {
+      db,
+      fetchHeadSha: async () => 'old-sha',
+      fetchTree: async () => TREE,
+      fetchRaw: async () => '',
+    },
+  })
+  assert.equal(res.reattributed, 0)
+  assert.deepEqual(db.calls.attributed, [])
+})
+
+test('force ignores the head-sha short-circuit', async () => {
+  const db = makeDb()
+  const res = await syncOnce({
+    guildConfigId: 'g1',
+    source: SOURCE,
+    projects: PROJECTS,
+    force: true,
+    deps: {
+      db,
+      fetchHeadSha: async () => 'old-sha',
+      fetchTree: async () => TREE,
+      fetchRaw: async () => '# T\n',
+    },
+  })
+  assert.equal(res.skipped, false)
+  assert.equal(db.calls.upserts.length, 2)
+  assert.deepEqual(db.calls.sync, { guildConfigId: 'g1', commitSha: 'old-sha' })
 })
 
 // --- GITHUB_TOKEN best-effort fallback (bot/src/services/docsSync.js: ghFetch) ---

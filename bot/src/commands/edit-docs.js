@@ -90,7 +90,19 @@ export async function handleEditDocsModal(interaction) {
   const title = interaction.fields.getTextInputValue('title').trim()
   const body = interaction.fields.getTextInputValue('body')
   const projectSlug = project.docsSlug || slugify(project.name)
-  const path = `docs/projects/${projectSlug}/${slugify(title)}.md`
+  const titleSlug = slugify(title)
+  // A punctuation-only or wholly non-ASCII title slugifies to an empty string,
+  // which would put every such page at the same path and silently overwrite the
+  // last one.
+  if (!titleSlug) {
+    return interaction
+      .editReply({
+        content:
+          'That title has no letters or digits to build a page address from. Use a title containing letters or digits.',
+      })
+      .catch(() => {})
+  }
+  const path = `docs/projects/${projectSlug}/${titleSlug}.md`
   const docId = toDocId(path)
 
   try {
@@ -103,7 +115,10 @@ export async function handleEditDocsModal(interaction) {
         .catch(() => {})
     }
 
-    await db.docPage.upsert({
+    // The read above is only there for the good error message: a sync can land
+    // between it and this write. `upsertLocal` refuses to clobber a repo row in
+    // the statement itself, so the race cannot replace an official page.
+    await db.docPage.upsertLocal({
       data: {
         guildConfigId: cfg.id,
         path,
@@ -112,7 +127,6 @@ export async function handleEditDocsModal(interaction) {
         projectId: project.id,
         title,
         content: body,
-        source: 'local',
         blobSha: null,
         size: body.length,
       },

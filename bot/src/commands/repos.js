@@ -12,6 +12,7 @@ import {
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { EPHEMERAL } from '../constants.js'
+import { reattributeGuildDocs } from '../services/docsSync.js'
 
 export const data = new SlashCommandBuilder()
   .setName('repos')
@@ -186,6 +187,11 @@ export async function handleConfirmAdd(interaction) {
         project = await db.project.create({
           data: { guildConfigId: cfg.id, name, docsSlug: slug, docsPaths: [] },
         })
+        // Attribute the already-mirrored pages to the new project now: nothing
+        // in the documentation repository changed, so the next sync would
+        // short-circuit and never re-derive them. Self-catching, so an
+        // attribution problem never reads back as a failed repo link.
+        await reattributeGuildDocs(cfg.id).catch(() => {})
       }
       if (project?.id && repo?.id) {
         await db.projectRepos.add({ data: { project_id: project.id, repository_id: repo.id } })

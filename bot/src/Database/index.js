@@ -594,6 +594,38 @@ async function docPageUpsert({ data }) {
   );
 }
 
+// A Discord-authored page. The ON DUPLICATE KEY UPDATE clause assigns every
+// column conditionally so an existing `source='repo'` row keeps its own values
+// and this write becomes a no-op: the read-then-write guard in /edit-docs
+// cannot see a sync that lands between its read and its write, but this can.
+// `source` is assigned last on purpose — MySQL evaluates the assignments left
+// to right and later expressions see the already-updated columns, so every
+// IF() above must still read the row's original source.
+async function docPageUpsertLocal({ data }) {
+  await query(
+    "INSERT INTO `docpage` (id, guildConfigId, path, docId, section, projectId, title, content, source, blobSha, size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'local', ?, ?) ON DUPLICATE KEY UPDATE docId = IF(source = 'repo', docId, VALUES(docId)), section = IF(source = 'repo', section, VALUES(section)), projectId = IF(source = 'repo', projectId, VALUES(projectId)), title = IF(source = 'repo', title, VALUES(title)), content = IF(source = 'repo', content, VALUES(content)), blobSha = IF(source = 'repo', blobSha, VALUES(blobSha)), size = IF(source = 'repo', size, VALUES(size)), source = IF(source = 'repo', source, VALUES(source))",
+    [
+      id(),
+      data.guildConfigId,
+      data.path,
+      data.docId,
+      data.section,
+      data.projectId ?? null,
+      data.title,
+      data.content ?? null,
+      data.blobSha ?? null,
+      data.size ?? 0,
+    ],
+  );
+}
+
+async function docPageSetProjectId({ guildConfigId, id: rowId, projectId }) {
+  await query(
+    "UPDATE `docpage` SET projectId = ? WHERE guildConfigId = ? AND id = ?",
+    [projectId ?? null, guildConfigId, rowId],
+  );
+}
+
 async function docPageDeleteRepoPathsNotIn({ guildConfigId, paths }) {
   if (!paths || paths.length === 0) {
     const res = await query(
@@ -1733,6 +1765,8 @@ const db = {
     findById: docPageFindById,
     search: docPageSearch,
     upsert: docPageUpsert,
+    upsertLocal: docPageUpsertLocal,
+    setProjectId: docPageSetProjectId,
     deleteRepoPathsNotIn: docPageDeleteRepoPathsNotIn,
     countsByProject: docPageCountsByProject,
   },
