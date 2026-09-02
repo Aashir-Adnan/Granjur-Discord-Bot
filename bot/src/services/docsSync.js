@@ -16,6 +16,12 @@ export const DEFAULT_SOURCE = {
 let tokenRejected = false
 let tokenWarned = false
 
+/** Test-only: reset the module-level token fallback state between cases. */
+export function __resetGhTokenState() {
+  tokenRejected = false
+  tokenWarned = false
+}
+
 function ghHeaders() {
   const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'granjur-bot' }
   const token = process.env.GITHUB_TOKEN || ''
@@ -23,36 +29,39 @@ function ghHeaders() {
   return headers
 }
 
-function isRateLimited(res) {
-  return res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0'
-}
-
-/** Fetch a GitHub API URL, falling back to unauthenticated once if the token is rejected. */
-async function ghFetch(url) {
+/**
+ * Fetch a GitHub API URL, falling back to unauthenticated once if the token is
+ * rejected outright. `fetchImpl` is injectable for tests; production callers get
+ * the real `fetch`. Only a 401 means the token itself is bad — any 403 (rate
+ * limit, primary or secondary/abuse-detection) is left to fail normally so
+ * `syncOnce` records it and the next cycle retries; a 403 never drops
+ * authentication.
+ */
+async function ghFetch(url, fetchImpl = fetch) {
   const usedAuth = Boolean(process.env.GITHUB_TOKEN) && !tokenRejected
-  let res = await fetch(url, { headers: ghHeaders() })
-  if (usedAuth && (res.status === 401 || (res.status === 403 && !isRateLimited(res)))) {
+  let res = await fetchImpl(url, { headers: ghHeaders() })
+  if (usedAuth && res.status === 401) {
     tokenRejected = true
     if (!tokenWarned) {
       tokenWarned = true
-      console.warn(`[docsSync] GITHUB_TOKEN rejected by GitHub (${res.status}) — continuing unauthenticated`)
+      console.warn('[docsSync] GITHUB_TOKEN rejected by GitHub (401) — continuing unauthenticated')
     }
-    res = await fetch(url, { headers: ghHeaders() })
+    res = await fetchImpl(url, { headers: ghHeaders() })
   }
   return res
 }
 
 /** Head commit sha of the branch. One API call. */
-export async function fetchHeadSha({ owner, repo, branch }) {
-  const res = await ghFetch(`${API}/repos/${owner}/${repo}/commits/${branch}`)
+export async function fetchHeadSha({ owner, repo, branch }, { fetchImpl = fetch } = {}) {
+  const res = await ghFetch(`${API}/repos/${owner}/${repo}/commits/${branch}`, fetchImpl)
   if (!res.ok) throw new Error(`GitHub commits ${res.status}: ${await res.text()}`)
   const json = await res.json()
   return json.sha
 }
 
 /** Every blob in the branch, recursively. One API call. */
-export async function fetchTree({ owner, repo, branch }) {
-  const res = await ghFetch(`${API}/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`)
+export async function fetchTree({ owner, repo, branch }, { fetchImpl = fetch } = {}) {
+  const res = await ghFetch(`${API}/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`, fetchImpl)
   if (!res.ok) throw new Error(`GitHub tree ${res.status}: ${await res.text()}`)
   const json = await res.json()
   if (json.truncated) console.warn('[docsSync] tree response was truncated')
