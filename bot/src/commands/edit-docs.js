@@ -10,6 +10,7 @@ import {
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { slugify, toDocId, sectionOf } from '../utils/docPath.js'
+import { EPHEMERAL } from '../constants.js'
 
 export const data = new SlashCommandBuilder()
   .setName('edit-docs')
@@ -17,7 +18,7 @@ export const data = new SlashCommandBuilder()
 
 export async function execute(interaction) {
   const guild = interaction.guild
-  if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
+  if (!guild) return interaction.editReply({ content: 'Use this in a server.' }).catch(() => {})
 
   const cfg = await getOrCreateGuildConfig(guild.id)
   const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
@@ -46,7 +47,7 @@ export async function execute(interaction) {
 
 export async function handleEditDocsSelect(interaction) {
   const guild = interaction.guild
-  if (!guild) return
+  if (!guild) return interaction.reply({ content: 'Use this in a server.', flags: EPHEMERAL }).catch(() => {})
   flowStore.set(interaction.user.id, guild.id, 'edit_docs', { projectId: interaction.values[0] })
 
   const modal = new ModalBuilder().setCustomId('edit_docs_modal').setTitle('New documentation page')
@@ -57,6 +58,7 @@ export async function handleEditDocsSelect(interaction) {
         .setLabel('Page title')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
+        .setMaxLength(200)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
@@ -72,7 +74,7 @@ export async function handleEditDocsSelect(interaction) {
 
 export async function handleEditDocsModal(interaction) {
   const guild = interaction.guild
-  if (!guild) return
+  if (!guild) return interaction.editReply({ content: 'Use this in a server.' }).catch(() => {})
   const cfg = await getOrCreateGuildConfig(guild.id)
   const state = flowStore.get(interaction.user.id, guild.id, 'edit_docs')
   if (!state?.projectId) {
@@ -89,26 +91,43 @@ export async function handleEditDocsModal(interaction) {
   const body = interaction.fields.getTextInputValue('body')
   const projectSlug = project.docsSlug || slugify(project.name)
   const path = `docs/projects/${projectSlug}/${slugify(title)}.md`
+  const docId = toDocId(path)
 
-  await db.docPage.upsert({
-    data: {
-      guildConfigId: cfg.id,
-      path,
-      docId: toDocId(path),
-      section: sectionOf(path),
-      projectId: project.id,
-      title,
-      content: body,
-      source: 'local',
-      blobSha: null,
-      size: body.length,
-    },
-  })
+  try {
+    const existing = await db.docPage.findByDocId({ guildConfigId: cfg.id, docId })
+    if (existing && existing.source === 'repo') {
+      return interaction
+        .editReply({
+          content: `**${existing.title}** already lives at that path as a page synced from the documentation repository, so it can't be edited here. Choose a different title.`,
+        })
+        .catch(() => {})
+    }
 
-  flowStore.clear(interaction.user.id, guild.id, 'edit_docs')
-  return interaction
-    .editReply({
-      content: `Saved **${title}** under **${project.name}**. Find it in **/docs**. It is stored in the bot only — it is not published to the docs site yet.`,
+    await db.docPage.upsert({
+      data: {
+        guildConfigId: cfg.id,
+        path,
+        docId,
+        section: sectionOf(path),
+        projectId: project.id,
+        title,
+        content: body,
+        source: 'local',
+        blobSha: null,
+        size: body.length,
+      },
     })
-    .catch(() => {})
+
+    flowStore.clear(interaction.user.id, guild.id, 'edit_docs')
+    const verb = existing ? 'Updated' : 'Saved'
+    return interaction
+      .editReply({
+        content: `${verb} **${title}** under **${project.name}**. Find it in **/docs**. It is stored in the bot only — it is not published to the docs site yet.`,
+      })
+      .catch(() => {})
+  } catch (e) {
+    return interaction
+      .editReply({ content: `Could not save that page: ${e?.message ?? String(e)}` })
+      .catch(() => {})
+  }
 }

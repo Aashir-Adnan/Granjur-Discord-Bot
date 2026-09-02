@@ -6,7 +6,8 @@ const REFRESH_CUSTOM_ID = 'doc_traversal_refresh'
 
 /**
  * Build embed + components for the #documentation channel (in-chat project doc traversal).
- * Options are built from repos and project schemas for the given guild.
+ * Options list the projects that have synced documentation pages (docpage), one option
+ * per project with a page count, for the given guild.
  */
 export async function buildDocTraversalPayload(guildId) {
   const cfg = await getOrCreateGuildConfig(guildId)
@@ -37,7 +38,7 @@ export async function buildDocTraversalPayload(guildId) {
   const embed = new EmbedBuilder()
     .setTitle('📚 Project documentation')
     .setDescription(
-      'Select a project below to view its documentation (schema or repo docs). Add repos with **/repos** and store schemas with **/project-db**.'
+      'Select a project below to browse its documentation. Documentation is synced from the documentation repository and can be read in full with **/docs**; write a new page with **/edit-docs**.'
     )
     .setColor(0x5865f2)
     .setFooter({ text: `${options.length} option(s)` })
