@@ -182,6 +182,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       "create_task_metric_api",
       "create_task_metric_qa",
       "create_task_metric_ac",
+      "projects_add",
     ];
     const customId = interaction.customId || "";
     const skipDefer =

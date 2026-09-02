@@ -99,6 +99,8 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/meetings.js")).handleRescheduleModal(
         interaction,
       );
+    if (customId === "projects_add_modal")
+      return (await import("../commands/projects.js")).handleAddModal(interaction);
     return;
   }
 
@@ -220,6 +222,10 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/admin-panel.js")).handleRecordingDetails(interaction);
     if (customId === "admin_panel_back")
       return (await import("../commands/admin-panel.js")).handleBack(interaction);
+    if (customId === "projects_add")
+      return (await import("../commands/projects.js")).handleAddButton(interaction);
+    if (customId === "projects_link_repo")
+      return (await import("../commands/projects.js")).handleLinkRepo(interaction);
     await interaction
       .editReply({
         content: `Unknown button. Received customId: "${customId}"`,
@@ -318,6 +324,10 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/playback.js")).handleMeetingSelect(interaction);
     if (customId === "playback_select_recording")
       return (await import("../commands/playback.js")).handleRecordingSelect(interaction);
+    if (customId === "projects_link_repo_select")
+      return (await import("../commands/projects.js")).handleLinkRepoSelect(interaction);
+    if (customId === "projects_link_project_select")
+      return (await import("../commands/projects.js")).handleLinkProjectSelect(interaction);
     // No handler matched — we already deferred, so we must editReply or Discord shows "interaction failed"
     await interaction
       .editReply({ content: "Unknown action.", components: [] })

@@ -154,13 +154,27 @@ export async function handleConfirmAdd(interaction) {
 
   try {
     const cfg = await getOrCreateGuildConfig(guild.id)
-    await db.repository.create({
+    const repo = await db.repository.create({
       data: {
         guildConfigId: cfg.id,
         name: state.name,
         url: state.url,
       },
     })
+
+    if (state.project) {
+      const name = String(state.project).trim()
+      let project = await db.project.findByName({ guildConfigId: cfg.id, name })
+      if (!project) {
+        const { slugify } = await import('../utils/docPath.js')
+        project = await db.project.create({
+          data: { guildConfigId: cfg.id, name, docsSlug: slugify(name), docsPaths: [] },
+        })
+      }
+      if (project?.id && repo?.id) {
+        await db.projectRepos.add({ data: { project_id: project.id, repository_id: repo.id } })
+      }
+    }
 
     flowStore.clear(interaction.user.id, guild.id, 'repos_add')
 

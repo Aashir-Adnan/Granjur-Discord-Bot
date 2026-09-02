@@ -860,20 +860,25 @@ async function projectFindFirst({ where }) {
 async function projectCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `project` (id, guildConfigId, name, readme, owner_emails) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO `project` (id, guildConfigId, name, readme, owner_emails, docsSlug, docsPaths) VALUES (?, ?, ?, ?, ?, ?, ?)",
     [
       pk,
       data.guildConfigId,
       data.name,
       data.readme ?? null,
-      data.owner_emails
-        ? Array.isArray(data.owner_emails)
-          ? JSON.stringify(data.owner_emails)
-          : data.owner_emails
-        : "[]",
+      data.owner_emails ?? null,
+      data.docsSlug ?? null,
+      JSON.stringify(data.docsPaths ?? []),
     ],
   );
   return queryOne("SELECT * FROM `project` WHERE id = ?", [pk]);
+}
+
+async function projectFindByName({ guildConfigId, name }) {
+  return queryOne("SELECT * FROM `project` WHERE guildConfigId = ? AND name = ?", [
+    guildConfigId,
+    name,
+  ]);
 }
 
 // ---------- project_schemas (FK project, name, latest_dump_id) ----------
@@ -1753,6 +1758,7 @@ const db = {
     findMany: projectFindMany,
     findFirst: projectFindFirst,
     create: projectCreate,
+    findByName: projectFindByName,
   },
   projectSchemas: {
     findMany: projectSchemasFindMany,

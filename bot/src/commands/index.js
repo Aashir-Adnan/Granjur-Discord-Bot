@@ -43,6 +43,7 @@ import * as createChannelCmd from './create-channel.js'
 import * as playbackCmd from './playback.js'
 import * as setupCmd from './setup.js'
 import * as meetingsCmd from './meetings.js'
+import * as projectsCmd from './projects.js'
 
 const commandModules = [
   initCmd,
@@ -81,6 +82,7 @@ const commandModules = [
   playbackCmd,
   setupCmd,
   meetingsCmd,
+  projectsCmd,
 ]
 
 export function getCommands() {
