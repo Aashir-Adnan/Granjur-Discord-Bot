@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node bot/src/index.js",
     "dev": "node --watch bot/src/index.js",
+    "test": "node --test bot/test/*.test.js",
     "db:init": "node bot/scripts/init-db.js",
     "db:migrate": "node bot/scripts/run-migrations.js",
     "db:seed": "node bot/scripts/seed-data.js",
