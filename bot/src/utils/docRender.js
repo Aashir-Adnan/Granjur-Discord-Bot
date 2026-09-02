@@ -117,6 +117,8 @@ function splitCodeBlock(block, max) {
   const inner = lines.slice(1, closed ? -1 : undefined)
   const wrap = (arr) => [opener, ...arr, '```'].join('\n')
 
+  const availableRoom = max - opener.length - 5
+
   const pieces = []
   let buf = []
   for (const line of inner) {
@@ -128,8 +130,17 @@ function splitCodeBlock(block, max) {
     }
   }
   if (buf.length) pieces.push(wrap(buf))
-  // A single line longer than max still has to be cut somewhere.
-  return pieces.flatMap((p) => (p.length <= max ? [p] : hardSplit(p, max)))
+  // Handle oversized pieces by splitting inner content and re-wrapping
+  return pieces.flatMap((p) => {
+    if (p.length <= max) return [p]
+    // Degenerate case: max is too small for fence overhead
+    if (availableRoom <= 0) return hardSplit(p, max)
+    // Extract inner content, split it, and re-wrap each chunk
+    const pLines = p.split('\n')
+    const pInner = pLines.slice(1, -1).join('\n')
+    const innerParts = hardSplit(pInner, availableRoom)
+    return innerParts.map(part => [opener, part, '```'].join('\n'))
+  })
 }
 
 /**

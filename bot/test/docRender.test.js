@@ -75,3 +75,14 @@ test('paginate hard-splits a single oversized paragraph', () => {
   assert.equal(pages.length, 3)
   assert.ok(pages.every((p) => p.length <= 100))
 })
+
+test('paginate splits oversized code blocks preserving fence balance', () => {
+  const fence = '```js\n' + 'z'.repeat(200) + '\n```'
+  const pages = paginate('intro\n\n' + fence + '\n\ntail', 60)
+  for (const p of pages) {
+    const fences = (p.match(/```/g) || []).length
+    assert.equal(fences % 2, 0, `unbalanced fence in page: ${JSON.stringify(p)}`)
+    assert.ok(p.length <= 60, `page exceeds max length: ${p.length}`)
+  }
+  assert.ok(pages.length > 1)
+})
