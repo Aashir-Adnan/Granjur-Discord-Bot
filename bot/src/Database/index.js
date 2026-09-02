@@ -511,6 +511,131 @@ async function ticketDocUpdate({ where, data }) {
   return ticketDocFindFirst({ where: { id: where.id } });
 }
 
+// ---------- DocPage / DocSource ----------
+async function docPageListIndex({ guildConfigId }) {
+  return query(
+    "SELECT id, path, docId, section, projectId, title, source FROM `docpage` WHERE guildConfigId = ? ORDER BY path",
+    [guildConfigId],
+  );
+}
+
+async function docPageFindByDocId({ guildConfigId, docId }) {
+  return queryOne("SELECT * FROM `docpage` WHERE guildConfigId = ? AND docId = ?", [
+    guildConfigId,
+    docId,
+  ]);
+}
+
+// Discord component values and custom_ids cap at 100 characters and the longest
+// docId in the corpus is 103, so components address a page by primary key.
+async function docPageFindById({ guildConfigId, id: rowId }) {
+  return queryOne("SELECT * FROM `docpage` WHERE guildConfigId = ? AND id = ?", [
+    guildConfigId,
+    rowId,
+  ]);
+}
+
+async function docPageSearch({ guildConfigId, q, limit = 25 }) {
+  const term = String(q || "").trim();
+  // mysql2 `execute` uses prepared statements, where a bound LIMIT parameter is
+  // sent as a string and MySQL rejects it. Inline a sanitised integer instead.
+  const cap = Math.min(Math.max(parseInt(limit, 10) || 25, 1), 25);
+  if (!term) {
+    return query(
+      `SELECT id, path, docId, section, projectId, title, source FROM \`docpage\` WHERE guildConfigId = ? ORDER BY title LIMIT ${cap}`,
+      [guildConfigId],
+    );
+  }
+  // FULLTEXT ignores tokens shorter than innodb_ft_min_token_size (3 by default),
+  // so short queries fall back to a title LIKE.
+  if (term.length < 3) {
+    return query(
+      `SELECT id, path, docId, section, projectId, title, source FROM \`docpage\` WHERE guildConfigId = ? AND title LIKE ? ORDER BY title LIMIT ${cap}`,
+      [guildConfigId, `%${term}%`],
+    );
+  }
+  const boolean = term.replace(/[+\-><()~*"@]/g, " ").trim().split(/\s+/).filter(Boolean).map((w) => `${w}*`).join(" ");
+  const rows = boolean
+    ? await query(
+        `SELECT id, path, docId, section, projectId, title, source, MATCH(title, content) AGAINST (? IN BOOLEAN MODE) AS score FROM \`docpage\` WHERE guildConfigId = ? AND MATCH(title, content) AGAINST (? IN BOOLEAN MODE) ORDER BY score DESC LIMIT ${cap}`,
+        [boolean, guildConfigId, boolean],
+      )
+    : [];
+  if (rows.length) return rows;
+  return query(
+    `SELECT id, path, docId, section, projectId, title, source FROM \`docpage\` WHERE guildConfigId = ? AND title LIKE ? ORDER BY title LIMIT ${cap}`,
+    [guildConfigId, `%${term}%`],
+  );
+}
+
+async function docPageUpsert({ data }) {
+  await query(
+    "INSERT INTO `docpage` (id, guildConfigId, path, docId, section, projectId, title, content, source, blobSha, size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE docId = VALUES(docId), section = VALUES(section), projectId = VALUES(projectId), title = VALUES(title), content = VALUES(content), source = VALUES(source), blobSha = VALUES(blobSha), size = VALUES(size)",
+    [
+      id(),
+      data.guildConfigId,
+      data.path,
+      data.docId,
+      data.section,
+      data.projectId ?? null,
+      data.title,
+      data.content ?? null,
+      data.source ?? "repo",
+      data.blobSha ?? null,
+      data.size ?? 0,
+    ],
+  );
+}
+
+async function docPageDeleteRepoPathsNotIn({ guildConfigId, paths }) {
+  if (!paths || paths.length === 0) {
+    const res = await query(
+      "DELETE FROM `docpage` WHERE guildConfigId = ? AND source = 'repo'",
+      [guildConfigId],
+    );
+    return res.affectedRows ?? 0;
+  }
+  const placeholders = paths.map(() => "?").join(", ");
+  const res = await query(
+    `DELETE FROM \`docpage\` WHERE guildConfigId = ? AND source = 'repo' AND path NOT IN (${placeholders})`,
+    [guildConfigId, ...paths],
+  );
+  return res.affectedRows ?? 0;
+}
+
+async function docPageCountsByProject({ guildConfigId }) {
+  return query(
+    "SELECT projectId, COUNT(*) AS n FROM `docpage` WHERE guildConfigId = ? GROUP BY projectId",
+    [guildConfigId],
+  );
+}
+
+async function docSourceGet({ guildConfigId }) {
+  return queryOne("SELECT * FROM `docsource` WHERE guildConfigId = ?", [guildConfigId]);
+}
+
+async function docSourceUpsert({ guildConfigId, data }) {
+  await query(
+    "INSERT INTO `docsource` (id, guildConfigId, owner, repo, branch, siteUrl) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE owner = VALUES(owner), repo = VALUES(repo), branch = VALUES(branch), siteUrl = VALUES(siteUrl)",
+    [id(), guildConfigId, data.owner, data.repo, data.branch, data.siteUrl],
+  );
+  return docSourceGet({ guildConfigId });
+}
+
+async function docSourceRecordSync({ guildConfigId, commitSha }) {
+  await query(
+    "UPDATE `docsource` SET lastCommitSha = ?, lastSyncedAt = CURRENT_TIMESTAMP(3), lastError = NULL WHERE guildConfigId = ?",
+    [commitSha, guildConfigId],
+  );
+}
+
+async function docSourceRecordError({ guildConfigId, message }) {
+  await query("UPDATE `docsource` SET lastError = ? WHERE guildConfigId = ?", [
+    String(message || "").slice(0, 2000),
+    guildConfigId,
+  ]);
+}
+
 // ---------- ScheduledMeeting ----------
 async function scheduledMeetingFindMany({ where, orderBy, take }) {
   let sql = "SELECT * FROM `scheduledmeeting` WHERE guildConfigId = ?";
@@ -1584,6 +1709,21 @@ const db = {
     findFirst: ticketDocFindFirst,
     create: ticketDocCreate,
     update: ticketDocUpdate,
+  },
+  docPage: {
+    listIndex: docPageListIndex,
+    findByDocId: docPageFindByDocId,
+    findById: docPageFindById,
+    search: docPageSearch,
+    upsert: docPageUpsert,
+    deleteRepoPathsNotIn: docPageDeleteRepoPathsNotIn,
+    countsByProject: docPageCountsByProject,
+  },
+  docSource: {
+    get: docSourceGet,
+    upsert: docSourceUpsert,
+    recordSync: docSourceRecordSync,
+    recordError: docSourceRecordError,
   },
   scheduledMeeting: {
     findMany: scheduledMeetingFindMany,

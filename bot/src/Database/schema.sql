@@ -363,6 +363,8 @@ CREATE TABLE IF NOT EXISTS project (
   name VARCHAR(255) NOT NULL,
   readme TEXT,
   owner_emails JSON DEFAULT ('[]'),
+  docsSlug VARCHAR(128) NULL,
+  docsPaths JSON NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, name),
@@ -414,3 +416,42 @@ CREATE TABLE IF NOT EXISTS clockentry (
 );
 
 -- Note: project_schemas.latest_dump_id logically references dump_versions(id). No FK to keep schema idempotent (re-runnable).
+
+-- Docs mirrored from the UBS-Doc repository, plus per-guild sync state.
+CREATE TABLE IF NOT EXISTS docpage (
+  id VARCHAR(36) PRIMARY KEY,
+  guildConfigId VARCHAR(36) NOT NULL,
+  path VARCHAR(512) NOT NULL,
+  docId VARCHAR(512) NOT NULL,
+  section VARCHAR(128) NOT NULL,
+  projectId VARCHAR(36) NULL,
+  title VARCHAR(512) NOT NULL,
+  content MEDIUMTEXT,
+  source VARCHAR(16) NOT NULL DEFAULT 'repo',
+  blobSha VARCHAR(64) NULL,
+  size INT NOT NULL DEFAULT 0,
+  createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uniq_docpage_path (guildConfigId, path),
+  KEY idx_docpage_project (guildConfigId, projectId),
+  KEY idx_docpage_section (guildConfigId, section),
+  FULLTEXT KEY ft_docpage (title, content),
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
+  FOREIGN KEY (projectId) REFERENCES project(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS docsource (
+  id VARCHAR(36) PRIMARY KEY,
+  guildConfigId VARCHAR(36) NOT NULL,
+  owner VARCHAR(255) NOT NULL,
+  repo VARCHAR(255) NOT NULL,
+  branch VARCHAR(255) NOT NULL DEFAULT 'main',
+  siteUrl VARCHAR(512) NOT NULL,
+  lastCommitSha VARCHAR(64) NULL,
+  lastSyncedAt DATETIME(3) NULL,
+  lastError TEXT NULL,
+  createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uniq_docsource_guild (guildConfigId),
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
