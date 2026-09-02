@@ -64,10 +64,19 @@ export function childOptions(index, { scope, prefix = '', page = 0 }) {
 
   // For section scopes at the root, treat the section name as the base prefix.
   // This strips the section name from docIds like 'api/overview' -> 'overview'.
+  // But a loose .md file directly in docs/ has no directory of its own, so
+  // sectionOf() falls back to the filename as its section (e.g. 'init.md' for
+  // docs/init.md, whose docId is just 'init'). Only substitute the section
+  // name as a base prefix when it is genuinely a directory — i.e. at least
+  // one row's docId actually starts with `${section}/` — otherwise leave the
+  // base empty so the loose file's docId (which has no slash) lists normally.
   if (scope.startsWith('sec:') && !prefix) {
     const section = scope.slice(4)
-    base = `${section}/`
-    morePrefix = section
+    const sectionIsDirectory = rows.some((r) => relOf(r).startsWith(`${section}/`))
+    if (sectionIsDirectory) {
+      base = `${section}/`
+      morePrefix = section
+    }
   }
 
   const dirs = new Set()

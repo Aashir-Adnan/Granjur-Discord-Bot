@@ -55,6 +55,19 @@ test('childOptions on a section scopes to that section only', () => {
   assert.deepEqual(values.sort(), ['doc:d1', 'doc:d2', 'root:'])
 })
 
+test('childOptions on a loose root file (no directory of its own) still lists it', () => {
+  // A .md file directly in docs/ has no directory, so sectionOf() falls back
+  // to the filename itself as the section (e.g. 'init.md' for docs/init.md).
+  // The section-as-base substitution must not treat that filename as a real
+  // directory prefix, or the row gets filtered out and the level is empty.
+  const looseFileIndex = [
+    { id: 'loose1', path: 'docs/init.md', docId: 'init', section: 'init.md', projectId: null, title: 'Init', source: 'repo' },
+  ]
+  const { options } = childOptions(looseFileIndex, { scope: 'sec:init.md', prefix: '' })
+  const values = options.map((o) => o.value)
+  assert.ok(values.includes('doc:loose1'), 'the loose root file is listed, not filtered out')
+})
+
 test('childOptions emits a root: escape at a scope root and a back: escape below it', () => {
   const atRoot = childOptions(INDEX, { scope: 'proj:p1', prefix: '' })
   assert.equal(atRoot.options[0].value, 'root:', 'scope root leads with the escape-to-global option')
