@@ -183,6 +183,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       "create_task_metric_qa",
       "create_task_metric_ac",
       "projects_add",
+      "edit_docs_select", // project select → new-page modal
     ];
     const customId = interaction.customId || "";
     const skipDefer =
