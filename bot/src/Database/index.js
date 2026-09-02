@@ -519,6 +519,13 @@ async function docPageListIndex({ guildConfigId }) {
   );
 }
 
+async function docPageListIndexFull({ guildConfigId }) {
+  return query(
+    "SELECT id, path, docId, section, projectId, title, source, blobSha FROM `docpage` WHERE guildConfigId = ?",
+    [guildConfigId],
+  );
+}
+
 async function docPageFindByDocId({ guildConfigId, docId }) {
   return queryOne("SELECT * FROM `docpage` WHERE guildConfigId = ? AND docId = ?", [
     guildConfigId,
@@ -1712,6 +1719,7 @@ const db = {
   },
   docPage: {
     listIndex: docPageListIndex,
+    listIndexFull: docPageListIndexFull,
     findByDocId: docPageFindByDocId,
     findById: docPageFindById,
     search: docPageSearch,
