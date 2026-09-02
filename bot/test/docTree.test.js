@@ -66,11 +66,39 @@ test('childOptions pages when there are more than 25 entries', () => {
     source: 'repo',
   }))
   const first = childOptions(many, { scope: 'sec:api', prefix: '', page: 0 })
-  assert.equal(first.options.length, 25)
   assert.equal(first.hasMore, true)
-  assert.equal(first.options[24].value, 'more:api:1')
+  const moreButton = first.options.find(o => o.value.startsWith('more:'))
+  assert.ok(moreButton, 'first page has a more button')
+  assert.equal(moreButton.value, 'more:api:1')
   const second = childOptions(many, { scope: 'sec:api', prefix: '', page: 1 })
   assert.equal(second.options[0].value.startsWith('doc:'), true)
+})
+
+test('pagination yields each entry exactly once across all pages', () => {
+  const many = Array.from({ length: 60 }, (_, i) => ({
+    id: `m${i}`,
+    path: `docs/api/f${i}.md`,
+    docId: `api/f${i}`,
+    section: 'api',
+    projectId: null,
+    title: `File ${i}`,
+    source: 'repo',
+  }))
+  const seen = new Set()
+  let page = 0
+  let hasMore = true
+  while (hasMore) {
+    const result = childOptions(many, { scope: 'sec:api', prefix: '', page })
+    for (const opt of result.options) {
+      if (opt.value.startsWith('doc:')) {
+        assert.equal(seen.has(opt.value), false, `duplicate entry on page ${page}: ${opt.value}`)
+        seen.add(opt.value)
+      }
+    }
+    hasMore = result.hasMore
+    page++
+  }
+  assert.equal(seen.size, 60, 'all 60 entries found across pages')
 })
 
 test('every option value stays inside Discord\'s 100 character cap', () => {

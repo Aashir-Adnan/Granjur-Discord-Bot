@@ -5,6 +5,7 @@
  */
 
 const MAX_OPTIONS = 25
+const PER_PAGE = 23  // MAX_OPTIONS - 2 (Back + More slots, reserved on every page)
 const LABEL_MAX = 100
 
 function relOf(row) {
@@ -110,20 +111,19 @@ export function childOptions(index, { scope, prefix = '', page = 0 }) {
     })
   }
 
-  const room = MAX_OPTIONS - options.length
-  const start = page * (room - 1)
-  const slice = entries.slice(start, start + room)
+  // Constant stride: always show PER_PAGE entries per page, with room for Back + More
+  const start = page * PER_PAGE
+  const slice = entries.slice(start, start + PER_PAGE)
   const hasMore = entries.length > start + slice.length
 
+  options.push(...slice)
+
   if (hasMore) {
-    options.push(...slice.slice(0, room - 1))
     options.push({
-      label: `→ Next ${Math.min(room - 1, entries.length - start - (room - 1))} of ${entries.length}`.slice(0, LABEL_MAX),
+      label: `→ Next ${Math.min(PER_PAGE, entries.length - start - PER_PAGE)} of ${entries.length}`.slice(0, LABEL_MAX),
       value: `more:${morePrefix}:${page + 1}`,
       description: 'Show more entries',
     })
-  } else {
-    options.push(...slice)
   }
 
   return { options, hasMore, total: entries.length }
