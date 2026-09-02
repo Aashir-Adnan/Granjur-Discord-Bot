@@ -210,6 +210,8 @@ export default async function handleInteractions(interaction) {
       ).handleDocTraversalBack(interaction);
     if (customId === "setup_docs_sync")
       return (await import("../commands/setup.js")).handleDocsSync(interaction);
+    if (customId.startsWith("docs_page_prev:") || customId.startsWith("docs_page_next:"))
+      return (await import("../commands/docs.js")).handleDocsPage(interaction);
     if (customId === "cleanup_confirm")
       return (await import("../commands/cleanup.js")).handleConfirm(interaction);
     if (customId === "cleanup_cancel")
@@ -288,7 +290,7 @@ export default async function handleInteractions(interaction) {
         interaction,
       );
     // force redeploy check
-    if (customId === "docs_browse")
+    if (customId === "docs_browse" || customId.startsWith("docs_browse:"))
       return (await import("../commands/docs.js")).handleDocsBrowse(
         interaction,
       );
