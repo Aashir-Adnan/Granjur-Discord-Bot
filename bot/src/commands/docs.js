@@ -105,7 +105,12 @@ async function browsePayload(cfg, scope, prefix, page) {
   } else {
     const res = childOptions(index, { scope, prefix, page })
     options = res.options
-    heading = prefix ? `**${prefix}**` : 'Select a folder or a page.'
+    // A section scope rewrites its base prefix to the section name (see
+    // childOptions), so at that level `prefix` reads like a folder name even
+    // though it is really the scope root — only show the folder heading once
+    // the user is genuinely below the scope root.
+    const atScopeRoot = !prefix || (scope.startsWith('sec:') && prefix === scope.slice(4))
+    heading = atScopeRoot ? 'Select a folder or a page.' : `**${prefix}**`
   }
 
   if (options.length === 0) {
@@ -126,7 +131,7 @@ async function browsePayload(cfg, scope, prefix, page) {
 }
 
 export async function execute(interaction) {
-  if (!interaction.guild) return interaction.editReply({ content: 'Use this in a server.' })
+  if (!interaction.guild) return interaction.editReply({ content: 'Use this in a server.' }).catch(() => {})
   const { cfg, source } = await context(interaction)
 
   const q = interaction.options.getString('query')
@@ -163,9 +168,18 @@ export async function handleDocsBrowse(interaction) {
   if (value.startsWith('dir:')) {
     return interaction.editReply(await browsePayload(cfg, scopeFromId, value.slice(4), 0)).catch(() => {})
   }
+  if (value === 'root:') {
+    return interaction.editReply(await browsePayload(cfg, null, '', 0)).catch(() => {})
+  }
   if (value.startsWith('back:')) {
     const parent = value.slice(5)
-    if (!parent) return interaction.editReply(await browsePayload(cfg, null, '', 0)).catch(() => {})
+    if (!parent) {
+      // Empty parent from a scope root means "back to the top of this scope",
+      // not the global root — losing scopeFromId here silently drops the
+      // project/section the user was browsing. Only fall back to the global
+      // root if we truly don't know the scope.
+      return interaction.editReply(await browsePayload(cfg, scopeFromId || null, '', 0)).catch(() => {})
+    }
     return interaction.editReply(await browsePayload(cfg, scopeFromId, parent, 0)).catch(() => {})
   }
   if (value.startsWith('more:')) {

@@ -52,7 +52,17 @@ test('childOptions marks local docs', () => {
 test('childOptions on a section scopes to that section only', () => {
   const { options } = childOptions(INDEX, { scope: 'sec:api', prefix: '' })
   const values = options.map((o) => o.value)
-  assert.deepEqual(values.sort(), ['doc:d1', 'doc:d2'])
+  assert.deepEqual(values.sort(), ['doc:d1', 'doc:d2', 'root:'])
+})
+
+test('childOptions emits a root: escape at a scope root and a back: escape below it', () => {
+  const atRoot = childOptions(INDEX, { scope: 'proj:p1', prefix: '' })
+  assert.equal(atRoot.options[0].value, 'root:', 'scope root leads with the escape-to-global option')
+  assert.equal(atRoot.options.some((o) => o.value.startsWith('back:')), false, 'no back: option at the scope root')
+
+  const nested = childOptions(INDEX, { scope: 'proj:p1', prefix: 'projects/badar-hms' })
+  assert.equal(nested.options[0].value, 'back:projects', 'a level below the scope root leads with back:')
+  assert.equal(nested.options.some((o) => o.value === 'root:'), false, 'root: is only offered at the scope root')
 })
 
 test('childOptions pages when there are more than 25 entries', () => {
@@ -71,7 +81,11 @@ test('childOptions pages when there are more than 25 entries', () => {
   assert.ok(moreButton, 'first page has a more button')
   assert.equal(moreButton.value, 'more:api:1')
   const second = childOptions(many, { scope: 'sec:api', prefix: '', page: 1 })
-  assert.equal(second.options[0].value.startsWith('doc:'), true)
+  // Every page at the scope root leads with the root: escape (same slot the
+  // back: option occupies on every page below the root), so the first doc
+  // entry is the second option, not the first.
+  assert.equal(second.options[0].value, 'root:')
+  assert.equal(second.options[1].value.startsWith('doc:'), true)
 })
 
 test('pagination yields each entry exactly once across all pages', () => {

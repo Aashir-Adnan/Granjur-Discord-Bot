@@ -109,6 +109,15 @@ export function childOptions(index, { scope, prefix = '', page = 0 }) {
       value: `back:${parent}`,
       description: parent || 'Back to the top',
     })
+  } else if (scope) {
+    // At the scope's own root there is nothing to go "up" to within the scope —
+    // without this, entering a project/section leaves no way back to the
+    // global project/section picker except re-running /docs.
+    options.push({
+      label: '← All documentation',
+      value: 'root:',
+      description: 'Back to projects and sections',
+    })
   }
 
   // Constant stride: always show PER_PAGE entries per page, with room for Back + More
