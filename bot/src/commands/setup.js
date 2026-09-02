@@ -1,8 +1,9 @@
-import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
-import { getOrCreateGuildConfig, updateGuildConfig } from "../db/index.js";
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
+import db, { getOrCreateGuildConfig, updateGuildConfig } from "../db/index.js";
 import { isValidZone, guildZone, zoneLabel, localZone } from "../utils/timezone.js";
 import { parseWhen } from "../utils/parseWhen.js";
 import { discordDateTime } from "../utils/discordTime.js";
+import { syncGuildNow } from "../services/docsSync.js";
 
 export const data = new SlashCommandBuilder()
   .setName("setup")
@@ -89,5 +90,38 @@ export async function execute(interaction) {
     .setColor(0x5865f2)
     .setFooter({ text: "Set with /setup timezone:<zone>" });
 
-  return interaction.editReply({ embeds: [embed] }).catch(() => {});
+  const src = await db.docSource.get({ guildConfigId: cfg.id }).catch(() => null);
+  const counts = await db.docPage.countsByProject({ guildConfigId: cfg.id }).catch(() => []);
+  const total = counts.reduce((n, r) => n + Number(r.n || 0), 0);
+  embed.addFields({
+    name: "Documentation",
+    value: src
+      ? `${total} page(s) from \`${src.owner}/${src.repo}\`\nLast synced: ${src.lastSyncedAt ? `<t:${Math.floor(new Date(src.lastSyncedAt).getTime() / 1000)}:R>` : "_never_"}${src.lastError ? `\nLast error: \`${String(src.lastError).slice(0, 200)}\`` : ""}`
+      : "_not configured — press Sync to set it up_",
+    inline: false,
+  });
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("setup_docs_sync")
+      .setLabel("Sync docs now")
+      .setStyle(ButtonStyle.Primary),
+  );
+
+  return interaction.editReply({ embeds: [embed], components: [row] }).catch(() => {});
+}
+
+export async function handleDocsSync(interaction) {
+  const guild = interaction.guild;
+  if (!guild) return;
+  await interaction
+    .editReply({ content: "Syncing documentation…", embeds: [], components: [] })
+    .catch(() => {});
+  const res = await syncGuildNow(guild.id);
+  const text = res.failed
+    ? `Sync failed: \`${res.error}\``
+    : res.skipped
+      ? "Already up to date — no changes since the last sync."
+      : `Synced. ${res.upserted} page(s) added or updated, ${res.deleted} removed.`;
+  return interaction.editReply({ content: text }).catch(() => {});
 }

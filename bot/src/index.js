@@ -15,6 +15,7 @@ import handleInteractions from "./handlers/interactions.js";
 import { startMeetingReminder } from "./services/meetingReminder.js";
 import { startMeetingAutoChannels } from "./services/meetingAutoChannel.js";
 import { startTicketReminder } from "./services/ticketReminder.js";
+import { startDocsSync } from "./services/docsSync.js";
 import {
   isRateLimitError,
   getRetryAfter,
@@ -46,6 +47,7 @@ client.once(Events.ClientReady, async () => {
   startMeetingReminder(client);
   startMeetingAutoChannels(client);
   startTicketReminder(client);
+  startDocsSync(client);
   console.log(`Logged in as ${client.user.tag}`);
 });
 client.on(Events.InteractionCreate, async (interaction) => {

@@ -208,6 +208,8 @@ export default async function handleInteractions(interaction) {
       return (
         await import("../commands/doc-channel.js")
       ).handleDocTraversalBack(interaction);
+    if (customId === "setup_docs_sync")
+      return (await import("../commands/setup.js")).handleDocsSync(interaction);
     if (customId === "cleanup_confirm")
       return (await import("../commands/cleanup.js")).handleConfirm(interaction);
     if (customId === "cleanup_cancel")
