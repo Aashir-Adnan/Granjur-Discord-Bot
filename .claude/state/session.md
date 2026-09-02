@@ -1,35 +1,41 @@
 # Current Session
 
-**Date:** 2026-08-31
+**Date:** 2026-09-03
 
-## Goal (done)
-Work the whole backlog: playback transport controls, `/schedule` items 4/5/7,
-`displayName` in `/create-task`, and the playback format/dead-code cleanup.
-Timezone chosen as per-guild via a new `/setup` command (user decision).
+## Goal
+Project-based documentation + preview in Discord, sourced from the `UBS-Doc` repo.
+Read-only (Phase 1). Design approved; spec written; implementation plan next.
 
-## Shipped — see completed.md 2026-08-31 top entry + knowledge/schedule-meetings.md
-+ knowledge/meeting-audio-recording.md (transport controls + format sections).
+**Spec:** `docs/superpowers/specs/2026-09-03-project-docs-preview-design.md` (uncommitted)
 
-New files: `bot/src/commands/{setup,meetings}.js`, `bot/src/utils/timezone.js`,
-migrations `010`/`011`.
+## Shape of the work
+GitHub (`Aashir-Adnan/UBS-Doc`, public, `main`) → 15-min sync service → MySQL
+(`docpage`, `docsource`) → Discord embeds, with a deep link to
+`https://ubs-doc.vercel.app/docs/<docId>` as the fallback for anything long.
+New/changed: migration 012, `db.docPage`/`db.docSource`, `services/docsSync.js`,
+rebuilt `/docs`, new `/projects`, repurposed `/edit-docs`, rebuilt `docTraversal.js`,
+first test suite in `bot/test/` via `node --test`.
 
-## Verification done
-- `node --check` + dynamic `import()` pass on every touched file.
-- `getCommands().map(toJSON)` builds all 36 commands; `setup`/`meetings` present;
-  autocomplete on `schedule.when` + `setup.timezone`.
-- `parseWhen` tested inline across zones + DST (EST/EDT) — all correct after fixing
-  the offset-solve loop in `zonedWallTimeToDate`.
-- `timezone.js` helpers tested inline.
+## Environment (verified 2026-09-02)
+- `npm install` clean, Node v24.15.0; ffmpeg-static binary present and working.
+- Remote MySQL 8.0.46 @ 20.120.228.55/granjur; all 11 migrations applied.
+- All 36 slash commands build. SSH to the VM works with
+  `C:\Users\Dell\Downloads\frame-work_key.pem`.
 
-## Verified after the fact
-- ffmpeg-static: 82 MB binary, `ffmpeg -version` exit 0, prism-media detects it,
-  package.json + package-lock.json in sync. (Note: `allowScripts` gating — fresh
-  installs need `npm approve-scripts ffmpeg-static`.)
+## Testing approach (user decision)
+Stop the VM instance (`pm2 stop granjur-bot`), run the real bot locally against the prod
+guild + prod DB, then restart the VM bot. The user runs the pm2 commands.
+**Push to `main` auto-deploys** (`.github/workflows/deploy.yml`) — branch for this work.
 
-## NOT verified (needs live env)
-- Migrations 010/011 not run here (no DB). `npm run db:migrate` required.
-- No live Discord run.
+## Discoveries worth keeping
+- `db.projectSchema` (`projectschema` table) has 0 rows; `docTraversal.js` and
+  `edit-docs.js` both read it. Dead paths. The live table is `project_schemas`, an
+  unrelated dump-versioning table.
+- `/repos` collects a project name and discards it; `project_repos` is never written by
+  any command. No command creates a project — the 8 rows came from `seed-projects.js`.
+- `GITHUB_TOKEN` in `.env` is invalid (401). Phase 1 does not need it.
+- UBS-Doc routes every file under `docs/` by URL whether or not `sidebar.ts` lists it,
+  but the glob is build-time, so new files need a Vercel rebuild.
 
-## Open follow-ups → backlog.md
-Migration run, ffmpeg download check, manager-role-name fragility, mixed-track
-playback, per-user tz, voice-channel picker.
+## Open questions
+- Commit the spec on a branch? (not committed yet — user has not asked)

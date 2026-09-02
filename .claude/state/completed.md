@@ -4,6 +4,16 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-02 — Environment setup verified; migrations 010/011 confirmed live
+Fresh `npm install` (73 pkgs, exit 0) on Node v24.15.0. `ffmpeg-static` binary
+downloaded without needing `npm approve-scripts` (82 MB, ffmpeg 6.1.1); `prism-media`
+resolves it and `libsodium-wrappers` initialises. Connected to the remote MySQL
+(20.120.228.55/granjur, 8.0.46): `schema_migrations` lists all 11 migrations and both
+`guildconfig.timezone` and `scheduledmeeting.cancelled` exist — backlog items
+"verify migrations 010+011" and "ffmpeg-static approve-scripts" are closed.
+All 36 slash commands build; 72/87 modules import cleanly (the 15 failures are dead
+vendored `Database/*` files, now a backlog item). No code changes.
+
 ## 2026-08-31 — Fix: `/schedule` autocomplete ISO round-trip lost the `Z`
 `parseWhen`'s ISO regex didn't allow fractional seconds, so `.000Z` fell through the
 offset group and the timestamp was re-read as wall-clock in the guild zone — a
