@@ -866,7 +866,11 @@ async function projectCreate({ data }) {
       data.guildConfigId,
       data.name,
       data.readme ?? null,
-      data.owner_emails ?? null,
+      data.owner_emails
+        ? Array.isArray(data.owner_emails)
+          ? JSON.stringify(data.owner_emails)
+          : data.owner_emails
+        : "[]",
       data.docsSlug ?? null,
       JSON.stringify(data.docsPaths ?? []),
     ],

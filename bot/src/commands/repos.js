@@ -45,7 +45,7 @@ export async function execute(interaction) {
   if (sub === 'add') {
     const nameOpt = interaction.options.getString('name')
     const urlOpt = interaction.options.getString('url')
-    const projectOpt = interaction.options.getString('project') || null
+    const projectOpt = (interaction.options.getString('project') || '').trim() || null
     if (nameOpt && urlOpt) {
       const url = urlOpt.replace(/\/$/, '')
       flowStore.set(interaction.user.id, guild.id, 'repos_add', { name: nameOpt, url, project: projectOpt })
@@ -125,7 +125,7 @@ export async function handleAddModal(interaction) {
     const g = await getOrCreateGuildConfig(guild.id)
     const name = interaction.fields.getTextInputValue('name')
     const url = interaction.fields.getTextInputValue('url').replace(/\/$/, '')
-    const project = interaction.fields.getTextInputValue('project') || null
+    const project = (interaction.fields.getTextInputValue('project') || '').trim() || null
 
     flowStore.set(interaction.user.id, guild.id, 'repos_add', { name, url, project })
 
@@ -152,41 +152,55 @@ export async function handleConfirmAdd(interaction) {
   const state = flowStore.get(interaction.user.id, guild.id, 'repos_add')
   if (!state) return interaction.editReply({ content: 'Session expired.', components: [] }).catch(() => {})
 
+  let cfg, repo
   try {
-    const cfg = await getOrCreateGuildConfig(guild.id)
-    const repo = await db.repository.create({
+    cfg = await getOrCreateGuildConfig(guild.id)
+    repo = await db.repository.create({
       data: {
         guildConfigId: cfg.id,
         name: state.name,
         url: state.url,
       },
     })
+  } catch (e) {
+    await interaction.editReply({ content: `Failed: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
+    return
+  }
 
-    if (state.project) {
+  // The repository is saved from here on — a project-link problem must never read back as "Failed".
+  flowStore.clear(interaction.user.id, guild.id, 'repos_add')
+
+  let linkNote = ''
+  if (state.project) {
+    try {
       const name = String(state.project).trim()
       let project = await db.project.findByName({ guildConfigId: cfg.id, name })
       if (!project) {
         const { slugify } = await import('../utils/docPath.js')
+        const slug = slugify(name)
+        const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
+        const slugConflict = projects.find((p) => p.docsSlug === slug)
+        if (slugConflict) {
+          throw new Error(`docs folder \`${slug}\` is already used by **${slugConflict.name}** — pick another slug`)
+        }
         project = await db.project.create({
-          data: { guildConfigId: cfg.id, name, docsSlug: slugify(name), docsPaths: [] },
+          data: { guildConfigId: cfg.id, name, docsSlug: slug, docsPaths: [] },
         })
       }
       if (project?.id && repo?.id) {
         await db.projectRepos.add({ data: { project_id: project.id, repository_id: repo.id } })
       }
+    } catch (e) {
+      linkNote = `\n\nLinking to project **${state.project}** did not complete (${e?.message ?? String(e)}). Finish it with **/projects** → **Link repo**.`
     }
-
-    flowStore.clear(interaction.user.id, guild.id, 'repos_add')
-
-    const embed = new EmbedBuilder()
-      .setTitle('Repository added')
-      .setDescription(`**${state.name}**: ${state.url}${state.project ? ` (${state.project})` : ''}`)
-      .setColor(0x57f287)
-
-    await interaction.editReply({ embeds: [embed], components: [] }).catch(() => {})
-  } catch (e) {
-    await interaction.editReply({ content: `Failed: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
   }
+
+  const embed = new EmbedBuilder()
+    .setTitle('Repository added')
+    .setDescription(`**${state.name}**: ${state.url}${state.project ? ` (${state.project})` : ''}${linkNote}`)
+    .setColor(0x57f287)
+
+  await interaction.editReply({ embeds: [embed], components: [] }).catch(() => {})
 }
 
 export async function handleCancel(interaction) {

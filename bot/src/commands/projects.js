@@ -93,6 +93,14 @@ export async function handleAddModal(interaction) {
     return interaction.editReply({ content: `**${name}** already exists.` }).catch(() => {})
   }
 
+  const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
+  const slugConflict = projects.find((p) => p.docsSlug === slug)
+  if (slugConflict) {
+    return interaction
+      .editReply({ content: `Docs folder \`${slug}\` is already used by **${slugConflict.name}** — pick another slug.` })
+      .catch(() => {})
+  }
+
   await db.project.create({
     data: { guildConfigId: cfg.id, name, docsSlug: slug, docsPaths: paths },
   })
