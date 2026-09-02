@@ -13,16 +13,38 @@ export const DEFAULT_SOURCE = {
   siteUrl: process.env.DOCS_SITE_URL || 'https://ubs-doc.vercel.app',
 }
 
+let tokenRejected = false
+let tokenWarned = false
+
 function ghHeaders() {
-  const token = process.env.GITHUB_TOKEN || ''
   const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'granjur-bot' }
-  if (token) headers.Authorization = `Bearer ${token}`
+  const token = process.env.GITHUB_TOKEN || ''
+  if (token && !tokenRejected) headers.Authorization = `Bearer ${token}`
   return headers
+}
+
+function isRateLimited(res) {
+  return res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0'
+}
+
+/** Fetch a GitHub API URL, falling back to unauthenticated once if the token is rejected. */
+async function ghFetch(url) {
+  const usedAuth = Boolean(process.env.GITHUB_TOKEN) && !tokenRejected
+  let res = await fetch(url, { headers: ghHeaders() })
+  if (usedAuth && (res.status === 401 || (res.status === 403 && !isRateLimited(res)))) {
+    tokenRejected = true
+    if (!tokenWarned) {
+      tokenWarned = true
+      console.warn(`[docsSync] GITHUB_TOKEN rejected by GitHub (${res.status}) — continuing unauthenticated`)
+    }
+    res = await fetch(url, { headers: ghHeaders() })
+  }
+  return res
 }
 
 /** Head commit sha of the branch. One API call. */
 export async function fetchHeadSha({ owner, repo, branch }) {
-  const res = await fetch(`${API}/repos/${owner}/${repo}/commits/${branch}`, { headers: ghHeaders() })
+  const res = await ghFetch(`${API}/repos/${owner}/${repo}/commits/${branch}`)
   if (!res.ok) throw new Error(`GitHub commits ${res.status}: ${await res.text()}`)
   const json = await res.json()
   return json.sha
@@ -30,14 +52,14 @@ export async function fetchHeadSha({ owner, repo, branch }) {
 
 /** Every blob in the branch, recursively. One API call. */
 export async function fetchTree({ owner, repo, branch }) {
-  const res = await fetch(`${API}/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`, { headers: ghHeaders() })
+  const res = await ghFetch(`${API}/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`)
   if (!res.ok) throw new Error(`GitHub tree ${res.status}: ${await res.text()}`)
   const json = await res.json()
   if (json.truncated) console.warn('[docsSync] tree response was truncated')
   return json.tree || []
 }
 
-/** File content from raw.githubusercontent — not subject to the API rate limit. */
+/** File content from raw.githubusercontent — not subject to the API rate limit. Never authenticated. */
 export async function fetchRaw(path, { owner, repo, branch }) {
   const res = await fetch(`${RAW}/${owner}/${repo}/${branch}/${path}`)
   if (!res.ok) throw new Error(`raw ${res.status} for ${path}`)
