@@ -24,6 +24,24 @@ function scopeRows(index, scope) {
   return index
 }
 
+/**
+ * The browse level an open document belongs to: the scope that owns it and
+ * the folder it sits in. Used by the "Back to docs" control on a document
+ * view, which has no browse history of its own to unwind.
+ */
+export function browseTargetFor(row) {
+  const scope = row.projectId ? `proj:${row.projectId}` : `sec:${row.section}`
+  const docId = row.docId || ''
+  const slash = docId.lastIndexOf('/')
+  let prefix = slash === -1 ? '' : docId.slice(0, slash)
+  // A section scope already folds the section name into its base prefix, so
+  // 'api' and '' are the same level under scope 'sec:api'. Return the canonical
+  // empty one, or the level emits a '← Back' escape where it owes a
+  // '← All documentation'.
+  if (scope.startsWith('sec:') && prefix === scope.slice(4)) prefix = ''
+  return { scope, prefix }
+}
+
 /** Root menu: projects that own docs, then unattributed sections. */
 export function rootOptions(index, projects) {
   const options = []

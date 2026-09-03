@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { rootOptions, childOptions } from '../src/utils/docTree.js'
+import { rootOptions, childOptions, browseTargetFor } from '../src/utils/docTree.js'
 
 const INDEX = [
   { id: 'd1', path: 'docs/api/overview.md', docId: 'api/overview', section: 'api', projectId: null, title: 'Overview', source: 'repo' },
@@ -142,4 +142,36 @@ test('every option value stays inside Discord\'s 100 character cap', () => {
     assert.ok(o.label.length <= 100)
     assert.ok((o.description || '').length <= 100)
   }
+})
+
+test('browseTargetFor returns the folder an attributed doc lives in', () => {
+  const t = browseTargetFor(INDEX[2])
+  assert.deepEqual(t, { scope: 'proj:p1', prefix: 'hms-documentation/admin-apis' })
+  // That target must actually list the doc it came from.
+  const { options } = childOptions(INDEX, t)
+  assert.ok(options.some((o) => o.value === 'doc:d3'))
+})
+
+test('browseTargetFor scopes an unattributed doc to its section', () => {
+  const t = browseTargetFor(INDEX[0])
+  assert.deepEqual(t, { scope: 'sec:api', prefix: '' })
+  const { options } = childOptions(INDEX, t)
+  assert.ok(options.some((o) => o.value === 'doc:d1'))
+})
+
+test('browseTargetFor handles a loose root file with no directory', () => {
+  const loose = [
+    { id: 'r1', path: 'docs/init.md', docId: 'init', section: 'init.md', projectId: null, title: 'Init', source: 'repo' },
+  ]
+  const t = browseTargetFor(loose[0])
+  assert.deepEqual(t, { scope: 'sec:init.md', prefix: '' })
+  const { options } = childOptions(loose, t)
+  assert.ok(options.some((o) => o.value === 'doc:r1'))
+})
+
+test('browseTargetFor on a local doc lands in its project folder', () => {
+  const t = browseTargetFor(INDEX[4])
+  assert.deepEqual(t, { scope: 'proj:p1', prefix: 'projects/badar-hms' })
+  const { options } = childOptions(INDEX, t)
+  assert.ok(options.some((o) => o.value === 'doc:d5'))
 })
