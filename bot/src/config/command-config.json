@@ -36,7 +36,8 @@
     "create-channel": ["Verified"],
     "playback": ["CEO", "Server Manager"],
     "setup": ["CEO", "Server Manager"],
-    "meetings": ["Verified"]
+    "meetings": ["Verified"],
+    "projects": ["CEO", "Server Manager"]
   },
   "dedicatedChannels": {
     "init": true,
@@ -131,9 +132,9 @@
       "detail": "Select a project to view its schema/README, or **New project** to paste and store. Use **/sql-dump** for versioned SQL dump history."
     },
     "docs": {
-      "summary": "Browse documentation in bot/docs/ — open folders and view .md files.",
-      "syntax": "`/docs`",
-      "detail": "Shows a file browser for bot/docs/. Select a folder to open it or a file to view its content (formatted in an embed)."
+      "summary": "Browse, search and read the project documentation.",
+      "syntax": "`/docs` or `/docs query:<words>`",
+      "detail": "Browse by project or section and open a page, or pass `query` to search titles and page text. A page is rendered into an embed, long pages page with ◀ ▶, and pages that come from the documentation repository carry a link to the published site. Everything is read from the bot database, which a manager refreshes with **/setup** → **Sync docs now**."
     },
     "faq": {
       "summary": "Ask or search FAQs.",
@@ -151,9 +152,9 @@
       "detail": "Access admin modules. CEO or Server Manager only."
     },
     "edit-docs": {
-      "summary": "Edit project or repo documentation (README).",
+      "summary": "Write a documentation page for a project, stored in the bot.",
       "syntax": "`/edit-docs`",
-      "detail": "Select a project or repo, then submit new README/content. Stored in database for projects; use GitHub for repos."
+      "detail": "Pick a project, then submit a page title and markdown body. The page is saved in the bot database and shows up in **/docs** under that project. It is not published to the documentation site, and a page synced from the documentation repository cannot be edited here — pick a different title if one already holds that address."
     },
     "clock-in": {
       "summary": "Clock in (start tracking time).",
@@ -244,6 +245,7 @@
       "summary": "List, reschedule, or cancel your scheduled meetings.",
       "syntax": "`/meetings`",
       "detail": "Shows your upcoming meetings. Select one to reschedule (new time) or cancel it. CEO/Server Manager can manage everyone's."
-    }
+    },
+    "projects": { "summary": "List projects, add a project, link a repository", "syntax": "/projects", "detail": "CEO/Server Manager only. A project's docs folder determines which UBS-Doc pages are attributed to it." }
   }
 }

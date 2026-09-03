@@ -4,6 +4,50 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-03 — Project documentation: sync UBS-Doc into MySQL and browse it from Discord
+Phase 1 (read-only) of `docs/superpowers/specs/2026-09-03-project-docs-preview-design.md`,
+executed from `docs/superpowers/plans/2026-09-03-project-docs-preview.md` on branch
+`feat/project-docs` (21 commits, not merged).
+
+- **Sync service** `bot/src/services/docsSync.js` — every 15 min, one API call for the head
+  SHA; on change, one tree call, then only changed blobs from raw.githubusercontent. Records
+  the head SHA only when the mirror is provably complete (a truncated tree, an empty document
+  list, or any per-file failure each suppress both the delete pass and the SHA write).
+  Re-attribution runs every cycle, including the short-circuit one.
+- **Storage** migration `012_doc_pages.sql`: `docpage` + `docsource`, plus `project.docsSlug`
+  and `project.docsPaths`. Applied to production; 173 pages synced, 138 attributed to Badar HMS.
+- **`/docs` rebuilt** — browse projects and sections, walk the tree, read a page in paged
+  embeds with a link to the live site, and an autocompleted `query` option backed by FULLTEXT.
+  Replaces the old browser over six unrelated files in `bot/docs/`.
+- **`/projects` added** — create a project (name, docs slug, extra doc paths), link a repo.
+  Closes the gap that no command created projects and `/repos` silently discarded the project
+  name its own modal collected.
+- **`/edit-docs` repointed** at `docpage` (it read a table with 0 rows), writing `source='local'`
+  pages that the sync can never overwrite or delete. Also fixed a pre-existing bug where
+  `edit_docs_select` was deferred before `showModal`, which had broken the command outright.
+- **`#documentation` channel** rebuilt on the same data.
+- **First test suite in this repo**: `node:test`, `npm test`, 54 tests in `bot/test/`.
+
+Verified against the live corpus: all 173 documents render (674 embed pages, longest 3800 of
+4096, zero unbalanced code fences), and walking all 102 levels of the browse tree reaches every
+document exactly once with no level over Discord's 25-option cap.
+
+Files: `bot/src/services/docsSync.js`, `bot/src/utils/{docPath,docRender,docTree}.js`,
+`bot/src/commands/{docs,projects,edit-docs,repos,setup,doc-channel}.js`,
+`bot/src/services/docTraversal.js`, `bot/src/Database/{index.js,schema.sql}`,
+`bot/src/Database/migrations/012_doc_pages.sql`, `bot/src/{index.js,handlers/interactions.js}`,
+`bot/src/config/command-config.json`, `bot/test/*`, `package.json`.
+
+## 2026-09-02 — Environment setup verified; migrations 010/011 confirmed live
+Fresh `npm install` (73 pkgs, exit 0) on Node v24.15.0. `ffmpeg-static` binary
+downloaded without needing `npm approve-scripts` (82 MB, ffmpeg 6.1.1); `prism-media`
+resolves it and `libsodium-wrappers` initialises. Connected to the remote MySQL
+(20.120.228.55/granjur, 8.0.46): `schema_migrations` lists all 11 migrations and both
+`guildconfig.timezone` and `scheduledmeeting.cancelled` exist — backlog items
+"verify migrations 010+011" and "ffmpeg-static approve-scripts" are closed.
+All 36 slash commands build; 72/87 modules import cleanly (the 15 failures are dead
+vendored `Database/*` files, now a backlog item). No code changes.
+
 ## 2026-09-02 — Meeting → tasks integration with CSAAS (feature complete)
 Full pipeline: a recorded Discord voice meeting is transcribed/analyzed by CSAAS,
 turned into proposed tasks + assignees, reviewed by a human in Discord, then mirrored

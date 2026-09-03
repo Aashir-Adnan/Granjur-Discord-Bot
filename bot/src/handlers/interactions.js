@@ -99,6 +99,8 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/meetings.js")).handleRescheduleModal(
         interaction,
       );
+    if (customId === "projects_add_modal")
+      return (await import("../commands/projects.js")).handleAddModal(interaction);
     return;
   }
 
@@ -210,6 +212,10 @@ export default async function handleInteractions(interaction) {
       return (
         await import("../commands/doc-channel.js")
       ).handleDocTraversalBack(interaction);
+    if (customId === "setup_docs_sync")
+      return (await import("../commands/setup.js")).handleDocsSync(interaction);
+    if (customId.startsWith("docs_page_prev:") || customId.startsWith("docs_page_next:"))
+      return (await import("../commands/docs.js")).handleDocsPage(interaction);
     if (customId === "cleanup_confirm")
       return (await import("../commands/cleanup.js")).handleConfirm(interaction);
     if (customId === "cleanup_cancel")
@@ -218,6 +224,10 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/admin-panel.js")).handleRecordingDetails(interaction);
     if (customId === "admin_panel_back")
       return (await import("../commands/admin-panel.js")).handleBack(interaction);
+    if (customId === "projects_add")
+      return (await import("../commands/projects.js")).handleAddButton(interaction);
+    if (customId === "projects_link_repo")
+      return (await import("../commands/projects.js")).handleLinkRepo(interaction);
     await interaction
       .editReply({
         content: `Unknown button. Received customId: "${customId}"`,
@@ -296,7 +306,7 @@ export default async function handleInteractions(interaction) {
         interaction,
       );
     // force redeploy check
-    if (customId === "docs_browse")
+    if (customId === "docs_browse" || customId.startsWith("docs_browse:"))
       return (await import("../commands/docs.js")).handleDocsBrowse(
         interaction,
       );
@@ -324,6 +334,10 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/playback.js")).handleMeetingSelect(interaction);
     if (customId === "playback_select_recording")
       return (await import("../commands/playback.js")).handleRecordingSelect(interaction);
+    if (customId === "projects_link_repo_select")
+      return (await import("../commands/projects.js")).handleLinkRepoSelect(interaction);
+    if (customId === "projects_link_project_select")
+      return (await import("../commands/projects.js")).handleLinkProjectSelect(interaction);
     // No handler matched — we already deferred, so we must editReply or Discord shows "interaction failed"
     await interaction
       .editReply({ content: "Unknown action.", components: [] })

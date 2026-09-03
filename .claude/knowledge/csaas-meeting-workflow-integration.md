@@ -43,14 +43,13 @@ plaintext transport + `actionPerformerURDD`, `skip_github` on `/approve`, the
 `/assign` endpoint + `extractAssignments` agent + `meeting_task_assignees` table,
 and an `/issuesync` `task_ids` filter. Bot side: `bot/src/services/csaasClient.js`
 (AES envelope + `isConfigured`), `meeting_pipeline_job` table
-(`bot/src/Database/meetingPipelineJob*.js`, migration 012),
+(`bot/src/Database/meetingPipelineJob*.js`, migration 013),
 `bot/src/services/meetingPipelineWorker.js` (`runTick` 60s loop, backoff,
 `MAX_ATTEMPTS`, stage timeout, `notifyFailure`),
 `bot/src/services/meetingPipelineStages.js` (10 stage runners +
 `resolveMeetingChannel`), review UI (`bot/src/services/meetingReviewUI.js` +
 `bot/src/commands/meetingReview.js`, `/meeting-review` `/meeting-retry`), `task`
-mirroring with `externalId`/`meetingId` (migration 013), and the ubs_doc `/docs`
-root via `UBS_DOC_PATH`. Manual E2E runbook:
+mirroring with `externalId`/`meetingId` (migration 014). Manual E2E runbook:
 `docs/meeting-pipeline-e2e-checklist.md`. Remaining follow-ups are in
 `.claude/state/backlog.md` (live E2E run, enqueue hook, `findLatest`, env truthiness).
 
@@ -108,10 +107,11 @@ CSAAS: `meetings.meeting_id`, `status` enum (`pending`→`transcribed`→`analyz
   `projectName`, `status='open'`) → ping assignees → `/issuesync` for GitHub-flagged
   tasks (with `[Agent Call]` marker).
 
-## ubs_doc
+## ubs_doc — superseded
 
-`C:\Users\adnan\VS_Code\Clones\UBS_Doc` — Docusaurus 3.9 site. For this feature: just
-`git clone` it on the VM, set `UBS_DOC_PATH` (relative), and mount its `docs/` as a
-read-only branch in the existing `/docs` traversal (`bot/src/commands/docs.js`,
-reuse the `resolveDocsPath` path-traversal guard). **No HTTP serving, no Firebase
-portal** — markdown browsing only.
+This feature originally planned to `git clone` ubs_doc onto the VM and mount its `docs/`
+as a second read-only root in `/docs` via `UBS_DOC_PATH`. **That approach is gone.**
+`main` replaced `/docs` with a MySQL-backed browser fed by a 15-minute sync of the same
+repository from GitHub, so no clone and no local path are involved any more. See
+[[project-docs]]. The `UBS_DOC_PATH` env var and `bot/src/services/docRoots.js` were
+removed when `main` merged into this branch on 2026-09-03.

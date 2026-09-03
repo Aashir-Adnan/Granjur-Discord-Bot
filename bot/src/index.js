@@ -16,6 +16,7 @@ import { startMeetingReminder } from "./services/meetingReminder.js";
 import { startMeetingAutoChannels } from "./services/meetingAutoChannel.js";
 import { startTicketReminder } from "./services/ticketReminder.js";
 import { startMeetingPipelineWorker } from "./services/meetingPipelineWorker.js";
+import { startDocsSync } from "./services/docsSync.js";
 import {
   isRateLimitError,
   getRetryAfter,
@@ -48,6 +49,7 @@ client.once(Events.ClientReady, async () => {
   startMeetingAutoChannels(client);
   startTicketReminder(client);
   startMeetingPipelineWorker(client);
+  startDocsSync(client);
   console.log(`Logged in as ${client.user.tag}`);
 });
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -183,6 +185,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       "create_task_metric_api",
       "create_task_metric_qa",
       "create_task_metric_ac",
+      "projects_add",
+      "edit_docs_select", // project select → new-page modal
     ];
     const customId = interaction.customId || "";
     const skipDefer =

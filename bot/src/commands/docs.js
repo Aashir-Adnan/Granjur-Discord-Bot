@@ -1,271 +1,218 @@
-import fs from 'fs'
 import {
   SlashCommandBuilder,
   ActionRowBuilder,
   StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   EmbedBuilder,
 } from 'discord.js'
-import { getOrCreateGuildConfig } from '../db/index.js'
-import { EPHEMERAL } from '../constants.js'
-import { listRoots, resolveDocPath, rootByKey } from '../services/docRoots.js'
+import db, { getOrCreateGuildConfig } from '../db/index.js'
+import { rootOptions, childOptions } from '../utils/docTree.js'
+import { renderForDiscord, paginate, docUrl } from '../utils/docRender.js'
+import { DEFAULT_SOURCE } from '../services/docsSync.js'
 
-const EMBED_DESC_MAX = 4096
-const EMBED_FIELD_VALUE_MAX = 1024
-const SELECT_OPTIONS_MAX = 25
-const LABEL_MAX = 100
-
-/** Human-readable location for embed footers. */
-function footerFor(rootKey, relativePath) {
-  const root = rootByKey(rootKey)
-  const base = root ? root.label : rootKey
-  return relativePath ? `${base}/${relativePath}` : base
-}
-
-/** List direct children of <root>/(relativePath): dirs and .md/.mdx files. */
-function listDocsDir(rootKey, relativePath) {
-  const dirPath = resolveDocPath(rootKey, relativePath)
-  if (!dirPath || !fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
-    return { dirs: [], files: [] }
-  }
-  const dirs = []
-  const files = []
-  try {
-    for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
-      if (entry.name.startsWith('.')) continue
-      const rel = relativePath ? `${relativePath}/${entry.name}` : entry.name
-      if (entry.isDirectory()) {
-        dirs.push({ name: entry.name, value: rel })
-      } else if (entry.isFile() && /\.(md|mdx)$/i.test(entry.name)) {
-        files.push({ name: entry.name, value: rel })
-      }
-    }
-  } catch (_) {
-    return { dirs: [], files: [] }
-  }
-  dirs.sort((a, b) => a.name.localeCompare(b.name))
-  files.sort((a, b) => a.name.localeCompare(b.name))
-  return { dirs, files }
-}
-
-/** Build select menu options for a given root+path (back + folders + files), max 25. */
-function buildBrowseOptions(rootKey, relativePath) {
-  const { dirs, files } = listDocsDir(rootKey, relativePath)
-  const options = []
-
-  if (relativePath) {
-    const parent = relativePath.includes('/') ? relativePath.split('/').slice(0, -1).join('/') : ''
-    options.push({
-      label: '← Back',
-      value: `back:${rootKey}:${relativePath}`,
-      description: parent ? `Back to ${parent}` : 'Back to root',
-    })
-  }
-
-  for (const d of dirs) {
-    if (options.length >= SELECT_OPTIONS_MAX) break
-    options.push({
-      label: `📁 ${d.name}`.slice(0, LABEL_MAX),
-      value: `dir:${rootKey}:${d.value}`,
-      description: `Open folder`,
-    })
-  }
-  for (const f of files) {
-    if (options.length >= SELECT_OPTIONS_MAX) break
-    options.push({
-      label: `📄 ${f.name}`.slice(0, LABEL_MAX),
-      value: `file:${rootKey}:${f.value}`,
-      description: f.value.slice(0, LABEL_MAX),
-    })
-  }
-
-  return options
-}
-
-/** Strip YAML frontmatter and truncate for Discord embed. */
-function formatDocContent(raw) {
-  let text = raw
-  const frontmatter = /^---\r?\n[\s\S]*?\r?\n---\r?\n/
-  if (frontmatter.test(text)) text = text.replace(frontmatter, '')
-  text = text.trim()
-  return text
-}
-
-/** Chunk content for embed: description (4096) + fields (1024 each). */
-function chunkForEmbed(content) {
-  const chunks = []
-  let rest = content
-  const descMax = EMBED_DESC_MAX - 50
-  if (rest.length <= descMax) {
-    chunks.push({ type: 'description', text: rest })
-    return chunks
-  }
-  chunks.push({ type: 'description', text: rest.slice(0, descMax) + '\n\n… *(truncated)*' })
-  rest = rest.slice(descMax)
-  const fieldMax = EMBED_FIELD_VALUE_MAX - 20
-  while (rest.length > 0 && chunks.length < 25) {
-    chunks.push({ type: 'field', text: rest.slice(0, fieldMax) + (rest.length > fieldMax ? '…' : '') })
-    rest = rest.slice(fieldMax)
-  }
-  return chunks
-}
-
-/** Read file from a doc root and return formatted content or null. */
-function readDocFile(rootKey, relativePath) {
-  const filePath = resolveDocPath(rootKey, relativePath)
-  if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return null
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8')
-    return formatDocContent(raw)
-  } catch (_) {
-    return null
-  }
-}
+const SELECT_ID = 'docs_browse'
+const PAGE_CHARS = 3800
 
 export const data = new SlashCommandBuilder()
   .setName('docs')
-  .setDescription('Browse documentation — open folders and view .md files')
+  .setDescription('Browse project and framework documentation')
+  .addStringOption((o) =>
+    o
+      .setName('query')
+      .setDescription('Search documentation by title or content')
+      .setRequired(false)
+      .setAutocomplete(true)
+  )
 
-export async function execute(interaction) {
-  const guild = interaction.guild
-  if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
+async function context(interaction) {
+  const cfg = await getOrCreateGuildConfig(interaction.guild.id)
+  const source = (await db.docSource.get({ guildConfigId: cfg.id })) || DEFAULT_SOURCE
+  return { cfg, source }
+}
 
-  const cfg = await getOrCreateGuildConfig(guild.id)
-  if (!cfg) return interaction.editReply({ content: 'Server not initialized. Run `/init` first.' })
+export async function autocomplete(interaction) {
+  const focused = interaction.options.getFocused(true)
+  if (focused.name !== 'query') return interaction.respond([]).catch(() => {})
+  try {
+    const cfg = await getOrCreateGuildConfig(interaction.guild.id)
+    const rows = await db.docPage.search({ guildConfigId: cfg.id, q: focused.value, limit: 25 })
+    // The choice value is the row id — an autocomplete value also caps at 100.
+    return interaction
+      .respond(rows.map((r) => ({ name: r.title.slice(0, 100), value: r.id })))
+      .catch(() => {})
+  } catch {
+    return interaction.respond([]).catch(() => {})
+  }
+}
 
-  const roots = listRoots()
+/** Build the embed + components for one page of one doc. */
+function docPayload(row, source, page) {
+  const rendered = renderForDiscord(row.content, { siteUrl: source.siteUrl, docId: row.docId })
+  const pages = paginate(rendered, PAGE_CHARS)
+  const n = Math.min(Math.max(page, 0), pages.length - 1)
+
+  const embed = new EmbedBuilder()
+    .setTitle(row.title.slice(0, 256))
+    .setDescription(pages[n] || '_empty_')
+    .setColor(0x5865f2)
+    .setFooter({ text: `${row.docId} — page ${n + 1}/${pages.length}` })
+
+  const buttons = []
+  if (pages.length > 1) {
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(`docs_page_prev:${row.id}:${n}`)
+        .setLabel('◀')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(n === 0),
+      new ButtonBuilder()
+        .setCustomId(`docs_page_next:${row.id}:${n}`)
+        .setLabel('▶')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(n >= pages.length - 1)
+    )
+  }
+  if (row.source !== 'local') {
+    buttons.push(
+      new ButtonBuilder()
+        .setLabel('Read full page ↗')
+        .setStyle(ButtonStyle.Link)
+        .setURL(docUrl(source.siteUrl, row.docId))
+    )
+  }
+
+  const components = buttons.length ? [new ActionRowBuilder().addComponents(buttons)] : []
+  return { embeds: [embed], components, content: null }
+}
+
+async function browsePayload(cfg, scope, prefix, page) {
+  const index = await db.docPage.listIndex({ guildConfigId: cfg.id })
+  if (index.length === 0) {
+    return {
+      content: 'No documentation synced yet. A manager can run **/setup** and press **Sync docs now**.',
+      embeds: [],
+      components: [],
+    }
+  }
 
   let options
-  let description
-  let footerText
-  if (roots.length > 1) {
-    options = roots.map((r) => ({
-      label: `📚 ${r.label}`.slice(0, LABEL_MAX),
-      value: `dir:${r.key}:`,
-      description: 'Open documentation root',
-    }))
-    description = 'Select a **documentation source** to browse.'
-    footerText = 'Documentation'
+  let heading
+  if (!scope) {
+    const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
+    options = rootOptions(index, projects)
+    heading = 'Select a project or a documentation section.'
   } else {
-    options = buildBrowseOptions(roots[0].key, '')
-    description = 'Select a **folder** to open it or a **file** to view its content.'
-    footerText = footerFor(roots[0].key, '')
+    const res = childOptions(index, { scope, prefix, page })
+    options = res.options
+    // A section scope rewrites its base prefix to the section name (see
+    // childOptions), so at that level `prefix` reads like a folder name even
+    // though it is really the scope root — only show the folder heading once
+    // the user is genuinely below the scope root.
+    const atScopeRoot = !prefix || (scope.startsWith('sec:') && prefix === scope.slice(4))
+    heading = atScopeRoot ? 'Select a folder or a page.' : `**${prefix}**`
   }
 
   if (options.length === 0) {
-    return interaction.editReply({
-      content: 'No documentation folders or .md/.mdx files found.',
-      flags: EPHEMERAL,
-    })
+    return { content: 'Nothing here.', embeds: [], components: [] }
   }
 
   const embed = new EmbedBuilder()
     .setTitle('📚 Documentation')
-    .setDescription(description)
+    .setDescription(heading)
     .setColor(0x5865f2)
-    .setFooter({ text: footerText })
 
   const select = new StringSelectMenuBuilder()
-    .setCustomId('docs_browse')
-    .setPlaceholder('Choose a folder or file…')
-    .addOptions(options.slice(0, SELECT_OPTIONS_MAX))
+    .setCustomId(scope ? `${SELECT_ID}:${scope}` : SELECT_ID)
+    .setPlaceholder('Choose…')
+    .addOptions(options.slice(0, 25))
 
-  await interaction.editReply({
-    embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(select)],
-  })
+  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(select)], content: null }
 }
 
-/** Handle docs_browse select: navigate to dir, back, or show file. */
-export async function handleDocsBrowse(interaction) {
-  const guild = interaction.guild
-  if (!guild) return
+export async function execute(interaction) {
+  if (!interaction.guild) return interaction.editReply({ content: 'Use this in a server.' }).catch(() => {})
+  const { cfg, source } = await context(interaction)
 
+  const q = interaction.options.getString('query')
+  if (q) {
+    // Picking an autocomplete suggestion sends a row id; typing free text and
+    // pressing enter sends whatever was typed, so fall back to a search.
+    let row = await db.docPage.findById({ guildConfigId: cfg.id, id: q })
+    if (!row) {
+      const hits = await db.docPage.search({ guildConfigId: cfg.id, q, limit: 1 })
+      if (hits.length) row = await db.docPage.findById({ guildConfigId: cfg.id, id: hits[0].id })
+    }
+    if (!row) {
+      return interaction.editReply({ content: `No documentation found for **${q}**.` }).catch(() => {})
+    }
+    return interaction.editReply(docPayload(row, source, 0)).catch(() => {})
+  }
+
+  return interaction.editReply(await browsePayload(cfg, null, '', 0)).catch(() => {})
+}
+
+export async function handleDocsBrowse(interaction) {
+  if (!interaction.guild) return
+  const { cfg, source } = await context(interaction)
   const value = interaction.values?.[0]
   if (!value) return
 
-  // Values are `<kind>:<root>:<relpath>`; split on the first two `:` only.
-  const [kind, root, ...restParts] = value.split(':')
-  const rest = restParts.join(':').trim()
+  const scopeFromId = interaction.customId.startsWith(`${SELECT_ID}:`)
+    ? interaction.customId.slice(SELECT_ID.length + 1)
+    : null
 
-  if (kind === 'file') {
-    const content = readDocFile(root, rest)
-    if (content == null) {
-      return interaction.editReply({
-        content: 'Could not read that file.',
-        embeds: [],
-        components: [],
-      }).catch(() => {})
+  if (value.startsWith('proj:') || value.startsWith('sec:')) {
+    return interaction.editReply(await browsePayload(cfg, value, '', 0)).catch(() => {})
+  }
+  if (value.startsWith('dir:')) {
+    return interaction.editReply(await browsePayload(cfg, scopeFromId, value.slice(4), 0)).catch(() => {})
+  }
+  if (value === 'root:') {
+    return interaction.editReply(await browsePayload(cfg, null, '', 0)).catch(() => {})
+  }
+  if (value.startsWith('back:')) {
+    const parent = value.slice(5)
+    if (!parent) {
+      // Empty parent from a scope root means "back to the top of this scope",
+      // not the global root — losing scopeFromId here silently drops the
+      // project/section the user was browsing. Only fall back to the global
+      // root if we truly don't know the scope.
+      return interaction.editReply(await browsePayload(cfg, scopeFromId || null, '', 0)).catch(() => {})
     }
-
-    const chunks = chunkForEmbed(content)
-    const embed = new EmbedBuilder()
-      .setTitle(`📄 ${rest}`)
-      .setColor(0x5865f2)
-      .setFooter({ text: footerFor(root, rest) })
-
-    const descChunk = chunks.find(c => c.type === 'description')
-    if (descChunk) embed.setDescription(descChunk.text)
-
-    const fieldChunks = chunks.filter(c => c.type === 'field')
-    for (let i = 0; i < fieldChunks.length; i++) {
-      embed.addFields({ name: `Continued (${i + 1})`, value: fieldChunks[i].text, inline: false })
+    return interaction.editReply(await browsePayload(cfg, scopeFromId, parent, 0)).catch(() => {})
+  }
+  if (value.startsWith('more:')) {
+    const rest = value.slice(5)
+    const lastColon = rest.lastIndexOf(':')
+    const prefix = rest.slice(0, lastColon)
+    const page = Number(rest.slice(lastColon + 1)) || 0
+    return interaction.editReply(await browsePayload(cfg, scopeFromId, prefix, page)).catch(() => {})
+  }
+  if (value.startsWith('doc:')) {
+    const row = await db.docPage.findById({ guildConfigId: cfg.id, id: value.slice(4) })
+    if (!row) {
+      const src = await db.docSource.get({ guildConfigId: cfg.id })
+      const when = src?.lastSyncedAt ? ` (last synced <t:${Math.floor(new Date(src.lastSyncedAt).getTime() / 1000)}:R>)` : ''
+      return interaction
+        .editReply({ content: `That page is not available — docs may be out of date${when}.`, embeds: [], components: [] })
+        .catch(() => {})
     }
-
-    return interaction.editReply({
-      content: null,
-      embeds: [embed],
-      components: [],
-    }).catch(() => {})
+    return interaction.editReply(docPayload(row, source, 0)).catch(() => {})
   }
 
-  if (kind === 'back') {
-    const parent = rest.includes('/') ? rest.split('/').slice(0, -1).join('/') : ''
-    const options = buildBrowseOptions(root, parent)
-    if (options.length === 0) {
-      return interaction.editReply({
-        content: 'No items here.',
-        embeds: [],
-        components: [],
-      }).catch(() => {})
-    }
-    const embed = new EmbedBuilder()
-      .setTitle('📚 Documentation')
-      .setDescription(parent ? `**${parent}** — Select a folder or file.` : 'Select a **folder** or **file**.')
-      .setColor(0x5865f2)
-      .setFooter({ text: footerFor(root, parent) })
-    const select = new StringSelectMenuBuilder()
-      .setCustomId('docs_browse')
-      .setPlaceholder('Choose a folder or file…')
-      .addOptions(options.slice(0, SELECT_OPTIONS_MAX))
-    return interaction.editReply({
-      embeds: [embed],
-      components: [new ActionRowBuilder().addComponents(select)],
-    }).catch(() => {})
-  }
+  return interaction.editReply({ content: 'Unknown selection.', components: [] }).catch(() => {})
+}
 
-  if (kind === 'dir') {
-    const options = buildBrowseOptions(root, rest)
-    if (options.length === 0) {
-      return interaction.editReply({
-        content: 'This folder is empty or has no .md/.mdx files.',
-        embeds: [],
-        components: [],
-      }).catch(() => {})
-    }
-    const embed = new EmbedBuilder()
-      .setTitle('📚 Documentation')
-      .setDescription(rest ? `**${rest}** — Select a folder or file.` : 'Select a **folder** or **file**.')
-      .setColor(0x5865f2)
-      .setFooter({ text: footerFor(root, rest) })
-    const select = new StringSelectMenuBuilder()
-      .setCustomId('docs_browse')
-      .setPlaceholder('Choose a folder or file…')
-      .addOptions(options.slice(0, SELECT_OPTIONS_MAX))
-    return interaction.editReply({
-      embeds: [embed],
-      components: [new ActionRowBuilder().addComponents(select)],
-    }).catch(() => {})
-  }
-
-  await interaction.editReply({ content: 'Unknown selection.', components: [] }).catch(() => {})
+export async function handleDocsPage(interaction) {
+  if (!interaction.guild) return
+  const { cfg, source } = await context(interaction)
+  // customId is `docs_page_(prev|next):<row id>:<current page>` — a row id
+  // never contains a colon, so a plain split is safe.
+  const [action, rowId, pageStr] = interaction.customId.split(':')
+  const page = Number(pageStr) || 0
+  const row = await db.docPage.findById({ guildConfigId: cfg.id, id: rowId })
+  if (!row) return interaction.editReply({ content: 'That page is no longer available.' }).catch(() => {})
+  const next = action === 'docs_page_next' ? page + 1 : page - 1
+  return interaction.editReply(docPayload(row, source, next)).catch(() => {})
 }

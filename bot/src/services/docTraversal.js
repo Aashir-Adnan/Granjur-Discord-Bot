@@ -6,45 +6,39 @@ const REFRESH_CUSTOM_ID = 'doc_traversal_refresh'
 
 /**
  * Build embed + components for the #documentation channel (in-chat project doc traversal).
- * Options are built from repos and project schemas for the given guild.
+ * Options list the projects that have synced documentation pages (docpage), one option
+ * per project with a page count, for the given guild.
  */
 export async function buildDocTraversalPayload(guildId) {
   const cfg = await getOrCreateGuildConfig(guildId)
   if (!cfg) return null
 
-  const repos = await db.repository.findMany({ where: { guildConfigId: cfg.id } })
-  const schemas = await db.projectSchema.findMany({ where: { guildConfigId: cfg.id } })
+  const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
+  const counts = await db.docPage.countsByProject({ guildConfigId: cfg.id })
+  const byId = new Map(counts.map((c) => [c.projectId, Number(c.n)]))
 
   const options = []
-  schemas.forEach((s) => {
+  for (const p of projects) {
+    const n = byId.get(p.id) || 0
+    if (!n) continue
     options.push({
-      label: `Schema: ${(s.projectName || s.projectId).slice(0, 100)}`,
-      value: `schema:${s.projectId}`,
-      description: 'Stored schema',
+      label: `${p.name}`.slice(0, 100),
+      value: `proj:${p.id}`,
+      description: `${n} documentation page(s)`,
     })
-  })
-  repos.forEach((r) => {
-    const name = (r.name || '').slice(0, 100)
-    if (!options.some((o) => o.value === `repo:${r.id}`)) {
-      options.push({
-        label: `Repo: ${name}`,
-        value: `repo:${r.id}`,
-        description: (r.url || '').slice(0, 80),
-      })
-    }
-  })
+  }
   if (options.length === 0) {
     options.push({
-      label: 'No projects yet — add repos with /repos',
+      label: 'No documentation synced yet',
       value: '__none__',
-      description: 'Then click Refresh below',
+      description: 'A manager can run /setup → Sync docs now',
     })
   }
 
   const embed = new EmbedBuilder()
     .setTitle('📚 Project documentation')
     .setDescription(
-      'Select a project below to view its documentation (schema or repo docs). Add repos with **/repos** and store schemas with **/project-db**.'
+      'Select a project below to browse its documentation. Documentation is synced from the documentation repository and can be read in full with **/docs**; write a new page with **/edit-docs**.'
     )
     .setColor(0x5865f2)
     .setFooter({ text: `${options.length} option(s)` })

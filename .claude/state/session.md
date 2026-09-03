@@ -1,69 +1,32 @@
 # Current Session
 
-**Date:** 2026-09-01
+**Date:** 2026-09-03
 
 ## Goal
-Scope + design the "meeting → transcription → notes → tasks → assign to Discord
-users" feature, bridging this bot to the CSAAS backend meeting workflow. Also:
-`git clone` ubs_doc onto the VM and expose its markdown in `/docs`.
+Merge `main` (the project-docs work) into `design/meeting-to-tasks-integration`, then
+finish the meeting -> tasks pipeline: get it running end to end.
 
-## Status: DESIGN / SPIKE — not yet approved, no code written
+## Branch state
+`design/meeting-to-tasks-integration`, forked at `88f6855`, 21 commits of meeting-pipeline
+work. `main` moved 23 commits ahead in the meantime (the UBS-Doc sync + `/docs` rebuild),
+now merged in here.
 
-User decisions locked in:
-1. Approved meeting-tasks become **real rows in the bot `task` table** (assignees,
-   `externalId=csaas:<meeting_task_id>`); CSAAS `meeting_tasks` stays pipeline
-   source-of-truth.
-2. **No bot-side project index** — CSAAS `tracked_projects` + `REPOS_CLONE_BASE_DIR`
-   is the single index; codebase search stays server-side. Bot only needs `UBS_DOC_PATH`.
-3. **Assignment = explicit transcript statements only** ("X will do Y" → assign to Y).
-   No capacity/skill/auto-balance logic. Unmatched → unassigned.
-4. When a task IS pushed to GitHub, use the `[Agent Call]` marker so CSAAS's existing
-   autonomous issue→PR agent picks it up.
-5. Bot↔CSAAS uses CSAAS **platform encryption** (`aes.js`, AES-256-ECB CryptoJS).
+## Merge resolutions worth remembering
+- **`/docs` is main's version.** This branch had added a second `/docs` root reading a
+  local `ubs_doc` clone (`UBS_DOC_PATH`). `main` replaced `/docs` wholesale with a
+  MySQL-backed browser fed by a GitHub sync of the same repo, so the local-clone route is
+  superseded: `bot/src/services/docRoots.js` + its test are deleted and `UBS_DOC_PATH` is
+  gone from `bot/.env.example`. The E2E runbook no longer asks for a clone.
+  The spec and plan still describe the old approach — they are historical records.
+- **Migrations renumbered.** `main` took `012` for `012_doc_pages.sql`, so this branch's
+  three migrations moved up: `013_meeting_pipeline_job`, `014_task_external_meeting`,
+  `015_task_externalid_unique`. None of them had been applied to any database yet.
+- Both `startDocsSync` and `startMeetingPipelineWorker` now start from `bot/src/index.js`.
+- `npm test` is `node --test` (bare), which discovers both this branch's colocated
+  `*.test.js` files and main's `bot/test/` suite.
 
-Orchestration decision: **Approach A** — persisted `meeting_pipeline_job` table +
-60s interval worker (pattern of `meetingReminder.js`), one stage/tick, idempotent,
-restart-safe.
-
-## Key findings (full detail: knowledge/csaas-meeting-workflow-integration.md)
-- CSAAS pipeline is **already fully API-exposed** (~22 endpoints) and Soniox is
-  **already wired** (`STT_PROVIDER=soniox`). GitHub push already gated on `GITHUB_PAT`.
-- Real gaps: meeting endpoints have `encryption:false`/`accessToken:false` in `step()`
-  → must flip for platform encryption; handlers need a **service URDD** (tenancy layer);
-  add `skip_github` flag to `/approve`; build new `/assign` endpoint + `extractAssignments`
-  agent + `meeting_task_assignees` table.
-- Bot has audio capture done (per-speaker `.ogg` + `MeetingRecording` rows), a `task`
-  table with `assigneeIds`/`externalId`, `guildmember.email` (same join key CSAAS uses),
-  `createIssue()`, and a `/docs` markdown traversal with a path-traversal guard to reuse.
-- Bot has **no Anthropic client** — not needed, AI stays in CSAAS.
-
-## Effort estimate
-~19–31 working days (~4–6 weeks) for a solid v1, one dev. Thin happy-path demo
-~6–9 days. Dominant cost = Discord review/approval UX + orchestration + integration
-testing (not the AI pipeline).
-
-## Next step
-Design doc WRITTEN + committed on branch `design/meeting-to-tasks-integration`:
-`docs/superpowers/specs/2026-09-01-meeting-to-tasks-integration-design.md`.
-Adjustment from user: **no authenticated/encrypted APIs for v1** — bot passes an
-existing `actionPerformerURDD` (env `CSAAS_ACTOR_URDD`) as a plain body field over
-localhost; encryption is a tracked hardening follow-up. Note: every CSAAS meeting
-handler calls `requireMeetingPermission` (throws 403 without a URDD holding
-`add_meetings`/`run_meeting_ai`/`update_meetings`), so that URDD must exist / be
-seeded on the CSAAS side.
-Spec approved. Implementation plan WRITTEN + committed:
-`docs/superpowers/plans/2026-09-01-meeting-to-tasks-integration.md` — 17 tasks in
-5 phases (P0 ubs_doc/`/docs`; P1 CSAAS: skip_github + /assign + /issuesync filter;
-P2 csaasClient; P3 job table + task cols + worker skeleton; P4 the 8 pipeline
-stages + review UI + interaction handlers + mirroring + issue sync + failure alerts).
-Bot test runner introduced: `node:test` (`npm test` = `node --test`), no new deps.
-User will provide the `CSAAS_ACTOR_URDD` (holds add_meetings/run_meeting_ai/update_meetings).
-
-Branch: `design/meeting-to-tasks-integration`.
-Next: execute the plan (subagent-driven per task, or inline).
-
-## Open questions still to resolve in the spec
-- Exact roster payload fields for `/assign` (ref = discordId? email?).
-- How the bot obtains/holds its service URDD + tenant scope in CSAAS.
-- Whether `/report` HTML is written to a bot-readable path or fetched via `/notes`.
-- Segment upload ordering / how speaker labels ride along with `segment_index`.
+## Next
+Finish the meeting pipeline. The one hard blocker is the live E2E run, which needs a real
+`CSAAS_ACTOR_URDD` from the user (a URDD holding `add_meetings` + `run_meeting_ai` +
+`update_meetings` + `view_meetings`). Runbook: `docs/meeting-pipeline-e2e-checklist.md`.
+Everything else outstanding is in `backlog.md` under "Meeting -> tasks integration".

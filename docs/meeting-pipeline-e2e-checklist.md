@@ -15,13 +15,13 @@ any change to the meeting pipeline, CSAAS meeting-workflow endpoints, or the rev
 
 ## 2. Bot side
 
-- [ ] `git clone` the ubs_doc repo next to the bot checkout so `UBS_DOC_PATH`
-      (`../UBS_Doc/docs`) resolves.
-- [ ] Set the 6 env vars in `bot/.env`:
+- [ ] Set the 5 env vars in `bot/.env`:
       `MEETING_PIPELINE_ENABLED=true`, `MEETING_REPORTS_DIR=bot/meeting-reports`,
       `MEETING_STAGE_TIMEOUT_MS=360000`, `CSAAS_API_URL=<url>`,
-      `CSAAS_ACTOR_URDD=<urdd id from step 1>`, `UBS_DOC_PATH=../UBS_Doc/docs`.
-- [ ] Run `npm run db:migrate` — confirm migrations 012 and 013 apply cleanly.
+      `CSAAS_ACTOR_URDD=<urdd id from step 1>`.
+- [ ] Run `npm run db:migrate` — confirm migrations `013_meeting_pipeline_job`,
+      `014_task_external_meeting` and `015_task_externalid_unique` apply cleanly
+      (`012_doc_pages` is already applied on the live DB).
 - [ ] Start the bot; confirm the log line `[meetingPipeline] worker started (60s tick)`
       (not the "disabled" line).
 

@@ -5,6 +5,9 @@
 - [schedule-meetings.md](schedule-meetings.md) — `/schedule`, `/meetings`, `/setup`;
   the timezone model, `parseWhen` NL time parser, Discord-timestamp helpers, and the
   autocomplete plumbing.
+- [project-docs.md](project-docs.md) — how UBS-Doc markdown is synced into MySQL and
+  browsed from Discord: the two tables, repo-vs-local pages, path-prefix attribution, the
+  sync safety rules, and the Discord limits that shape `/docs`.
 - [csaas-meeting-workflow-integration.md](csaas-meeting-workflow-integration.md) —
   planned feature: bot → CSAAS backend meeting pipeline (transcribe → analyze → tasks
   → assign to Discord users, GitHub push optional). What CSAAS already exposes, the

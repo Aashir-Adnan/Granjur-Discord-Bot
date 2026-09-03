@@ -44,6 +44,7 @@ import * as playbackCmd from './playback.js'
 import * as setupCmd from './setup.js'
 import * as meetingsCmd from './meetings.js'
 import * as meetingReviewCmd from './meetingReview.js'
+import * as projectsCmd from './projects.js'
 
 const commandModules = [
   initCmd,
@@ -83,6 +84,7 @@ const commandModules = [
   setupCmd,
   meetingsCmd,
   meetingReviewCmd,
+  projectsCmd,
 ]
 
 // A module's `data` may be a single SlashCommandBuilder or an array of them
