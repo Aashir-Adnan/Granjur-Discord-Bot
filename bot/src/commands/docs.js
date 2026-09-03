@@ -7,7 +7,7 @@ import {
   EmbedBuilder,
 } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
-import { rootOptions, childOptions } from '../utils/docTree.js'
+import { rootOptions, childOptions, browseTargetFor } from '../utils/docTree.js'
 import { renderForDiscord, paginate, docUrl } from '../utils/docRender.js'
 import { DEFAULT_SOURCE } from '../services/docsSync.js'
 
@@ -58,7 +58,15 @@ function docPayload(row, source, page) {
     .setColor(0x5865f2)
     .setFooter({ text: `${row.docId} — page ${n + 1}/${pages.length}` })
 
-  const buttons = []
+  // A document replaces the browse menu, so without this the only way back to
+  // the picker is re-running /docs. There is no history to unwind — the row
+  // itself says which folder it lives in.
+  const buttons = [
+    new ButtonBuilder()
+      .setCustomId(`docs_back:${row.id}`)
+      .setLabel('← Back to docs')
+      .setStyle(ButtonStyle.Secondary),
+  ]
   if (pages.length > 1) {
     buttons.push(
       new ButtonBuilder()
@@ -202,6 +210,17 @@ export async function handleDocsBrowse(interaction) {
   }
 
   return interaction.editReply({ content: 'Unknown selection.', components: [] }).catch(() => {})
+}
+
+export async function handleDocsBack(interaction) {
+  if (!interaction.guild) return
+  const { cfg } = await context(interaction)
+  const rowId = interaction.customId.slice('docs_back:'.length)
+  const row = await db.docPage.findById({ guildConfigId: cfg.id, id: rowId })
+  // A page deleted by a sync since it was opened still gets the user somewhere
+  // useful, so fall back to the global root rather than erroring.
+  const { scope, prefix } = row ? browseTargetFor(row) : { scope: null, prefix: '' }
+  return interaction.editReply(await browsePayload(cfg, scope, prefix, 0)).catch(() => {})
 }
 
 export async function handleDocsPage(interaction) {

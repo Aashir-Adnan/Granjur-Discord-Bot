@@ -92,6 +92,11 @@ Per-file failures are isolated — one bad file no longer abandons the rest of t
   vary with whether the escape row is present, or pages overlap and entries become
   unreachable.
 - Every level carries an escape: `back:<parent>` below the scope root, `root:` at it.
+  An open document is not a browse level and has no history to unwind, so its
+  `← Back to docs` button carries only the row id (`docs_back:<id>`, 35 chars) and
+  recomputes the level from the row via `browseTargetFor`. Under a `sec:` scope that
+  helper normalises a prefix equal to the section name to `''`, since `childOptions`
+  folds the section into its base prefix and the two are the same level.
 
 ## Gotchas that cost time
 
