@@ -75,6 +75,23 @@ test('buildExplainEmbed caps references and the title', () => {
   assert.equal(embed.fields[0].value.split('\n').length, MAX_RENDERED_REFERENCES)
 })
 
+test('a single over-long reference line is skipped, not dropping the rest: short, huge, short all considered and both shorts render', () => {
+  const refs = [
+    { path: 'a.md', heading: '', quote: '' },
+    {
+      path: `a-very-long-directory-name/${'segment-'.repeat(150)}/huge-file-name.md`,
+      heading: 'A heading that is also fairly long to push the line length up past the field cap on its own',
+      quote: '',
+    },
+    { path: 'b.md', heading: '', quote: '' },
+  ]
+  const embed = buildExplainEmbed({ question: 'q', answer: 'a', references: refs, scope: 's', durationMs: 0, siteUrl: SITE }, lookupTitle).toJSON()
+  const lines = embed.fields[0].value.split('\n')
+  assert.equal(lines.length, 2)
+  assert.match(lines[0], /\[a\]/)
+  assert.match(lines[1], /\[b\]/)
+})
+
 test('buildExplainEmbed keeps the references field under the 1024 field cap', () => {
   const refs = Array.from({ length: 8 }, (_, i) => ({
     path: `a-very-long-directory-name-number-${i}/and-another-long-segment/and-a-really-long-file-name-${i}.md`,

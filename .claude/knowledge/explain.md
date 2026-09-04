@@ -12,9 +12,18 @@ via CSAAS `POST /api/meeting/workflow/explain` → `Services/SysScripts/AIScript
 `All documentation` whenever scoping did not happen — that is the first thing to check
 when a project answer looks too broad.
 
-**Tools:** `--disallowedTools Write,Edit,MultiEdit,NotebookEdit,Bash,WebFetch,WebSearch,Task`
-via `claudeClient`'s `extraArgs` option. `--allowedTools` would not restrict anything because
-`claudeClient` always passes `--dangerously-skip-permissions`.
+**Tools:** the explain call runs WITHOUT `--dangerously-skip-permissions` — `claudeClient`
+passes that flag on every call by default, but `explainAgent.js` opts out per-call with
+`skipPermissions: false`. In `-p` mode, without that flag, a `Read`/`Grep`/`Glob` outside the
+working directory needs a permission nobody can grant and is denied — this is what makes the
+working directory an actual jail, not just a default starting point (with the flag present, an
+absolute-path read escapes it regardless of `--allowedTools`/`--disallowedTools`). On top of that:
+`--setting-sources user` so a `.claude/settings.json` committed inside the docs clone itself
+cannot grant permissions back; `--disallowedTools Write,Edit,MultiEdit,NotebookEdit,Bash,WebFetch,WebSearch,Task`
+via `claudeClient`'s `extraArgs` option as belt-and-braces on top of both. `/explain` also refuses
+to run at all unless the server has `CLAUDE_BACKEND=cli` — `runExplain` asserts
+`getBackend() === "cli"` before doing anything else and fails closed (throws) otherwise, since the
+API backend cannot read the documentation clone.
 
 **Docs freshness:** `git pull --ff-only` on the clone at most every 15 minutes, before a run.
 

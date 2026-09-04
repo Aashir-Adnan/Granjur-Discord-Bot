@@ -47,9 +47,10 @@ function referencesField(references, siteUrl, lookupTitle) {
   let used = 0
   for (const r of refs) {
     const line = referenceLine(r, siteUrl, lookupTitle)
-    // A single over-long line is dropped rather than truncated: a truncated
-    // markdown link is a broken link.
-    if (used + line.length + 1 > FIELD_MAX) break
+    // A single over-long line is dropped rather than truncated (a truncated
+    // markdown link is a broken link) — but skip past it, don't stop: a later,
+    // shorter reference must still get a chance to render.
+    if (used + line.length + 1 > FIELD_MAX) continue
     lines.push(line)
     used += line.length + 1
   }

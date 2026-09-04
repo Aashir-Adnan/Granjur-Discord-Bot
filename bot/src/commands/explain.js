@@ -26,14 +26,23 @@ export const data = new SlashCommandBuilder()
       .setMaxLength(QUESTION_MAX)
   )
 
-/** Autocomplete choices: "No project" first, then projects matching the typed text. Pure. */
+/** Autocomplete choices: "No project" first, then projects matching the typed text, sorted by name. Pure. */
 export function projectChoices(projects, term) {
   const t = String(term || '').trim().toLowerCase()
   const head = { name: NO_PROJECT_LABEL, value: NO_PROJECT }
   const rest = (projects || [])
     .filter((p) => !t || String(p.name || '').toLowerCase().includes(t))
+    .slice()
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }))
     .map((p) => ({ name: String(p.name || p.id).slice(0, 100), value: String(p.id) }))
   return [head, ...rest].slice(0, 25)
+}
+
+/** Does this error (thrown by explain()) mean the server-side EXPLAIN_BUSY guard fired? Pure. */
+function isExplainBusy(e) {
+  const parts = [e?.message, e?.body?.message, e?.body?.payload]
+    .map((v) => (typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v)))
+  return parts.some((s) => s.includes('EXPLAIN_BUSY'))
 }
 
 export async function autocomplete(interaction) {
@@ -55,22 +64,29 @@ export async function execute(interaction) {
     return interaction.editReply({ content: 'The explainer is not configured on this bot (CSAAS_API_URL / CSAAS_ACTOR_URDD).' }).catch(() => {})
   }
 
-  const cfg = await getOrCreateGuildConfig(interaction.guild.id)
   const projectValue = interaction.options.getString('project')
   const question = String(interaction.options.getString('question') || '').trim()
   if (!question) return interaction.editReply({ content: 'Ask a question.' }).catch(() => {})
 
   // The picker's value is a project id; free text typed past the suggestions
   // arrives as-is and matches nothing, which is treated as "no project".
+  let cfg
   let project = null
-  if (projectValue && projectValue !== NO_PROJECT) {
-    const row = await db.project.findFirst({ where: { id: projectValue } }).catch(() => null)
-    if (row && row.guildConfigId === cfg.id) {
-      project = { name: row.name, docsPaths: Array.isArray(row.docsPaths) ? row.docsPaths : null }
+  try {
+    cfg = await getOrCreateGuildConfig(interaction.guild.id)
+    if (projectValue && projectValue !== NO_PROJECT) {
+      const row = await db.project.findFirst({ where: { id: projectValue } }).catch(() => null)
+      if (row && row.guildConfigId === cfg.id) {
+        project = { name: row.name, docsPaths: Array.isArray(row.docsPaths) ? row.docsPaths : null }
+      }
     }
+  } catch (e) {
+    console.error('[explain] prep failed:', e?.message ?? e)
+    return interaction.editReply({ content: 'Something went wrong preparing your question — try again in a minute.' }).catch(() => {})
   }
 
-  await interaction.editReply({ content: `Reading the ${project ? `**${project.name}**` : ''} documentation… this takes a minute.` }).catch(() => {})
+  const projectPart = project ? `**${project.name}** ` : ''
+  await interaction.editReply({ content: `Reading the ${projectPart}documentation… this takes a minute.` }).catch(() => {})
 
   let result
   try {
@@ -78,7 +94,10 @@ export async function execute(interaction) {
   } catch (e) {
     const status = e instanceof CsaasError ? e.status : null
     console.error(`[explain] CSAAS failed (status ${status}):`, e?.message ?? e)
-    return interaction.editReply({ content: "Couldn't reach the explainer — try again in a minute." }).catch(() => {})
+    const content = isExplainBusy(e)
+      ? 'The explainer is busy with another question — try again in a minute.'
+      : "Couldn't reach the explainer — try again in a minute."
+    return interaction.editReply({ content }).catch(() => {})
   }
 
   const source = (await db.docSource.get({ guildConfigId: cfg.id }).catch(() => null)) || DEFAULT_SOURCE

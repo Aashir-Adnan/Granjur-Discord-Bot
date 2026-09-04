@@ -12,7 +12,9 @@ test('"No project" is always first and carries the sentinel value', () => {
   const out = projectChoices(projects, '')
   assert.equal(out[0].value, NO_PROJECT)
   assert.match(out[0].name, /^No project/)
-  assert.deepEqual(out.slice(1).map((c) => c.value), ['p1', 'p2', 'p3'])
+  // projects (above) are unsorted by insertion order (Framework, Badar HMS,
+  // CSAAS) — the rest must come back sorted by name: Badar HMS, CSAAS, Framework.
+  assert.deepEqual(out.slice(1).map((c) => c.value), ['p2', 'p3', 'p1'])
 })
 
 test('typing filters projects by name, case-insensitively, and keeps "No project"', () => {

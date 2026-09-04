@@ -195,7 +195,12 @@ export async function handleCommand(interaction, commands) {
     await cmd.execute(interaction)
   } catch (err) {
     console.error(`Command ${interaction.commandName}:`, err)
-    const msg = err.message || 'Something went wrong.'
+    // Public-reply commands (e.g. /explain) show their reply to the whole
+    // channel, so a raw error message (which may leak internals) is replaced
+    // with a fixed generic string. Ephemeral commands keep err.message.
+    const msg = isPublicReplyCommand(interaction.commandName)
+      ? 'Something went wrong. Try again in a minute.'
+      : (err.message || 'Something went wrong.')
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply({ content: msg }).catch(() => {})
     } else {
