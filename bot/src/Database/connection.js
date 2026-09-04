@@ -19,6 +19,14 @@ export function getPool() {
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
+      // The database is remote, so idle pooled connections get dropped by the
+      // server or an intermediary and the next query fails with ECONNRESET —
+      // observed repeatedly during the meeting-pipeline run, costing a worker
+      // tick each time. Keepalive holds them open; idleTimeout retires a
+      // connection on our side before the server decides to.
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10_000,
+      idleTimeout: 60_000,
     })
   }
   return pool
