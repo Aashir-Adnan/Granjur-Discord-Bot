@@ -166,8 +166,18 @@ export async function execute(interaction) {
   if (name === 'meeting-retry') {
     const job = await resolveJob(meetingArg)
     if (!job) return interaction.editReply({ content: 'No pipeline job found for that meeting.' })
-    if (job.status !== 'failed') {
-      return interaction.editReply({ content: `That job is not in a failed state (${job.status}).` })
+    // 'failed' is the obvious case, but a job that is merely waiting out a long
+    // backoff is 'pending' — and that is exactly when someone wants to nudge it
+    // after fixing whatever broke the stage. Both clear cleanly. Refuse the rest:
+    // 'working' would race an in-flight stage, 'blocked' is waiting on the review
+    // UI (use the buttons), and 'done' has nothing to retry.
+    if (job.status !== 'failed' && job.status !== 'pending') {
+      const why = job.status === 'blocked'
+        ? 'That job is waiting on its review message — use the buttons there.'
+        : job.status === 'working'
+          ? 'That job is running a stage right now. Try again in a minute.'
+          : `That job is ${job.status} — nothing to retry.`
+      return interaction.editReply({ content: why })
     }
     await db.meetingPipelineJob.update(job.id, {
       status: 'pending',
@@ -175,6 +185,8 @@ export async function execute(interaction) {
       nextAttemptAt: null,
       lastError: null,
     })
-    return interaction.editReply({ content: 'Re-queued the meeting pipeline job.' })
+    return interaction.editReply({
+      content: `Re-queued the meeting pipeline job (was ${job.status} at stage \`${job.stage}\`, attempt ${job.attempts}). It resumes on the next tick.`,
+    })
   }
 }
