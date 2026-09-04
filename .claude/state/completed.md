@@ -4,6 +4,41 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-04 — Ship to production: task ticket channels, both repos on main
+The meeting pipeline now notifies people the way `/create-task` always has, and both
+sides of it are on `main` and deployed.
+
+**Task notification (`05bfc78`).** A mirrored meeting task used to get one ping in the
+review channel — which for a `/record` meeting with no dedicated meeting text channel
+lands in the voice channel's own chat, where nobody looks. Now each assigned task gets
+its own private channel under the Features category, visible to the assignee and the
+approver, opened with an embed that mentions them, plus a best-effort DM pointing at
+it. The task row is repointed at its own channel so `/close-feature` and `/update-task`
+resolve there; the review-channel summary links each one. New
+`bot/src/services/taskTicketChannel.js` (`createTaskTicketChannel`, `dmTaskAssignees`);
+`mirroredStage` carries a prior `taskChannelId` forward so a retry after a partial
+mirror never makes a second channel or re-DMs; `/meeting-review` approve now records
+`dataJson.approvedBy` — the assigner's role. Five new tests, suite at 122.
+
+**Bot repo:** `design/meeting-to-tasks-integration` fast-forwarded onto `main` and
+pushed (`45aaf64..05bfc78`, 39 commits). VM pulled, migrations 013–015 already applied,
+40 commands re-registered, `granjur-bot` restarted and logging
+`[meetingPipeline] worker started (60s tick)`.
+
+**CSAAS repo:** the five local VM commits are now on CSAAS `main` as one clean commit
+(`263f861`). The originals had swept up server-runtime churn — 17 migration files the
+boot process had moved to `data/migrations_completed/`, and a regenerated `schema.sql`
+— so the push was rebuilt from a source-only diff in a temp clone, restoring
+`data/migrations/20260901_meeting_task_assignees.sql` that the churn commit had
+deleted. Safe because `runMigrationsOnStart.js` keys off a `schema_migrations` ledger
+table, not file presence. Deploy ran; VM CSAAS is at `263f861`, 0 ahead, and
+`/meeting/workflow/{assign,approve,issuesync}` all reach their handlers.
+
+**Production env:** `MEETING_PIPELINE_ENABLED=true`, `CSAAS_API_URL=http://127.0.0.1:3000/api`
+(CSAAS is on the same VM — no tunnel in production), `CSAAS_ACTOR_URDD=6` added to
+`~/Granjur-Discord-Bot/.env`. Local bot instance and the SSH tunnel both shut down.
+
+
 ## 2026-09-04 — Meeting → tasks pipeline: first successful end-to-end run
 A two-person voice meeting became a task row in the bot database, through all ten
 stages: `created → transcribing → analyzing → generating_tasks → assigning →

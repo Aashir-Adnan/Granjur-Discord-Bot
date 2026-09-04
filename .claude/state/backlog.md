@@ -4,18 +4,25 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
-## Meeting → tasks integration — finish the job
-Feature is code-complete (see `completed.md` 2026-09-02) but has **never run end to end**.
-- **Live E2E run — blocked on the user** providing a real `CSAAS_ACTOR_URDD`: a URDD
-  holding `add_meetings` + `run_meeting_ai` + `update_meetings` + `view_meetings`
-  (the last for `/notes` + `/meeting`). Runbook:
-  `docs/meeting-pipeline-e2e-checklist.md`. Stages `created` and onward have NOT yet run
-  live; the worker starts and ticks cleanly (2026-09-04).
-- **CSAAS-side changes are only local commits on the VM** (`/var/www/CSAAS/CSAAS_Backend`,
-  5 commits ahead of `origin/main`: the four `feat/meeting-workflow-assign` cherry-picks
-  plus the `/issuesync` requestMethod fix). `Deploy to Azure.yml` does
-  `git reset --hard origin/main` on every push to CSAAS `main`, which will erase them.
-  To make them permanent they must be pushed to CSAAS `main` — the user's call.
+## Meeting → tasks integration — remaining gaps
+Ran end to end and shipped to production (see `completed.md` 2026-09-04). What is
+still unexercised or wrong:
+- **Assignment has never been exercised live.** The one live run mirrored an
+  unassigned task, so the new per-task ticket channel, the assignee DM and the
+  `assigneeIds` write have unit tests but no live run behind them. Next recording
+  should assign a task in `/meeting-review` before approving.
+- **The GitHub `[Agent Call]` push is untested live** — `issue_syncing` has only run
+  with zero github-flagged tasks. It also needs a working `GITHUB_TOKEN` (see below).
+- **Project linkage is broken.** CSAAS reports the project as `Badar_HMS`; the
+  repository row is named `Badar_HMS_Node`, so `mirroredStage`'s exact-name
+  `repository.findFirst` misses and every mirrored task lands with `projectId` and
+  `repositoryId` null. Needs fuzzier matching (or a stored alias). Until then
+  `issue_syncing` cannot resolve a repo slug either.
+- **No project-wise task view.** `/dashboard` groups by module. Nothing lists tasks
+  per project, which is what a manager asks for after a meeting.
+- **Review lands in the voice channel's own chat** for a `/record` meeting, because
+  `meetingchannel.textChannelId` is null unless a dedicated meeting channel was set
+  up. Consider falling back to the guild's meeting/summary channel.
 - **Seven other `LIMIT ?` sites in `bot/src/Database/index.js`** (lines ~490, 493, 964,
   1027, 1030, 1663, 1716) have the same prepared-statement failure that broke the first
   pipeline tick (`Incorrect arguments to mysqld_stmt_execute`). Pre-existing, outside the
@@ -37,6 +44,12 @@ Task 10 of `docs/superpowers/plans/2026-09-03-project-docs-preview.md` — click
 `/docs`, `/projects`, `/edit-docs` and the `#documentation` channel on branch
 `feat/project-docs`. Everything else about that branch is verified automatically; this is the
 only unverified part. Procedure is in `session.md`.
+## `Task` vs `task` — the table-case bug reached beyond the pipeline
+`taskCreate`/`taskUpdate` wrote `` `Task` ``, which MySQL on Linux treats as a
+different table. Fixed in `099179d`, but it means task writes had **never** worked on
+this server — `/create-task`, `/bug` and `/feature` share those functions. Worth a
+sweep for other capitalised table identifiers in `bot/src/Database/index.js`.
+
 ## Four commands still read a table with zero rows
 `/create-task`, `/feature`, `/project-db` and `/create-project-categories` all read
 `db.projectSchema`, i.e. the `projectschema` table, which has **0 rows** in production. The
