@@ -5,6 +5,7 @@ import {
   EmbedBuilder,
 } from 'discord.js'
 import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
+import { memberPassesRoleGate, roleIdsAreStale, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
 
 const TWO_MONTHS_MS = 60 * 24 * 60 * 60 * 1000
 function twoMonthsAgo() {
@@ -32,10 +33,10 @@ export async function execute(interaction) {
 
   const member = await guild.members.fetch(interaction.user.id).catch(() => null)
   const dashboardIds = ensureStringArray(cfg.dashboardRoleIds)
-  const canDashboard =
-    (dashboardIds.length && member?.roles.cache.some((r) => dashboardIds.includes(r.id))) ||
-    member?.permissions.has('Administrator')
-  if (!canDashboard) {
+  if (roleIdsAreStale(guild, dashboardIds)) {
+    console.warn(`[dashboard] guildconfig.dashboardRoleIds names no live role in ${guild.id} — falling back to role names; re-run /init`)
+  }
+  if (!memberPassesRoleGate(guild, member, dashboardIds, LEADERSHIP_ROLE_NAMES)) {
     return interaction.editReply({ content: 'Only CEO or Server Manager can use the dashboard.' })
   }
 
