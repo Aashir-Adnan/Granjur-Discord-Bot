@@ -4,6 +4,35 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-05 — Ship `/explain`: Claude answers from a project's documentation
+
+Live feature: `/explain project:<picker> question:<text>` answers questions about a project's 
+documentation using Claude, running on the VM in a scope bounded by the project's first 
+`docsPaths` entry. One-shot, no session. One live smoke test: Badar HMS question answered 
+in 23 s with three references under `hms-documentation/`.
+
+**Bot side** (`52c434e`): `/explain` command, modal picker per project, text truncation at 
+4000 chars, reference limit 8, 120 s timeout. Dedicated `csaasClient.explain()` call via 
+`POST /api/meeting/workflow/explain`. Embeds built by `explainRender.js`. Tests cover 
+the command, rendering, and CSAAS integration.
+
+**CSAAS side** (`1c44b62`): `POST /api/meeting/workflow/explain` endpoint wiring. 
+`explainAgent.js` runs Claude (`claudeClient.chat`) with `--disallowedTools` (Write, Edit, 
+Bash, WebFetch, etc.) in the docs directory scoped by project. `extraArgs` option on 
+`claudeClient` (`1aa51e0`) gates tool access. Non-JSON from Claude is retried once, then 
+returned raw. References drop entries with no path; answer trimmed at 4000. Tests: 
+`explainAgent.test.js` (`896fd75`), `dc52778`.
+
+**Scope fallback:** Footer reports `All documentation` when scoping did not happen — 
+verify `Repos/UBS-Doc/docs/<project.docsPaths[0]>` exists on the VM if answers look 
+too broad.
+
+**Debugging:** `pm2 logs csaas | grep '\[explain\]'` shows scope, reference count, 
+milliseconds per question.
+
+**Deferred features** in `backlog.md`: code as a second source, thread/follow-up mode, 
+multiple `docsPaths` per project.
+
 ## 2026-09-04 — Ship to production: task ticket channels, both repos on main
 The meeting pipeline now notifies people the way `/create-task` always has, and both
 sides of it are on `main` and deployed.

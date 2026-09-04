@@ -4,6 +4,18 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## /explain — follow-ups
+
+**Code as a second source** once the fresh Badar HMS clone is on the VM (`--add-dir` 
+or a second `cwd` root; renderer needs a `file:line` form).
+
+**Threads / follow-up mode** (CLI `--resume` per Discord thread, idle timeout).
+
+**Multiple `docsPaths` per project** (only the first is used).
+
+
+---
+
 ## Meeting → tasks integration — remaining gaps
 Ran end to end and shipped to production (see `completed.md` 2026-09-04). What is
 still unexercised or wrong:

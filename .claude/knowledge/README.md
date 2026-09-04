@@ -8,6 +8,7 @@
 - [project-docs.md](project-docs.md) — how UBS-Doc markdown is synced into MySQL and
   browsed from Discord: the two tables, repo-vs-local pages, path-prefix attribution, the
   sync safety rules, and the Discord limits that shape `/docs`.
+- [explain.md](explain.md) — /explain: Claude answers from a project's docs on the VM; scoping by cwd; debugging.
 - [csaas-meeting-workflow-integration.md](csaas-meeting-workflow-integration.md) —
   planned feature: bot → CSAAS backend meeting pipeline (transcribe → analyze → tasks
   → assign to Discord users, GitHub push optional). What CSAAS already exposes, the
