@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import { taskChoiceLabel, holdersOf } from '../utils/taskLabel.js'
+import { notifyTaskUpdate } from '../services/taskUpdateNotify.js'
 
 /** Parse space-separated @mentions or Discord user IDs into array of IDs. */
 function parseUserIds(str) {
@@ -101,6 +102,23 @@ export async function execute(interaction) {
 
   try {
     await db.task.update({ where: { id: taskId }, data: updates })
+
+    // The write is what matters; notification is best-effort and must never
+    // turn a successful update into a failed command.
+    let notified = { channelId: task.discordChannelId || null, created: false, dmed: [] }
+    try {
+      notified = await notifyTaskUpdate({
+        client: interaction.client,
+        guild,
+        task,
+        before: task,
+        updates,
+        actorId: interaction.user.id,
+      })
+    } catch (e) {
+      console.error('[update-task] notify:', e?.message ?? e)
+    }
+
     const embed = new EmbedBuilder()
       .setTitle('Task updated')
       .setDescription(`**${task.title || taskId}**`)
@@ -110,6 +128,16 @@ export async function execute(interaction) {
         inline: true,
       })))
       .setColor(0x57f287)
+    if (notified.channelId) {
+      embed.addFields({
+        name: notified.created ? 'Channel created' : 'Task channel',
+        value: `<#${notified.channelId}>`,
+        inline: false,
+      })
+    }
+    if (notified.dmed.length) {
+      embed.setFooter({ text: `Notified ${notified.dmed.length} member(s) by DM` })
+    }
     return interaction.editReply({ embeds: [embed] })
   } catch (e) {
     console.error('[update-task]', e)
