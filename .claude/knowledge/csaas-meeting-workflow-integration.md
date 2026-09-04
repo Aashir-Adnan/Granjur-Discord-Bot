@@ -115,3 +115,35 @@ as a second read-only root in `/docs` via `UBS_DOC_PATH`. **That approach is gon
 repository from GitHub, so no clone and no local path are involved any more. See
 [[project-docs]]. The `UBS_DOC_PATH` env var and `bot/src/services/docRoots.js` were
 removed when `main` merged into this branch on 2026-09-03.
+
+## Operational gotchas found on the first live run (2026-09-04)
+
+**CSAAS's Claude CLI reads `azureuser`'s credentials, not root's.** The server runs as
+root under root's pm2, but `Services/SysScripts/AgentScripts/claudeClient.js` overrides
+`HOME` when it spawns the CLI:
+
+    const effectiveHome = process.env.CLAUDE_CLI_HOME || "/home/azureuser";
+
+So the credential store that matters is `/home/azureuser/.claude/.credentials.json`.
+Authenticating with `sudo -i` + `claude auth login` writes `/root/.claude/` and changes
+nothing — the symptom is `401 OAuth access token has expired` from `/analyze` while a
+manual `sudo -H claude` succeeds. **Log in as `azureuser`, no sudo.** Every AI stage
+(`analyzing`, `generating_tasks`, `assigning`) depends on this; transcription does not,
+because Soniox is a separate credential.
+
+**Retry scheduling must use the database clock.** `nextAttemptAt` is compared against
+MySQL's `NOW(3)`. Writing it as a JS `Date` makes mysql2 serialise it in the Node
+process's local timezone, so with Node on UTC+5 and MySQL on UTC every backoff landed
+five hours late and the job was never re-claimed. Fixed by sending an offset and letting
+MySQL compute `NOW(3) + INTERVAL n SECOND`. Any future column compared against a SQL
+clock needs the same treatment.
+
+**`LIMIT ?` and `INTERVAL ? SECOND` cannot be bound.** `query()` uses prepared statements;
+mysql2 binds a JS number as a DOUBLE and MySQL rejects it with `Incorrect arguments to
+mysqld_stmt_execute`. Inline a clamped integer instead. Seven other `LIMIT ?` sites in
+`bot/src/Database/index.js` still have this latent bug — see the backlog.
+
+**`/issuesync` and three sibling endpoints 405'd on every method** on deployed CSAAS main.
+`meetingWorkflow.js` is hand-written and never passes through `ApiObjectsGenerator`, so
+its `requestMethod: { Add: "POST", List: "GET" }` map reached `requestMethodValidator`
+raw and matched nothing. It must be a plain array: `requestMethod: ["POST", "GET"]`.
