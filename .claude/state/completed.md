@@ -4,6 +4,41 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-04 — Meeting → tasks pipeline: first successful end-to-end run
+A two-person voice meeting became a task row in the bot database, through all ten
+stages: `created → transcribing → analyzing → generating_tasks → assigning →
+awaiting_review → approved → mirrored → issue_syncing → done`. CSAAS meeting 5,
+Soniox transcription of two per-speaker files, one task correctly identifying a
+tenant-reactivation URDD bug with four source files named; bot task `8cac25ab…`
+(`type=feature`, `externalId=csaas:1`).
+
+Setup: CSAAS on the VM reached over an SSH tunnel, `CSAAS_ACTOR_URDD=6`, bot run
+locally with production `granjur-bot` stopped. Four CSAAS commits cherry-picked onto
+the VM's `main` (`/assign`, `skip_github`, `task_ids`, plus an `/issuesync`
+`requestMethod` fix) — **local commits only, erased by the next push to CSAAS main**.
+
+Eight bugs found and fixed, none reachable by unit tests:
+1. `LIMIT ?` / `INTERVAL ? SECOND` cannot be bound under prepared statements — broke
+   the first tick (`fe4db8d`).
+2. `nextAttemptAt` written on the Node clock but compared against MySQL's `NOW(3)`,
+   putting every retry five hours out (`87642e9`).
+3. `/record` was never registered in the command index, and used a start path that
+   never enqueued the pipeline (`77626a2`).
+4. Connection pool had no keepalive against the remote database (`baed8c3`).
+5. `/meeting-retry` refused `pending` jobs — exactly the state it is needed for
+   (`30ab9f8`).
+6. `awaiting_review` advanced the stage while blocking, so the job sat at stage
+   `approved` with nobody having approved — which killed the assignee dropdown, the
+   GitHub toggle, the per-task reject and `/meeting-review` (`da35317`).
+7. **`task` INSERT/UPDATE referenced `` `Task` ``**, which does not exist on a
+   case-sensitive server — task writes had never worked here, affecting
+   `/create-task`, `/bug` and `/feature` too (`099179d`).
+8. The final summary was edited into the meeting's channel rather than the one the
+   review was re-posted to, so it silently never appeared (`c3f42e4`).
+
+Not yet exercised: assignment (the task mirrored unassigned), the assignee ping, and
+the GitHub `[Agent Call]` push. See `backlog.md`.
+
 ## 2026-09-03 — Project documentation: sync UBS-Doc into MySQL and browse it from Discord
 Phase 1 (read-only) of `docs/superpowers/specs/2026-09-03-project-docs-preview-design.md`,
 executed from `docs/superpowers/plans/2026-09-03-project-docs-preview.md` on branch
