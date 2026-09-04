@@ -27,7 +27,7 @@ beforeEach(() => {
   stubFetch((url, opts) => ({ meeting_id: 'm1', echoedBody: JSON.parse(opts.body) }))
 })
 
-const { createMeeting, fetchNotes, issueSync, CsaasError, isConfigured } =
+const { createMeeting, fetchNotes, issueSync, explain, CsaasError, isConfigured } =
   await import('./csaasClient.js')
 
 test('isConfigured reflects env', () => {
@@ -106,4 +106,37 @@ test('an aborted/timed-out fetch becomes a CsaasError', async () => {
     () => createMeeting({ title: 'x' }),
     (e) => e instanceof CsaasError && /timed out/i.test(e.message),
   )
+})
+
+test('explain posts question + project and unwraps the answer', async () => {
+  let captured
+  globalThis.fetch = async (url, opts) => {
+    captured = { url, opts }
+    return {
+      ok: true, status: 200,
+      text: async () => JSON.stringify({
+        status: 200,
+        payload: { return: { answer: 'A', references: [{ path: 'init.md', heading: '', quote: '' }], scope: 'All documentation', model: 'm', durationMs: 12 } },
+      }),
+    }
+  }
+  const out = await explain({ question: 'q?', project: null })
+  assert.equal(out.answer, 'A')
+  assert.equal(out.scope, 'All documentation')
+  assert.match(captured.url, /\/meeting\/workflow\/explain$/)
+  const body = JSON.parse(captured.opts.body)
+  assert.equal(body.question, 'q?')
+  assert.equal(body.project, null)
+  assert.equal(String(body.actionPerformerURDD), process.env.CSAAS_ACTOR_URDD)
+  // a per-call timeout is passed as the abort signal
+  assert.ok(captured.opts.signal instanceof AbortSignal)
+})
+
+test('explain normalises a missing references array', async () => {
+  globalThis.fetch = async () => ({
+    ok: true, status: 200,
+    text: async () => JSON.stringify({ status: 200, payload: { return: { answer: 'A', scope: 'x' } } }),
+  })
+  const out = await explain({ question: 'q?', project: null })
+  assert.deepEqual(out.references, [])
 })

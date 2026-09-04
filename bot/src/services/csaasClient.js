@@ -25,8 +25,8 @@ function requestTimeoutMs() {
 
 // AbortSignal.timeout aborts the fetch itself so a hung request stops consuming
 // resources (and a timed-out /transcribe does not later append a duplicate segment).
-function timeoutSignal() {
-  return AbortSignal.timeout(requestTimeoutMs())
+function timeoutSignal(ms = requestTimeoutMs()) {
+  return AbortSignal.timeout(ms)
 }
 
 function isAbort(err) {
@@ -34,12 +34,13 @@ function isAbort(err) {
     /aborted|timed out/i.test(String(err?.message || ''))
 }
 
-async function runFetch(url, init) {
+async function runFetch(url, init, { timeoutMs } = {}) {
+  const ms = timeoutMs || requestTimeoutMs()
   try {
-    return await fetch(url, { ...init, signal: timeoutSignal() })
+    return await fetch(url, { ...init, signal: timeoutSignal(ms) })
   } catch (err) {
     if (isAbort(err)) {
-      throw new CsaasError(`CSAAS request timed out after ${requestTimeoutMs()}ms: ${url}`, 0, null)
+      throw new CsaasError(`CSAAS request timed out after ${ms}ms: ${url}`, 0, null)
     }
     throw err
   }
@@ -60,12 +61,12 @@ function unwrap(json, status) {
   return json.payload?.return ?? json
 }
 
-async function postJson(pathname, body) {
+async function postJson(pathname, body, { timeoutMs } = {}) {
   const res = await runFetch(`${BASE()}${pathname}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...body, actionPerformerURDD: URDD() }),
-  })
+  }, { timeoutMs })
   const text = await res.text()
   const json = parseBody(text)
   if (!res.ok) throw new CsaasError(json?.message || text || res.statusText, res.status, json)
@@ -135,6 +136,21 @@ export const issueSync = async (meetingId, { owner, repo, taskIds, dryRun }) => 
       skipped: !!r.skipped,
       error: r.error ?? null,
     })),
+  }
+}
+
+// /explain runs the Claude CLI in the docs clone: 30–90 s is normal. The
+// interaction token lasts 15 minutes, so a 2-minute ceiling is comfortable.
+export const EXPLAIN_TIMEOUT_MS = 120_000
+
+export const explain = async ({ question, project }) => {
+  const out = await postJson('/meeting/workflow/explain', { question, project: project ?? null }, { timeoutMs: EXPLAIN_TIMEOUT_MS })
+  return {
+    answer: String(out?.answer ?? ''),
+    references: Array.isArray(out?.references) ? out.references : [],
+    scope: String(out?.scope ?? 'All documentation'),
+    model: out?.model ?? null,
+    durationMs: Number(out?.durationMs) || 0,
   }
 }
 
