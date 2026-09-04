@@ -186,7 +186,15 @@ async function awaitingReviewStage({ job, db, client, csaasClient }) {
     console.warn(`[meetingPipeline] no channel resolved for meeting ${job.meetingId}; /meeting-review can re-post`)
   }
 
-  return { block: true, patch }
+  // Block WITHOUT advancing. The worker advances the stage on any non-false
+  // `advance`, which used to leave a review pending at stage 'approved' — a lie:
+  // nothing had been approved, a human had not looked yet. Everything that gates
+  // on the review checks `stage === 'awaiting_review'` (the component handlers'
+  // isActive, and the /meeting-review re-post), so advancing here silently killed
+  // the assignee dropdown, the GitHub toggle, the per-task reject, and made
+  // /meeting-review answer "not awaiting review (stage: approved)". handleApprove
+  // sets stage 'approved' itself when the human actually approves.
+  return { block: true, advance: false, patch }
 }
 
 // approved: tell CSaaS the human decision. On meeting-level reject, terminate the
