@@ -18,6 +18,9 @@ import { OggOpusEncoder } from "../utils/oggOpusStream.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const activeConnections = new Map(); // meetingId -> connection
+// meetingId -> the session's endMeetingSession closure, so /record stop can end the
+// session properly (status row + pipeline enqueue) instead of only dropping the socket.
+const sessionEnders = new Map();
 const MAX_RECORDING_SECONDS = 60 * 60 * 2; // 2 hours
 const CONNECTION_TIMEOUT_MS = 120000; // 120 seconds for voice connection to become ready (Discord can be slow on cloud hosts)
 const MAX_CONNECTION_RETRIES = 2; // Number of connection retry attempts
@@ -236,6 +239,16 @@ export async function stopMeetingRecording(meetingId) {
     return false;
   }
 
+  // A session started by startMeetingRecording owns a full end path (finish streams,
+  // mark completed, enqueue the pipeline job, tidy channels). Prefer it; the fallback
+  // below only covers a legacy startRecording() connection.
+  const endSession = sessionEnders.get(meetingId);
+  if (endSession) {
+    sessionEnders.delete(meetingId);
+    await endSession();
+    return true;
+  }
+
   try {
     await db.meetingRecordingStatus.update({
       where: { meetingId },
@@ -416,7 +429,9 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     }
   };
 
-  // Check if channel is empty (only bot remains) with 5-minute grace period
+  sessionEnders.set(meetingId, endMeetingSession);
+
+  // Check if channel is empty (only bot remains) with 2-minute grace period
   let emptyGraceTimeout = null;
   const EMPTY_GRACE_MS = 2 * 60 * 1000; // 2 minutes
 
@@ -450,6 +465,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   // Handle cleanup
   const cleanup = () => {
     activeConnections.delete(meetingId);
+    sessionEnders.delete(meetingId);
     clearTimeout(timeoutHandle);
     clearInterval(channelCheckInterval);
     if (emptyGraceTimeout) clearTimeout(emptyGraceTimeout);

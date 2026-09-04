@@ -1,7 +1,7 @@
 import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
 import {
-  startRecording,
-  stopRecording,
+  startMeetingRecording,
+  stopMeetingRecording,
   isRecording,
 } from "../services/voiceCapture.js";
 import { ensureMeetingChannel } from "../services/meetingListener.js";
@@ -44,7 +44,9 @@ export async function execute(interaction) {
         content: "Already recording this meeting.",
       });
     }
-    startRecording(voiceChannel, meetingChannel.meetingId);
+    // The unified session: per-user capture, MeetingRecordingStatus row, empty-channel
+    // grace timer, and the meeting-pipeline enqueue when the session ends.
+    await startMeetingRecording(voiceChannel, guild, meetingChannel.meetingId, voiceChannel.id);
     const embed = new EmbedBuilder()
       .setTitle("Recording started")
       .setDescription(
@@ -54,7 +56,7 @@ export async function execute(interaction) {
     return interaction.editReply({ embeds: [embed] });
   }
 
-  const stopped = stopRecording(meetingChannel.meetingId);
+  const stopped = await stopMeetingRecording(meetingChannel.meetingId);
   const embed = new EmbedBuilder()
     .setTitle(stopped ? "Recording stopped" : "Not recording")
     .setDescription(
