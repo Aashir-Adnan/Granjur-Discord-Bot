@@ -46,6 +46,7 @@ import * as meetingsCmd from './meetings.js'
 import * as meetingReviewCmd from './meetingReview.js'
 import * as projectsCmd from './projects.js'
 import * as recordCmd from './record.js'
+import * as explainCmd from './explain.js'
 
 const commandModules = [
   initCmd,
@@ -62,6 +63,7 @@ const commandModules = [
   projectDbCmd,
   evaluateCmd,
   docsCmd,
+  explainCmd,
   faqCmd,
   faqAnswerCmd,
   scrapCmd,
@@ -152,6 +154,14 @@ const MODAL_FIRST_COMMANDS = new Set([])
 
 export function isModalFirstCommand(name) {
   return MODAL_FIRST_COMMANDS.has(name)
+}
+
+// Commands whose reply should be visible to the channel, not only to the
+// invoker. Every other slash command is deferred ephemerally in index.js.
+const PUBLIC_REPLY_COMMANDS = new Set(['explain'])
+
+export function isPublicReplyCommand(name) {
+  return PUBLIC_REPLY_COMMANDS.has(name)
 }
 
 export async function handleAutocomplete(interaction, commands) {

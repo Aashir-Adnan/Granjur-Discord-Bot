@@ -5,6 +5,7 @@ import {
   handleCommand,
   handleAutocomplete,
   isModalFirstCommand,
+  isPublicReplyCommand,
 } from "./commands/index.js";
 import { handleMemberAdd } from "./events/memberAdd.js";
 import { handleMeetingMessageCreate } from "./events/messageCreate.js";
@@ -73,7 +74,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     !isModalFirstCommand(interaction.commandName)
   ) {
     try {
-      await interaction.deferReply({ flags: EPHEMERAL });
+      await interaction.deferReply(
+        isPublicReplyCommand(interaction.commandName) ? {} : { flags: EPHEMERAL },
+      );
     } catch (e) {
       if (isRateLimitError(e)) {
         const retry = getRetryAfter(e);

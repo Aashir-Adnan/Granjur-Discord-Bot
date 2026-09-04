@@ -14,6 +14,7 @@
     "project-db": ["Verified"],
     "evaluate": ["Senior Dev", "CEO", "Server Manager"],
     "docs": ["Verified"],
+    "explain": ["Verified"],
     "faq": ["Verified"],
     "faq-answer": ["CEO", "Server Manager"],
     "repos": ["CEO", "Server Manager"],
@@ -52,6 +53,7 @@
     "schedule": true,
     "project-db": true,
     "docs": true,
+    "explain": true,
     "faq": true,
     "repos": true,
     "dashboard": true,
@@ -135,6 +137,11 @@
       "summary": "Browse, search and read the project documentation.",
       "syntax": "`/docs` or `/docs query:<words>`",
       "detail": "Browse by project or section and open a page, or pass `query` to search titles and page text. A page is rendered into an embed, long pages page with ◀ ▶, and pages that come from the documentation repository carry a link to the published site. Everything is read from the bot database, which a manager refreshes with **/setup** → **Sync docs now**."
+    },
+    "explain": {
+      "summary": "Ask a question about a project; answered from its documentation with references.",
+      "syntax": "`/explain project:<pick one> question:<your question>`",
+      "detail": "Pick a project (or **No project** for all documentation) and ask in plain words. Claude reads that project's documentation on the server and answers with links to the pages it used. One question, one answer — ask again to follow up. Takes 30–90 seconds."
     },
     "faq": {
       "summary": "Ask or search FAQs.",
