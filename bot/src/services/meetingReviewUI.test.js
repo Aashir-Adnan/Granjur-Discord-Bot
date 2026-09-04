@@ -85,3 +85,51 @@ test('buildReviewMessage: 3 tasks -> 2 pages, <=5 rows, customIds carry jobId', 
     assert.ok(json.includes('mtg_page:JOB9:'))
   }
 })
+
+// --- regression: CSAAS sends task_id as a number in the task list and as a
+// string in the assignment list; a Discord customId always carries a string.
+// On 2026-09-04 every strict comparison missed, so a 0.92-confidence
+// auto-assignment never reached the picker and clicking the picker did nothing.
+
+const NUMERIC_TASKS = [
+  { task_id: 2, goal_of_task: 'Fix the landing page APIs' },
+  { task_id: 3, goal_of_task: 'Audit the encryption architecture' },
+]
+const STRING_ASSIGNMENTS = [
+  { task_id: '2', assignee_ref: '1544234821419532349', confidence: 0.92 },
+  { task_id: '3', assignee_ref: null, confidence: 0 },
+]
+
+test('a string-keyed assignment reaches a number-keyed task', () => {
+  const state = initReviewState(NUMERIC_TASKS, STRING_ASSIGNMENTS)
+  assert.equal(state.tasks[0].assigneeRef, '1544234821419532349')
+  assert.equal(state.tasks[1].assigneeRef, null)
+  // ids are normalised to strings so later comparisons cannot drift back
+  assert.deepEqual(state.tasks.map((t) => t.taskId), ['2', '3'])
+})
+
+test('a customId string taskId still matches a numeric task', () => {
+  const state = initReviewState(NUMERIC_TASKS, [])
+  // '3' is what parseReviewCustomId slices out of `mtg_assignee:<job>:3`
+  const assigned = applyReviewAction(state, { type: 'assignee', taskId: '3', ref: '99' })
+  assert.equal(assigned.tasks[1].assigneeRef, '99')
+  assert.equal(assigned.tasks[0].assigneeRef, null)
+
+  const toggled = applyReviewAction(assigned, { type: 'toggleGithub', taskId: '2' })
+  assert.equal(toggled.tasks[0].github, true)
+
+  const dropped = applyReviewAction(toggled, { type: 'rejectTask', taskId: '2' })
+  assert.equal(dropped.tasks[0].rejected, true)
+  assert.equal(dropped.tasks[1].rejected, false)
+})
+
+test('summarizeApproval counts numeric-id tasks against string-id state', () => {
+  let state = initReviewState(NUMERIC_TASKS, STRING_ASSIGNMENTS)
+  state = applyReviewAction(state, { type: 'rejectTask', taskId: '3' })
+  state = applyReviewAction(state, { type: 'toggleGithub', taskId: '2' })
+  const out = summarizeApproval(state, NUMERIC_TASKS)
+  assert.equal(out.approved.length, 1)
+  assert.equal(out.approved[0].task_id, 2)
+  assert.equal(out.rejectedCount, 1)
+  assert.equal(out.githubCount, 1)
+})

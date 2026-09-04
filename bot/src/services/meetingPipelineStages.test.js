@@ -534,3 +534,81 @@ test('mirrored does not create a second channel when one already exists', async 
   assert.equal(dms.length, 0)
   assert.equal(out.patch.dataJson.mirrored[0].taskChannelId, 'already')
 })
+
+test('mirrored matches numeric csaas task ids against string review ids', async () => {
+  const created = []
+  const guildCreates = []
+  const reviewChannel = { id: 'tc1', send: async () => ({ id: 'x' }) }
+  reviewChannel.guild = {
+    id: 'g1',
+    channels: {
+      cache: { find: () => null },
+      create: async (o) => {
+        guildCreates.push(o)
+        return { id: `c${guildCreates.length}`, send: async () => ({}) }
+      },
+    },
+  }
+  const client = {
+    user: { id: 'bot' },
+    channels: { fetch: async () => reviewChannel },
+    users: { fetch: async () => ({ send: async () => {} }) },
+  }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findFirst: async () => null },
+    task: {
+      findFirst: async () => null,
+      create: async ({ data }) => { created.push(data); return { id: 'dbA', assigneeIds: data.assigneeIds } },
+      update: async () => ({}),
+    },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 2, goal_of_task: 'Fix the APIs' }],
+      review: { tasks: [{ taskId: '2', assigneeRef: '11', rejected: false }] },
+    },
+  }
+  const out = await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(created.length, 1)
+  assert.equal(created[0].externalId, 'csaas:2')
+  assert.deepEqual(created[0].assigneeIds, ['11'])
+  assert.equal(out.patch.dataJson.mirrored[0].taskChannelId, 'c2')
+})
+
+test('mirrored backfills assigneeIds onto a row mirrored before it had an assignee', async () => {
+  const updates = []
+  const reviewChannel = { id: 'tc1', send: async () => ({ id: 'x' }) }
+  reviewChannel.guild = {
+    id: 'g1',
+    channels: { cache: { find: () => null }, create: async () => ({ id: 'c', send: async () => ({}) }) },
+  }
+  const client = {
+    user: { id: 'bot' },
+    channels: { fetch: async () => reviewChannel },
+    users: { fetch: async () => ({ send: async () => {} }) },
+  }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findFirst: async () => null },
+    task: {
+      findFirst: async () => ({ id: 'existing', assigneeIds: [] }),
+      create: async () => { throw new Error('should not create') },
+      update: async ({ where, data }) => { updates.push([where, data]); return {} },
+    },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 2, goal_of_task: 'Fix the APIs' }],
+      review: { tasks: [{ taskId: '2', assigneeRef: '11', rejected: false }] },
+    },
+  }
+  await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.deepEqual(updates[0], [{ id: 'existing' }, { assigneeIds: ['11'] }])
+})

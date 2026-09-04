@@ -9,7 +9,7 @@ import { EmbedBuilder } from 'discord.js'
 import { getGuildConfigById } from '../Database/index.js'
 import { buildRoster } from './meetingRoster.js'
 import { deriveMeetingName, formatMeetingDate } from '../commands/playback.js'
-import { initReviewState, buildReviewMessage, summarizeApproval } from './meetingReviewUI.js'
+import { initReviewState, buildReviewMessage, summarizeApproval, taskKey } from './meetingReviewUI.js'
 import { mapMeetingTaskToRow } from './meetingTaskMap.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
 
@@ -240,7 +240,7 @@ async function mirroredStage({ job, db, client, csaasClient }) {
   // A retry after a partial mirror must not create a second channel per task,
   // so carry forward what the previous run already made.
   const prior = new Map(
-    (Array.isArray(dataJson.mirrored) ? dataJson.mirrored : []).map((m) => [m.csaasTaskId, m]),
+    (Array.isArray(dataJson.mirrored) ? dataJson.mirrored : []).map((m) => [taskKey(m.csaasTaskId), m]),
   )
 
   // The approver plays the assigner's role: on a /create-task feature they get
@@ -259,7 +259,7 @@ async function mirroredStage({ job, db, client, csaasClient }) {
   const mirrored = []
   for (const reviewTask of reviewTasks) {
     if (reviewTask.rejected) continue
-    const csaasTask = csaasTasks.find((t) => t.task_id === reviewTask.taskId)
+    const csaasTask = csaasTasks.find((t) => taskKey(t.task_id) === taskKey(reviewTask.taskId))
     if (!csaasTask) continue
 
     let repositoryId = null
@@ -289,12 +289,23 @@ async function mirroredStage({ job, db, client, csaasClient }) {
       console.warn('[meetingPipeline] task.findFirst (mirror) failed:', e?.message || e)
       taskRow = null
     }
-    if (!taskRow) taskRow = await db.task.create({ data: row })
+    if (!taskRow) {
+      taskRow = await db.task.create({ data: row })
+    } else if (row.assigneeIds.length && !(taskRow.assigneeIds || []).length) {
+      // The row survives from an earlier mirror that ran with no assignee. A
+      // re-run only happens after the review was corrected, so carry the new
+      // assignment onto the existing row rather than leaving it orphaned.
+      try {
+        await db.task.update({ where: { id: taskRow.id }, data: { assigneeIds: row.assigneeIds } })
+      } catch (e) {
+        console.warn('[meetingPipeline] assigneeIds backfill failed:', e?.message || e)
+      }
+    }
 
     // Ticket parity: an assigned task gets its own private channel, and the
     // assignee gets a DM pointing at it. An unassigned task has nobody to give
     // the channel to — it is covered by the summary line below instead.
-    let taskChannelId = prior.get(csaasTask.task_id)?.taskChannelId || null
+    let taskChannelId = prior.get(taskKey(csaasTask.task_id))?.taskChannelId || null
     if (!taskChannelId && guild && reviewTask.assigneeRef) {
       try {
         const ticket = await createTaskTicketChannel(guild, {
@@ -421,7 +432,7 @@ async function issueSyncingStage({ job, db, csaasClient }) {
   // group gh entries by `owner/repo`
   const groups = new Map() // key -> { owner, repo, entries: [] }
   for (const entry of gh) {
-    const csaasTask = csaasTasks.find((t) => t.task_id === entry.csaasTaskId)
+    const csaasTask = csaasTasks.find((t) => taskKey(t.task_id) === taskKey(entry.csaasTaskId))
     const project = csaasTask?.project
     const slug = project ? slugByName.get(project) : null
     if (!slug) {

@@ -20,13 +20,22 @@ function clip(str, max = EMBED_DESC_MAX) {
 
 // ---- state ----------------------------------------------------------------
 
+// CSAAS returns a task's id as a NUMBER in the task list but as a STRING in the
+// assignment list, and a Discord customId can only ever carry a string. Every
+// lookup below is a strict comparison, so one un-normalized side silently drops
+// the match — which is exactly what happened on 2026-09-04: a 0.92-confidence
+// auto-assignment never reached the picker, and clicking the picker changed
+// nothing, so an approved meeting produced two unassigned tasks and no ticket
+// channels. Compare task ids as strings, always.
+export const taskKey = (v) => (v == null ? '' : String(v))
+
 export function initReviewState(tasks, assignments) {
   const asgByTask = new Map()
-  for (const a of assignments ?? []) asgByTask.set(a.task_id, a)
+  for (const a of assignments ?? []) asgByTask.set(taskKey(a.task_id), a)
   return {
     tasks: (tasks ?? []).map((t) => ({
-      taskId: t.task_id,
-      assigneeRef: asgByTask.get(t.task_id)?.assignee_ref ?? null,
+      taskId: taskKey(t.task_id),
+      assigneeRef: asgByTask.get(taskKey(t.task_id))?.assignee_ref ?? null,
       github: false,
       rejected: false,
     })),
@@ -39,7 +48,7 @@ export function applyReviewAction(state, action) {
     return { ...state, page: action.page }
   }
   const mapTask = (t) => {
-    if (t.taskId !== action.taskId) return t
+    if (taskKey(t.taskId) !== taskKey(action.taskId)) return t
     switch (action.type) {
       case 'assignee':
         return { ...t, assigneeRef: action.ref }
@@ -55,12 +64,12 @@ export function applyReviewAction(state, action) {
 }
 
 export function summarizeApproval(state, tasks) {
-  const stByTask = new Map(state.tasks.map((t) => [t.taskId, t]))
+  const stByTask = new Map(state.tasks.map((t) => [taskKey(t.taskId), t]))
   const approved = []
   let rejectedCount = 0
   let githubCount = 0
   for (const task of tasks ?? []) {
-    const st = stByTask.get(task.task_id)
+    const st = stByTask.get(taskKey(task.task_id))
     if (st?.rejected) {
       rejectedCount += 1
       continue
@@ -103,7 +112,7 @@ export function buildReviewMessage({ job, notes, reportPath, state, roster }) {
   const start = page * PAGE_SIZE
   const pageTasks = allTasks.slice(start, start + PAGE_SIZE)
 
-  const stByTask = new Map((state?.tasks ?? []).map((t) => [t.taskId, t]))
+  const stByTask = new Map((state?.tasks ?? []).map((t) => [taskKey(t.taskId), t]))
 
   // header embed
   const header = new EmbedBuilder().setTitle(clip(title, 256))
@@ -117,7 +126,7 @@ export function buildReviewMessage({ job, notes, reportPath, state, roster }) {
   const components = []
 
   for (const task of pageTasks) {
-    const st = stByTask.get(task.task_id) ?? {
+    const st = stByTask.get(taskKey(task.task_id)) ?? {
       taskId: task.task_id,
       assigneeRef: asgByTask.get(task.task_id)?.assignee_ref ?? null,
       github: false,
