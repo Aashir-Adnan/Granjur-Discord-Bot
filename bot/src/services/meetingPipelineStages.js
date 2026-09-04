@@ -179,6 +179,11 @@ async function awaitingReviewStage({ job, db, client, csaasClient }) {
       const payload = buildReviewMessage({ job: { ...job, dataJson: data }, notes, reportPath, state, roster })
       const msg = await channel.send(payload)
       patch.reviewMessageId = msg.id
+      // Remember WHERE it went. doneStage edits this message into the final
+      // summary, and /meeting-review can re-post it to a different channel —
+      // resolving the channel again later finds the wrong one and the edit is
+      // silently swallowed.
+      data.reviewChannelId = channel.id
     } catch (e) {
       console.warn('[meetingPipeline] failed to post review message:', e?.message || e)
     }
@@ -440,7 +445,13 @@ async function doneStage({ job, db, client }) {
     .setDescription(lines.join('\n'))
 
   try {
-    const channel = await resolveMeetingChannel(client, db, job)
+    // Prefer the channel the review was actually posted to; fall back to the
+    // meeting's channel for jobs created before reviewChannelId was recorded.
+    let channel = null
+    if (dataJson.reviewChannelId) {
+      channel = await client?.channels?.fetch(dataJson.reviewChannelId).catch(() => null)
+    }
+    if (!channel) channel = await resolveMeetingChannel(client, db, job)
     if (channel && job.reviewMessageId) {
       const msg = await channel.messages.fetch(job.reviewMessageId).catch(() => null)
       if (msg) await msg.edit({ embeds: [summaryEmbed], components: [] }).catch(() => {})

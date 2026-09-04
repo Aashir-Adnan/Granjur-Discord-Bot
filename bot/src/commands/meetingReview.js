@@ -159,7 +159,14 @@ export async function execute(interaction) {
       roster: job.dataJson?.roster,
     })
     const msg = await interaction.channel.send(payload)
-    await db.meetingPipelineJob.update(job.id, { reviewMessageId: msg.id }).catch(() => {})
+    // Record the new home of the review message too, so doneStage edits the
+    // summary into THIS channel rather than the meeting's original one.
+    await db.meetingPipelineJob
+      .update(job.id, {
+        reviewMessageId: msg.id,
+        dataJson: { ...(job.dataJson || {}), reviewChannelId: interaction.channel.id },
+      })
+      .catch(() => {})
     return interaction.editReply({ content: 'Re-posted the review UI in this channel.' })
   }
 
