@@ -188,8 +188,8 @@
     },
     "update-task": {
       "summary": "Update an existing task (status, assignees, etc.).",
-      "syntax": "`/update-task`",
-      "detail": "Modify task fields like status, assignees, modules, and test results."
+      "syntax": "`/update-task task:<pick from the list> [status] [assignees] …`",
+      "detail": "Start typing in the **task** field and pick from the suggestions — each shows the title, its status and who holds it, so you never type an id. Then set any of status, assignees, title, description, implementation status, or the API/QA/AC counts."
     },
     "create-project-role": {
       "summary": "Create a Discord role for a project.",

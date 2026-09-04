@@ -6,6 +6,7 @@ import {
 } from 'discord.js'
 import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
 import { memberPassesRoleGate, roleIdsAreStale, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
+import { holdersOf } from '../utils/taskLabel.js'
 
 const TWO_MONTHS_MS = 60 * 24 * 60 * 60 * 1000
 function twoMonthsAgo() {
@@ -20,6 +21,27 @@ const MODULES = [
   { value: 'meetings', label: 'Meetings', description: 'Scheduled meetings' },
   { value: 'faqs', label: 'FAQs', description: 'Unanswered vs total' },
 ]
+
+// One line per task, OUTSIDE a code fence so `<@id>` renders as a name. The old
+// monospace table printed the assignee column as "2 assignee(s)" — a count, which
+// never answers the only question that column exists for — and collapsed status
+// into implementationStatus, hiding the real one. Shared by the Tasks, Bugs and
+// Features views so all three say who holds a task and where it stands.
+function taskLine(t) {
+  const holders = holdersOf(t)
+  const who = holders.length ? holders.map((id) => `<@${id}>`).join(' ') : '_unassigned_'
+  const status = t.status || 'open'
+  const impl =
+    t.implementationStatus && t.implementationStatus !== 'not_started'
+      ? ` · impl \`${t.implementationStatus}\``
+      : ''
+  const mark = (v) => (v === 1 ? '✅' : v === 0 ? '❌' : '–')
+  const tests = ` · API ${mark(t.passedApiTests)} QA ${mark(t.passedQaTests)} AC ${mark(t.passedAcceptanceCriteria)}`
+  const typ = t.type || (t.is_bug ? 'bug' : 'feature')
+  const title = String(t.title || t.id)
+  const head = title.length > 60 ? `${title.slice(0, 59)}…` : title
+  return `• \`${typ}\` **${head}** · \`${status}\`${impl}\n  ${who}${tests}`
+}
 
 export const data = new SlashCommandBuilder()
   .setName('dashboard')
@@ -84,35 +106,13 @@ export async function handleModuleSelect(interaction) {
       else for (const m of mods) { (byModule[m] = byModule[m] || []).push(t) }
     }
     const sectionLines = []
-    const pad = (s, n) => (s ?? '—').slice(0, n).padEnd(n)
-    const header = '```\n' +
-      pad('Type', 8) + ' | ' + pad('Title', 28) + ' | ' + pad('Handlers', 18) + ' | ' + pad('Status', 12) + ' | ' +
-      'API Test  | QA Test  | AC   | ' + pad('Scope', 20) + '\n' +
-      '—'.repeat(8) + '—'.repeat(32) + '—'.repeat(22) + '—'.repeat(14) + '—'.repeat(28) + '\n'
-    const fmt = (t) => {
-      const assignees = ensureStringArray(t.is_feature ? t.assigneeIds : t.taggedMemberIds)
-      const handlerStr = assignees.length ? `${assignees.length} assignee(s)` : '—'
-      const status = (t.implementationStatus ?? t.status ?? '—').slice(0, 10)
-      const api = t.passedApiTests === 1 ? 'Pass' : t.passedApiTests === 0 ? 'Fail' : 'N/A'
-      const qa = t.passedQaTests === 1 ? 'Pass' : t.passedQaTests === 0 ? 'Fail' : 'N/A'
-      const ac = t.passedAcceptanceCriteria === 1 ? 'Pass' : t.passedAcceptanceCriteria === 0 ? 'Fail' : 'N/A'
-      const scope = (t.scope || '—').slice(0, 18)
-      const title = (t.title || t.id).slice(0, 26)
-      const typ = (t.type || (t.is_bug ? 'bug' : 'feature')).slice(0, 7)
-      return pad(typ, 8) + ' | ' + pad(title, 28) + ' | ' + pad(handlerStr, 18) + ' | ' + pad(status, 12) + ' | ' +
-        pad(api, 7) + ' | ' + pad(qa, 7) + ' | ' + pad(ac, 4) + ' | ' + pad(scope, 20)
+    const section = (heading, rows) => {
+      sectionLines.push(`\n**${heading}**`)
+      sectionLines.push(rows.slice(0, 12).map((t) => taskLine(t)).join('\n'))
+      if (rows.length > 12) sectionLines.push(`_… and ${rows.length - 12} more_`)
     }
-    const moduleNames = Object.keys(byModule).sort()
-    for (const mod of moduleNames) {
-      sectionLines.push(`\n**Module: ${mod}**`)
-      sectionLines.push(header + byModule[mod].slice(0, 12).map(fmt).join('\n') + '\n```')
-      if (byModule[mod].length > 12) sectionLines.push(`_… and ${byModule[mod].length - 12} more_`)
-    }
-    if (noModule.length > 0) {
-      sectionLines.push('\n**Module: (none)**')
-      sectionLines.push(header + noModule.slice(0, 12).map(fmt).join('\n') + '\n```')
-      if (noModule.length > 12) sectionLines.push(`_… and ${noModule.length - 12} more_`)
-    }
+    for (const mod of Object.keys(byModule).sort()) section(`Module: ${mod}`, byModule[mod])
+    if (noModule.length > 0) section('Module: (none)', noModule)
     const desc = sectionLines.length
       ? sectionLines.join('\n').slice(0, 3900)
       : 'No tasks yet. Use **/create-task** to add tasks.'
@@ -121,7 +121,7 @@ export async function handleModuleSelect(interaction) {
       .setDescription(desc)
       .addFields({
         name: 'Legend',
-        value: '**Handlers** = assignees (who the task is assigned to). **API Test** = API tests pass/fail. **QA Test** = QA tests pass/fail. **AC** = Acceptance criteria met.',
+        value: 'The second line of each task is who holds it. **API / QA / AC** — ✅ passing, ❌ failing, – not recorded. Change any of it with **/update-task**.',
         inline: false,
       })
       .setColor(0x5865f2)
@@ -139,10 +139,8 @@ export async function handleModuleSelect(interaction) {
       where: { guildConfigId: cfg.id, is_bug: 1, createdAtSince: since },
       take: 15,
     })
-    const pad = (s, n) => (String(s ?? '—').slice(0, n)).padEnd(n)
     const lines = recent.length
-      ? '```\n' + pad('Status', 10) + ' | ' + pad('Title', 48) + ' | ' + pad('Created', 10) + '\n' + '—'.repeat(70) + '\n' +
-        recent.map((b) => pad(b.status ?? '—', 10) + ' | ' + pad((b.title || b.id).slice(0, 46), 48) + ' | ' + pad(b.createdAt ? new Date(b.createdAt).toISOString().slice(0, 10) : '—', 10)).join('\n') + '\n```'
+      ? recent.map((b) => taskLine(b)).join('\n').slice(0, 3900)
       : 'No bug tasks (≤2mo).'
     embed = new EmbedBuilder()
       .setTitle('Dashboard — Bugs')
@@ -155,10 +153,8 @@ export async function handleModuleSelect(interaction) {
       where: { guildConfigId: cfg.id, is_feature: 1, createdAtSince: since },
       take: 15,
     })
-    const pad = (s, n) => (String(s ?? '—').slice(0, n)).padEnd(n)
     const lines = recent.length
-      ? '```\n' + pad('Status', 10) + ' | ' + pad('Title', 48) + ' | ' + pad('Created', 10) + '\n' + '—'.repeat(70) + '\n' +
-        recent.map((f) => pad(f.status ?? '—', 10) + ' | ' + pad((f.title || f.id).slice(0, 46), 48) + ' | ' + pad(f.createdAt ? new Date(f.createdAt).toISOString().slice(0, 10) : '—', 10)).join('\n') + '\n```'
+      ? recent.map((f) => taskLine(f)).join('\n').slice(0, 3900)
       : 'No feature tasks (≤2mo).'
     embed = new EmbedBuilder()
       .setTitle('Dashboard — Features')
