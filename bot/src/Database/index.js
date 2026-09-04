@@ -287,7 +287,7 @@ async function taskCreate({ data }) {
   const pk = id();
   const taskExternalValues = buildTaskInsertValues(data);
   await query(
-    `INSERT INTO \`Task\` (id, guildConfigId, type, is_bug, is_feature, title, description, status, createdBy, assigneeIds, taggedMemberIds,
+    `INSERT INTO \`task\` (id, guildConfigId, type, is_bug, is_feature, title, description, status, createdBy, assigneeIds, taggedMemberIds,
      repositoryId, projectId, projectName, discordChannelId, discordThreadId, externalIssueUrl, externalIssueNumber,
      modules, handlerId, scope, implementationStatus, passedApiTests, passedQaTests, passedAcceptanceCriteria,
      externalId, meetingId)
@@ -392,7 +392,7 @@ async function taskUpdate({ where, data }) {
   }
   if (sets.length === 0) return taskFindFirst({ where: { id } });
   vals.push(id);
-  await query(`UPDATE \`Task\` SET ${sets.join(", ")} WHERE id = ?`, vals);
+  await query(`UPDATE \`task\` SET ${sets.join(", ")} WHERE id = ?`, vals);
   return taskFindFirst({ where: { id } });
 }
 
