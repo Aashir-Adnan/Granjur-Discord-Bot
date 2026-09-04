@@ -1,7 +1,7 @@
 # `/explain` — ask a question of a project's documentation
 
 **Date:** 2026-09-04
-**Status:** approved in discussion; awaiting spec review
+**Status:** implemented 2026-09-05; §3 corrected after the final review (see below)
 **Related:** `docs/superpowers/specs/2026-09-03-project-docs-preview-design.md` (the docs
 mirror this reads), `docs/superpowers/specs/2026-09-01-meeting-to-tasks-integration-design.md`
 (the CSAAS client and endpoint conventions this reuses)
@@ -40,9 +40,17 @@ Isolation is the **working directory**, not the prompt.
 | A project with no `docsPaths` (Framework, CSAAS today) | `Repos/UBS-Doc/docs` | *All documentation* |
 | "No project — all documentation" | `Repos/UBS-Doc/docs` | *All documentation* |
 
-Claude cannot cite a file it cannot see, so a project-scoped answer cannot leak another
-project's pages. A project with several `docsPaths` uses the first; multi-root scoping is
-out of scope for v1 and only one project has `docsPaths` at all today.
+**The working directory is a default, not a jail** — corrected 2026-09-05 after the final
+review. `Read`, `Grep` and `Glob` accept absolute paths; what stops the CLI reading outside
+its working directory is the **permission system**, and `claudeClient` normally disables
+it with `--dangerously-skip-permissions`. So the explain call runs **without** that flag
+(per-call `skipPermissions: false`, §4): in `-p` mode a read outside the working directory
+needs a permission no one is there to grant, and is denied. That denial is the isolation.
+Two supporting measures: `--setting-sources user`, so a `.claude/settings.json` merged into
+the docs repository cannot grant anything; and the endpoint drops any reference whose path
+does not resolve under the docs root (§4 step 4), so an escape would be visible rather
+than silent. A project with several `docsPaths` uses the first; multi-root scoping is out
+of scope for v1 and only one project has `docsPaths` at all today.
 
 The footer label makes it visible when scoping did **not** happen, so a project with no
 `docsPaths` does not silently answer from everything while looking scoped.
@@ -82,23 +90,30 @@ in `Src/Apis/ProjectSpecificApis/MeetingWorkflow/meetingWorkflow.js`, next to `/
 3. Call `claudeClient.chat(messages, { cwd, system, extraArgs, model })` where:
    - `messages` is one user turn: the question.
    - `system` is the explainer prompt (§5).
+   - `skipPermissions: false` — a **new** per-call option on `claudeClient.chat` /
+     `chatViaLocalCli` (default `true`, so every existing caller is unchanged) that
+     omits `--dangerously-skip-permissions` for this call. This is the isolation (§3).
    - `extraArgs` is
-     `["--disallowedTools", "Write,Edit,MultiEdit,NotebookEdit,Bash,WebFetch,WebSearch,Task"]`.
-     `claudeClient` passes `--dangerously-skip-permissions` on every call (verified
-     2026-09-04 — meeting analysis runs with every tool enabled), and under that flag an
-     `--allowedTools` allowlist does not restrict anything. `--disallowedTools` removes
-     the tools from the session outright, which holds regardless of permission mode.
-     Read, Grep and Glob remain — all the explainer needs.
-     `extraArgs` is a **new** option on `claudeClient.chat` / `chatViaLocalCli`:
-     appended to the CLI argv after the existing output flags. Today the only way to
-     add CLI flags is the global `CLAUDE_CLI_ARGS_JSON` env var; a per-call option is
-     needed so this endpoint's tool restriction does not leak into meeting analysis.
+     `["--permission-mode", "default", "--setting-sources", "user",
+       "--disallowedTools", "Write,Edit,MultiEdit,NotebookEdit,Bash,WebFetch,WebSearch,Task"]`.
+     The tool removal is belt-and-braces on top of the permission jail — Read, Grep and
+     Glob remain, all the explainer needs. `extraArgs` is a **new** per-call option
+     appended to the CLI argv after the output flags, and it is carried through both of
+     `chatViaLocalCli`'s retry paths. Today the only way to add CLI flags is the global
+     `CLAUDE_CLI_ARGS_JSON` env var; a per-call option keeps this endpoint's restriction
+     out of meeting analysis.
+   - `timeoutMs: 110000` — per-call CLI timeout, below the bot's 120 s so the server
+     gives up no later than the client. One explain runs at a time; a second concurrent
+     request fails fast with `EXPLAIN_BUSY`, which the bot renders as "busy — try again".
+   - The endpoint refuses to run unless `CLAUDE_BACKEND=cli`: the API backend ignores
+     `cwd` and `extraArgs` and would answer from general knowledge while looking scoped.
    - `claudeClient` already passes `--output-format text`; the endpoint does **not**
      add `--output-format json`. The model's reply arrives as plain text and is expected
      to be the JSON object from §5.
    - `model` is `process.env.EXPLAIN_MODEL || undefined` (falls through to the CLI's
      default), so the explainer can be pinned independently of meeting analysis.
-4. Parse the result (§6).
+4. Parse the result (§6), then drop any reference whose path does not resolve under the
+   docs root (logged, never silently prefixed).
 5. Respond `{ answer, references, scope, model, durationMs }`.
 
 **Response body**
