@@ -25,8 +25,24 @@ now merged in here.
 - `npm test` is `node --test` (bare), which discovers both this branch's colocated
   `*.test.js` files and main's `bot/test/` suite.
 
-## Next
-Finish the meeting pipeline. The one hard blocker is the live E2E run, which needs a real
-`CSAAS_ACTOR_URDD` from the user (a URDD holding `add_meetings` + `run_meeting_ai` +
-`update_meetings` + `view_meetings`). Runbook: `docs/meeting-pipeline-e2e-checklist.md`.
-Everything else outstanding is in `backlog.md` under "Meeting -> tasks integration".
+## Live E2E — in progress (2026-09-04)
+- `CSAAS_ACTOR_URDD=6` (holds all four meeting permissions — verified: 403 without it).
+- CSAAS runs on the VM at `/var/www/CSAAS/CSAAS_Backend`, port 3000, root's pm2 `csaas`,
+  nodemon (restarts on file change; migrations run on boot from `data/migrations/`).
+- The bot runs LOCALLY over an SSH tunnel: `ssh -N -L 3000:127.0.0.1:3000 azureuser@VM`,
+  so `CSAAS_API_URL=http://127.0.0.1:3000/api`. Production `granjur-bot` is stopped on
+  the VM for the duration; restart it with `pm2 start granjur-bot` afterwards.
+- Applied on the VM as LOCAL commits (ephemeral — see backlog): the four
+  `feat/meeting-workflow-assign` cherry-picks (`/assign`, `skip_github`, `task_ids`),
+  plus a fix making four meeting endpoints' `requestMethod` an array — the hand-written
+  `{Add, List}` map never went through `ApiObjectsGenerator`, so `requestMethodValidator`
+  405'd every method on `/issuesync` (and three siblings) on deployed main.
+- Bot migrations 013–015 applied to the live bot DB. CSAAS's `meeting_task_assignees`
+  migration ran on CSAAS boot (three nullable columns on `meeting_tasks`).
+- First live tick failed: `LIMIT ?` / `INTERVAL ? SECOND` under prepared statements.
+  Fixed in `fe4db8d`; smoke-tested live. Worker now ticks cleanly.
+- Verified endpoints through the tunnel: `/assign` exists ("roster array is required"),
+  `/issuesync` reaches its handler on POST and GET.
+
+Remaining: a human must record a meeting (runbook §3) — everything from the `created`
+stage onward is unexercised. A monitor on `meeting_pipeline_job` + the bot log is armed.

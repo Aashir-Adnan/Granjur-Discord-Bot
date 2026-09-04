@@ -68,6 +68,7 @@ any change to the meeting pipeline, CSAAS meeting-workflow endpoints, or the rev
 - [ ] Run `/meeting-retry <meetingId>` — confirm the job resets
       (`status='pending'`, `attempts=0`, `lastError=null`) and resumes.
 
-## 9. Docs mount
+## 9. Docs
 
-- [ ] `/docs` shows "UBS Knowledge Base" as a second root alongside the existing docs.
+- [ ] `/docs` browses the synced UBS-Doc corpus (projects + sections) — no local clone
+      is involved any more; see `.claude/knowledge/project-docs.md`.

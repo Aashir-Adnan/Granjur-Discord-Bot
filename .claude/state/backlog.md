@@ -9,8 +9,17 @@ Feature is code-complete (see `completed.md` 2026-09-02) but has **never run end
 - **Live E2E run — blocked on the user** providing a real `CSAAS_ACTOR_URDD`: a URDD
   holding `add_meetings` + `run_meeting_ai` + `update_meetings` + `view_meetings`
   (the last for `/notes` + `/meeting`). Runbook:
-  `docs/meeting-pipeline-e2e-checklist.md`. During the run, smoke-test the
-  `meeting_pipeline_job` `claim`/`claimBatch` SQL against a live DB — only fake-db tested.
+  `docs/meeting-pipeline-e2e-checklist.md`. Stages `created` and onward have NOT yet run
+  live; the worker starts and ticks cleanly (2026-09-04).
+- **CSAAS-side changes are only local commits on the VM** (`/var/www/CSAAS/CSAAS_Backend`,
+  5 commits ahead of `origin/main`: the four `feat/meeting-workflow-assign` cherry-picks
+  plus the `/issuesync` requestMethod fix). `Deploy to Azure.yml` does
+  `git reset --hard origin/main` on every push to CSAAS `main`, which will erase them.
+  To make them permanent they must be pushed to CSAAS `main` — the user's call.
+- **Seven other `LIMIT ?` sites in `bot/src/Database/index.js`** (lines ~490, 493, 964,
+  1027, 1030, 1663, 1716) have the same prepared-statement failure that broke the first
+  pipeline tick (`Incorrect arguments to mysqld_stmt_execute`). Pre-existing, outside the
+  meeting work; any command that reaches them with a bound LIMIT will error.
 - **`/meeting-review latest` unsupported** — no `db.meetingPipelineJob.findLatest`;
   the command needs an explicit meetingId.
 - **`stopMeetingRecording` in `voiceCapture.js` is dead code (no callers)** — the
