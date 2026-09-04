@@ -1574,6 +1574,17 @@ async function meetingPipelineJobUpdate(jobId, patch) {
   const vals = [];
   for (const c of cols) {
     if (patch[c] === undefined) continue;
+    // nextAttemptAt is compared against MySQL's NOW(3) by the claim query, so it
+    // must be written on the server's clock. Binding a JS Date makes mysql2
+    // serialise it in the Node process's local timezone, which put every retry
+    // hours into the future on a UTC server (observed live: a 60s backoff landed
+    // 5h60s away, and the job was never re-claimed). Send an offset in seconds
+    // and let MySQL do the arithmetic.
+    if (c === "nextAttemptAt" && patch[c] instanceof Date) {
+      const secs = Math.max(0, Math.round((patch[c].getTime() - Date.now()) / 1000));
+      sets.push(`\`${c}\` = NOW(3) + INTERVAL ${secs} SECOND`);
+      continue;
+    }
     sets.push(`\`${c}\` = ?`);
     vals.push(c === "dataJson" && patch[c] !== null && typeof patch[c] === "object" ? JSON.stringify(patch[c]) : patch[c]);
   }
@@ -1592,6 +1603,17 @@ async function meetingPipelineJobUpdateIf(jobId, patch, cond = {}) {
   const vals = [];
   for (const c of cols) {
     if (patch[c] === undefined) continue;
+    // nextAttemptAt is compared against MySQL's NOW(3) by the claim query, so it
+    // must be written on the server's clock. Binding a JS Date makes mysql2
+    // serialise it in the Node process's local timezone, which put every retry
+    // hours into the future on a UTC server (observed live: a 60s backoff landed
+    // 5h60s away, and the job was never re-claimed). Send an offset in seconds
+    // and let MySQL do the arithmetic.
+    if (c === "nextAttemptAt" && patch[c] instanceof Date) {
+      const secs = Math.max(0, Math.round((patch[c].getTime() - Date.now()) / 1000));
+      sets.push(`\`${c}\` = NOW(3) + INTERVAL ${secs} SECOND`);
+      continue;
+    }
     sets.push(`\`${c}\` = ?`);
     vals.push(c === "dataJson" && patch[c] !== null && typeof patch[c] === "object" ? JSON.stringify(patch[c]) : patch[c]);
   }
