@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ChannelType, PermissionFlagsBits } from 'discord.js'
+import { ChannelType, PermissionFlagsBits, OverwriteType } from 'discord.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
 
 function fakeGuild() {
@@ -57,6 +57,13 @@ test('createTaskTicketChannel makes a private channel and mentions its members',
   assert.deepEqual(
     chan.permissionOverwrites.slice(1).map((o) => o.id),
     ['11', '22'],
+  )
+  // The guild id is a role; the member ids are users. Discord silently discards
+  // a user overwrite typed as a role, leaving the channel visible to nobody.
+  assert.equal(chan.permissionOverwrites[0].type, OverwriteType.Role)
+  assert.deepEqual(
+    chan.permissionOverwrites.slice(1).map((o) => o.type),
+    [OverwriteType.Member, OverwriteType.Member],
   )
 
   const sent = guild._sends[0]

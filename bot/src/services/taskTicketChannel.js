@@ -6,7 +6,7 @@
 // of row, so it gets the same treatment — a single ping in a shared channel is
 // easy to miss (and, for a `/record` meeting, lands in the voice channel's own
 // chat), whereas a new channel plus a DM reaches the person.
-import { ChannelType, PermissionFlagsBits, EmbedBuilder } from 'discord.js'
+import { ChannelType, PermissionFlagsBits, EmbedBuilder, OverwriteType } from 'discord.js'
 import { getOrCreateCategory } from '../utils/categories.js'
 import { CATEGORY_BOLD_NAMES } from '../constants.js'
 
@@ -54,8 +54,12 @@ export async function createTaskTicketChannel(guild, opts) {
     parent: category.id,
     topic: `${categoryName === 'Bugs' ? 'Bug' : 'Feature'}: ${String(title || '').slice(0, 100)}`,
     permissionOverwrites: [
-      { id: guild.id, type: 0, deny: [PermissionFlagsBits.ViewChannel] },
-      ...members.map((id) => ({ id, type: 0, allow: MEMBER_PERMS })),
+      // The guild id is a ROLE (@everyone); every other id here is a USER. Passing
+      // type 0 for a user makes Discord discard the overwrite without an error, and
+      // the ticket channel ends up visible to nobody — which is what happened to
+      // feature-f56be0 on 2026-09-04.
+      { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+      ...members.map((id) => ({ id, type: OverwriteType.Member, allow: MEMBER_PERMS })),
     ],
   })
 

@@ -2,6 +2,7 @@ import {
   SlashCommandBuilder,
   ChannelType,
   PermissionFlagsBits,
+  OverwriteType,
   ActionRowBuilder,
   StringSelectMenuBuilder,
   ButtonBuilder,
@@ -224,8 +225,8 @@ export async function handleCreate(interaction) {
     const uniqueParticipants = [...new Set(participantIds)]
     const category = await getOrCreateCategory(guild, 'Bugs', { orNames: [CATEGORY_BOLD_NAMES['Bugs']].filter(Boolean) })
     const overwrites = [
-      { id: guild.id, type: 0, deny: [PermissionFlagsBits.ViewChannel] },
-      ...uniqueParticipants.map((id) => ({ id, type: 0, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
+      { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+      ...uniqueParticipants.map((id) => ({ id, type: OverwriteType.Member, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
     ]
     const channel = await guild.channels.create({
       name: `bug-${ticket.id.slice(-6)}`,

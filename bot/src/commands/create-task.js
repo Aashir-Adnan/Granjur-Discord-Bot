@@ -8,6 +8,7 @@ import {
   TextInputStyle,
   ChannelType,
   PermissionFlagsBits,
+  OverwriteType,
   ButtonBuilder,
   ButtonStyle,
 } from 'discord.js'
@@ -705,8 +706,8 @@ export async function handleCreate(interaction) {
 
       const category = await getOrCreateCategory(guild, 'Features', { orNames: [CATEGORY_BOLD_NAMES['Features']].filter(Boolean) })
       const overwrites = [
-        { id: guild.id, type: 0, deny: [PermissionFlagsBits.ViewChannel] },
-        ...uniqueSet.map((id) => ({ id, type: 0, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
+        { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+        ...uniqueSet.map((id) => ({ id, type: OverwriteType.Member, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
       ]
       const channel = await guild.channels.create({
         name: `feature-${task.id.slice(-6)}`,
@@ -774,8 +775,8 @@ export async function handleCreate(interaction) {
 
       const category = await getOrCreateCategory(guild, 'Bugs', { orNames: [CATEGORY_BOLD_NAMES['Bugs']].filter(Boolean) })
       const overwrites = [
-        { id: guild.id, type: 0, deny: [PermissionFlagsBits.ViewChannel] },
-        ...uniqueParticipants.map((id) => ({ id, type: 0, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
+        { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+        ...uniqueParticipants.map((id) => ({ id, type: OverwriteType.Member, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
       ]
       const channel = await guild.channels.create({
         name: `bug-${task.id.slice(-6)}`,
