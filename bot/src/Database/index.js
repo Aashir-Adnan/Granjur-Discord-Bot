@@ -1533,14 +1533,20 @@ function _mpjStaleSeconds() {
 async function meetingPipelineJobClaimBatch(limit = 3) {
   // Pick up pending jobs, plus jobs stuck in 'working' past the stage timeout
   // (crashed/killed process left them mid-transition — the claim will re-take them).
+  //
+  // query() runs prepared statements (pool.execute). mysql2 binds a JS number as a
+  // DOUBLE, which MySQL rejects inside LIMIT and INTERVAL ... SECOND with
+  // "Incorrect arguments to mysqld_stmt_execute" — the first live tick failed on
+  // exactly this. Both values are clamped integers we control, so inline them.
+  const cap = Math.min(Math.max(parseInt(limit, 10) || 3, 1), 50);
+  const stale = _mpjStaleSeconds();
   const rows = await query(
     `SELECT * FROM \`meeting_pipeline_job\`
      WHERE (
        (status = 'pending' AND (nextAttemptAt IS NULL OR nextAttemptAt <= NOW(3)))
-       OR (status = 'working' AND updatedAt < NOW(3) - INTERVAL ? SECOND)
+       OR (status = 'working' AND updatedAt < NOW(3) - INTERVAL ${stale} SECOND)
      )
-     ORDER BY updatedAt ASC LIMIT ?`,
-    [_mpjStaleSeconds(), limit],
+     ORDER BY updatedAt ASC LIMIT ${cap}`,
   );
   return rows.map(_mpjRow);
 }
@@ -1548,13 +1554,16 @@ async function meetingPipelineJobClaimBatch(limit = 3) {
 // Conditional claim: flip pending -> working (or re-take a stale 'working') for
 // exactly one worker. Returns true only when this call won the row.
 async function meetingPipelineJobClaim(jobId) {
+  // Same prepared-statement constraint as claimBatch: INTERVAL takes an inlined
+  // integer, never a bound parameter.
+  const stale = _mpjStaleSeconds();
   const result = await query(
     `UPDATE \`meeting_pipeline_job\` SET status = 'working', updatedAt = NOW(3)
      WHERE id = ? AND (
        status = 'pending'
-       OR (status = 'working' AND updatedAt < NOW(3) - INTERVAL ? SECOND)
+       OR (status = 'working' AND updatedAt < NOW(3) - INTERVAL ${stale} SECOND)
      )`,
-    [jobId, _mpjStaleSeconds()],
+    [jobId],
   );
   return result?.affectedRows === 1;
 }
