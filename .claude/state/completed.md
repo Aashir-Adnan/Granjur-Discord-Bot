@@ -33,6 +33,19 @@ milliseconds per question.
 **Deferred features** in `backlog.md`: code as a second source, thread/follow-up mode, 
 multiple `docsPaths` per project.
 
+**Final review and fix wave (same day).** The whole-branch review found one Critical: the
+working directory is a default, not a jail — under `--dangerously-skip-permissions` the
+CLI's `Read` accepts absolute paths, so a Verified member could have had `.env` posted into a
+public embed. Fixed in CSAAS `3050103` / bot `8d55c35`: the explain call runs without that
+flag (per-call `skipPermissions:false`) so a read outside the working directory is denied by
+the CLI's own permission system; `--setting-sources user`; reference paths validated against
+the docs root; `CLAUDE_BACKEND=cli` asserted; flags carried through both retry paths; 110 s
+per-call CLI timeout and a one-in-flight guard; public error text made generic. Verified
+live: the endpoint refused an injection probe with no leak, and a direct CLI run with the
+endpoint's identity was denied `../init.md` — "requested permissions to read … but you
+haven't granted it yet". Spec §3 corrected (`b2c0d27`). Bot `main` = `c50823c`, 174 tests;
+CSAAS `main` = `3050103`, 39 tests. `/explain` registered as the 41st command.
+
 ## 2026-09-04 — Ship to production: task ticket channels, both repos on main
 The meeting pipeline now notifies people the way `/create-task` always has, and both
 sides of it are on `main` and deployed.
