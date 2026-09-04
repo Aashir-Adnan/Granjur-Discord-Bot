@@ -432,3 +432,105 @@ test('mirrored posts an unassigned summary line', async () => {
   assert.equal(sent.length, 1)
   assert.match(sent[0], /1 task\(s\) from this meeting are unassigned/)
 })
+
+test('mirrored gives each assigned task its own channel, DMs the assignee, and repoints the row', async () => {
+  const created = []
+  const updated = []
+  const sent = []
+  const dms = []
+  const guildCreates = []
+  const chanSends = []
+  const reviewChannel = { id: 'tc1', send: async (m) => { sent.push(m); return { id: 'x' } } }
+  const guild = {
+    id: 'g1',
+    channels: {
+      cache: { find: () => null },
+      create: async (opts) => {
+        guildCreates.push(opts)
+        if (opts.type === 4) return { id: 'cat1', name: opts.name }
+        return { id: `task-${guildCreates.length}`, send: async (m) => { chanSends.push(m); return { id: 'm' } } }
+      },
+    },
+  }
+  reviewChannel.guild = guild
+  const client = {
+    user: { id: 'bot' },
+    channels: { fetch: async () => reviewChannel },
+    users: { fetch: async (id) => ({ send: async (m) => dms.push([id, m]) }) },
+  }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findFirst: async () => null },
+    task: {
+      findFirst: async () => null,
+      create: async ({ data }) => { created.push(data); return { id: 'dbtask1' } },
+      update: async ({ where, data }) => { updated.push([where, data]); return {} },
+    },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      title: 'Sprint sync',
+      approvedBy: '99',
+      tasks: [{ task_id: 'a', goal_of_task: 'Do A' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: '11', rejected: false }] },
+    },
+  }
+  const out = await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+
+  // A private channel per assigned task, holding the assignee and the approver.
+  const taskChan = guildCreates[1]
+  assert.equal(taskChan.name, 'feature-btask1')
+  assert.deepEqual(taskChan.permissionOverwrites.slice(1).map((o) => o.id), ['11', '99'])
+  assert.match(chanSends[0].content, /<@11> <@99>/)
+
+  // The row now points at its own channel, not the review channel.
+  assert.equal(created[0].discordChannelId, 'tc1')
+  assert.deepEqual(updated[0][1], { discordChannelId: 'task-2' })
+  assert.equal(out.patch.dataJson.mirrored[0].taskChannelId, 'task-2')
+
+  // And the assignee is DMed a pointer at it.
+  assert.equal(dms.length, 1)
+  assert.equal(dms[0][0], '11')
+  assert.match(dms[0][1], /<#task-2>/)
+
+  // The review-channel summary links the new channel.
+  assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\* \(<#task-2>\)/)
+})
+
+test('mirrored does not create a second channel when one already exists', async () => {
+  const guildCreates = []
+  const dms = []
+  const reviewChannel = { id: 'tc1', send: async () => ({ id: 'x' }) }
+  reviewChannel.guild = {
+    id: 'g1',
+    channels: { cache: { find: () => null }, create: async (o) => { guildCreates.push(o); return { id: 'c', send: async () => ({}) } } },
+  }
+  const client = {
+    user: { id: 'bot' },
+    channels: { fetch: async () => reviewChannel },
+    users: { fetch: async (id) => ({ send: async (m) => dms.push([id, m]) }) },
+  }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findFirst: async () => null },
+    task: { findFirst: async () => ({ id: 'dbtask1' }), create: async () => ({ id: 'nope' }), update: async () => ({}) },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      pinged: true,
+      tasks: [{ task_id: 'a', goal_of_task: 'Do A' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: '11', rejected: false }] },
+      mirrored: [{ csaasTaskId: 'a', dbTaskId: 'dbtask1', taskChannelId: 'already' }],
+    },
+  }
+  const out = await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(guildCreates.length, 0)
+  assert.equal(dms.length, 0)
+  assert.equal(out.patch.dataJson.mirrored[0].taskChannelId, 'already')
+})

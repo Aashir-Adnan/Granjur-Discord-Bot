@@ -77,7 +77,15 @@ async function handleApprove(interaction, jobId) {
     return interaction.reply({ content: 'Already processed.', ephemeral: true })
   }
   const ok = await db.meetingPipelineJob.updateIf(
-    jobId, { stage: 'approved', status: 'pending' }, { status: 'blocked' },
+    jobId,
+    {
+      // The approver stands in for the assigner: the mirror stage gives them
+      // access to each task's channel alongside its assignee.
+      dataJson: { ...(job.dataJson || {}), approvedBy: interaction.user.id },
+      stage: 'approved',
+      status: 'pending',
+    },
+    { status: 'blocked' },
   )
   if (!ok) {
     return interaction.reply({ content: 'This review was already processed.', ephemeral: true })

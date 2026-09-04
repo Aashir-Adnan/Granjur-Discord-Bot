@@ -11,6 +11,7 @@ import { buildRoster } from './meetingRoster.js'
 import { deriveMeetingName, formatMeetingDate } from '../commands/playback.js'
 import { initReviewState, buildReviewMessage, summarizeApproval } from './meetingReviewUI.js'
 import { mapMeetingTaskToRow } from './meetingTaskMap.js'
+import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
 
 async function guildIdFor(guildConfigId) {
   const cfg = await getGuildConfigById(guildConfigId)
@@ -222,8 +223,10 @@ async function approvedStage({ job, csaasClient }) {
   return { patch: {} }
 }
 
-// mirrored: create a bot task row for each non-rejected reviewed task, record the
-// mapping on dataJson.mirrored, and ping assignees in the review channel.
+// mirrored: create a bot task row for each non-rejected reviewed task, give each
+// assigned task its own private channel the way a /create-task feature ticket
+// gets one, record the mapping on dataJson.mirrored, and summarise in the review
+// channel.
 async function mirroredStage({ job, db, client, csaasClient }) {
   const dataJson = { ...(job.dataJson || {}) }
   const review = dataJson.review || {}
@@ -233,6 +236,25 @@ async function mirroredStage({ job, db, client, csaasClient }) {
   const channel = await resolveMeetingChannel(client, db, job)
   const discordChannelId = channel?.id || null
   const botUserId = client?.user?.id
+
+  // A retry after a partial mirror must not create a second channel per task,
+  // so carry forward what the previous run already made.
+  const prior = new Map(
+    (Array.isArray(dataJson.mirrored) ? dataJson.mirrored : []).map((m) => [m.csaasTaskId, m]),
+  )
+
+  // The approver plays the assigner's role: on a /create-task feature they get
+  // access to the ticket channel alongside the assignees.
+  const approverId = dataJson.approvedBy || null
+
+  let guild = channel?.guild || null
+  if (!guild) {
+    try {
+      guild = await client.guilds.fetch(await guildIdFor(job.guildConfigId))
+    } catch (e) {
+      console.warn('[meetingPipeline] guild fetch for task channels failed:', e?.message || e)
+    }
+  }
 
   const mirrored = []
   for (const reviewTask of reviewTasks) {
@@ -269,12 +291,45 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     }
     if (!taskRow) taskRow = await db.task.create({ data: row })
 
+    // Ticket parity: an assigned task gets its own private channel, and the
+    // assignee gets a DM pointing at it. An unassigned task has nobody to give
+    // the channel to — it is covered by the summary line below instead.
+    let taskChannelId = prior.get(csaasTask.task_id)?.taskChannelId || null
+    if (!taskChannelId && guild && reviewTask.assigneeRef) {
+      try {
+        const ticket = await createTaskTicketChannel(guild, {
+          taskId: taskRow.id,
+          title: row.title,
+          description: row.description,
+          memberIds: [reviewTask.assigneeRef, approverId],
+          fields: [
+            { name: 'Status', value: 'open', inline: true },
+            { name: 'Assignees', value: `<@${reviewTask.assigneeRef}>`, inline: true },
+            { name: 'From meeting', value: dataJson.title || job.meetingId, inline: false },
+          ],
+          closeHint: 'Use **/close-feature** in this channel when done.',
+        })
+        taskChannelId = ticket.id
+        // Point the row at its own channel rather than the review channel, so
+        // /close-feature and /update-task resolve here.
+        await db.task.update({ where: { id: taskRow.id }, data: { discordChannelId: ticket.id } })
+      } catch (e) {
+        console.warn('[meetingPipeline] task channel creation failed:', e?.message || e)
+      }
+      await dmTaskAssignees(client, [reviewTask.assigneeRef], {
+        title: row.title,
+        channelId: taskChannelId,
+        note: 'Use **/update-task** to change its status.',
+      })
+    }
+
     mirrored.push({
       dbTaskId: taskRow.id,
       csaasTaskId: csaasTask.task_id,
       assigneeRef: reviewTask.assigneeRef,
       github: !!reviewTask.github,
       title: row.title,
+      taskChannelId,
     })
 
     // Persist progress after each task so a retry resumes where it stopped.
@@ -296,15 +351,17 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     for (const m of mirrored) {
       if (m.assigneeRef) {
         if (!byRef.has(m.assigneeRef)) byRef.set(m.assigneeRef, [])
-        byRef.get(m.assigneeRef).push(m.title)
+        byRef.get(m.assigneeRef).push(m)
       } else {
         unassigned++
       }
     }
-    for (const [ref, titles] of byRef) {
+    for (const [ref, items] of byRef) {
       try {
         await channel.send(
-          `<@${ref}> you've been assigned: ${titles.map((t) => `**${t}**`).join(', ')} — /update-task for details`,
+          `<@${ref}> you've been assigned: ${items
+            .map((m) => (m.taskChannelId ? `**${m.title}** (<#${m.taskChannelId}>)` : `**${m.title}**`))
+            .join(', ')} — /update-task for details`,
         )
       } catch (e) {
         console.warn('[meetingPipeline] assignee ping failed:', e?.message || e)
