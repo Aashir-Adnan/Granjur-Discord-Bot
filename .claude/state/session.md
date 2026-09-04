@@ -1,32 +1,27 @@
 # Current Session
 
-**Date:** 2026-09-04
+**Date:** 2026-09-05
 
 ## Goal (done)
-Ship the meeting → tasks pipeline: make a created task actually reach its assignee,
-then put both sides on `main` and run production off them.
+Ship `/explain` feature: both repos deployed and live-smoked.
 
 ## Outcome
-- `bot/src/services/taskTicketChannel.js` — per-task private channel + assignee DM,
-  mirroring what `/create-task` does for a feature ticket. Wired into `mirroredStage`.
-  Commit `05bfc78`; suite at 122 passing.
-- Bot `main` = `05bfc78` (39 commits fast-forwarded from
-  `design/meeting-to-tasks-integration`), pushed and deployed to the VM.
-- CSAAS `main` = `263f861` — the five VM-local commits rebuilt source-only (the
-  originals had swept up moved migration files and a regenerated `schema.sql`) and
-  pushed. Deploy ran; VM CSAAS is in sync and the meeting endpoints respond.
-
-## Production state
-- `granjur-bot` (pm2, VM) online, `[meetingPipeline] worker started (60s tick)`,
-  40 commands registered.
-- `~/Granjur-Discord-Bot/.env` gained `MEETING_PIPELINE_ENABLED=true`,
-  `CSAAS_API_URL=http://127.0.0.1:3000/api`, `CSAAS_ACTOR_URDD=6`. CSAAS is on the same
-  VM, so production needs no SSH tunnel — the tunnel and the local bot instance used
-  for testing are both shut down. A `.env.bak.<timestamp>` sits beside it.
-- Only startup warning is the known dead `GITHUB_TOKEN` (401) — in `backlog.md`.
+- **Knowledge page:** `.claude/knowledge/explain.md` documents the feature, architecture 
+  (VM-side Claude via CSAAS), scoping by project `docsPaths` (first entry only, fallback 
+  `All documentation` scope), tool restrictions, debug commands, limits, and test files.
+- **Index:** Added `explain.md` line to `.claude/knowledge/README.md`.
+- **State:** Recorded deployment in `completed.md` (2026-09-05) with bot and CSAAS commits. 
+  Added `backlog.md` `/explain — follow-ups` section with three deferred items: code as 
+  a second source, thread mode, multiple `docsPaths`.
+- **Production:** Both repos on `main`, deployed to the VM, live smoke test passed 
+  (Badar HMS question answered in 23 s with three references under `hms-documentation/`).
 
 ## Next
-`backlog.md` §"Meeting → tasks integration — remaining gaps". The live gap worth
-closing first is a recording where a task is actually **assigned** in
-`/meeting-review` — that exercises the new ticket channel, the DM and the
-`assigneeIds` write, none of which has run outside unit tests.
+Live acceptance in Discord (three test questions from the spec) — the human's next 
+interaction via the controller. Then plan B: move to "projects for tasks" backlog item.
+
+## Files changed
+- `.claude/knowledge/explain.md` (new)
+- `.claude/knowledge/README.md`
+- `.claude/state/completed.md`
+- `.claude/state/backlog.md`
