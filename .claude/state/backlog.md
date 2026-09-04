@@ -5,6 +5,18 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 ---
 
 ## /explain — follow-ups
+- **Drop `MultiEdit` from `EXTRA_ARGS`** — CLI 2.1.186 warns `deny rule "MultiEdit" matches no
+  known tool` on every explain run (harmless, noisy). `explainAgent.js`, spec §4, tests.
+- **`CLAUDE_CLI_ARGS_JSON` is an escape hatch** — an operator template containing
+  `--dangerously-skip-permissions` would re-open the read jail regardless of
+  `skipPermissions:false`. Either strip that flag from the template for explain calls or
+  document it as forbidden. Final-review out-of-scope note, 2026-09-05.
+- **`spawnSync` blocks the CSAAS event loop** for the whole CLI run (30–90 s). The 110 s
+  per-call timeout and the one-in-flight guard bound it; the durable fix is an async spawn.
+  Pre-existing for meeting analysis too.
+- **`/home/azureuser/.claude/.credentials.json` is root-owned** (root's pm2 refreshes the
+  token) — azureuser's own `claude` reports "Not logged in". The endpoint is unaffected.
+  Fix: run CSAAS as azureuser, or `chown` after each refresh. Observed 2026-09-05.
 
 **Code as a second source** once the fresh Badar HMS clone is on the VM (`--add-dir` 
 or a second `cwd` root; renderer needs a `file:line` form).
