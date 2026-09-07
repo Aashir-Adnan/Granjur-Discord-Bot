@@ -5,6 +5,9 @@ import {
   isRecording,
 } from "../services/voiceCapture.js";
 import { ensureMeetingChannel } from "../services/meetingListener.js";
+import { resolveMeetingChannel } from "../services/meetingPipelineStages.js";
+import { ensureGuidelinesPinned } from "../config/meetingGuidelines.js";
+import db from "../db/index.js";
 
 export const data = new SlashCommandBuilder()
   .setName("record")
@@ -47,6 +50,12 @@ export async function execute(interaction) {
     // The unified session: per-user capture, MeetingRecordingStatus row, empty-channel
     // grace timer, and the meeting-pipeline enqueue when the session ends.
     await startMeetingRecording(voiceChannel, guild, meetingChannel.meetingId, voiceChannel.id);
+    // The channel the transcript and the review will land in gets the guidelines.
+    const target = await resolveMeetingChannel(interaction.client, db, {
+      meetingId: meetingChannel.meetingId,
+      guildConfigId: meetingChannel.guildConfigId,
+    });
+    if (target) await ensureGuidelinesPinned(target, guild.client.user.id);
     const embed = new EmbedBuilder()
       .setTitle("Recording started")
       .setDescription(

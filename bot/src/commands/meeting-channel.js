@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, ChannelType } from 'discord.js'
 import { getOrCreateGuildConfig } from '../db/index.js'
 import { ensureMeetingChannel } from '../services/meetingListener.js'
+import { ensureGuidelinesPinned } from '../config/meetingGuidelines.js'
 
 const CATEGORY_MEETINGS = '📋 Meetings'
 
@@ -55,6 +56,8 @@ export async function execute(interaction) {
     parent: category.id,
     topic: 'Meeting chat is stored in the database with the sender and timestamp.',
   })
+
+  await ensureGuidelinesPinned(textChannel, guild.client.user.id)
 
   const voiceChannel = await guild.channels.create({
     name: `${baseName}-voice`,
