@@ -140,3 +140,61 @@ test('explain normalises a missing references array', async () => {
   const out = await explain({ question: 'q?', project: null })
   assert.deepEqual(out.references, [])
 })
+
+test('transcribeUtterance posts multipart with every field the endpoint reads', async () => {
+  process.env.CSAAS_API_URL = 'http://localhost:9999/api'
+  process.env.CSAAS_ACTOR_URDD = 'urdd-1'
+  const seen = {}
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    seen.url = String(url)
+    seen.form = init.body
+    return new Response(JSON.stringify({ status: 200, payload: { return: { text: 'hello', sequence: 4 } } }), { status: 200 })
+  }
+  try {
+    const { transcribeUtterance } = await import('./csaasClient.js')
+    const out = await transcribeUtterance('m1', {
+      buffer: Buffer.from('abc'), filename: 'u.ogg', speakerRef: 'u1',
+      speakerName: 'Nauraiz', startedAt: new Date('2026-09-07T10:00:00Z'),
+      sequence: 4, durationMs: 1400,
+    })
+    assert.equal(out.text, 'hello')
+    assert.equal(out.sequence, 4)
+    assert.ok(seen.url.endsWith('/meeting/workflow/utterance'), seen.url)
+    assert.equal(seen.form.get('meeting_id'), 'm1')
+    assert.equal(seen.form.get('sequence'), '4')
+    assert.equal(seen.form.get('speaker_ref'), 'u1')
+    assert.equal(seen.form.get('speaker_name'), 'Nauraiz')
+    assert.equal(seen.form.get('started_at'), '2026-09-07T10:00:00.000Z')
+    assert.equal(seen.form.get('duration_ms'), '1400')
+    assert.equal(seen.form.get('actionPerformerURDD'), 'urdd-1')
+    assert.ok(seen.form.get('file'), 'audio blob is attached')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('analyzeLive sends the snake_case body analyze-live expects', async () => {
+  process.env.CSAAS_API_URL = 'http://localhost:9999/api'
+  process.env.CSAAS_ACTOR_URDD = 'urdd-1'
+  let body = null
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    body = JSON.parse(init.body)
+    return new Response(JSON.stringify({ status: 200, payload: { return: { summary: 'ok' } } }), { status: 200 })
+  }
+  try {
+    const { analyzeLive } = await import('./csaasClient.js')
+    const out = await analyzeLive('m1', {
+      meetingNotes: { segment_0: { time_range: '00:00-05:00', transcription: 'A: hi' } },
+      totalDurationSec: 300,
+    })
+    assert.equal(out.summary, 'ok')
+    assert.equal(body.meeting_id, 'm1')
+    assert.equal(body.total_duration_sec, 300)
+    assert.equal(body.meeting_notes.segment_0.time_range, '00:00-05:00')
+    assert.equal(body.actionPerformerURDD, 'urdd-1')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})

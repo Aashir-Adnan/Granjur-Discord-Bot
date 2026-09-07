@@ -166,3 +166,37 @@ export async function transcribeSegment(meetingId, { buffer, filename, segmentIn
   if (!res.ok) throw new CsaasError(json?.message || text || res.statusText, res.status, json)
   return unwrap(json, res.status)
 }
+
+// One speaker turn: a short clip, so a much tighter ceiling than the 5-minute
+// default. A turn that has not come back in 30 s is not worth waiting for —
+// the feed skips its sequence at 25 s anyway.
+export const UTTERANCE_TIMEOUT_MS = 30_000
+
+export async function transcribeUtterance(meetingId, { buffer, filename, speakerRef, speakerName, startedAt, sequence, durationMs }) {
+  const form = new FormData()
+  form.append('meeting_id', String(meetingId))
+  form.append('sequence', String(sequence))
+  form.append('speaker_ref', String(speakerRef ?? ''))
+  form.append('speaker_name', String(speakerName ?? ''))
+  form.append('started_at', new Date(startedAt).toISOString())
+  form.append('duration_ms', String(durationMs ?? 0))
+  form.append('actionPerformerURDD', URDD())
+  form.append('file', new Blob([buffer]), filename || `utterance-${sequence}.ogg`)
+  const res = await runFetch(`${BASE()}/meeting/workflow/utterance`, { method: 'POST', body: form }, { timeoutMs: UTTERANCE_TIMEOUT_MS })
+  const text = await res.text()
+  const json = parseBody(text)
+  if (!res.ok) throw new CsaasError(json?.message || text || res.statusText, res.status, json)
+  const out = unwrap(json, res.status)
+  return { text: String(out?.text ?? ''), sequence: Number(out?.sequence ?? sequence) }
+}
+
+// analyze-live stores the assembled transcript AND runs the Claude analysis in
+// the same request, so it inherits /analyze's 30-90 s cost.
+export const ANALYZE_LIVE_TIMEOUT_MS = 180_000
+
+export const analyzeLive = (meetingId, { meetingNotes, totalDurationSec }) =>
+  postJson('/meeting/workflow/analyze-live', {
+    meeting_id: meetingId,
+    meeting_notes: meetingNotes,
+    total_duration_sec: totalDurationSec,
+  }, { timeoutMs: ANALYZE_LIVE_TIMEOUT_MS })
