@@ -13,9 +13,17 @@ import { initReviewState, buildReviewMessage, summarizeApproval, taskKey } from 
 import { mapMeetingTaskToRow } from './meetingTaskMap.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
 import { matchProject } from '../utils/projectMatch.js'
+import { buildAnalyzeLivePayload } from './liveTranscriptPayload.js'
 
-async function guildIdFor(guildConfigId) {
-  const cfg = await getGuildConfigById(guildConfigId)
+// dbArg is an optional test seam: the real `db` facade never carries a
+// getGuildConfigById of its own (it's a raw Database/index.js export, not
+// part of the Prisma-style surface), so this always falls through to the
+// real lookup at runtime. A test's fake `db` can supply one to avoid a real
+// network round trip.
+async function guildIdFor(guildConfigId, dbArg) {
+  const cfg = dbArg?.getGuildConfigById
+    ? await dbArg.getGuildConfigById(guildConfigId)
+    : await getGuildConfigById(guildConfigId)
   if (!cfg?.guildId) throw new Error('created stage: no guildConfig for ' + guildConfigId)
   return cfg.guildId
 }
@@ -25,7 +33,7 @@ async function createdStage({ job, db, csaasClient, client }) {
   const meeting = await db.meeting.findUnique({ where: { id: job.meetingId } })
   const recs = await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } })
 
-  const guildId = await guildIdFor(job.guildConfigId)
+  const guildId = await guildIdFor(job.guildConfigId, db)
   const guild = await client.guilds.fetch(guildId)
   const roster = await buildRoster({
     guild,
@@ -39,10 +47,15 @@ async function createdStage({ job, db, csaasClient, client }) {
     ' — ' +
     formatMeetingDate(recs[0]?.startedAt || meeting?.createdAt)
 
-  const { meeting_id } = await csaasClient.createMeeting({
-    title,
-    participants: roster.map((r) => r.displayName),
-  })
+  // startMeetingRecording creates the CSAAS meeting so the live transcript has
+  // somewhere to post. Only create one here when that did not happen.
+  let meeting_id = meeting?.csaasMeetingId || null
+  if (!meeting_id) {
+    ;({ meeting_id } = await csaasClient.createMeeting({
+      title,
+      participants: roster.map((r) => r.displayName),
+    }))
+  }
 
   return {
     patch: {
@@ -56,6 +69,24 @@ async function createdStage({ job, db, csaasClient, client }) {
 // One successful upload per tick (advance:false) so each upload is short and
 // independently retryable; advances only once every rec is uploaded-or-missing.
 async function transcribingStage({ job, db, csaasClient }) {
+  // Live path: the bot transcribed each turn as it was spoken, so CSAAS gets a
+  // real conversation instead of one whole file per speaker. analyze-live both
+  // stores the transcript and runs the analysis, so `analyzing` then no-ops.
+  const LIVE_MIN_UTTERANCES = 5
+  try {
+    const n = (await db.meetingUtterance?.countWithText?.({ meetingId: job.meetingId })) || 0
+    if (n >= LIVE_MIN_UTTERANCES) {
+      const rows = await db.meetingUtterance.findMany({ where: { meetingId: job.meetingId } })
+      const { meetingNotes, totalDurationSec } = buildAnalyzeLivePayload(rows)
+      const analysis = await csaasClient.analyzeLive(job.csaasMeetingId, { meetingNotes, totalDurationSec })
+      return { patch: { dataJson: { ...(job.dataJson || {}), liveTranscript: true, analysis } } }
+    }
+  } catch (e) {
+    // Anything wrong with the live path drops through to the whole-file upload
+    // below — a meeting is never lost because live transcription misbehaved.
+    console.warn(`[meetingPipeline] live transcript path failed, falling back: ${e?.message || e}`)
+  }
+
   const recs = (await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } }))
     .slice()
     .sort((a, b) => new Date(a.startedAt || 0) - new Date(b.startedAt || 0))
@@ -98,8 +129,11 @@ async function transcribingStage({ job, db, csaasClient }) {
 
 // analyzing: one CSaaS call, store the analysis blob on dataJson.
 async function analyzingStage({ job, csaasClient }) {
+  const data = job.dataJson || {}
+  // The live path already ran the analysis inside analyze-live.
+  if (data.liveTranscript && data.analysis) return { patch: { dataJson: data } }
   const { analysis } = await csaasClient.analyze(job.csaasMeetingId)
-  return { patch: { dataJson: { ...(job.dataJson || {}), analysis } } }
+  return { patch: { dataJson: { ...data, analysis } } }
 }
 
 // generating_tasks: one CSaaS call, store the generated task list on dataJson.
