@@ -1317,7 +1317,7 @@ async function meetingFindUnique({ where }) {
   return null;
 }
 
-async function meetingUpdate({ where, data }) {
+export function meetingUpdateSql(data) {
   const sets = [];
   const vals = [];
   if (data.transcript !== undefined) {
@@ -1328,6 +1328,15 @@ async function meetingUpdate({ where, data }) {
     sets.push("notes = ?");
     vals.push(data.notes);
   }
+  if (data.csaasMeetingId !== undefined) {
+    sets.push("csaasMeetingId = ?");
+    vals.push(data.csaasMeetingId);
+  }
+  return { sets, vals };
+}
+
+async function meetingUpdate({ where, data }) {
+  const { sets, vals } = meetingUpdateSql(data);
   if (sets.length === 0)
     return queryOne("SELECT * FROM `meeting` WHERE id = ?", [where.id]);
   vals.push(where.id);
@@ -1394,6 +1403,59 @@ async function meetingChannelUpdate({ where, data }) {
     vals,
   );
   return meetingChannelFindUnique({ where: { id: where.id } });
+}
+
+// ---------- MeetingUtterance (per-speaker transcript turns) ----------
+export function meetingUtteranceInsertSql() {
+  return {
+    sql:
+      "INSERT INTO `meetingutterance` " +
+      "(id, guildConfigId, meetingId, `sequence`, speakerRef, speakerName, startedAt, durationMs, text) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+      "ON DUPLICATE KEY UPDATE text = VALUES(text), speakerName = VALUES(speakerName)",
+  };
+}
+
+export function meetingUtteranceFindManySql({ meetingId }) {
+  return {
+    sql: "SELECT * FROM `meetingutterance` WHERE meetingId = ? ORDER BY `sequence` ASC",
+    params: [meetingId],
+  };
+}
+
+export function meetingUtteranceCountSql({ meetingId }) {
+  return {
+    sql: "SELECT COUNT(*) AS n FROM `meetingutterance` WHERE meetingId = ? AND text IS NOT NULL AND TRIM(text) <> ''",
+    params: [meetingId],
+  };
+}
+
+async function meetingUtteranceCreate({ data }) {
+  const pk = id();
+  const { sql } = meetingUtteranceInsertSql();
+  await query(sql, [
+    pk,
+    data.guildConfigId,
+    data.meetingId,
+    data.sequence,
+    data.speakerRef ?? null,
+    data.speakerName ?? null,
+    data.startedAt ?? new Date(),
+    data.durationMs ?? 0,
+    data.text ?? null,
+  ]);
+  return queryOne("SELECT * FROM `meetingutterance` WHERE id = ?", [pk]);
+}
+
+async function meetingUtteranceFindMany({ where }) {
+  const { sql, params } = meetingUtteranceFindManySql({ meetingId: where.meetingId });
+  return query(sql, params);
+}
+
+async function meetingUtteranceCountWithText({ meetingId }) {
+  const { sql, params } = meetingUtteranceCountSql({ meetingId });
+  const row = await queryOne(sql, params);
+  return Number(row?.n || 0);
 }
 
 // ---------- MeetingRecording (for individual user audio recordings) ----------
@@ -2045,6 +2107,11 @@ const db = {
   meetingRecording: {
     create: meetingRecordingCreate,
     findMany: meetingRecordingFindMany,
+  },
+  meetingUtterance: {
+    create: meetingUtteranceCreate,
+    findMany: meetingUtteranceFindMany,
+    countWithText: meetingUtteranceCountWithText,
   },
   meetingRecordingStatus: {
     findUnique: meetingRecordingStatusFindUnique,
