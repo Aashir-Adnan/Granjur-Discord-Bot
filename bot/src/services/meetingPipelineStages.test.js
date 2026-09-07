@@ -645,6 +645,21 @@ test('created reuses the CSAAS meeting made when recording started', async () =>
   assert.equal(out.patch.csaasMeetingId, 'csaas-existing')
 })
 
+test('created calls createMeeting when no CSAAS meeting was made at recording start', async () => {
+  let created = false
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', csaasMeetingId: null }) },
+    meetingRecording: { findMany: async () => [{ filePath: '/r/abc-standup/a.ogg', startedAt: new Date('2026-09-07T10:00:00Z') }] },
+    guildMember: { findMany: async () => [] },
+    getGuildConfigById: async () => ({ guildId: 'g' }),
+  }
+  const csaasClient = { createMeeting: async () => { created = true; return { meeting_id: 'csaas-new' } } }
+  const client = { guilds: { fetch: async () => ({ id: 'g', members: { fetch: async () => ({}) } }) } }
+  const out = await stageRunners.created({ job: { meetingId: 'm', guildConfigId: 'g' }, db, client, csaasClient })
+  assert.equal(created, true, 'must create a CSAAS meeting when none exists yet')
+  assert.equal(out.patch.csaasMeetingId, 'csaas-new')
+})
+
 test('transcribing takes the live path when there are enough utterances', async () => {
   let uploaded = 0
   let liveArgs = null

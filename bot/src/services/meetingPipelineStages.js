@@ -15,14 +15,18 @@ import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js
 import { matchProject } from '../utils/projectMatch.js'
 import { buildAnalyzeLivePayload } from './liveTranscriptPayload.js'
 
-// dbArg is an optional test seam: the real `db` facade never carries a
-// getGuildConfigById of its own (it's a raw Database/index.js export, not
-// part of the Prisma-style surface), so this always falls through to the
-// real lookup at runtime. A test's fake `db` can supply one to avoid a real
-// network round trip.
-async function guildIdFor(guildConfigId, dbArg) {
-  const cfg = dbArg?.getGuildConfigById
-    ? await dbArg.getGuildConfigById(guildConfigId)
+// overrides is a test-only seam, never meant to carry real data: the `db`
+// facade passed at runtime (bot/src/db/index.js default export) is a plain
+// object literal with no getGuildConfigById key of its own, so passing the
+// real `db` here always falls through to the real lookup below. (A
+// *namespace* import of that module, `import * as ns from '../db/index.js'`,
+// would carry getGuildConfigById as a named re-export — nothing does that
+// today, which is why this stays safe, but don't pass such a namespace
+// object in as `overrides`.) A test's fake object can supply
+// getGuildConfigById to avoid a real network round trip.
+async function guildIdFor(guildConfigId, overrides) {
+  const cfg = overrides?.getGuildConfigById
+    ? await overrides.getGuildConfigById(guildConfigId)
     : await getGuildConfigById(guildConfigId)
   if (!cfg?.guildId) throw new Error('created stage: no guildConfig for ' + guildConfigId)
   return cfg.guildId
@@ -285,7 +289,7 @@ async function mirroredStage({ job, db, client, csaasClient }) {
   let guild = channel?.guild || null
   if (!guild) {
     try {
-      guild = await client.guilds.fetch(await guildIdFor(job.guildConfigId))
+      guild = await client.guilds.fetch(await guildIdFor(job.guildConfigId, db))
     } catch (e) {
       console.warn('[meetingPipeline] guild fetch for task channels failed:', e?.message || e)
     }
