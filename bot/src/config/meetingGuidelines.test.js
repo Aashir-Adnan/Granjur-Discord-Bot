@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildGuidelinesEmbed, findGuidelinesPin, ensureGuidelinesPinned, GUIDELINES_MARKER } from './meetingGuidelines.js'
+import { buildGuidelinesEmbed, findGuidelinesPin, ensureGuidelinesPinned, postConsentNotice, GUIDELINES_MARKER } from './meetingGuidelines.js'
 
 test('the embed explains transcription, the commands and the flow', () => {
   const json = buildGuidelinesEmbed().toJSON()
@@ -45,4 +45,25 @@ test('a channel that cannot be read never throws at a call site', async () => {
     send: async () => { throw new Error('Missing Permissions') },
   }
   assert.equal(await ensureGuidelinesPinned(channel, 'bot'), false)
+})
+
+test('the consent notice says the meeting is recorded and where the words go', async () => {
+  // Moved here from transcriptFeed: it used to be posted by feed.start(), which
+  // only runs when CSAAS answered — so a backend outage meant a meeting recorded
+  // with no notice at all. It is now posted from the recording-start path.
+  const sent = []
+  const channel = { isTextBased: () => true, send: async (payload) => { sent.push(payload) } }
+
+  assert.equal(await postConsentNotice(channel), true)
+  assert.equal(sent.length, 1, 'posted exactly once')
+  assert.match(sent[0].content, /recorded/i)
+  assert.match(sent[0].content, /transcrib/i)
+  assert.match(sent[0].content, /appear in this channel/i)
+  assert.deepEqual(sent[0].allowedMentions, { parse: [] })
+})
+
+test('a channel that refuses the consent notice does not stop the recording', async () => {
+  const channel = { isTextBased: () => true, send: async () => { throw new Error('Missing Permissions') } }
+  assert.equal(await postConsentNotice(channel), false)
+  assert.equal(await postConsentNotice(null), false)
 })

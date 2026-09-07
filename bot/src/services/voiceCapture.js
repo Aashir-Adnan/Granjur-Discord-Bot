@@ -17,6 +17,7 @@ import { OggOpusEncoder } from "../utils/oggOpusStream.js";
 import * as csaasClient from "./csaasClient.js";
 import { createTranscriptFeed } from "./transcriptFeed.js";
 import { resolveMeetingChannel } from "./meetingPipelineStages.js";
+import { postConsentNotice } from "../config/meetingGuidelines.js";
 import { deriveMeetingName, formatMeetingDate } from "../commands/playback.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -276,6 +277,23 @@ export function isRecording(meetingId) {
 }
 
 /**
+ * Drop whatever the previous recording of this meeting row left behind.
+ *
+ * A voice channel keeps one meeting row across recordings (ensureMeetingChannel
+ * returns the existing row unless forceNewMeeting is passed, and /record does not
+ * pass it), while the feed's sequence counter restarts at 1 every session. The
+ * insert is ON DUPLICATE KEY UPDATE on (meetingId, sequence), so a second
+ * recording in the same channel would silently overwrite the first meeting's
+ * turns — and leave the ones it did not reach behind, mixed in with the new ones.
+ *
+ * Exported for its test; not part of the public recording surface.
+ */
+export async function clearStaleLiveSession(database, meetingId) {
+  await database.meeting.update({ where: { id: meetingId }, data: { csaasMeetingId: null } });
+  await database.meetingUtterance.deleteMany({ where: { meetingId } });
+}
+
+/**
  * Unified meeting recording: joins voice channel, records audio, and tracks in database.
  * Combines voice channel joining + audio recording + meeting record tracking.
  * Ends recording when all human members leave the channel.
@@ -384,6 +402,14 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
 
   // End meeting session
   const endMeetingSession = async () => {
+    // One shot. Teardown now parks for tens of seconds — the final utterances
+    // flush and feed.stop() drain up to three 30 s speech-to-text calls — and
+    // the meeting stays in activeConnections/sessionEnders for all of it, so an
+    // impatient `/record action:stop` can find the ender the grace timer is
+    // already running. Two runs both reach connection.destroy(); the second
+    // throws "already been destroyed" and, on the timer path, that rejection is
+    // unhandled and skips cleanup() and deleteOnEnd.
+    if (sessionEnding) return;
     console.log(`[voiceCapture] Ending meeting session: ${meetingId}`);
     sessionEnding = true;
     try {
@@ -873,6 +899,40 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
 
   if (!sessionEnding) activeConnections.set(meetingId, connection);
 
+  // The consent notice and the live transcript want the same channel, so it is
+  // resolved once — and independently of CSAAS. Recording consent is announced
+  // whenever recording starts: with the backend down there is no transcript, but
+  // people must still be told they are being recorded.
+  //
+  // Placed here rather than beside the ready cue for the same reason the CSAAS
+  // block below is: this is a database read plus a channel fetch, and running it
+  // before the speaking handler is registered would drop the opening words of the
+  // meeting. It still lands well before any transcript line.
+  let meetingTextChannel = null;
+  if (!sessionEnding) {
+    try {
+      meetingTextChannel = await resolveMeetingChannel(guild.client, db, {
+        meetingId,
+        guildConfigId: cfg.id,
+      });
+    } catch (e) {
+      console.warn(`[voiceCapture] Could not resolve the meeting channel: ${e?.message || e}`);
+    }
+    // Never throws; a channel the bot cannot post in must not stop the recording.
+    if (meetingTextChannel) await postConsentNotice(meetingTextChannel);
+  }
+
+  // Clear whatever the previous recording of this meeting row left behind, before
+  // anything can write over it. Unconditional: stale utterances left in place are
+  // also what the pipeline would analyse for this meeting if no live feed runs.
+  let liveSessionCleared = false;
+  try {
+    await clearStaleLiveSession(db, meetingId);
+    liveSessionCleared = true;
+  } catch (e) {
+    console.warn(`[voiceCapture] Could not clear the previous live session for ${meetingId}: ${e?.message || e}`);
+  }
+
   // The live transcript needs a CSAAS meeting_id while the meeting is still
   // running. createdStage would only make one after the recording ends, so the
   // meeting is created here and createdStage reuses the id.
@@ -884,7 +944,9 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   // answer "no active recording" for a meeting that is recording, and a grace
   // period expiring inside the window would be undone by this block writing
   // "recording" back over a completed meeting.
-  if (csaasClient.isConfigured() && !sessionEnding) {
+  // liveSessionCleared: if the stale rows could not be dropped, a live feed would
+  // write its turns straight over the previous meeting's. No feed this meeting.
+  if (csaasClient.isConfigured() && !sessionEnding && liveSessionCleared) {
     try {
       const humans = voiceChannel.members.filter((m) => !m.user.bot).map((m) => m.displayName);
       // deriveMeetingName reads the *directory of* the path it is given, so it
@@ -895,9 +957,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
       if (meeting_id) {
         // Worth recording even if the meeting ended meanwhile: the pipeline reuses it.
         await db.meeting.update({ where: { id: meetingId }, data: { csaasMeetingId: meeting_id } });
-        const channel = sessionEnding
-          ? null
-          : await resolveMeetingChannel(guild.client, db, { meetingId, guildConfigId: cfg.id });
+        const channel = sessionEnding ? null : meetingTextChannel;
         if (channel) {
           feed = createTranscriptFeed({
             db, csaasClient, channel,

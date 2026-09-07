@@ -77,18 +77,30 @@ async function transcribingStage({ job, db, csaasClient }) {
   // real conversation instead of one whole file per speaker. analyze-live both
   // stores the transcript and runs the analysis, so `analyzing` then no-ops.
   const LIVE_MIN_UTTERANCES = 5
-  try {
-    const n = (await db.meetingUtterance?.countWithText?.({ meetingId: job.meetingId })) || 0
-    if (n >= LIVE_MIN_UTTERANCES) {
-      const rows = await db.meetingUtterance.findMany({ where: { meetingId: job.meetingId } })
-      const { meetingNotes, totalDurationSec } = buildAnalyzeLivePayload(rows)
-      const analysis = await csaasClient.analyzeLive(job.csaasMeetingId, { meetingNotes, totalDurationSec })
-      return { patch: { dataJson: { ...(job.dataJson || {}), liveTranscript: true, analysis } } }
+  // The fallback below returns advance:false after each file, so this stage is
+  // re-entered once per speaker recording. Without a sticky marker every one of
+  // those ticks would re-attempt analyze-live (countWithText never drops back
+  // below the threshold), each attempt rewriting meetings.transcript on the
+  // backend and burning a 30-90 s blocking analysis while the fallback is
+  // concurrently building that same transcript.
+  let liveFailed = (job.dataJson || {}).liveTranscriptFailed === true
+  if (!liveFailed) {
+    try {
+      const n = (await db.meetingUtterance?.countWithText?.({ meetingId: job.meetingId })) || 0
+      if (n >= LIVE_MIN_UTTERANCES) {
+        const rows = await db.meetingUtterance.findMany({ where: { meetingId: job.meetingId } })
+        const { meetingNotes, totalDurationSec } = buildAnalyzeLivePayload(rows)
+        const analysis = await csaasClient.analyzeLive(job.csaasMeetingId, { meetingNotes, totalDurationSec })
+        return { patch: { dataJson: { ...(job.dataJson || {}), liveTranscript: true, analysis } } }
+      }
+    } catch (e) {
+      // Anything wrong with the live path drops through to the whole-file upload
+      // below — a meeting is never lost because live transcription misbehaved.
+      // The flag rides out on whatever patch the fallback returns, so this tick
+      // still makes its usual progress.
+      liveFailed = true
+      console.warn(`[meetingPipeline] live transcript path failed, falling back: ${e?.message || e}`)
     }
-  } catch (e) {
-    // Anything wrong with the live path drops through to the whole-file upload
-    // below — a meeting is never lost because live transcription misbehaved.
-    console.warn(`[meetingPipeline] live transcript path failed, falling back: ${e?.message || e}`)
   }
 
   const recs = (await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } }))
@@ -98,6 +110,9 @@ async function transcribingStage({ job, db, csaasClient }) {
   const data = { uploaded: [], missing: [], ...(job.dataJson || {}) }
   data.uploaded = [...(data.uploaded || [])]
   data.missing = [...(data.missing || [])]
+  // Every return below patches dataJson with `data`, so setting it here is what
+  // makes the fallback stick across the per-file ticks.
+  if (liveFailed) data.liveTranscriptFailed = true
   const done = new Set(data.uploaded)
 
   for (const rec of recs) {

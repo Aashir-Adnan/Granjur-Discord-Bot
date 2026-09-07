@@ -42,6 +42,29 @@ export function buildGuidelinesEmbed() {
     .setFooter({ text: GUIDELINES_MARKER })
 }
 
+// Recording consent. It used to be posted by the live transcript feed, which only
+// exists when CSAAS answered — so a meeting recorded against a down backend was
+// announced by nothing at all. Consent is unconditional, so this is posted from
+// the recording-start path instead, whatever the backend is doing.
+export const CONSENT_NOTICE =
+  '🎙️ **This meeting is being recorded and transcribed.** ' +
+  'Everything said in the voice channel will appear in this channel as text.'
+
+/**
+ * Post the recording-consent notice. Never throws: a channel the bot cannot post
+ * in must not stop the recording that is already starting.
+ */
+export async function postConsentNotice(channel) {
+  if (!channel?.isTextBased?.()) return false
+  try {
+    await channel.send({ content: CONSENT_NOTICE, allowedMentions: { parse: [] } })
+    return true
+  } catch (e) {
+    console.warn(`[meetingGuidelines] could not post the consent notice: ${e?.message || e}`)
+    return false
+  }
+}
+
 export function findGuidelinesPin(messages, botUserId) {
   for (const m of messages || []) {
     if (m?.author?.id !== botUserId) continue

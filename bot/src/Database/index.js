@@ -1429,7 +1429,12 @@ export function meetingUtteranceInsertSql(data) {
     sql:
       `INSERT INTO \`meetingutterance\` (${columnList}) ` +
       `VALUES (${placeholders}) ` +
-      "ON DUPLICATE KEY UPDATE text = VALUES(text), speakerName = VALUES(speakerName)",
+      // startedAt and durationMs are refreshed too: a row overwritten by a later
+      // meeting in the same voice channel would otherwise carry the new text
+      // against the old meeting's clock, and the transcript would be bucketed
+      // against timings that never belonged to it.
+      "ON DUPLICATE KEY UPDATE text = VALUES(text), speakerName = VALUES(speakerName), " +
+      "startedAt = VALUES(startedAt), durationMs = VALUES(durationMs)",
     params: columns.map(([, val]) => val),
   };
 }
@@ -1437,6 +1442,13 @@ export function meetingUtteranceInsertSql(data) {
 export function meetingUtteranceFindManySql({ meetingId }) {
   return {
     sql: "SELECT * FROM `meetingutterance` WHERE meetingId = ? ORDER BY `sequence` ASC",
+    params: [meetingId],
+  };
+}
+
+export function meetingUtteranceDeleteManySql({ meetingId }) {
+  return {
+    sql: "DELETE FROM `meetingutterance` WHERE meetingId = ?",
     params: [meetingId],
   };
 }
@@ -1465,6 +1477,14 @@ async function meetingUtteranceCreate({ data }) {
 async function meetingUtteranceFindMany({ where }) {
   const { sql, params } = meetingUtteranceFindManySql({ meetingId: where.meetingId });
   return query(sql, params);
+}
+
+// A voice channel keeps its meeting row across recordings, so a second /record
+// in the same channel restarts the sequence counter at 1 and would overwrite the
+// previous meeting's turns. Recording start clears them first.
+async function meetingUtteranceDeleteMany({ where }) {
+  const { sql, params } = meetingUtteranceDeleteManySql({ meetingId: where.meetingId });
+  await query(sql, params);
 }
 
 async function meetingUtteranceCountWithText({ meetingId }) {
@@ -2126,6 +2146,7 @@ const db = {
   meetingUtterance: {
     create: meetingUtteranceCreate,
     findMany: meetingUtteranceFindMany,
+    deleteMany: meetingUtteranceDeleteMany,
     countWithText: meetingUtteranceCountWithText,
   },
   meetingRecordingStatus: {

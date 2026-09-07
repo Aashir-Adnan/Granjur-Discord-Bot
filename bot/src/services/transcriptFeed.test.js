@@ -284,14 +284,17 @@ test('a deleted channel disables the feed instead of throwing every flush', asyn
   await feed.flushOnce(T0 + 2000) // must not throw
 })
 
-test('start posts the consent notice before any transcript', async () => {
+test('start posts nothing — the consent notice belongs to the recording path', async () => {
+  // It used to be posted here, which meant no notice at all whenever CSAAS was
+  // down: the feed is only ever built after a successful createMeeting. It now
+  // comes from voiceCapture (postConsentNotice, tested in meetingGuidelines).
+  // Posting it here too would double it.
   const channel = fakeChannel()
   const feed = createTranscriptFeed({
     db: fakeDb(), channel, guildConfigId: 'g', meetingId: 'm', csaasMeetingId: 'c',
     csaasClient: echoStt,
   })
   await feed.start({ interval: false })
-  assert.match(channel.sent[0], /transcrib/i)
-  assert.match(channel.sent[0], /appear in this channel/i)
+  assert.deepEqual(channel.sent, [])
   feed.stop()
 })

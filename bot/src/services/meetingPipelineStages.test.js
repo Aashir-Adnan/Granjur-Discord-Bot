@@ -729,6 +729,49 @@ test('an analyze-live failure falls back rather than failing the meeting', async
   )
 })
 
+test('a failed analyze-live is not retried on every fallback tick', async () => {
+  // The fallback uploads one file per tick and returns advance:false, so the
+  // stage is re-entered once per speaker. countWithText never drops back below
+  // the threshold, so without a sticky marker every tick would run analyze-live
+  // again — each one a blocking 30-90 s analysis that rewrites the transcript the
+  // fallback is building at the same time.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-'))
+  const f1 = path.join(dir, 'ali.ogg'); fs.writeFileSync(f1, 'aaa')
+  const f2 = path.join(dir, 'sara.ogg'); fs.writeFileSync(f2, 'bbb')
+
+  let liveCalls = 0
+  const db = {
+    meetingUtterance: {
+      countWithText: async () => 9,
+      findMany: async () => ([{ sequence: 1, speakerName: 'A', text: 'one', durationMs: 1000, startedAt: new Date() }]),
+    },
+    meetingRecording: { findMany: async () => [
+      { id: 'r1', filePath: f1, fileName: 'ali.ogg', startedAt: '2026-01-01T00:00:00Z' },
+      { id: 'r2', filePath: f2, fileName: 'sara.ogg', startedAt: '2026-01-01T00:01:00Z' },
+    ] },
+  }
+  const csaasClient = {
+    transcribeSegment: async () => ({}),
+    analyzeLive: async () => { liveCalls += 1; throw new Error('claude quota exceeded') },
+  }
+
+  const job = { id: 'j', meetingId: 'm', csaasMeetingId: 'c', dataJson: {} }
+  const t1 = await stageRunners.transcribing({ job, db, csaasClient, client: {} })
+  assert.equal(liveCalls, 1)
+  assert.equal(t1.advance, false)
+  assert.equal(t1.patch.dataJson.liveTranscriptFailed, true, 'the failure is recorded on the job')
+  assert.deepEqual(t1.patch.dataJson.uploaded, ['r1'], 'the tick still made its usual progress')
+
+  const t2 = await stageRunners.transcribing({ job: { ...job, dataJson: t1.patch.dataJson }, db, csaasClient, client: {} })
+  assert.equal(liveCalls, 1, 'the live path is not attempted again')
+  assert.deepEqual(t2.patch.dataJson.uploaded, ['r1', 'r2'])
+  assert.equal(t2.patch.dataJson.liveTranscriptFailed, true, 'the marker survives later ticks')
+
+  const t3 = await stageRunners.transcribing({ job: { ...job, dataJson: t2.patch.dataJson }, db, csaasClient, client: {} })
+  assert.equal(liveCalls, 1)
+  assert.notEqual(t3.advance, false, 'the stage still completes')
+})
+
 test('analyzing does not call CSAAS twice when the live path already analysed', async () => {
   let called = false
   const csaasClient = { analyze: async () => { called = true; return { analysis: {} } } }

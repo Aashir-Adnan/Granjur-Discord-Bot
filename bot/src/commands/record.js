@@ -51,11 +51,18 @@ export async function execute(interaction) {
     // grace timer, and the meeting-pipeline enqueue when the session ends.
     await startMeetingRecording(voiceChannel, guild, meetingChannel.meetingId, voiceChannel.id);
     // The channel the transcript and the review will land in gets the guidelines.
-    const target = await resolveMeetingChannel(interaction.client, db, {
-      meetingId: meetingChannel.meetingId,
-      guildConfigId: meetingChannel.guildConfigId,
-    });
-    if (target) await ensureGuidelinesPinned(target, guild.client.user.id);
+    // Recording is already running by this point, so a database blip here must not
+    // reach the command's error path: "Something went wrong, please try again" for
+    // a live recording invites the user to start a second one.
+    try {
+      const target = await resolveMeetingChannel(interaction.client, db, {
+        meetingId: meetingChannel.meetingId,
+        guildConfigId: meetingChannel.guildConfigId,
+      });
+      if (target) await ensureGuidelinesPinned(target, guild.client.user.id);
+    } catch (e) {
+      console.warn(`[record] could not pin the guidelines: ${e?.message || e}`);
+    }
     const embed = new EmbedBuilder()
       .setTitle("Recording started")
       .setDescription(

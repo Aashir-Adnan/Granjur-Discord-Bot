@@ -141,9 +141,11 @@ export function renderBlocks(blocks, maxChars = MAX_MESSAGE_CHARS) {
   return messages
 }
 
-const CONSENT_NOTICE =
-  '🎙️ **This meeting is being recorded and transcribed.** ' +
-  'Everything said in the voice channel will appear in this channel as text.'
+// The consent notice is deliberately NOT posted here. The feed only exists when
+// CSAAS was configured, answered, and a channel resolved; consent has to be
+// announced whenever recording starts, so it is posted from voiceCapture's
+// recording-start path (see postConsentNotice in config/meetingGuidelines.js).
+// Posting it here as well would double it.
 
 const DEGRADE_AFTER_FAILURES = 3
 
@@ -325,7 +327,6 @@ export function createTranscriptFeed({
     },
 
     async start({ interval = true } = {}) {
-      await send(CONSENT_NOTICE)
       if (interval && !timer) {
         timer = setInterval(() => {
           this.flushOnce().catch((e) => logger.warn?.(`[transcriptFeed] flush failed: ${e?.message || e}`))

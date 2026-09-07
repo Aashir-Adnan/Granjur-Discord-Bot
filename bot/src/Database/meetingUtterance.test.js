@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   meetingUtteranceInsertSql,
   meetingUtteranceFindManySql,
+  meetingUtteranceDeleteManySql,
   meetingUtteranceCountSql,
   meetingUpdateSql,
 } from './index.js'
@@ -29,6 +30,27 @@ test('the insert derives its column order and params from one source, so they ca
     'column order must match the params order exactly',
   )
   assert.deepEqual(params, ['u1', 'g1', 'm1', 3, 'spk-1', 'Alice', startedAt, 1500, 'hello'])
+})
+
+test('an overwritten row refreshes its timing, not just its text', () => {
+  // Same voice channel, second meeting: sequence 1 already exists from the first
+  // one. Updating only text and speakerName would leave the new words hanging off
+  // the old meeting's startedAt, and /meeting-retry would bucket them by that clock.
+  const { sql } = meetingUtteranceInsertSql({ meetingId: 'm1', sequence: 1 })
+  const update = sql.slice(sql.indexOf('ON DUPLICATE KEY UPDATE'))
+  for (const col of ['text', 'speakerName', 'startedAt', 'durationMs']) {
+    assert.ok(
+      new RegExp(`${col} = VALUES\\(${col}\\)`).test(update),
+      `${col} must be refreshed on an overwrite`,
+    )
+  }
+})
+
+test('deleteMany clears exactly one meeting, by meetingId', () => {
+  const { sql, params } = meetingUtteranceDeleteManySql({ meetingId: 'm1' })
+  assert.ok(sql.includes('`meetingutterance`'), 'lowercase table name')
+  assert.match(sql, /^DELETE FROM `meetingutterance` WHERE meetingId = \?$/)
+  assert.deepEqual(params, ['m1'])
 })
 
 test('findMany orders by sequence so capture order is preserved', () => {
