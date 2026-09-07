@@ -54,3 +54,35 @@ test('no usable turns yields an empty payload rather than throwing', () => {
   assert.deepEqual(out.meetingNotes, {})
   assert.equal(out.totalDurationSec, 0)
 })
+
+test('ordering follows sequence, not startedAt, under an overlapping interjection', () => {
+  // A's turn is claimed first (sequence 1) but its startedAt is recorded later
+  // than B's (e.g. buffering/finalization lag) — B interjects partway through
+  // A's turn. Sequence order and startedAt order disagree here on purpose:
+  // sequence must win.
+  const { meetingNotes } = buildAnalyzeLivePayload([
+    u(1, 5000, 'A', 'I think we should start with booking'),
+    u(2, 1000, 'B', 'wait, the created date is wrong'),
+    u(3, 9000, 'C', 'anyway, continuing'),
+  ])
+  assert.deepEqual(Object.keys(meetingNotes), ['segment_0'])
+  assert.equal(
+    meetingNotes.segment_0.transcription,
+    'A: I think we should start with booking\nB: wait, the created date is wrong\nC: anyway, continuing',
+  )
+})
+
+test('segments and total duration anchor to the first usable turn, not the first recorded one', () => {
+  const { meetingNotes, totalDurationSec } = buildAnalyzeLivePayload([
+    u(1, 0, 'A', '   '), // leading inaudible turn — filtered out, must not anchor
+    u(2, 3000, 'B', 'real speech begins'),
+    u(3, 9000, 'C', 'closing thought'),
+  ])
+  assert.deepEqual(Object.keys(meetingNotes), ['segment_0'])
+  assert.equal(meetingNotes.segment_0.time_range, '00:00-05:00')
+  assert.equal(
+    totalDurationSec,
+    7,
+    'anchored to the first usable turn (3s in), not the leading empty one (0s): (9s - 3s) + the last turn\'s 1s',
+  )
+})
