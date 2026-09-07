@@ -4,6 +4,37 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-07 — Live meeting transcription (code complete, awaiting live verification)
+
+Per-speaker live transcript posted into the meeting channel while a meeting records, and
+that transcript replaces the per-speaker whole-file upload as what CSAAS analyses.
+Meeting channels also gained a pinned guidelines message.
+
+Built with subagent-driven development across 9 tasks; suite 190 -> 246.
+Branch `feat/live-transcription` in BOTH repos, not yet merged to `main`.
+
+- Bot `56e1cdd..4f4a534` (14 commits). New: `bot/src/services/transcriptFeed.js`,
+  `liveTranscriptPayload.js`, `bot/src/config/meetingGuidelines.js`,
+  `bot/src/Database/migrations/016_meeting_utterance.sql`. Modified: `voiceCapture.js`,
+  `meetingPipelineStages.js`, `csaasClient.js`, `Database/index.js`, `record.js`,
+  `meeting-channel.js`, `meetingAutoChannel.js`.
+- CSAAS `4176fa4..9bad076` (2 commits): `POST /api/meeting/workflow/utterance` +
+  `data/migrations/20260907_1_meeting_utterances.sql`.
+
+Bugs found and fixed during review that would have shipped silently: a `/playback`
+regression producing two `MeetingRecording` rows on a truncated file after any
+mid-meeting write error; every meeting creating two CSAAS meetings so the analysis ran
+against an empty one; overlapping speech rendering out of spoken order; a five-minute
+window where `/record stop` answered "no active recording" while recording; and a test
+the plan specified that would have queried the production database on every `npm test`.
+
+Knowledge: `.claude/knowledge/live-meeting-transcription.md`.
+
+**Remaining: Task 10** — merge both branches, deploy, and verify on a live meeting.
+Steps are in the plan's Task 10.
+
+---
+
 ## 2026-09-05 — Ship `/explain`: Claude answers from a project's documentation
 
 Live feature: `/explain project:<picker> question:<text>` answers questions about a project's 

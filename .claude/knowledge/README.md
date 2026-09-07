@@ -15,3 +15,4 @@
   gaps (endpoint auth/encryption, service URDD, `skip_github`, new `/assign` agent),
   schema differences, and the bot-side orchestration shape. ubs_doc = git clone +
   `UBS_DOC_PATH` mounted read-only in `/docs`.
+- [live-meeting-transcription.md](live-meeting-transcription.md) — per-turn live transcript into the meeting channel; capture-time segmentation, ordering rules, the analyze-live handoff and its fallback.
