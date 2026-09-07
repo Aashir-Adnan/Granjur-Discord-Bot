@@ -14,26 +14,39 @@ export const STALL_MS = 25000
 export const GROUP_WINDOW_MS = 60000
 export const MAX_MESSAGE_CHARS = 1800
 export const MAX_CONCURRENT_STT = 3
+// An 'open' turn is still being spoken, so it holds the cursor by design. This is
+// only the backstop for a turn whose capture stream never closes; it must stay
+// comfortably above the capture loop's maximum segment length (30 s).
+export const OPEN_STALL_MS = 60000
 
 const renderable = (e) => e.status === 'done' && String(e.text || '').trim() !== ''
 
 /**
  * Release the longest contiguous run of consumable turns from `nextSeq`.
- * A turn is consumable when it has come back (done or failed) or has been
- * pending longer than `stallMs`. Only `done` turns with text are rendered;
- * the rest are consumed silently so the cursor keeps moving. Sequences are
- * guaranteed contiguous by the caller (a number is only assigned once a turn
- * passes the minimum-duration gate), so a missing entry at the cursor means
+ *
+ * A turn is consumable when it has come back (done or failed) or has outstayed
+ * its timeout: `stallMs` once submitted for transcription, `openStallMs` while
+ * still being spoken. Only `done` turns with text are rendered; the rest are
+ * consumed silently so the cursor keeps moving.
+ *
+ * A number is claimed when a turn *starts*, so a turn still in progress sits at
+ * the cursor and holds everything behind it — which is exactly what keeps the
+ * channel in the order things were said rather than the order speech-to-text
+ * happened to answer. Numbers stay contiguous because every claimed number is
+ * settled one way or another (a turn rejected by the minimum-duration gate is
+ * abandoned, which settles it as failed), so a missing entry at the cursor means
  * "not yet arrived", not a permanent hole — takeReady stops there and waits.
  */
-export function takeReady(pending, nextSeq, now, stallMs = STALL_MS) {
+export function takeReady(pending, nextSeq, now, stallMs = STALL_MS, openStallMs = OPEN_STALL_MS) {
   const ready = []
   let next = nextSeq
   for (;;) {
     const e = pending.get(next)
     if (!e) break
     const settled = e.status === 'done' || e.status === 'failed'
-    const stalled = e.status === 'pending' && now - e.enqueuedAt >= stallMs
+    const stalled =
+      (e.status === 'pending' && now - e.enqueuedAt >= stallMs) ||
+      (e.status === 'open' && now - e.startedAtMs >= openStallMs)
     if (!settled && !stalled) break
     if (renderable(e)) ready.push(e)
     next += 1
@@ -137,9 +150,16 @@ const DEGRADE_AFTER_FAILURES = 3
 /**
  * The live feed. One per meeting.
  *
- * `push` is called from the voice capture loop for every accepted utterance and
- * returns immediately — the speech-to-text call runs in the background, at most
+ * The voice capture loop calls `begin` when a turn starts, which claims that
+ * turn's place in the transcript, and then either `submit` with the audio when
+ * the turn ends or `abandon` when it produced nothing worth transcribing. Both
+ * return immediately — the speech-to-text call runs in the background, at most
  * MAX_CONCURRENT_STT at a time. `flushOnce` posts whatever is releasable.
+ *
+ * Claiming the number at the start rather than the end is what makes overlapping
+ * speech read correctly: if A talks for twenty seconds and B interjects five
+ * seconds in, B finishes first, but A already holds the lower number and so
+ * still prints first.
  */
 export function createTranscriptFeed({
   db, csaasClient, channel, guildConfigId, meetingId, csaasMeetingId,
@@ -227,17 +247,49 @@ export function createTranscriptFeed({
   let warnedDegraded = false
 
   return {
-    push({ speakerRef, speakerName, startedAt, durationMs, buffer }) {
+    /**
+     * Claim this turn's place in the transcript, at the moment it starts.
+     * Returns the sequence number, or null when the feed is not accepting turns.
+     * Every number handed out must later be settled with `submit` or `abandon`.
+     */
+    begin({ speakerRef, speakerName, startedAt }, now = Date.now()) {
       if (stopped || degraded || disabled) return null
       sequence += 1
-      const entry = {
-        sequence, speakerRef, speakerName, startedAt, durationMs, buffer,
-        text: '', status: 'pending', enqueuedAt: Date.now(),
+      pending.set(sequence, {
+        sequence, speakerRef, speakerName, startedAt,
+        durationMs: 0, buffer: null,
+        text: '', status: 'open', startedAtMs: now, enqueuedAt: now,
+      })
+      return sequence
+    },
+
+    /** The turn ended with usable audio: hand it to speech-to-text. */
+    submit(seq, { speakerName, durationMs, buffer }) {
+      const entry = pending.get(seq)
+      if (!entry || entry.status !== 'open') return null
+      if (speakerName) entry.speakerName = speakerName
+      entry.durationMs = durationMs
+      entry.buffer = buffer
+      // The feed may have given up while this turn was being spoken. The number
+      // is already claimed, so settle it rather than leaving a hole.
+      if (stopped || degraded || disabled) {
+        entry.status = 'failed'
+        entry.buffer = null
+        return null
       }
-      pending.set(sequence, entry)
+      entry.status = 'pending'
+      entry.enqueuedAt = Date.now()
       queue.push(entry)
       pump()
-      return sequence
+      return seq
+    },
+
+    /** The turn produced nothing usable; consume its number so the cursor moves. */
+    abandon(seq) {
+      const entry = pending.get(seq)
+      if (!entry || entry.status !== 'open') return
+      entry.status = 'failed'
+      entry.buffer = null
     },
 
     /** Resolves when every queued speech-to-text call has settled. */
@@ -278,8 +330,10 @@ export function createTranscriptFeed({
       stopped = true
       if (timer) { clearInterval(timer); timer = null }
       await this.drain()
-      // Everything settled, so release whatever is left regardless of the stall window.
-      await this.flushOnce(Date.now() + STALL_MS + 1)
+      // Everything settled, so release whatever is left regardless of either
+      // stall window — including any turn still marked open, which at this point
+      // can only be one whose capture stream never closed.
+      await this.flushOnce(Date.now() + OPEN_STALL_MS + STALL_MS + 1)
     },
 
     stats() { return { sequence, flushed, degraded, disabled } },
