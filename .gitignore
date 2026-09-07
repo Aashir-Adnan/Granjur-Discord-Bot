@@ -4,3 +4,6 @@ bot/meeting-reports/
 
 # Per-speaker meeting audio written by voiceCapture — never commit recordings
 recordings/
+
+# Editor/tool scratch directory, not part of the project
+.bridge/
