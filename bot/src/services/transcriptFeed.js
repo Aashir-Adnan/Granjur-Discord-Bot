@@ -305,7 +305,15 @@ export function createTranscriptFeed({
         await send('⚠️ Live transcription is **unavailable** for the rest of this meeting. Recording continues, and the meeting will still be analysed afterwards.')
       }
       const { ready, next: cursor } = takeReady(pending, next, now, STALL_MS)
-      for (let s = next; s < cursor; s++) pending.delete(s)
+      for (let s = next; s < cursor; s++) {
+        // A turn consumed while still open never had its audio submitted, so it
+        // is lost from the transcript rather than merely untranscribed. Say so:
+        // silence here is indistinguishable from a speaker who said nothing.
+        if (pending.get(s)?.status === 'open') {
+          logger.warn?.(`[transcriptFeed] turn ${s} was still open after ${OPEN_STALL_MS} ms and was dropped`)
+        }
+        pending.delete(s)
+      }
       next = cursor
       if (ready.length === 0) return 0
       const messages = renderBlocks(groupUtterances(ready, GROUP_WINDOW_MS), MAX_MESSAGE_CHARS)
@@ -336,6 +344,8 @@ export function createTranscriptFeed({
       await this.flushOnce(Date.now() + OPEN_STALL_MS + STALL_MS + 1)
     },
 
-    stats() { return { sequence, flushed, degraded, disabled } },
+    // `cursor` is the next sequence number the feed is waiting on. It is the only
+    // way to tell a turn that settled from one still holding the queue open.
+    stats() { return { sequence, cursor: next, flushed, degraded, disabled } },
   }
 }

@@ -2,14 +2,17 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   takeReady, groupUtterances, renderBlocks,
-  STALL_MS, GROUP_WINDOW_MS, MAX_MESSAGE_CHARS,
+  STALL_MS, OPEN_STALL_MS, GROUP_WINDOW_MS, MAX_MESSAGE_CHARS,
 } from './transcriptFeed.js'
 
 const T0 = new Date('2026-09-07T10:00:00Z').getTime()
+// startedAtMs matters: the open-stall branch reads it, and leaving it undefined
+// would make `now - undefined >= openStallMs` evaluate NaN >= n as false, so a
+// test of that branch would pass without ever exercising it.
 const entry = (sequence, over = {}) => ({
   sequence, speakerRef: 'u1', speakerName: 'Nauraiz',
   startedAt: new Date(T0 + sequence * 1000), durationMs: 900,
-  text: `line ${sequence}`, status: 'done', enqueuedAt: T0, ...over,
+  text: `line ${sequence}`, status: 'done', startedAtMs: T0, enqueuedAt: T0, ...over,
 })
 const mapOf = (...es) => new Map(es.map((e) => [e.sequence, e]))
 
@@ -36,6 +39,29 @@ test('a stalled sequence is skipped once the timeout passes, not before', () => 
   const late = takeReady(pending, 1, T0 + STALL_MS, STALL_MS)
   assert.deepEqual(late.ready.map((e) => e.sequence), [2], 'the stalled turn is dropped, not rendered')
   assert.equal(late.next, 3)
+})
+
+test('a turn still open holds the cursor until OPEN_STALL_MS, then is consumed', () => {
+  // The one thing standing between a sequence claimed but never settled and a
+  // feed frozen for the rest of the meeting.
+  const pending = mapOf(entry(1, { status: 'open', text: '' }), entry(2))
+
+  const early = takeReady(pending, 1, T0 + OPEN_STALL_MS - 1, STALL_MS, OPEN_STALL_MS)
+  assert.deepEqual(early.ready, [], 'a turn still being spoken holds everything behind it')
+  assert.equal(early.next, 1, 'the cursor does not move past it')
+
+  const late = takeReady(pending, 1, T0 + OPEN_STALL_MS, STALL_MS, OPEN_STALL_MS)
+  assert.deepEqual(late.ready.map((e) => e.sequence), [2], 'the abandoned turn is dropped, not rendered')
+  assert.equal(late.next, 3, 'the cursor advances past it so later turns can render')
+})
+
+test('an open turn is held on its own clock, not the submitted-turn stall window', () => {
+  // STALL_MS (25 s) is shorter than a maximum segment (30 s), so measuring an
+  // open turn against it would drop every long turn.
+  const pending = mapOf(entry(1, { status: 'open', text: '' }))
+  const { ready, next } = takeReady(pending, 1, T0 + STALL_MS + 1, STALL_MS, OPEN_STALL_MS)
+  assert.deepEqual(ready, [])
+  assert.equal(next, 1, 'still held well past the window that applies to a submitted turn')
 })
 
 test('failed and inaudible turns are consumed but never rendered', () => {
@@ -229,15 +255,20 @@ test('a turn already in progress when the feed degrades is settled, not left ope
   const csaasClient = { transcribeUtterance: async () => { calls += 1; throw new Error('stt down') } }
   const feed = createTranscriptFeed({ db: fakeDb(), csaasClient, channel, guildConfigId: 'g', meetingId: 'm', csaasMeetingId: 'c' })
 
+  // Claimed first, so it sits at the cursor and holds every later turn behind it.
   const inFlight = feed.begin({ speakerRef: 'u1', startedAt: new Date(T0) }, T0)
   for (let i = 1; i <= 3; i++) turn(feed, { startedAt: new Date(T0 + i * 1000), at: T0 + i * 1000 })
   await feed.drain()
   assert.equal(feed.stats().degraded, true)
+  assert.equal(feed.stats().cursor, 1, 'nothing has been consumed: the open turn is at the cursor')
 
   assert.equal(feed.submit(inFlight, { speakerName: 'A', durationMs: 900, buffer: Buffer.from('a') }), null)
   assert.equal(calls, 3, 'no transcription attempted for the turn that arrived after degrading')
+
+  // Well inside OPEN_STALL_MS, so the cursor can only move past sequence 1 if
+  // submit actually settled it. Left open, it would still be holding here.
   await feed.flushOnce(T0 + STALL_MS + 1000)
-  assert.equal(feed.stats().sequence, 4)
+  assert.equal(feed.stats().cursor, 5, 'the refused turn was settled, not left holding the queue')
 })
 
 test('a deleted channel disables the feed instead of throwing every flush', async () => {

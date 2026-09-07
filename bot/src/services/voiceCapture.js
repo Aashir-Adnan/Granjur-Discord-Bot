@@ -574,6 +574,10 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   // next speaking.start is safe and gives us natural turn boundaries.
   const UTTERANCE_SILENCE_MS = 900;
   const MIN_UTTERANCE_MS = 500;
+  // Must stay below OPEN_STALL_MS in transcriptFeed.js. A segment holds its
+  // claimed sequence number — and so the whole feed — until it is submitted, and
+  // the feed drops any turn still open past OPEN_STALL_MS. Raise this above that
+  // and every long turn is silently dropped from the transcript.
   const MAX_UTTERANCE_MS = 30000;
   const FRAME_MS = 20; // Opus frames from Discord are always 20 ms
 
@@ -836,8 +840,16 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     console.error(`[voiceCapture] Speaking event error:`, err.message);
   });
 
-  // Update meeting recording status in database
-  if (voiceChannelId) {
+  // Update meeting recording status in database.
+  //
+  // Guarded on sessionEnding: channelCheckInterval is armed before the connect
+  // wait above, so an empty channel can expire its grace period while this
+  // function is still inside waitForConnectionReady (up to 120 s) and the ready
+  // cue (up to 5 s). endMeetingSession has then already written "completed" and
+  // destroyed the connection, and writing "recording" back over it — or
+  // re-registering the dead connection below — would leave isRecording
+  // permanently true, so that meeting could never be started again.
+  if (voiceChannelId && !sessionEnding) {
     try {
       await db.meetingRecordingStatus
         .upsert({
@@ -859,7 +871,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     } catch (_) {}
   }
 
-  activeConnections.set(meetingId, connection);
+  if (!sessionEnding) activeConnections.set(meetingId, connection);
 
   // The live transcript needs a CSAAS meeting_id while the meeting is still
   // running. createdStage would only make one after the recording ends, so the
