@@ -7,12 +7,28 @@ import {
   meetingUpdateSql,
 } from './index.js'
 
-test('the insert names every column the caller can set', () => {
-  const { sql } = meetingUtteranceInsertSql()
-  for (const col of ['guildConfigId', 'meetingId', 'sequence', 'speakerRef', 'speakerName', 'startedAt', 'durationMs', 'text']) {
-    assert.ok(sql.includes(col), `insert is missing ${col}`)
-  }
+test('the insert derives its column order and params from one source, so they cannot drift', () => {
+  const startedAt = new Date('2026-01-01T00:00:00Z')
+  const { sql, params } = meetingUtteranceInsertSql({
+    id: 'u1',
+    guildConfigId: 'g1',
+    meetingId: 'm1',
+    sequence: 3,
+    speakerRef: 'spk-1',
+    speakerName: 'Alice',
+    startedAt,
+    durationMs: 1500,
+    text: 'hello',
+  })
   assert.ok(sql.includes('`meetingutterance`'), 'lowercase table name')
+  const columnList = sql.match(/INSERT INTO `meetingutterance` \(([^)]+)\)/)[1]
+  const columns = columnList.split(',').map((c) => c.trim())
+  assert.deepEqual(
+    columns,
+    ['id', 'guildConfigId', 'meetingId', '`sequence`', 'speakerRef', 'speakerName', 'startedAt', 'durationMs', 'text'],
+    'column order must match the params order exactly',
+  )
+  assert.deepEqual(params, ['u1', 'g1', 'm1', 3, 'spk-1', 'Alice', startedAt, 1500, 'hello'])
 })
 
 test('findMany orders by sequence so capture order is preserved', () => {

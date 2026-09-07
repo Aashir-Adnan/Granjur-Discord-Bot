@@ -1406,13 +1406,31 @@ async function meetingChannelUpdate({ where, data }) {
 }
 
 // ---------- MeetingUtterance (per-speaker transcript turns) ----------
-export function meetingUtteranceInsertSql() {
+// The column list and the params array are derived from one ordered source
+// (`columns` below) so they cannot drift out of sync with each other — see
+// the taskUpdate / ticketDocCreate incidents this pattern exists to avoid.
+export function meetingUtteranceInsertSql(data) {
+  const columns = [
+    ["id", data.id],
+    ["guildConfigId", data.guildConfigId],
+    ["meetingId", data.meetingId],
+    ["sequence", data.sequence],
+    ["speakerRef", data.speakerRef ?? null],
+    ["speakerName", data.speakerName ?? null],
+    ["startedAt", data.startedAt ?? new Date()],
+    ["durationMs", data.durationMs ?? 0],
+    ["text", data.text ?? null],
+  ];
+  const columnList = columns
+    .map(([col]) => (col === "sequence" ? "`sequence`" : col))
+    .join(", ");
+  const placeholders = columns.map(() => "?").join(", ");
   return {
     sql:
-      "INSERT INTO `meetingutterance` " +
-      "(id, guildConfigId, meetingId, `sequence`, speakerRef, speakerName, startedAt, durationMs, text) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+      `INSERT INTO \`meetingutterance\` (${columnList}) ` +
+      `VALUES (${placeholders}) ` +
       "ON DUPLICATE KEY UPDATE text = VALUES(text), speakerName = VALUES(speakerName)",
+    params: columns.map(([, val]) => val),
   };
 }
 
@@ -1432,19 +1450,16 @@ export function meetingUtteranceCountSql({ meetingId }) {
 
 async function meetingUtteranceCreate({ data }) {
   const pk = id();
-  const { sql } = meetingUtteranceInsertSql();
-  await query(sql, [
-    pk,
-    data.guildConfigId,
-    data.meetingId,
-    data.sequence,
-    data.speakerRef ?? null,
-    data.speakerName ?? null,
-    data.startedAt ?? new Date(),
-    data.durationMs ?? 0,
-    data.text ?? null,
-  ]);
-  return queryOne("SELECT * FROM `meetingutterance` WHERE id = ?", [pk]);
+  const { sql, params } = meetingUtteranceInsertSql({ ...data, id: pk });
+  await query(sql, params);
+  // Re-select by the (meetingId, sequence) unique key, not by `pk`: on an
+  // ON DUPLICATE KEY UPDATE hit MySQL keeps the existing row's id, so `pk`
+  // was never written and a lookup by id would return null even though the
+  // row persisted correctly.
+  return queryOne(
+    "SELECT * FROM `meetingutterance` WHERE meetingId = ? AND `sequence` = ?",
+    [data.meetingId, data.sequence],
+  );
 }
 
 async function meetingUtteranceFindMany({ where }) {
