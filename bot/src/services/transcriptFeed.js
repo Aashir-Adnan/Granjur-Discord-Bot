@@ -127,3 +127,161 @@ export function renderBlocks(blocks, maxChars = MAX_MESSAGE_CHARS) {
   flush()
   return messages
 }
+
+const CONSENT_NOTICE =
+  '🎙️ **This meeting is being recorded and transcribed.** ' +
+  'Everything said in the voice channel will appear in this channel as text.'
+
+const DEGRADE_AFTER_FAILURES = 3
+
+/**
+ * The live feed. One per meeting.
+ *
+ * `push` is called from the voice capture loop for every accepted utterance and
+ * returns immediately — the speech-to-text call runs in the background, at most
+ * MAX_CONCURRENT_STT at a time. `flushOnce` posts whatever is releasable.
+ */
+export function createTranscriptFeed({
+  db, csaasClient, channel, guildConfigId, meetingId, csaasMeetingId,
+  logger = console,
+}) {
+  const pending = new Map()
+  let sequence = 0
+  let next = 1
+  let flushed = 0
+  let inFlight = 0
+  let consecutiveFailures = 0
+  let degraded = false
+  let disabled = false
+  let stopped = false
+  let timer = null
+  const queue = []
+  const waiters = []
+
+  const settle = () => {
+    if (inFlight === 0 && queue.length === 0) {
+      while (waiters.length) waiters.shift()()
+    }
+  }
+
+  const pump = () => {
+    while (inFlight < MAX_CONCURRENT_STT && queue.length) {
+      const entry = queue.shift()
+      inFlight += 1
+      csaasClient
+        .transcribeUtterance(csaasMeetingId, {
+          buffer: entry.buffer,
+          filename: `utterance-${entry.sequence}.ogg`,
+          speakerRef: entry.speakerRef,
+          speakerName: entry.speakerName,
+          startedAt: entry.startedAt,
+          sequence: entry.sequence,
+          durationMs: entry.durationMs,
+        })
+        .then(async ({ text }) => {
+          consecutiveFailures = 0
+          entry.text = text
+          entry.status = 'done'
+          entry.buffer = null // release the audio as soon as it is transcribed
+          try {
+            await db.meetingUtterance.create({
+              data: {
+                guildConfigId, meetingId,
+                sequence: entry.sequence,
+                speakerRef: entry.speakerRef,
+                speakerName: entry.speakerName,
+                startedAt: entry.startedAt,
+                durationMs: entry.durationMs,
+                text,
+              },
+            })
+          } catch (e) {
+            logger.warn?.(`[transcriptFeed] persist failed for seq ${entry.sequence}: ${e?.message || e}`)
+          }
+        })
+        .catch((e) => {
+          entry.status = 'failed'
+          entry.buffer = null
+          consecutiveFailures += 1
+          logger.warn?.(`[transcriptFeed] stt failed for seq ${entry.sequence}: ${e?.message || e}`)
+          if (consecutiveFailures >= DEGRADE_AFTER_FAILURES) degraded = true
+        })
+        .finally(() => { inFlight -= 1; settle(); pump() })
+    }
+    settle()
+  }
+
+  const send = async (body) => {
+    if (disabled) return false
+    try {
+      await channel.send({ content: body, allowedMentions: { parse: [] } })
+      return true
+    } catch (e) {
+      // The channel is gone (or the bot lost access). Stop trying every 6 s.
+      disabled = true
+      logger.warn?.(`[transcriptFeed] channel send failed, disabling feed: ${e?.message || e}`)
+      return false
+    }
+  }
+
+  let warnedDegraded = false
+
+  return {
+    push({ speakerRef, speakerName, startedAt, durationMs, buffer }) {
+      if (stopped || degraded || disabled) return null
+      sequence += 1
+      const entry = {
+        sequence, speakerRef, speakerName, startedAt, durationMs, buffer,
+        text: '', status: 'pending', enqueuedAt: Date.now(),
+      }
+      pending.set(sequence, entry)
+      queue.push(entry)
+      pump()
+      return sequence
+    },
+
+    /** Resolves when every queued speech-to-text call has settled. */
+    drain() {
+      if (inFlight === 0 && queue.length === 0) return Promise.resolve()
+      return new Promise((resolve) => waiters.push(resolve))
+    },
+
+    async flushOnce(now = Date.now()) {
+      if (disabled) return 0
+      if (degraded && !warnedDegraded) {
+        warnedDegraded = true
+        await send('⚠️ Live transcription is **unavailable** for the rest of this meeting. Recording continues, and the meeting will still be analysed afterwards.')
+      }
+      const { ready, next: cursor } = takeReady(pending, next, now, STALL_MS)
+      for (let s = next; s < cursor; s++) pending.delete(s)
+      next = cursor
+      if (ready.length === 0) return 0
+      const messages = renderBlocks(groupUtterances(ready, GROUP_WINDOW_MS), MAX_MESSAGE_CHARS)
+      let sent = 0
+      for (const body of messages) {
+        if (await send(body)) { sent += 1; flushed += 1 }
+      }
+      return sent
+    },
+
+    async start({ interval = true } = {}) {
+      await send(CONSENT_NOTICE)
+      if (interval && !timer) {
+        timer = setInterval(() => {
+          this.flushOnce().catch((e) => logger.warn?.(`[transcriptFeed] flush failed: ${e?.message || e}`))
+        }, FLUSH_INTERVAL_MS)
+        timer.unref?.()
+      }
+    },
+
+    async stop() {
+      stopped = true
+      if (timer) { clearInterval(timer); timer = null }
+      await this.drain()
+      // Everything settled, so release whatever is left regardless of the stall window.
+      await this.flushOnce(Date.now() + STALL_MS + 1)
+    },
+
+    stats() { return { sequence, flushed, degraded, disabled } },
+  }
+}

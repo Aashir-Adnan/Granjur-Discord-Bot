@@ -110,3 +110,86 @@ test('a long split block reassembles to the original text exactly once, with no 
   // it once recovers the original text.
   assert.equal(reconstructed.replace(/^> /, ''), original)
 })
+
+import { createTranscriptFeed } from './transcriptFeed.js'
+
+const fakeChannel = () => {
+  const sent = []
+  return { sent, isTextBased: () => true, send: async (m) => { sent.push(typeof m === 'string' ? m : m.content); return {} } }
+}
+const fakeDb = () => {
+  const rows = []
+  return { rows, meetingUtterance: { create: async ({ data }) => { rows.push(data); return data } } }
+}
+
+test('a transcribed turn reaches the channel and the database', async () => {
+  const channel = fakeChannel()
+  const db = fakeDb()
+  const csaasClient = { transcribeUtterance: async (_m, o) => ({ text: 'hello there', sequence: o.sequence }) }
+  const feed = createTranscriptFeed({ db, csaasClient, channel, guildConfigId: 'g', meetingId: 'm', csaasMeetingId: 'c' })
+
+  feed.push({ speakerRef: 'u1', speakerName: 'Nauraiz', startedAt: new Date(T0), durationMs: 900, buffer: Buffer.from('a') })
+  await feed.drain()
+  const sentCount = await feed.flushOnce(T0 + 1000)
+
+  assert.equal(sentCount, 1)
+  assert.match(channel.sent[0], /\*\*Nauraiz\*\*/)
+  assert.match(channel.sent[0], /> hello there/)
+  assert.equal(db.rows.length, 1, 'the utterance is persisted')
+  assert.equal(db.rows[0].meetingId, 'm')
+  assert.equal(db.rows[0].sequence, 1)
+})
+
+test('sequences are contiguous, so the cursor never stalls on a gap', async () => {
+  const feed = createTranscriptFeed({
+    db: fakeDb(), channel: fakeChannel(), guildConfigId: 'g', meetingId: 'm', csaasMeetingId: 'c',
+    csaasClient: { transcribeUtterance: async (_m, o) => ({ text: 't', sequence: o.sequence }) },
+  })
+  const a = feed.push({ speakerRef: 'u1', speakerName: 'A', startedAt: new Date(T0), durationMs: 900, buffer: Buffer.from('a') })
+  const b = feed.push({ speakerRef: 'u1', speakerName: 'A', startedAt: new Date(T0 + 1000), durationMs: 900, buffer: Buffer.from('b') })
+  assert.equal(a, 1)
+  assert.equal(b, 2)
+  await feed.drain()
+})
+
+test('repeated speech-to-text failures degrade the feed once, and recording continues', async () => {
+  const channel = fakeChannel()
+  const csaasClient = { transcribeUtterance: async () => { throw new Error('stt down') } }
+  const feed = createTranscriptFeed({ db: fakeDb(), csaasClient, channel, guildConfigId: 'g', meetingId: 'm', csaasMeetingId: 'c' })
+
+  for (let i = 0; i < 5; i++) {
+    feed.push({ speakerRef: 'u1', speakerName: 'A', startedAt: new Date(T0 + i * 1000), durationMs: 900, buffer: Buffer.from('a') })
+  }
+  await feed.drain()
+  await feed.flushOnce(T0 + STALL_MS + 1000)
+
+  const warnings = channel.sent.filter((m) => /transcription/i.test(m) && /unavailable/i.test(m))
+  assert.equal(warnings.length, 1, 'warned exactly once, not once per failure')
+  assert.equal(feed.stats().degraded, true)
+  assert.equal(feed.push({ speakerRef: 'u1', speakerName: 'A', startedAt: new Date(), durationMs: 900, buffer: Buffer.from('a') }), null)
+})
+
+test('a deleted channel disables the feed instead of throwing every flush', async () => {
+  const channel = { isTextBased: () => true, send: async () => { throw new Error('Unknown Channel') } }
+  const feed = createTranscriptFeed({
+    db: fakeDb(), channel, guildConfigId: 'g', meetingId: 'm', csaasMeetingId: 'c',
+    csaasClient: { transcribeUtterance: async (_m, o) => ({ text: 't', sequence: o.sequence }) },
+  })
+  feed.push({ speakerRef: 'u1', speakerName: 'A', startedAt: new Date(T0), durationMs: 900, buffer: Buffer.from('a') })
+  await feed.drain()
+  await feed.flushOnce(T0 + 1000)
+  assert.equal(feed.stats().disabled, true)
+  await feed.flushOnce(T0 + 2000) // must not throw
+})
+
+test('start posts the consent notice before any transcript', async () => {
+  const channel = fakeChannel()
+  const feed = createTranscriptFeed({
+    db: fakeDb(), channel, guildConfigId: 'g', meetingId: 'm', csaasMeetingId: 'c',
+    csaasClient: { transcribeUtterance: async (_m, o) => ({ text: 't', sequence: o.sequence }) },
+  })
+  await feed.start({ interval: false })
+  assert.match(channel.sent[0], /transcrib/i)
+  assert.match(channel.sent[0], /appear in this channel/i)
+  feed.stop()
+})
