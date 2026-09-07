@@ -60,6 +60,16 @@ export const data = new SlashCommandBuilder()
       { name: 'Done', value: 'done' }
     )
   )
+  .addStringOption((o) =>
+    o
+      .setName('project')
+      .setDescription('Attach the task to a project (start typing a project name)')
+      .setRequired(false)
+      .setAutocomplete(true)
+  )
+
+/** Sentinel value for "detach from any project" in the project picker. */
+export const NO_PROJECT = 'none'
 
 export async function execute(interaction) {
   const guild = interaction.guild
@@ -93,6 +103,22 @@ export async function execute(interaction) {
   if (assigneesStr !== null && assigneesStr !== undefined) updates.assigneeIds = parseUserIds(assigneesStr)
   const implStatus = interaction.options.getString('implementation_status')
   if (implStatus !== null && implStatus !== undefined) updates.implementationStatus = implStatus
+  const projectOpt = interaction.options.getString('project')
+  if (projectOpt !== null && projectOpt !== undefined) {
+    if (projectOpt === NO_PROJECT) {
+      updates.projectId = null
+      updates.projectName = null
+    } else {
+      // The picker's value is a project id; free text typed past the
+      // suggestions arrives as-is and must not be written as an id.
+      const row = await db.project.findFirst({ where: { id: projectOpt } }).catch(() => null)
+      if (!row || row.guildConfigId !== cfg.id) {
+        return interaction.editReply({ content: `No project matches **${projectOpt.slice(0, 80)}**. Start typing a project name and pick one from the list.` })
+      }
+      updates.projectId = row.id
+      updates.projectName = row.name
+    }
+  }
 
   if (Object.keys(updates).length === 0) {
     return interaction.editReply({
@@ -150,8 +176,29 @@ export async function execute(interaction) {
  * read one off a dashboard and retype it, so the choice shows title, status and
  * holder while the value stays the id.
  */
+/** Project picker choices: "No project" first, then names matching the typed text. Pure. */
+export function projectChoices(projects, term) {
+  const t = String(term || '').trim().toLowerCase()
+  const head = { name: 'No project — detach from any project', value: NO_PROJECT }
+  const rest = (projects || [])
+    .filter((p) => !t || String(p.name || '').toLowerCase().includes(t))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }))
+    .map((p) => ({ name: String(p.name || p.id).slice(0, 100), value: String(p.id) }))
+  return [head, ...rest].slice(0, 25)
+}
+
 export async function autocomplete(interaction) {
   const focused = interaction.options.getFocused(true)
+  if (focused.name === 'project') {
+    try {
+      const cfg = await getOrCreateGuildConfig(interaction.guild.id)
+      const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
+      return interaction.respond(projectChoices(projects, focused.value)).catch(() => {})
+    } catch (e) {
+      console.error('[update-task] project autocomplete:', e?.message ?? e)
+      return interaction.respond([]).catch(() => {})
+    }
+  }
   if (focused.name !== 'task') return interaction.respond([]).catch(() => {})
   try {
     const cfg = await getOrCreateGuildConfig(interaction.guild.id)

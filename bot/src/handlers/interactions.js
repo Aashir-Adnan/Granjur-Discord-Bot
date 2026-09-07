@@ -218,6 +218,10 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/docs.js")).handleDocsPage(interaction);
     if (customId.startsWith("docs_back:"))
       return (await import("../commands/docs.js")).handleDocsBack(interaction);
+    if (customId.startsWith("docs_tpage_prev:") || customId.startsWith("docs_tpage_next:"))
+      return (await import("../commands/docs.js")).handleTicketDocPage(interaction);
+    if (customId.startsWith("docs_tback:"))
+      return (await import("../commands/docs.js")).handleTicketDocBack(interaction);
     if (customId === "cleanup_confirm")
       return (await import("../commands/cleanup.js")).handleConfirm(interaction);
     if (customId === "cleanup_cancel")
@@ -316,6 +320,10 @@ export default async function handleInteractions(interaction) {
       return faqAnswerCmd.handleFaqSelect(interaction);
     if (customId === "dashboard_select")
       return (await import("../commands/dashboard.js")).handleModuleSelect(
+        interaction,
+      );
+    if (customId.startsWith("dashboard_project:"))
+      return (await import("../commands/dashboard.js")).handleProjectSelect(
         interaction,
       );
     if (customId === "fetch_my_select")

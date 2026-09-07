@@ -86,10 +86,10 @@ export async function execute(interaction) {
 
   const cfg = await getOrCreateGuildConfig(guild.id)
   const repos = await db.repository.findMany({ where: { guildConfigId: cfg.id } })
-  const projects = await db.projectSchema.findMany({ where: { guildConfigId: cfg.id } })
+  const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
   if (!repos.length && !projects.length) {
     return interaction.editReply({
-      content: 'No repositories or projects. Add repos with **/repos** or add a project schema with **/project-db**.',
+      content: 'No repositories or projects. Add repos with **/repos** or a project with **/projects**.',
     })
   }
 
@@ -383,9 +383,9 @@ async function showReposProjectsStep(interaction, state, guild) {
   try {
     const cfg = await getOrCreateGuildConfig(guild.id)
     const repos = await db.repository.findMany({ where: { guildConfigId: cfg.id } })
-    const projects = await db.projectSchema.findMany({ where: { guildConfigId: cfg.id } })
+    const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
     const repoOptions = repos.slice(0, 25).map((r) => ({ label: r.name.slice(0, 100), value: r.id, description: (r.url || '').slice(0, 80) }))
-    const projectOptions = projects.slice(0, 25).map((p) => ({ label: (p.projectName || p.projectId || 'Project').slice(0, 100), value: p.id, description: 'Schema' }))
+    const projectOptions = projects.slice(0, 25).map((p) => ({ label: String(p.name || 'Project').slice(0, 100), value: p.id, description: p.docsSlug ? `docs: ${p.docsSlug}`.slice(0, 100) : 'Project' }))
 
     const embed = new EmbedBuilder()
     .setTitle('Create feature task')
@@ -445,7 +445,7 @@ export async function handleProjectsSelect(interaction) {
       await respond(interaction, { content: SESSION_EXPIRED_MSG, components: [] }).catch(() => {})
       return
     }
-    const nextState = { ...state, projectSchemaIds: interaction.values || [] }
+    const nextState = { ...state, projectIds: interaction.values || [] }
     flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
     await showReposProjectsStep(interaction, nextState, guild)
   } catch (e) {
@@ -569,7 +569,7 @@ async function showConfirmStep(interaction, state, guild) {
     const assignees = state.assigneeIds || []
     embed.addFields(
       { name: 'Assignees', value: assignees.length ? assignees.map((id) => `<@${id}>`).join(' ') : 'None', inline: true },
-      { name: 'Repos / Projects', value: `${state.repositoryIds?.length || 0} repos, ${state.projectSchemaIds?.length || 0} projects`, inline: true }
+      { name: 'Repos / Projects', value: `${state.repositoryIds?.length || 0} repos, ${state.projectIds?.length || 0} projects`, inline: true }
     )
   } else {
     const tagged = state.taggedMemberIds || []
@@ -676,9 +676,11 @@ export async function handleCreate(interaction) {
       const assigneeIds = state.assigneeIds || []
       const uniqueSet = [...new Set([interaction.user.id, ...assigneeIds].filter(Boolean))]
       const firstRepoId = state.repositoryIds?.[0] ?? null
-      const firstProjectSchema = state.projectSchemaIds?.[0] ? await db.projectSchema.findFirst({ where: { id: state.projectSchemaIds[0] } }) : null
-      const projectId = firstProjectSchema?.projectId ?? null
-      const projectName = firstProjectSchema?.projectName ?? null
+      // Tasks belong to the real `project` table (Framework, Badar HMS, CSAAS),
+      // not `projectschema`, which is a dump-versioning table with no rows.
+      const firstProject = state.projectIds?.[0] ? await db.project.findFirst({ where: { id: state.projectIds[0] } }) : null
+      const projectId = firstProject?.id ?? null
+      const projectName = firstProject?.name ?? null
 
       const task = await db.feature.create({
         data: {
@@ -701,7 +703,6 @@ export async function handleCreate(interaction) {
       })
 
       if (state.repositoryIds?.length) await db.featureRepositories.add(task.id, state.repositoryIds)
-      if (state.projectSchemaIds?.length) await db.featureProjectSchemas.add(task.id, state.projectSchemaIds)
       await db.ticketDoc.create({ data: { guildConfigId: cfg.id, ticketType: 'feature', taskId: task.id, title: state.title?.slice(0, 512) || 'Feature', content: null } })
 
       const category = await getOrCreateCategory(guild, 'Features', { orNames: [CATEGORY_BOLD_NAMES['Features']].filter(Boolean) })

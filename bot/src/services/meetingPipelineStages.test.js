@@ -348,7 +348,9 @@ test('mirrored creates a task per non-rejected review task and pings assignees',
   const db = {
     meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
     meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
-    repository: { findFirst: async ({ where }) => (where.name === 'granjur' ? { id: 'r1' } : null) },
+    repository: { findMany: async () => [{ id: 'r1', name: 'granjur' }] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
     task: { findFirst: async () => null, create: async ({ data }) => { created.push(data); return { id: `db${created.length}` } } },
     meetingPipelineJob: { update: async () => ({}) },
   }
@@ -387,7 +389,9 @@ test('mirrored is idempotent on re-run: reuses existing task, no re-ping when pi
   const db = {
     meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
     meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
-    repository: { findFirst: async () => null },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
     task: {
       findFirst: async ({ where }) =>
         where.externalId === 'csaas:a' ? { id: 'existing1' } : null,
@@ -417,7 +421,9 @@ test('mirrored posts an unassigned summary line', async () => {
   const db = {
     meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
     meetingChannel: { findFirst: async () => null },
-    repository: { findFirst: async () => null },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
     task: { findFirst: async () => null, create: async () => ({ id: 'db1' }) },
     meetingPipelineJob: { update: async () => ({}) },
   }
@@ -461,7 +467,9 @@ test('mirrored gives each assigned task its own channel, DMs the assignee, and r
   const db = {
     meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
     meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
-    repository: { findFirst: async () => null },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
     task: {
       findFirst: async () => null,
       create: async ({ data }) => { created.push(data); return { id: 'dbtask1' } },
@@ -516,7 +524,9 @@ test('mirrored does not create a second channel when one already exists', async 
   const db = {
     meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
     meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
-    repository: { findFirst: async () => null },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
     task: { findFirst: async () => ({ id: 'dbtask1' }), create: async () => ({ id: 'nope' }), update: async () => ({}) },
     meetingPipelineJob: { update: async () => ({}) },
   }
@@ -557,7 +567,9 @@ test('mirrored matches numeric csaas task ids against string review ids', async 
   const db = {
     meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
     meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
-    repository: { findFirst: async () => null },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
     task: {
       findFirst: async () => null,
       create: async ({ data }) => { created.push(data); return { id: 'dbA', assigneeIds: data.assigneeIds } },
@@ -594,7 +606,9 @@ test('mirrored backfills assigneeIds onto a row mirrored before it had an assign
   const db = {
     meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
     meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
-    repository: { findFirst: async () => null },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
     task: {
       findFirst: async () => ({ id: 'existing', assigneeIds: [] }),
       create: async () => { throw new Error('should not create') },

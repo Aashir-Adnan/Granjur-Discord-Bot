@@ -31,10 +31,10 @@ export async function execute(interaction) {
 
   const cfg = await getOrCreateGuildConfig(guild.id)
   const repos = await db.repository.findMany({ where: { guildConfigId: cfg.id } })
-  const projects = await db.projectSchema.findMany({ where: { guildConfigId: cfg.id } })
+  const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
   if (!repos.length && !projects.length) {
     return interaction.editReply({
-      content: 'No repositories or projects. Add repos with **/repos** or add a project schema with **/project-db**.',
+      content: 'No repositories or projects. Add repos with **/repos** or a project with **/projects**.',
     })
   }
 
@@ -129,7 +129,7 @@ export async function handleTitleModal(interaction) {
       description: description || null,
       scope: scope || null,
       repositoryIds: existing?.repositoryIds ?? [],
-      projectSchemaIds: existing?.projectSchemaIds ?? [],
+      projectIds: existing?.projectIds ?? [],
       modules,
       assigneeIds: existing?.assigneeIds ?? [],
     }
@@ -144,7 +144,7 @@ export async function handleTitleModal(interaction) {
 async function showReposProjectsStep(interaction, state, guild) {
   const cfg = await getOrCreateGuildConfig(guild.id)
   const repos = await db.repository.findMany({ where: { guildConfigId: cfg.id } })
-  const projects = await db.projectSchema.findMany({ where: { guildConfigId: cfg.id } })
+  const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
 
   const repoOptions = repos.slice(0, 25).map((r) => ({
     label: r.name.slice(0, 100),
@@ -152,9 +152,9 @@ async function showReposProjectsStep(interaction, state, guild) {
     description: (r.url || '').slice(0, 80),
   }))
   const projectOptions = projects.slice(0, 25).map((p) => ({
-    label: (p.projectName || p.projectId || 'Project').slice(0, 100),
+    label: String(p.name || 'Project').slice(0, 100),
     value: p.id,
-    description: 'Schema',
+    description: p.docsSlug ? `docs: ${p.docsSlug}`.slice(0, 100) : 'Project',
   }))
 
   const embed = new EmbedBuilder()
@@ -214,8 +214,8 @@ export async function handleProjectsSelect(interaction) {
   const state = flowStore.get(interaction.user.id, guild.id, 'feature')
   if (!state || state.step !== SELECT_REPOS_PROJECTS_STEP) return interaction.editReply({ content: 'Session expired. Run /feature again.', components: [] }).catch(() => {})
 
-  const projectSchemaIds = interaction.values || []
-  const nextState = { ...state, projectSchemaIds }
+  const projectIds = interaction.values || []
+  const nextState = { ...state, projectIds }
   flowStore.set(interaction.user.id, guild.id, 'feature', nextState)
   await showReposProjectsStep(interaction, nextState, guild)
 }
@@ -254,7 +254,7 @@ async function showConfirmStep(interaction, state, guild) {
       { name: 'Scope', value: state.scope || '—', inline: true },
       { name: 'Assignees', value: mentions, inline: true },
       { name: 'Modules', value: (state.modules?.length ? state.modules.join(', ') : 'None').slice(0, 300), inline: false },
-      { name: 'Repos / Projects', value: `${state.repositoryIds?.length || 0} repos, ${state.projectSchemaIds?.length || 0} projects`, inline: false },
+      { name: 'Repos / Projects', value: `${state.repositoryIds?.length || 0} repos, ${state.projectIds?.length || 0} projects`, inline: false },
       { name: 'Description', value: (state.description || '—').slice(0, 300), inline: false }
     )
     .setColor(0x5865f2)
@@ -306,9 +306,10 @@ export async function handleCreate(interaction) {
     const uniqueSet = [...new Set(uniqueParticipants)]
 
     const firstRepoId = state.repositoryIds?.[0] ?? null
-    const firstProjectSchema = state.projectSchemaIds?.[0] ? await db.projectSchema.findFirst({ where: { id: state.projectSchemaIds[0] } }) : null
-    const projectId = firstProjectSchema?.projectId ?? null
-    const projectName = firstProjectSchema?.projectName ?? null
+    // Tasks belong to the real `project` table, not the empty `projectschema`.
+    const firstProject = state.projectIds?.[0] ? await db.project.findFirst({ where: { id: state.projectIds[0] } }) : null
+    const projectId = firstProject?.id ?? null
+    const projectName = firstProject?.name ?? null
 
     const feature = await db.feature.create({
       data: {
@@ -329,9 +330,6 @@ export async function handleCreate(interaction) {
 
     if (state.repositoryIds?.length) {
       await db.featureRepositories.add(feature.id, state.repositoryIds)
-    }
-    if (state.projectSchemaIds?.length) {
-      await db.featureProjectSchemas.add(feature.id, state.projectSchemaIds)
     }
 
     await db.ticketDoc.create({

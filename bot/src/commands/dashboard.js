@@ -79,25 +79,96 @@ export async function execute(interaction) {
   })
 }
 
+const PROJECT_MODULES = new Set(['tasks', 'bugs', 'features'])
+
+function moduleSelectRow(current) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('dashboard_select')
+      .setPlaceholder('Select what to view (details / analytics)')
+      .addOptions(
+        MODULES.map((m) => ({
+          label: m.label,
+          value: m.value,
+          description: m.description,
+          default: m.value === current,
+        })),
+      ),
+  )
+}
+
+// The project filter for the task views. 'all' is no filter, 'none' is tasks
+// with no project attached, anything else is a project id.
+function projectWhere(filter) {
+  if (filter === 'none') return { projectId: null }
+  if (filter && filter !== 'all') return { projectId: filter }
+  return {}
+}
+
+function projectLabel(filter, projects) {
+  if (filter === 'none') return 'No project'
+  if (!filter || filter === 'all') return 'All projects'
+  return projects.find((p) => p.id === filter)?.name || 'Project'
+}
+
+function projectSelectRow(module, filter, projects) {
+  const options = [
+    { label: 'All projects', value: 'all', default: !filter || filter === 'all' },
+    // 22 leaves room for "All projects" and "No project" inside Discord's 25.
+    ...projects.slice(0, 22).map((p) => ({
+      label: String(p.name).slice(0, 100),
+      value: p.id,
+      default: filter === p.id,
+    })),
+    {
+      label: 'No project',
+      value: 'none',
+      description: 'Tasks not attached to any project',
+      default: filter === 'none',
+    },
+  ]
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`dashboard_project:${module}`)
+      .setPlaceholder('Filter by project')
+      .addOptions(options),
+  )
+}
+
 export async function handleModuleSelect(interaction) {
-  const guild = interaction.guild
-  if (!guild) return
   const value = interaction.values?.[0]
   if (!value) return
+  return renderModule(interaction, value, 'all')
+}
+
+/** `dashboard_project:<module>` — re-render that module filtered by the project picked. */
+export async function handleProjectSelect(interaction) {
+  const module = interaction.customId.slice('dashboard_project:'.length)
+  return renderModule(interaction, module, interaction.values?.[0] || 'all')
+}
+
+async function renderModule(interaction, value, filter) {
+  const guild = interaction.guild
+  if (!guild) return
 
   const cfg = await getOrCreateGuildConfig(guild.id)
   const since = twoMonthsAgo()
-  const [bugCount, featureCount, meetingCount, faqOpen, faqTotal] = await Promise.all([
+  const [bugCount, featureCount, meetingCount, faqOpen, faqTotal, projects] = await Promise.all([
     db.task.count({ where: { guildConfigId: cfg.id, is_bug: 1, createdAtSince: since } }),
     db.task.count({ where: { guildConfigId: cfg.id, is_feature: 1, createdAtSince: since } }),
     db.scheduledMeeting.count({ where: { guildConfigId: cfg.id } }),
     db.faq.count({ where: { guildConfigId: cfg.id, status: 'open' } }),
     db.faq.count({ where: { guildConfigId: cfg.id } }),
+    PROJECT_MODULES.has(value)
+      ? db.project.findMany({ where: { guildConfigId: cfg.id } }).catch(() => [])
+      : Promise.resolve([]),
   ])
+  const scope = projectLabel(filter, projects)
+  const where = { guildConfigId: cfg.id, createdAtSince: since, ...projectWhere(filter) }
 
   let embed
   if (value === 'tasks') {
-    const tasks = await db.task.findMany({ where: { guildConfigId: cfg.id, createdAtSince: since }, take: 200 })
+    const tasks = await db.task.findMany({ where, take: 200 })
     const byModule = {}
     const noModule = []
     for (const t of tasks) {
@@ -115,9 +186,11 @@ export async function handleModuleSelect(interaction) {
     if (noModule.length > 0) section('Module: (none)', noModule)
     const desc = sectionLines.length
       ? sectionLines.join('\n').slice(0, 3900)
-      : 'No tasks yet. Use **/create-task** to add tasks.'
+      : filter === 'all'
+        ? 'No tasks yet. Use **/create-task** to add tasks.'
+        : `No tasks for **${scope}** in the last two months.`
     embed = new EmbedBuilder()
-      .setTitle('Dashboard — Tasks')
+      .setTitle(`Dashboard — Tasks · ${scope}`)
       .setDescription(desc)
       .addFields({
         name: 'Legend',
@@ -125,7 +198,7 @@ export async function handleModuleSelect(interaction) {
         inline: false,
       })
       .setColor(0x5865f2)
-      .setFooter({ text: `Total: ${tasks.length} (≤2mo) | Grouped by module` })
+      .setFooter({ text: `Total: ${tasks.length} (≤2mo) | ${scope} | Grouped by module` })
   } else if (value === 'overview') {
     embed = new EmbedBuilder()
       .setTitle('Dashboard — Overview')
@@ -135,33 +208,27 @@ export async function handleModuleSelect(interaction) {
       .setColor(0x5865f2)
       .setFooter({ text: 'Granjur · Bugs/features: last 2 months' })
   } else if (value === 'bugs') {
-    const recent = await db.task.findMany({
-      where: { guildConfigId: cfg.id, is_bug: 1, createdAtSince: since },
-      take: 15,
-    })
-    const lines = recent.length
-      ? recent.map((b) => taskLine(b)).join('\n').slice(0, 3900)
-      : 'No bug tasks (≤2mo).'
+    const rows = await db.task.findMany({ where: { ...where, is_bug: 1 }, take: 200 })
+    const lines = rows.length
+      ? rows.slice(0, 15).map((b) => taskLine(b)).join('\n').slice(0, 3900)
+      : `No bug tasks (≤2mo) for ${scope}.`
     embed = new EmbedBuilder()
-      .setTitle('Dashboard — Bugs')
+      .setTitle(`Dashboard — Bugs · ${scope}`)
       .setDescription(lines)
-      .addFields({ name: 'Total (≤2mo)', value: String(bugCount), inline: true })
+      .addFields({ name: 'Total (≤2mo)', value: String(filter === 'all' ? bugCount : rows.length), inline: true })
       .setColor(0xed4245)
-      .setFooter({ text: 'Last 2 months' })
+      .setFooter({ text: `Last 2 months | ${scope}` })
   } else if (value === 'features') {
-    const recent = await db.task.findMany({
-      where: { guildConfigId: cfg.id, is_feature: 1, createdAtSince: since },
-      take: 15,
-    })
-    const lines = recent.length
-      ? recent.map((f) => taskLine(f)).join('\n').slice(0, 3900)
-      : 'No feature tasks (≤2mo).'
+    const rows = await db.task.findMany({ where: { ...where, is_feature: 1 }, take: 200 })
+    const lines = rows.length
+      ? rows.slice(0, 15).map((f) => taskLine(f)).join('\n').slice(0, 3900)
+      : `No feature tasks (≤2mo) for ${scope}.`
     embed = new EmbedBuilder()
-      .setTitle('Dashboard — Features')
+      .setTitle(`Dashboard — Features · ${scope}`)
       .setDescription(lines)
-      .addFields({ name: 'Total (≤2mo)', value: String(featureCount), inline: true })
+      .addFields({ name: 'Total (≤2mo)', value: String(filter === 'all' ? featureCount : rows.length), inline: true })
       .setColor(0x5865f2)
-      .setFooter({ text: 'Last 2 months' })
+      .setFooter({ text: `Last 2 months | ${scope}` })
   } else if (value === 'meetings') {
     const meetings = await db.scheduledMeeting.findMany({
       where: { guildConfigId: cfg.id },
@@ -182,7 +249,11 @@ export async function handleModuleSelect(interaction) {
       .setColor(0xfee75c)
   }
 
-  await interaction.editReply({ embeds: [embed], components: [] })
+  // Keep the module picker on screen so the next view is one click away, and
+  // add the project filter on the views where a task can have a project.
+  const components = [moduleSelectRow(value)]
+  if (PROJECT_MODULES.has(value)) components.push(projectSelectRow(value, filter, projects))
+  await interaction.editReply({ embeds: [embed], components })
 }
 
 export async function handleModule(interaction) {

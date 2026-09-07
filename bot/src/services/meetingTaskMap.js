@@ -1,5 +1,6 @@
 // Pure mapper: a CSAAS task + its review row -> args for db.task.create({ data }).
-// ctx = { guildConfigId, meetingId, discordChannelId, botUserId, repositoryId }
+// ctx = { guildConfigId, meetingId, discordChannelId, botUserId, repositoryId,
+//         projectId, projectName }
 export function mapMeetingTaskToRow(csaasTask, reviewTask, ctx) {
   const actions = Array.isArray(csaasTask.intended_actions) ? csaasTask.intended_actions.join('\n') : ''
   const cmds = Array.isArray(csaasTask.suggested_commands) && csaasTask.suggested_commands.length
@@ -15,7 +16,10 @@ export function mapMeetingTaskToRow(csaasTask, reviewTask, ctx) {
     status: 'open',
     createdBy: ctx.botUserId || null,
     assigneeIds: reviewTask.assigneeRef ? [reviewTask.assigneeRef] : [],
-    projectName: csaasTask.project || null,
+    // The bot's own project row when the CSAAS name could be matched to one;
+    // otherwise keep CSAAS's name so the dashboard can still show it.
+    projectId: ctx.projectId || null,
+    projectName: ctx.projectName || csaasTask.project || null,
     repositoryId: ctx.repositoryId || null,
     scope: csaasTask.feature || null,
     modules: csaasTask.sub_feature ? [csaasTask.sub_feature] : [],

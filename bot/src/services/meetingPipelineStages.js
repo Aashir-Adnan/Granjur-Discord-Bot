@@ -12,6 +12,7 @@ import { deriveMeetingName, formatMeetingDate } from '../commands/playback.js'
 import { initReviewState, buildReviewMessage, summarizeApproval, taskKey } from './meetingReviewUI.js'
 import { mapMeetingTaskToRow } from './meetingTaskMap.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
+import { matchProject } from '../utils/projectMatch.js'
 
 async function guildIdFor(guildConfigId) {
   const cfg = await getGuildConfigById(guildConfigId)
@@ -256,29 +257,37 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     }
   }
 
+  // CSAAS names the project as it heard it ("Badar_HMS"); the bot's rows are
+  // "Badar HMS" and "Badar_HMS_Node". Load the three tables once and match
+  // loosely — an exact-name lookup left every mirrored task with no project.
+  let matchCtx = { projects: [], repos: [], links: [] }
+  try {
+    const [projects, repos, links] = await Promise.all([
+      db.project.findMany({ where: { guildConfigId: job.guildConfigId } }),
+      db.repository.findMany({ where: { guildConfigId: job.guildConfigId } }),
+      db.projectRepos.findMany({ where: {} }),
+    ])
+    matchCtx = { projects: projects || [], repos: repos || [], links: links || [] }
+  } catch (e) {
+    console.warn('[meetingPipeline] project/repo lookup failed:', e?.message || e)
+  }
+
   const mirrored = []
   for (const reviewTask of reviewTasks) {
     if (reviewTask.rejected) continue
     const csaasTask = csaasTasks.find((t) => taskKey(t.task_id) === taskKey(reviewTask.taskId))
     if (!csaasTask) continue
 
-    let repositoryId = null
-    try {
-      const repo = await db.repository.findFirst({
-        where: { guildConfigId: job.guildConfigId, name: csaasTask.project },
-      })
-      repositoryId = repo?.id || null
-    } catch (e) {
-      console.warn('[meetingPipeline] repository lookup failed:', e?.message || e)
-      repositoryId = null
-    }
+    const match = matchProject(csaasTask.project, matchCtx)
 
     const row = mapMeetingTaskToRow(csaasTask, reviewTask, {
       guildConfigId: job.guildConfigId,
       meetingId: job.meetingId,
       discordChannelId,
       botUserId,
-      repositoryId,
+      repositoryId: match?.repositoryId ?? null,
+      projectId: match?.projectId ?? null,
+      projectName: match?.projectName ?? null,
     })
 
     // Idempotency: a retry after a partial mirror must not double-create rows.

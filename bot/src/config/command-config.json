@@ -136,7 +136,7 @@
     "docs": {
       "summary": "Browse, search and read the project documentation.",
       "syntax": "`/docs` or `/docs query:<words>`",
-      "detail": "Browse by project or section and open a page, or pass `query` to search titles and page text. A page is rendered into an embed, long pages page with ◀ ▶, and pages that come from the documentation repository carry a link to the published site. Everything is read from the bot database, which a manager refreshes with **/setup** → **Sync docs now**."
+      "detail": "Browse by project or section and open a page, or pass `query` to search titles and page text. **Ticket docs** at the bottom of the first menu holds the write-ups attached to closed feature tickets, grouped by project. A page is rendered into an embed, long pages page with ◀ ▶, and pages that come from the documentation repository carry a link to the published site. Everything is read from the bot database, which a manager refreshes with **/setup** → **Sync docs now**."
     },
     "explain": {
       "summary": "Ask a question about a project; answered from its documentation with references.",
@@ -156,7 +156,7 @@
     "dashboard": {
       "summary": "CEO/Server Manager dashboard.",
       "syntax": "`/dashboard`",
-      "detail": "Access admin modules. CEO or Server Manager only."
+      "detail": "Access admin modules. CEO or Server Manager only. The Tasks, Bugs and Features views carry a **project filter** — pick a project (or *No project*) to see only its work."
     },
     "edit-docs": {
       "summary": "Write a documentation page for a project, stored in the bot.",
@@ -194,9 +194,9 @@
       "detail": "Unified command for creating bugs and features. Select type, repo/project, fill in details, assign members."
     },
     "update-task": {
-      "summary": "Update an existing task (status, assignees, etc.).",
-      "syntax": "`/update-task task:<pick from the list> [status] [assignees] …`",
-      "detail": "Start typing in the **task** field and pick from the suggestions — each shows the title, its status and who holds it, so you never type an id. Then set any of status, assignees, title, description, implementation status, or the API/QA/AC counts."
+      "summary": "Update an existing task (status, assignees, project, etc.).",
+      "syntax": "`/update-task task:<pick from the list> [status] [assignees] [project] …`",
+      "detail": "Start typing in the **task** field and pick from the suggestions — each shows the title, its status and who holds it, so you never type an id. Then set any of status, assignees, **project**, title, description, implementation status, or the API/QA/AC counts. Attaching a project makes the task show up under that project in **/dashboard**."
     },
     "create-project-role": {
       "summary": "Create a Discord role for a project.",

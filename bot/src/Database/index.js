@@ -256,6 +256,14 @@ async function taskFindMany({ where, orderBy, take }) {
     sql += " AND createdAt >= ?";
     params.push(where.createdAtSince);
   }
+  // projectId: a string filters to that project; `null` means "tasks with no
+  // project" (the dashboard's "No project" bucket); undefined means no filter.
+  if (where?.projectId === null) {
+    sql += " AND projectId IS NULL";
+  } else if (where?.projectId) {
+    sql += " AND projectId = ?";
+    params.push(where.projectId);
+  }
   const orderByField = orderBy ? Object.keys(orderBy)[0] : 'createdAt';
   const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'DESC';
   sql += ` ORDER BY \`${orderByField}\` ${orderByDir}`;
@@ -341,6 +349,20 @@ async function taskUpdate({ where, data }) {
   if (data.handlerId !== undefined) {
     sets.push("handlerId = ?");
     vals.push(data.handlerId);
+  }
+  // Project linkage: written by /create-task, /feature, /update-task and the
+  // meeting mirror once they read the real `project` table.
+  if (data.projectId !== undefined) {
+    sets.push("projectId = ?");
+    vals.push(data.projectId);
+  }
+  if (data.projectName !== undefined) {
+    sets.push("projectName = ?");
+    vals.push(data.projectName);
+  }
+  if (data.repositoryId !== undefined) {
+    sets.push("repositoryId = ?");
+    vals.push(data.repositoryId);
   }
   if (data.scope !== undefined) {
     sets.push("scope = ?");
@@ -486,20 +508,36 @@ async function ticketDocFindMany({ where, take, orderBy }) {
   const orderByField = orderBy ? Object.keys(orderBy)[0] : 'createdAt';
   const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'DESC';
   sql += ` ORDER BY \`${orderByField}\` ${orderByDir}`;
-  if (take) {
-    sql += " LIMIT ?";
-    params.push(take);
-  } else {
-    sql += " LIMIT ?";
-    params.push(100);
-  }
+  // LIMIT cannot be a bound parameter under prepared statements
+  // ("Incorrect arguments to mysqld_stmt_execute") — inline the integer.
+  const limit = Math.min(Math.max(parseInt(take, 10) || 100, 1), 500);
+  sql += ` LIMIT ${limit}`;
   return query(sql, params);
+}
+
+/**
+ * Every stored ticket document with the task it belongs to, for the /docs
+ * "Ticket docs" browser. Only rows that actually hold content — a feature
+ * closed without a document leaves a content-less row that has nothing to show.
+ */
+async function ticketDocListWithTask({ guildConfigId }) {
+  if (!guildConfigId) return [];
+  return query(
+    `SELECT d.id, d.title, d.taskId, d.ticketType, d.createdAt, d.updatedAt,
+            t.projectId, t.projectName, t.status AS taskStatus, t.title AS taskTitle
+       FROM \`ticketdoc\` d
+       JOIN \`task\` t ON t.id = d.taskId
+      WHERE d.guildConfigId = ? AND d.content IS NOT NULL AND d.content <> ''
+      ORDER BY d.updatedAt DESC
+      LIMIT 500`,
+    [guildConfigId],
+  );
 }
 
 async function ticketDocCreate({ data }) {
   const pk = id();
   await query(
-    `INSERT INTO \`TicketDoc\` (id, guildConfigId, ticketType, taskId, title, content)
+    `INSERT INTO \`ticketdoc\` (id, guildConfigId, ticketType, taskId, title, content)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [
       pk,
@@ -1912,6 +1950,7 @@ const db = {
     findFirst: ticketDocFindFirst,
     create: ticketDocCreate,
     update: ticketDocUpdate,
+    listWithTask: ticketDocListWithTask,
   },
   docPage: {
     listIndex: docPageListIndex,
