@@ -1317,7 +1317,7 @@ async function meetingFindUnique({ where }) {
   return null;
 }
 
-async function meetingUpdate({ where, data }) {
+export function meetingUpdateSql(data) {
   const sets = [];
   const vals = [];
   if (data.transcript !== undefined) {
@@ -1328,6 +1328,15 @@ async function meetingUpdate({ where, data }) {
     sets.push("notes = ?");
     vals.push(data.notes);
   }
+  if (data.csaasMeetingId !== undefined) {
+    sets.push("csaasMeetingId = ?");
+    vals.push(data.csaasMeetingId);
+  }
+  return { sets, vals };
+}
+
+async function meetingUpdate({ where, data }) {
+  const { sets, vals } = meetingUpdateSql(data);
   if (sets.length === 0)
     return queryOne("SELECT * FROM `meeting` WHERE id = ?", [where.id]);
   vals.push(where.id);
@@ -1394,6 +1403,94 @@ async function meetingChannelUpdate({ where, data }) {
     vals,
   );
   return meetingChannelFindUnique({ where: { id: where.id } });
+}
+
+// ---------- MeetingUtterance (per-speaker transcript turns) ----------
+// The column list and the params array are derived from one ordered source
+// (`columns` below) so they cannot drift out of sync with each other — see
+// the taskUpdate / ticketDocCreate incidents this pattern exists to avoid.
+export function meetingUtteranceInsertSql(data) {
+  const columns = [
+    ["id", data.id],
+    ["guildConfigId", data.guildConfigId],
+    ["meetingId", data.meetingId],
+    ["sequence", data.sequence],
+    ["speakerRef", data.speakerRef ?? null],
+    ["speakerName", data.speakerName ?? null],
+    ["startedAt", data.startedAt ?? new Date()],
+    ["durationMs", data.durationMs ?? 0],
+    ["text", data.text ?? null],
+  ];
+  const columnList = columns
+    .map(([col]) => (col === "sequence" ? "`sequence`" : col))
+    .join(", ");
+  const placeholders = columns.map(() => "?").join(", ");
+  return {
+    sql:
+      `INSERT INTO \`meetingutterance\` (${columnList}) ` +
+      `VALUES (${placeholders}) ` +
+      // startedAt and durationMs are refreshed too: a row overwritten by a later
+      // meeting in the same voice channel would otherwise carry the new text
+      // against the old meeting's clock, and the transcript would be bucketed
+      // against timings that never belonged to it.
+      "ON DUPLICATE KEY UPDATE text = VALUES(text), speakerName = VALUES(speakerName), " +
+      "startedAt = VALUES(startedAt), durationMs = VALUES(durationMs)",
+    params: columns.map(([, val]) => val),
+  };
+}
+
+export function meetingUtteranceFindManySql({ meetingId }) {
+  return {
+    sql: "SELECT * FROM `meetingutterance` WHERE meetingId = ? ORDER BY `sequence` ASC",
+    params: [meetingId],
+  };
+}
+
+export function meetingUtteranceDeleteManySql({ meetingId }) {
+  return {
+    sql: "DELETE FROM `meetingutterance` WHERE meetingId = ?",
+    params: [meetingId],
+  };
+}
+
+export function meetingUtteranceCountSql({ meetingId }) {
+  return {
+    sql: "SELECT COUNT(*) AS n FROM `meetingutterance` WHERE meetingId = ? AND text IS NOT NULL AND TRIM(text) <> ''",
+    params: [meetingId],
+  };
+}
+
+async function meetingUtteranceCreate({ data }) {
+  const pk = id();
+  const { sql, params } = meetingUtteranceInsertSql({ ...data, id: pk });
+  await query(sql, params);
+  // Re-select by the (meetingId, sequence) unique key, not by `pk`: on an
+  // ON DUPLICATE KEY UPDATE hit MySQL keeps the existing row's id, so `pk`
+  // was never written and a lookup by id would return null even though the
+  // row persisted correctly.
+  return queryOne(
+    "SELECT * FROM `meetingutterance` WHERE meetingId = ? AND `sequence` = ?",
+    [data.meetingId, data.sequence],
+  );
+}
+
+async function meetingUtteranceFindMany({ where }) {
+  const { sql, params } = meetingUtteranceFindManySql({ meetingId: where.meetingId });
+  return query(sql, params);
+}
+
+// A voice channel keeps its meeting row across recordings, so a second /record
+// in the same channel restarts the sequence counter at 1 and would overwrite the
+// previous meeting's turns. Recording start clears them first.
+async function meetingUtteranceDeleteMany({ where }) {
+  const { sql, params } = meetingUtteranceDeleteManySql({ meetingId: where.meetingId });
+  await query(sql, params);
+}
+
+async function meetingUtteranceCountWithText({ meetingId }) {
+  const { sql, params } = meetingUtteranceCountSql({ meetingId });
+  const row = await queryOne(sql, params);
+  return Number(row?.n || 0);
 }
 
 // ---------- MeetingRecording (for individual user audio recordings) ----------
@@ -2045,6 +2142,12 @@ const db = {
   meetingRecording: {
     create: meetingRecordingCreate,
     findMany: meetingRecordingFindMany,
+  },
+  meetingUtterance: {
+    create: meetingUtteranceCreate,
+    findMany: meetingUtteranceFindMany,
+    deleteMany: meetingUtteranceDeleteMany,
+    countWithText: meetingUtteranceCountWithText,
   },
   meetingRecordingStatus: {
     findUnique: meetingRecordingStatusFindUnique,

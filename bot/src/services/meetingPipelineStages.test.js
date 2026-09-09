@@ -626,3 +626,165 @@ test('mirrored backfills assigneeIds onto a row mirrored before it had an assign
   await stageRunners.mirrored({ job, db, client, csaasClient: {} })
   assert.deepEqual(updates[0], [{ id: 'existing' }, { assigneeIds: ['11'] }])
 })
+
+test('created reuses the CSAAS meeting made when recording started', async () => {
+  let created = false
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', csaasMeetingId: 'csaas-existing' }) },
+    meetingRecording: { findMany: async () => [{ filePath: '/r/abc-standup/a.ogg', startedAt: new Date('2026-09-07T10:00:00Z') }] },
+    guildMember: { findMany: async () => [] },
+    // guildIdFor's real lookup (getGuildConfigById) is a raw, unmocked network
+    // call unrelated to this fake db — createdStage's guildIdFor(id, db) checks
+    // for this first so the test never touches the real database.
+    getGuildConfigById: async () => ({ guildId: 'g' }),
+  }
+  const csaasClient = { createMeeting: async () => { created = true; return { meeting_id: 'csaas-new' } } }
+  const client = { guilds: { fetch: async () => ({ id: 'g', members: { fetch: async () => ({}) } }) } }
+  const out = await stageRunners.created({ job: { meetingId: 'm', guildConfigId: 'g' }, db, client, csaasClient })
+  assert.equal(created, false, 'must not create a second CSAAS meeting')
+  assert.equal(out.patch.csaasMeetingId, 'csaas-existing')
+})
+
+test('created calls createMeeting when no CSAAS meeting was made at recording start', async () => {
+  let created = false
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', csaasMeetingId: null }) },
+    meetingRecording: { findMany: async () => [{ filePath: '/r/abc-standup/a.ogg', startedAt: new Date('2026-09-07T10:00:00Z') }] },
+    guildMember: { findMany: async () => [] },
+    getGuildConfigById: async () => ({ guildId: 'g' }),
+  }
+  const csaasClient = { createMeeting: async () => { created = true; return { meeting_id: 'csaas-new' } } }
+  const client = { guilds: { fetch: async () => ({ id: 'g', members: { fetch: async () => ({}) } }) } }
+  const out = await stageRunners.created({ job: { meetingId: 'm', guildConfigId: 'g' }, db, client, csaasClient })
+  assert.equal(created, true, 'must create a CSAAS meeting when none exists yet')
+  assert.equal(out.patch.csaasMeetingId, 'csaas-new')
+})
+
+test('transcribing takes the live path when there are enough utterances', async () => {
+  let uploaded = 0
+  let liveArgs = null
+  const db = {
+    meetingUtterance: {
+      countWithText: async () => 7,
+      findMany: async () => ([
+        { sequence: 1, speakerName: 'A', text: 'one', durationMs: 1000, startedAt: new Date('2026-09-07T10:00:00Z') },
+        { sequence: 2, speakerName: 'B', text: 'two', durationMs: 1000, startedAt: new Date('2026-09-07T10:00:04Z') },
+      ]),
+    },
+    meetingRecording: { findMany: async () => [{ id: 'r1', filePath: '/nope.ogg', fileName: 'a.ogg' }] },
+  }
+  const csaasClient = {
+    transcribeSegment: async () => { uploaded += 1 },
+    analyzeLive: async (mid, args) => { liveArgs = [mid, args]; return { summary: 'ok' } },
+  }
+  const job = { meetingId: 'm', csaasMeetingId: 'c', dataJson: {} }
+  const out = await stageRunners.transcribing({ job, db, csaasClient })
+
+  assert.equal(uploaded, 0, 'the whole-file path is skipped')
+  assert.equal(liveArgs[0], 'c')
+  assert.equal(liveArgs[1].meetingNotes.segment_0.transcription, 'A: one\nB: two')
+  assert.equal(out.patch.dataJson.liveTranscript, true)
+  assert.equal(out.patch.dataJson.analysis.summary, 'ok')
+  assert.notEqual(out.advance, false, 'the stage completes in one tick')
+})
+
+test('too few utterances falls back to the whole-file upload', async () => {
+  let uploaded = 0
+  let liveCalled = false
+  const db = {
+    meetingUtterance: { countWithText: async () => 4, findMany: async () => [] },
+    meetingRecording: { findMany: async () => [{ id: 'r1', filePath: '/nope.ogg', fileName: 'a.ogg' }] },
+  }
+  const csaasClient = {
+    transcribeSegment: async () => { uploaded += 1 },
+    analyzeLive: async () => { liveCalled = true; return {} },
+  }
+  const job = { meetingId: 'm', csaasMeetingId: 'c', dataJson: {} }
+  await assert.rejects(
+    () => stageRunners.transcribing({ job, db, csaasClient }),
+    /all meeting recording files missing on disk/,
+    'it really did run the old path (the fake file does not exist)'
+  )
+  assert.equal(liveCalled, false)
+  assert.equal(uploaded, 0)
+})
+
+test('an analyze-live failure falls back rather than failing the meeting', async () => {
+  const db = {
+    meetingUtterance: {
+      countWithText: async () => 9,
+      findMany: async () => ([{ sequence: 1, speakerName: 'A', text: 'one', durationMs: 1000, startedAt: new Date() }]),
+    },
+    meetingRecording: { findMany: async () => [] },
+  }
+  const csaasClient = {
+    transcribeSegment: async () => {},
+    analyzeLive: async () => { throw new Error('csaas down') },
+  }
+  const job = { meetingId: 'm', csaasMeetingId: 'c', dataJson: {} }
+  await assert.rejects(
+    () => stageRunners.transcribing({ job, db, csaasClient }),
+    /all meeting recording files missing on disk/,
+    'fell through to the whole-file path, which then found no recordings'
+  )
+})
+
+test('a failed analyze-live is not retried on every fallback tick', async () => {
+  // The fallback uploads one file per tick and returns advance:false, so the
+  // stage is re-entered once per speaker. countWithText never drops back below
+  // the threshold, so without a sticky marker every tick would run analyze-live
+  // again — each one a blocking 30-90 s analysis that rewrites the transcript the
+  // fallback is building at the same time.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-'))
+  const f1 = path.join(dir, 'ali.ogg'); fs.writeFileSync(f1, 'aaa')
+  const f2 = path.join(dir, 'sara.ogg'); fs.writeFileSync(f2, 'bbb')
+
+  let liveCalls = 0
+  const db = {
+    meetingUtterance: {
+      countWithText: async () => 9,
+      findMany: async () => ([{ sequence: 1, speakerName: 'A', text: 'one', durationMs: 1000, startedAt: new Date() }]),
+    },
+    meetingRecording: { findMany: async () => [
+      { id: 'r1', filePath: f1, fileName: 'ali.ogg', startedAt: '2026-01-01T00:00:00Z' },
+      { id: 'r2', filePath: f2, fileName: 'sara.ogg', startedAt: '2026-01-01T00:01:00Z' },
+    ] },
+  }
+  const csaasClient = {
+    transcribeSegment: async () => ({}),
+    analyzeLive: async () => { liveCalls += 1; throw new Error('claude quota exceeded') },
+  }
+
+  const job = { id: 'j', meetingId: 'm', csaasMeetingId: 'c', dataJson: {} }
+  const t1 = await stageRunners.transcribing({ job, db, csaasClient, client: {} })
+  assert.equal(liveCalls, 1)
+  assert.equal(t1.advance, false)
+  assert.equal(t1.patch.dataJson.liveTranscriptFailed, true, 'the failure is recorded on the job')
+  assert.deepEqual(t1.patch.dataJson.uploaded, ['r1'], 'the tick still made its usual progress')
+
+  const t2 = await stageRunners.transcribing({ job: { ...job, dataJson: t1.patch.dataJson }, db, csaasClient, client: {} })
+  assert.equal(liveCalls, 1, 'the live path is not attempted again')
+  assert.deepEqual(t2.patch.dataJson.uploaded, ['r1', 'r2'])
+  assert.equal(t2.patch.dataJson.liveTranscriptFailed, true, 'the marker survives later ticks')
+
+  const t3 = await stageRunners.transcribing({ job: { ...job, dataJson: t2.patch.dataJson }, db, csaasClient, client: {} })
+  assert.equal(liveCalls, 1)
+  assert.notEqual(t3.advance, false, 'the stage still completes')
+})
+
+test('analyzing does not call CSAAS twice when the live path already analysed', async () => {
+  let called = false
+  const csaasClient = { analyze: async () => { called = true; return { analysis: {} } } }
+  const job = { csaasMeetingId: 'c', dataJson: { liveTranscript: true, analysis: { summary: 'ok' } } }
+  const out = await stageRunners.analyzing({ job, csaasClient, db: {} })
+  assert.equal(called, false)
+  assert.equal(out.patch.dataJson.analysis.summary, 'ok')
+})
+
+test('analyzing still calls CSAAS on the fallback path', async () => {
+  let called = false
+  const csaasClient = { analyze: async () => { called = true; return { analysis: { summary: 'from-analyze' } } } }
+  const out = await stageRunners.analyzing({ job: { csaasMeetingId: 'c', dataJson: {} }, csaasClient, db: {} })
+  assert.equal(called, true)
+  assert.equal(out.patch.dataJson.analysis.summary, 'from-analyze')
+})

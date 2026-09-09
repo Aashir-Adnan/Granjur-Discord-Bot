@@ -13,9 +13,21 @@ import { initReviewState, buildReviewMessage, summarizeApproval, taskKey } from 
 import { mapMeetingTaskToRow } from './meetingTaskMap.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
 import { matchProject } from '../utils/projectMatch.js'
+import { buildAnalyzeLivePayload } from './liveTranscriptPayload.js'
 
-async function guildIdFor(guildConfigId) {
-  const cfg = await getGuildConfigById(guildConfigId)
+// overrides is a test-only seam, never meant to carry real data: the `db`
+// facade passed at runtime (bot/src/db/index.js default export) is a plain
+// object literal with no getGuildConfigById key of its own, so passing the
+// real `db` here always falls through to the real lookup below. (A
+// *namespace* import of that module, `import * as ns from '../db/index.js'`,
+// would carry getGuildConfigById as a named re-export — nothing does that
+// today, which is why this stays safe, but don't pass such a namespace
+// object in as `overrides`.) A test's fake object can supply
+// getGuildConfigById to avoid a real network round trip.
+async function guildIdFor(guildConfigId, overrides) {
+  const cfg = overrides?.getGuildConfigById
+    ? await overrides.getGuildConfigById(guildConfigId)
+    : await getGuildConfigById(guildConfigId)
   if (!cfg?.guildId) throw new Error('created stage: no guildConfig for ' + guildConfigId)
   return cfg.guildId
 }
@@ -25,7 +37,7 @@ async function createdStage({ job, db, csaasClient, client }) {
   const meeting = await db.meeting.findUnique({ where: { id: job.meetingId } })
   const recs = await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } })
 
-  const guildId = await guildIdFor(job.guildConfigId)
+  const guildId = await guildIdFor(job.guildConfigId, db)
   const guild = await client.guilds.fetch(guildId)
   const roster = await buildRoster({
     guild,
@@ -39,10 +51,15 @@ async function createdStage({ job, db, csaasClient, client }) {
     ' — ' +
     formatMeetingDate(recs[0]?.startedAt || meeting?.createdAt)
 
-  const { meeting_id } = await csaasClient.createMeeting({
-    title,
-    participants: roster.map((r) => r.displayName),
-  })
+  // startMeetingRecording creates the CSAAS meeting so the live transcript has
+  // somewhere to post. Only create one here when that did not happen.
+  let meeting_id = meeting?.csaasMeetingId || null
+  if (!meeting_id) {
+    ;({ meeting_id } = await csaasClient.createMeeting({
+      title,
+      participants: roster.map((r) => r.displayName),
+    }))
+  }
 
   return {
     patch: {
@@ -56,6 +73,36 @@ async function createdStage({ job, db, csaasClient, client }) {
 // One successful upload per tick (advance:false) so each upload is short and
 // independently retryable; advances only once every rec is uploaded-or-missing.
 async function transcribingStage({ job, db, csaasClient }) {
+  // Live path: the bot transcribed each turn as it was spoken, so CSAAS gets a
+  // real conversation instead of one whole file per speaker. analyze-live both
+  // stores the transcript and runs the analysis, so `analyzing` then no-ops.
+  const LIVE_MIN_UTTERANCES = 5
+  // The fallback below returns advance:false after each file, so this stage is
+  // re-entered once per speaker recording. Without a sticky marker every one of
+  // those ticks would re-attempt analyze-live (countWithText never drops back
+  // below the threshold), each attempt rewriting meetings.transcript on the
+  // backend and burning a 30-90 s blocking analysis while the fallback is
+  // concurrently building that same transcript.
+  let liveFailed = (job.dataJson || {}).liveTranscriptFailed === true
+  if (!liveFailed) {
+    try {
+      const n = (await db.meetingUtterance?.countWithText?.({ meetingId: job.meetingId })) || 0
+      if (n >= LIVE_MIN_UTTERANCES) {
+        const rows = await db.meetingUtterance.findMany({ where: { meetingId: job.meetingId } })
+        const { meetingNotes, totalDurationSec } = buildAnalyzeLivePayload(rows)
+        const analysis = await csaasClient.analyzeLive(job.csaasMeetingId, { meetingNotes, totalDurationSec })
+        return { patch: { dataJson: { ...(job.dataJson || {}), liveTranscript: true, analysis } } }
+      }
+    } catch (e) {
+      // Anything wrong with the live path drops through to the whole-file upload
+      // below — a meeting is never lost because live transcription misbehaved.
+      // The flag rides out on whatever patch the fallback returns, so this tick
+      // still makes its usual progress.
+      liveFailed = true
+      console.warn(`[meetingPipeline] live transcript path failed, falling back: ${e?.message || e}`)
+    }
+  }
+
   const recs = (await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } }))
     .slice()
     .sort((a, b) => new Date(a.startedAt || 0) - new Date(b.startedAt || 0))
@@ -63,6 +110,9 @@ async function transcribingStage({ job, db, csaasClient }) {
   const data = { uploaded: [], missing: [], ...(job.dataJson || {}) }
   data.uploaded = [...(data.uploaded || [])]
   data.missing = [...(data.missing || [])]
+  // Every return below patches dataJson with `data`, so setting it here is what
+  // makes the fallback stick across the per-file ticks.
+  if (liveFailed) data.liveTranscriptFailed = true
   const done = new Set(data.uploaded)
 
   for (const rec of recs) {
@@ -98,8 +148,11 @@ async function transcribingStage({ job, db, csaasClient }) {
 
 // analyzing: one CSaaS call, store the analysis blob on dataJson.
 async function analyzingStage({ job, csaasClient }) {
+  const data = job.dataJson || {}
+  // The live path already ran the analysis inside analyze-live.
+  if (data.liveTranscript && data.analysis) return { patch: { dataJson: data } }
   const { analysis } = await csaasClient.analyze(job.csaasMeetingId)
-  return { patch: { dataJson: { ...(job.dataJson || {}), analysis } } }
+  return { patch: { dataJson: { ...data, analysis } } }
 }
 
 // generating_tasks: one CSaaS call, store the generated task list on dataJson.
@@ -251,7 +304,7 @@ async function mirroredStage({ job, db, client, csaasClient }) {
   let guild = channel?.guild || null
   if (!guild) {
     try {
-      guild = await client.guilds.fetch(await guildIdFor(job.guildConfigId))
+      guild = await client.guilds.fetch(await guildIdFor(job.guildConfigId, db))
     } catch (e) {
       console.warn('[meetingPipeline] guild fetch for task channels failed:', e?.message || e)
     }

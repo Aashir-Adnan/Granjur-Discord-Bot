@@ -14,6 +14,11 @@ import { fileURLToPath } from "url";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
 import { meetingPipelineEnabled } from "../Database/meetingPipelineJob.helpers.js";
 import { OggOpusEncoder } from "../utils/oggOpusStream.js";
+import * as csaasClient from "./csaasClient.js";
+import { createTranscriptFeed } from "./transcriptFeed.js";
+import { resolveMeetingChannel } from "./meetingPipelineStages.js";
+import { postConsentNotice } from "../config/meetingGuidelines.js";
+import { deriveMeetingName, formatMeetingDate } from "../commands/playback.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -272,6 +277,23 @@ export function isRecording(meetingId) {
 }
 
 /**
+ * Drop whatever the previous recording of this meeting row left behind.
+ *
+ * A voice channel keeps one meeting row across recordings (ensureMeetingChannel
+ * returns the existing row unless forceNewMeeting is passed, and /record does not
+ * pass it), while the feed's sequence counter restarts at 1 every session. The
+ * insert is ON DUPLICATE KEY UPDATE on (meetingId, sequence), so a second
+ * recording in the same channel would silently overwrite the first meeting's
+ * turns — and leave the ones it did not reach behind, mixed in with the new ones.
+ *
+ * Exported for its test; not part of the public recording surface.
+ */
+export async function clearStaleLiveSession(database, meetingId) {
+  await database.meeting.update({ where: { id: meetingId }, data: { csaasMeetingId: null } });
+  await database.meetingUtterance.deleteMany({ where: { meetingId } });
+}
+
+/**
  * Unified meeting recording: joins voice channel, records audio, and tracks in database.
  * Combines voice channel joining + audio recording + meeting record tracking.
  * Ends recording when all human members leave the channel.
@@ -356,18 +378,65 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     }
   };
 
-  // Track one continuous stream per user
+  // Track one continuous encoder/file per user
   const activeUserStreams = new Map();
+
+  // The live transcript feed, set up once the meeting is registered as recording.
+  // Declared here because endMeetingSession closes over it.
+  let feed = null;
+
+  // Set before any teardown begins, so a speaking.start arriving mid-teardown
+  // cannot open a file and a stream nothing will ever close or record.
+  let sessionEnding = false;
+
+  // One promise per turn currently being captured, resolving once that turn's
+  // audio has been handed to the feed. endMeetingSession waits on these so the
+  // speaker who is mid-sentence when /record stop runs is not dropped.
+  const pendingUtterances = new Set();
+
+  // Every live per-utterance subscription. Teardown closes these directly rather
+  // than going through the speaker records, so a turn whose speaker setup is
+  // still in flight is closed too — otherwise the wait above would last as long
+  // as that person kept talking.
+  const liveSubscriptions = new Set();
 
   // End meeting session
   const endMeetingSession = async () => {
+    // One shot. Teardown now parks for tens of seconds — the final utterances
+    // flush and feed.stop() drain up to three 30 s speech-to-text calls — and
+    // the meeting stays in activeConnections/sessionEnders for all of it, so an
+    // impatient `/record action:stop` can find the ender the grace timer is
+    // already running. Two runs both reach connection.destroy(); the second
+    // throws "already been destroyed" and, on the timer path, that rejection is
+    // unhandled and skips cleanup() and deleteOnEnd.
+    if (sessionEnding) return;
     console.log(`[voiceCapture] Ending meeting session: ${meetingId}`);
+    sessionEnding = true;
     try {
-      // End all active user streams gracefully
-      for (const [userId, stream] of activeUserStreams) {
+      // Close any turn still in progress first, and wait for its audio to reach
+      // the feed. Only then stop the feed: its final flush needs a live channel,
+      // and this function deletes the channel further down.
+      for (const stream of liveSubscriptions) {
+        try { stream.destroy(); } catch (_) {}
+      }
+      try {
+        await Promise.all(Array.from(pendingUtterances));
+      } catch (e) {
+        console.warn(`[voiceCapture] Error flushing final utterances: ${e?.message || e}`);
+      }
+
+      if (feed) {
+        try { await feed.stop(); } catch (e) { console.warn(`[voiceCapture] feed stop failed: ${e?.message || e}`); }
+      }
+
+      // End all active user encoders. A retired speaker — one whose write stream
+      // already finished or died mid-meeting — stays in the map so it can never
+      // be rebuilt on the same path, and its file is already closed: ending its
+      // encoder again would only push an EOS page at a dead write stream.
+      for (const [userId, speaker] of activeUserStreams) {
+        if (speaker.retired || speaker.oggEncoder.writableEnded) continue;
         console.log(`[voiceCapture] Ending stream for user ${userId}`);
-        try { stream.opusStream.destroy(); } catch (_) {}
-        try { stream.oggEncoder.end(); } catch (_) {}
+        try { speaker.oggEncoder.end(); } catch (_) {}
       }
 
       try {
@@ -525,9 +594,28 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
   }
 
 
-  receiver.speaking.on("start", async (userId) => {
-    if (activeUserStreams.has(userId)) return; // already recording this user
+  // One long-lived encoder per speaker (the /playback artifact, unchanged), fed
+  // by one short-lived subscription per utterance. Discord ends an AfterSilence
+  // stream at the end of a turn and releases the user, so re-subscribing on the
+  // next speaking.start is safe and gives us natural turn boundaries.
+  const UTTERANCE_SILENCE_MS = 900;
+  const MIN_UTTERANCE_MS = 500;
+  // Must stay below OPEN_STALL_MS in transcriptFeed.js. A segment holds its
+  // claimed sequence number — and so the whole feed — until it is submitted, and
+  // the feed drops any turn still open past OPEN_STALL_MS. Raise this above that
+  // and every long turn is silently dropped from the transcript.
+  const MAX_UTTERANCE_MS = 30000;
+  const FRAME_MS = 20; // Opus frames from Discord are always 20 ms
 
+  // A packet that arrives after the encoder was ended — a turn starting as the
+  // meeting is torn down — would raise "write after end", and that error destroys
+  // the write stream mid-flush and truncates the speaker's file.
+  const writeToFile = (speaker, packet) => {
+    if (speaker.retired || speaker.oggEncoder.writableEnded || speaker.oggEncoder.destroyed) return;
+    speaker.oggEncoder.write(packet);
+  };
+
+  const createSpeaker = async (userId) => {
     // Look up user email for file naming
     let userLabel = userId;
     try {
@@ -539,27 +627,12 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
       }
     } catch (_) {}
 
-    console.log(`[voiceCapture] Started recording user: ${userLabel} (${userId}) in meeting: ${meetingId}`);
-
     const fileName = `${userLabel}.ogg`;
     const filePath = path.join(recordingsDir, fileName);
     const startedAt = new Date();
 
-    const opusStream = receiver.subscribe(userId, {
-      end: {
-        behavior: EndBehaviorType.Manual,
-      },
-    });
-
     const oggEncoder = new OggOpusEncoder({ sampleRate: 48000, channels: 2 });
     const writeStream = fs.createWriteStream(filePath);
-
-    opusStream.on("error", (err) => {
-      console.error(`[voiceCapture] Opus stream error for user ${userId}:`, err.message);
-      oggEncoder.destroy();
-      writeStream.destroy();
-      activeUserStreams.delete(userId);
-    });
 
     oggEncoder.on("error", (err) => {
       console.error(`[voiceCapture] OGG encoder error for user ${userId}:`, err.message);
@@ -574,34 +647,235 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     const writePromise = new Promise((resolve) => { resolveWrite = resolve; });
     pendingWrites.add(writePromise);
 
-    opusStream.on("end", () => {
-      console.log(`[voiceCapture] Recording ended for user ${userId}`);
-      oggEncoder.end();
-    });
+    const speaker = {
+      oggEncoder, writeStream, filePath, fileName, startedAt, writePromise, resolveWrite,
+      displayName: userId, retired: false,
+    };
 
+    // Exactly one MeetingRecording row per speaker per meeting. "finish", "error"
+    // and "close" can each arrive, so finalize is idempotent, and pendingWrites
+    // has to resolve on every one of those paths or endMeetingSession waits
+    // forever. The speaker is marked retired rather than removed from
+    // activeUserStreams: an encoder error 20 minutes in would otherwise let the
+    // next speaking.start build a second encoder and a second write stream on the
+    // same path, truncating the file the first row already describes and leaving
+    // /playback listing the speaker twice.
+    let finalized = false;
     const finalize = () => {
+      if (finalized) return;
+      finalized = true;
+      speaker.retired = true;
       finishRecording(userId, filePath, startedAt, new Date(), fileName)
         .catch(() => {})
         .finally(() => {
           pendingWrites.delete(writePromise);
           resolveWrite();
-          activeUserStreams.delete(userId);
         });
     };
 
     writeStream.on("finish", finalize);
     writeStream.on("error", finalize);
+    writeStream.on("close", finalize);
 
-    opusStream.pipe(oggEncoder).pipe(writeStream);
-    activeUserStreams.set(userId, { opusStream, oggEncoder, writeStream, filePath, fileName, startedAt, writePromise, resolveWrite });
+    oggEncoder.pipe(writeStream);
+
+    activeUserStreams.set(userId, speaker);
+
+    // Deliberately not awaited: this is an HTTP round trip and the packets of the
+    // turn that is starting right now must not wait behind it. The name is only
+    // read when an utterance is handed to the feed, at least MIN_UTTERANCE_MS +
+    // UTTERANCE_SILENCE_MS later.
+    guild.members
+      .fetch(userId)
+      .then((m) => { speaker.displayName = m.displayName; })
+      .catch(() => {});
+
+    console.log(`[voiceCapture] Started recording user: ${userLabel} (${userId}) in meeting: ${meetingId}`);
+    return speaker;
+  };
+
+  // speaking.start can fire again while the first setup is still awaiting the
+  // database, so the in-flight setup is registered synchronously. Two speaker
+  // objects for one user would mean two writers on one file and two rows.
+  const speakerSetups = new Map();
+  const speakerFor = (userId) => {
+    const existing = activeUserStreams.get(userId);
+    if (existing) return existing;
+    let setup = speakerSetups.get(userId);
+    if (!setup) {
+      setup = createSpeaker(userId);
+      speakerSetups.set(userId, setup);
+      const forget = () => speakerSetups.delete(userId);
+      setup.then(forget, forget);
+    }
+    return setup;
+  };
+
+  // userIds with a live per-utterance subscription. Kept outside the speaker so the
+  // guard can be set before anything is awaited.
+  const activeUtterances = new Set();
+
+  receiver.speaking.on("start", (userId) => {
+    // Teardown has begun: a new turn here would open a file and a write stream
+    // that nothing left running will close or record.
+    if (sessionEnding) return;
+    if (activeUtterances.has(userId)) return; // already capturing this turn
+    activeUtterances.add(userId);
+
+    // Subscribed synchronously, inside the speaking event. VoiceReceiver raises
+    // "start" and then delivers the packet that raised it only to a subscription
+    // that already exists, so awaiting anything first would cost the leading 20 ms
+    // of every turn — audio the old Manual subscription kept.
+    const opusStream = receiver.subscribe(userId, {
+      end: { behavior: EndBehaviorType.AfterSilence, duration: UTTERANCE_SILENCE_MS },
+    });
+    liveSubscriptions.add(opusStream);
+
+    let speaker = null;
+    const buffered = []; // packets captured before this speaker's encoder exists
+    let packets = [];
+    let frames = 0;
+    let segmentStartedAt = new Date();
+    let ended = false;
+
+    // Registered synchronously, before anything can await, so endMeetingSession
+    // sees this turn the moment it snapshots pendingUtterances.
+    let resolveTurn;
+    const turnFlushed = new Promise((r) => { resolveTurn = r; });
+    pendingUtterances.add(turnFlushed);
+    turnFlushed.then(() => pendingUtterances.delete(turnFlushed));
+
+    // Flushes started by this turn (the final one, plus any long-monologue cut).
+    const flushes = [];
+    const track = (p) => { if (p) flushes.push(p); };
+
+    // The transcript number is claimed when the segment *starts*, so overlapping
+    // speech renders in the order it was said rather than the order speech-to-text
+    // came back. Every claimed number must be settled by submit or abandon.
+    let segmentSeq = null;
+    const beginSegment = () => {
+      segmentSeq = feed ? feed.begin({ speakerRef: userId, startedAt: segmentStartedAt }) : null;
+    };
+    beginSegment();
+
+    // Resolves once, on the first turn only; every later turn hits the cache and
+    // this settles on the next microtask, before any further packet can arrive.
+    const setup = Promise.resolve(speakerFor(userId))
+      .then((s) => {
+        speaker = s;
+        for (const p of buffered) writeToFile(s, p);
+        buffered.length = 0;
+      })
+      .catch((err) => {
+        console.error(`[voiceCapture] Failed to start recording user ${userId}:`, err?.message || err);
+      });
+
+    opusStream.on("error", (err) => {
+      console.error(`[voiceCapture] Opus stream error for user ${userId}:`, err.message);
+      try { opusStream.destroy(); } catch (_) {}
+    });
+
+    // Hand what has been captured so far to the feed as a small standalone OGG,
+    // built by a throwaway encoder so the speaker's own file is never touched.
+    // Resolves once the segment has been submitted, so teardown can wait on it.
+    const emitSegment = () => {
+      const segment = packets;
+      const durationMs = frames * FRAME_MS;
+      const seq = segmentSeq;
+      packets = [];
+      frames = 0;
+      segmentStartedAt = new Date();
+      segmentSeq = null;
+
+      // Captured once: `feed` is a let, and this function's callbacks run later.
+      const f = feed;
+      if (!f || seq == null) return null;
+      if (segment.length === 0 || durationMs < MIN_UTTERANCE_MS) {
+        // Below the minimum-duration gate. The number is already claimed, so it
+        // has to be settled or the feed's cursor would stall behind it forever.
+        f.abandon(seq);
+        return null;
+      }
+
+      return new Promise((resolve) => {
+        const chunks = [];
+        const enc = new OggOpusEncoder({ sampleRate: 48000, channels: 2 });
+        enc.on("data", (c) => chunks.push(c));
+        enc.on("end", () => {
+          f.submit(seq, {
+            speakerName: speaker?.displayName,
+            durationMs,
+            buffer: Buffer.concat(chunks),
+          });
+          resolve();
+        });
+        enc.on("error", (err) => {
+          console.warn(`[voiceCapture] utterance encode failed: ${err.message}`);
+          f.abandon(seq);
+          resolve();
+        });
+        for (const p of segment) enc.write(p);
+        enc.end();
+      });
+    };
+
+    opusStream.on("data", (packet) => {
+      frames += 1;
+      // Keep the meeting file complete regardless of what happens to the feed.
+      if (speaker) writeToFile(speaker, packet);
+      else buffered.push(packet);
+      if (segmentSeq != null) packets.push(packet);
+      // A monologue with no pause would otherwise never reach the feed. Only the
+      // feed's segment is cut here: destroying the subscription would drop audio
+      // from the .ogg until the speaker next paused, because speaking.start does
+      // not fire again while packets keep arriving.
+      if (frames * FRAME_MS >= MAX_UTTERANCE_MS) {
+        track(emitSegment());
+        beginSegment();
+      }
+    });
+
+    const finishUtterance = () => {
+      if (ended) return;
+      ended = true;
+      // Safe to release the guard here even though the receiver deletes its
+      // subscription on "close", which can follow this "end": both are nextTick
+      // callbacks in the same batch, and speaking.start can only be raised from a
+      // UDP packet in a later I/O phase, so no turn can slip between them and be
+      // handed the dying stream by receiver.subscribe.
+      activeUtterances.delete(userId);
+      liveSubscriptions.delete(opusStream);
+      // The turn can end before the speaker's encoder exists (a very short first
+      // turn), so the flush waits for the setup it may have raced.
+      setup
+        .then(() => {
+          // Unconditional: even a turn whose speaker setup failed has claimed a
+          // sequence number, and emitSegment is what settles it either way.
+          track(emitSegment());
+        })
+        .then(() => Promise.all(flushes))
+        .catch((err) => console.warn(`[voiceCapture] utterance flush failed: ${err?.message || err}`))
+        .then(resolveTurn);
+    };
+
+    opusStream.on("end", finishUtterance);
+    opusStream.on("close", finishUtterance);
   });
 
   receiver.speaking.on("error", (err) => {
     console.error(`[voiceCapture] Speaking event error:`, err.message);
   });
 
-  // Update meeting recording status in database
-  if (voiceChannelId) {
+  // Update meeting recording status in database.
+  //
+  // Guarded on sessionEnding: channelCheckInterval is armed before the connect
+  // wait above, so an empty channel can expire its grace period while this
+  // function is still inside waitForConnectionReady (up to 120 s) and the ready
+  // cue (up to 5 s). endMeetingSession has then already written "completed" and
+  // destroyed the connection, and writing "recording" back over it — or
+  // re-registering the dead connection below — would leave isRecording
+  // permanently true, so that meeting could never be started again.
+  if (voiceChannelId && !sessionEnding) {
     try {
       await db.meetingRecordingStatus
         .upsert({
@@ -623,6 +897,90 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
     } catch (_) {}
   }
 
-  activeConnections.set(meetingId, connection);
+  if (!sessionEnding) activeConnections.set(meetingId, connection);
+
+  // The consent notice and the live transcript want the same channel, so it is
+  // resolved once — and independently of CSAAS. Recording consent is announced
+  // whenever recording starts: with the backend down there is no transcript, but
+  // people must still be told they are being recorded.
+  //
+  // Placed here rather than beside the ready cue for the same reason the CSAAS
+  // block below is: this is a database read plus a channel fetch, and running it
+  // before the speaking handler is registered would drop the opening words of the
+  // meeting. It still lands well before any transcript line.
+  let meetingTextChannel = null;
+  if (!sessionEnding) {
+    try {
+      meetingTextChannel = await resolveMeetingChannel(guild.client, db, {
+        meetingId,
+        guildConfigId: cfg.id,
+      });
+    } catch (e) {
+      console.warn(`[voiceCapture] Could not resolve the meeting channel: ${e?.message || e}`);
+    }
+    // Never throws; a channel the bot cannot post in must not stop the recording.
+    if (meetingTextChannel) await postConsentNotice(meetingTextChannel);
+  }
+
+  // Clear whatever the previous recording of this meeting row left behind, before
+  // anything can write over it. Unconditional: stale utterances left in place are
+  // also what the pipeline would analyse for this meeting if no live feed runs.
+  let liveSessionCleared = false;
+  try {
+    await clearStaleLiveSession(db, meetingId);
+    liveSessionCleared = true;
+  } catch (e) {
+    console.warn(`[voiceCapture] Could not clear the previous live session for ${meetingId}: ${e?.message || e}`);
+  }
+
+  // The live transcript needs a CSAAS meeting_id while the meeting is still
+  // running. createdStage would only make one after the recording ends, so the
+  // meeting is created here and createdStage reuses the id.
+  //
+  // Placement is load-bearing on both sides. It is after the speaking handler so
+  // no audio is lost while CSAAS is called, and after the status upsert and
+  // activeConnections.set because createMeeting inherits CSAAS_REQUEST_TIMEOUT_MS
+  // (five minutes by default): until those two have run, /record stop would
+  // answer "no active recording" for a meeting that is recording, and a grace
+  // period expiring inside the window would be undone by this block writing
+  // "recording" back over a completed meeting.
+  // liveSessionCleared: if the stale rows could not be dropped, a live feed would
+  // write its turns straight over the previous meeting's. No feed this meeting.
+  if (csaasClient.isConfigured() && !sessionEnding && liveSessionCleared) {
+    try {
+      const humans = voiceChannel.members.filter((m) => !m.user.bot).map((m) => m.displayName);
+      // deriveMeetingName reads the *directory of* the path it is given, so it
+      // gets a path inside recordingsDir rather than recordingsDir itself.
+      const name = deriveMeetingName(path.join(recordingsDir, "meeting.ogg"), meetingId);
+      const title = `${name} — ${formatMeetingDate(new Date())}`;
+      const { meeting_id } = await csaasClient.createMeeting({ title, participants: humans });
+      if (meeting_id) {
+        // Worth recording even if the meeting ended meanwhile: the pipeline reuses it.
+        await db.meeting.update({ where: { id: meetingId }, data: { csaasMeetingId: meeting_id } });
+        const channel = sessionEnding ? null : meetingTextChannel;
+        if (channel) {
+          feed = createTranscriptFeed({
+            db, csaasClient, channel,
+            guildConfigId: cfg.id, meetingId, csaasMeetingId: meeting_id,
+          });
+          await feed.start();
+          console.log(`[voiceCapture] Live transcript feed started for meeting ${meetingId}`);
+          if (sessionEnding) {
+            // The meeting ended while CSAAS was still answering, so
+            // endMeetingSession has already run past its feed.stop(). Stop the
+            // feed here or its flush interval outlives the meeting.
+            const late = feed;
+            feed = null;
+            try { await late.stop(); } catch (_) {}
+          }
+        }
+      }
+    } catch (e) {
+      // No live feed this meeting; recording and the existing pipeline are unaffected.
+      feed = null;
+      console.warn(`[voiceCapture] Live transcript unavailable: ${e?.message || e}`);
+    }
+  }
+
   return connection;
 }

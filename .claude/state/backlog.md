@@ -4,6 +4,40 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Live meeting transcription — follow-ups
+Found during the 2026-09-07 build and its reviews. See
+`.claude/knowledge/live-meeting-transcription.md`.
+
+- **`/record` should pass `forceNewMeeting: true`.** `ensureMeetingChannel` returns the
+  same `meetingId` forever for a persistent voice channel, so re-recording the same room
+  reuses it. `clearStaleLiveSession` now wipes the previous session's utterance rows to
+  stop them being half-overwritten, which means a previous recording whose pipeline job
+  had not run yet loses its live transcript and falls back. The root fix touches
+  `/playback` grouping and the recordings directory, so it was left out of scope.
+- **`/meeting-retry` cannot re-arm the live path** — it resets status and attempts but
+  leaves `dataJson`, so `liveTranscriptFailed` survives forever. A meeting that hit a
+  transient Claude outage is stuck on the whole-file fallback permanently.
+- **Extract `endMeetingSession` into a module-level factory.** Two tests currently assert
+  against the *source text* of `voiceCapture.js` because those closures need a live voice
+  socket and the repo has no module mocking. A `createSessionEnder({...})` factory would
+  make the re-entrancy guard a two-line behavioural test and let both source-text tests go.
+- **Consent notice needs a channel.** If `resolveMeetingChannel` returns null, nothing is
+  posted and nothing warns loudly — the remaining hole in the consent surface.
+- **`transcriptFeed`'s queue is unbounded** and `degraded` trips on failures, not on
+  slowness. A backend answering every call in 29 s grows the queue all meeting, each entry
+  holding up to ~240 KB of Opus, and makes teardown take `queueLength/3 x 30 s`.
+- **`transcribeAudio.js` builds `new OpenAI()` at module load**, so the CSAAS utterance
+  test needs `OPENAI_API_KEY` even under `STT_PROVIDER=soniox`. A CI blocker, not a merge
+  blocker.
+- **`bot/src/Database/schema.sql` was not updated** with `meetingutterance` or
+  `meeting.csaasMeetingId`; migration 016 covers a fresh install but the schema dump is
+  now an incomplete picture.
+- Smaller: `total_duration_sec` is sent to `analyze-live` and never read; `dataJson.analysis`
+  holds a different shape on the live vs fallback path; the empty-channel log says
+  "5-minute grace period" while the constant and the new pinned guidelines both say 2.
+
+---
+
 ## /explain — follow-ups
 - **Drop `MultiEdit` from `EXTRA_ARGS`** — CLI 2.1.186 warns `deny rule "MultiEdit" matches no
   known tool` on every explain run (harmless, noisy). `explainAgent.js`, spec §4, tests.
