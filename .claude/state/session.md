@@ -1,49 +1,40 @@
 # Current Session
 
-**Date:** 2026-09-07
+**Date:** 2026-09-11
 
-## Goal
-Live per-speaker meeting transcription in the meeting's Discord channel, plus a
-pinned meeting-guidelines message in every meeting channel.
+## Goal (done)
+Ship live per-speaker meeting transcription into the meeting channel, and deploy it.
 
-## Status
-Design approved in chat; spec written to
-`docs/superpowers/specs/2026-09-07-live-meeting-transcription-design.md`.
-Awaiting the human's review of the spec before writing the implementation plan.
+## Outcome
+Built across 9 tasks with subagent-driven development, reviewed task by task plus a
+whole-branch review, merged and deployed. Suite 190 → 246.
 
-## Plan
-1. Spec (done) → human review.
-2. `superpowers:writing-plans` → implementation plan.
-3. `superpowers:subagent-driven-development` to execute it.
+- Bot `main` **9ca532d**, CSAAS `main` **ef24b0a**. Both live on the VM.
+- Knowledge: `.claude/knowledge/live-meeting-transcription.md`.
+- Follow-ups: the "Live meeting transcription" section of `backlog.md`.
 
-## Decisions taken (see spec §3)
-- Live as people speak, not a dump at the end.
-- Grouped blocks posted by the bot (bold name · time, quoted text), not webhook
-  impersonation.
-- The live transcript **replaces** the per-speaker whole-file `/transcribe`
-  upload, with automatic fallback to it.
-- STT runs on CSAAS via a new `POST /api/meeting/workflow/utterance`; the
-  existing `STT_PROVIDER` toggle still picks Soniox or Whisper.
-- Always on, announced by a notice at meeting start.
+## Deployment facts worth remembering
+- **Both repos auto-deploy on push to `main`.** The bot's
+  `.github/workflows/deploy.yml` pulls, runs `npm run db:migrate`, then restarts pm2 —
+  migrations are handled, no manual step. CSAAS uses `Deploy to Azure.yml`, and its
+  `runMigrationsOnStart.js` applies migrations at boot and moves the file into
+  `data/migrations_completed/`.
+- `gh run list` on the CSAAS repo showed **no run** for the push, yet the VM was at the
+  right commit with the migration applied. Do not trust `gh run list` there as evidence
+  of whether CSAAS deployed — verify on the VM instead.
+- **VM access:** `ssh -i /c/Users/Dell/Downloads/frame-work_key.pem azureuser@20.120.228.55`.
+  Bot at `~/Granjur-Discord-Bot` under azureuser's pm2; CSAAS at
+  `/var/www/CSAAS/CSAAS_Backend` under **root's** pm2 (`sudo pm2 list`).
+- CSAAS `.env` DB vars are `DB_HOST` / `DB_USER` / `DB_PW` / `DB_DATABASE` (not
+  `DB_PASSWORD` / `DB_NAME`). The bot uses a single `DATABASE_URL`.
 
-## Key finding driving the design
-`startMeetingRecording` opens one continuous Opus stream per speaker; Discord
-sends nothing during silence, so each `.ogg` is that speaker's speech with all
-gaps removed. Speaking order cannot be reconstructed from the stored files by
-any merge — segmentation has to happen at capture time. See spec §2.
+## Next
+A live meeting is the only thing left. Two people talking, deliberately overlapping, then
+check `meetingpipelinejob.dataJson` shows `liveTranscript: true` and that the CSAAS
+transcript reads as alternating `Name: text` lines rather than one block per speaker.
+The tuning knob if turns come out fragmented is `UTTERANCE_SILENCE_MS` (900 → 1200) in
+`voiceCapture.js`; if `MAX_UTTERANCE_MS` is ever raised, `OPEN_STALL_MS` must rise with it.
 
-## Hole found in spec self-review
-The CSAAS meeting is created by `createdStage`, which runs after recording ends,
-so a live feed would have no `meeting_id`. Fixed in spec §4.1: `createMeeting`
-moves to recording start, the id is stored on `meeting.csaasMeetingId`, and
-`createdStage` reuses it when present.
-
-## Knowledge / skills in use
-- `.claude/knowledge/meeting-audio-recording.md` — capture and playback pipeline.
-- `.claude/knowledge/csaas-meeting-workflow-integration.md` — CSAAS endpoints.
-- `superpowers:brainstorming` (done), then `writing-plans`,
-  then `subagent-driven-development`.
-
-## Open questions
-None blocking. The 900 ms utterance-silence window is the parameter most likely
-to need tuning after the first real meeting (spec §12).
+Known sharp edge while testing: re-recording the same voice channel clears the previous
+session's stored turns, because `/record` reuses one `meetingId` per voice channel. Use a
+fresh channel per test run. Root fix is in the backlog.

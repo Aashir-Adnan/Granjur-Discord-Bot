@@ -4,7 +4,7 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
-## 2026-09-07 — Live meeting transcription (code complete, awaiting live verification)
+## 2026-09-07 — Live meeting transcription (deployed 2026-09-09, awaiting a live meeting)
 
 Per-speaker live transcript posted into the meeting channel while a meeting records, and
 that transcript replaces the per-speaker whole-file upload as what CSAAS analyses.
@@ -30,8 +30,15 @@ the plan specified that would have queried the production database on every `npm
 
 Knowledge: `.claude/knowledge/live-meeting-transcription.md`.
 
-**Remaining: Task 10** — merge both branches, deploy, and verify on a live meeting.
-Steps are in the plan's Task 10.
+**Deployed 2026-09-09.** Bot `main` 9ca532d (auto-deploys via `.github/workflows/deploy.yml`,
+which pulls, runs `npm run db:migrate`, then restarts pm2). CSAAS `main` ef24b0a.
+Verified on the VM: `meeting_utterances` exists with `meeting_id int` + FK and its ledger
+row says applied; bot `meetingutterance` and `meeting.csaasMeetingId` exist; a probe of
+`POST /api/meeting/workflow/utterance` reaches the handler (returns our own
+"Audio file is required", past the permission check); bot online, 0 unstable restarts.
+
+**Remaining: a live meeting.** Two people, overlapping speech, then confirm the pipeline
+took the live path. Steps in the plan's Task 10.
 
 ---
 
