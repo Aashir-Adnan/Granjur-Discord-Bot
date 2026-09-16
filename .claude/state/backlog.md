@@ -4,6 +4,28 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Command visibility and access — follow-ups
+From the 2026-09-16 session, after unhiding ten commands.
+
+- **No member has an email stored.** All 11 `guildmember` rows have `email` empty,
+  because the DM verification path (`handleGetCode`) saves `email: ''` and never asks
+  for one. Only `handleEmailModal` stores an address and nobody uses it. Anything that
+  matches a person by email cannot work: looking someone up for a role grant, the
+  meeting roster, and the per-speaker recording filenames all fall back to Discord
+  display names. Decide whether the DM path should collect an email, or drop email as
+  an identifier.
+- **`/scrap`, `/migrate` and `/reconcile` have never been run.** They were hidden by the
+  permission bug until now, and they are the destructive ones. `{ ...interaction }` is
+  gone from the codebase so they do not share the bug that broke `/invite` and
+  `/verify`, but that only rules out one defect class — nothing else about them has
+  been exercised. Read them before running on live data.
+- **The repo's root `.env` points at the production database.** A test that reaches the
+  default `db` export queries the live server; this has now bitten twice (Task 8 of the
+  transcription plan, and `verify.test.js`). `handleOtpModal` and `guildIdFor` take a
+  `db` seam for this reason. A separate test database would remove the hazard entirely.
+
+---
+
 ## Live meeting transcription — follow-ups
 Found during the 2026-09-07 build and its reviews. See
 `.claude/knowledge/live-meeting-transcription.md`.

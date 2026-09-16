@@ -1,6 +1,6 @@
 # Current Session
 
-**Date:** 2026-09-11
+**Date:** 2026-09-16
 
 ## Goal (done)
 Ship live per-speaker meeting transcription into the meeting channel, and deploy it.
@@ -38,3 +38,38 @@ The tuning knob if turns come out fragmented is `UTTERANCE_SILENCE_MS` (900 → 
 Known sharp edge while testing: re-recording the same voice channel clears the previous
 session's stored turns, because `/record` reuses one `meetingId` per voice channel. Use a
 fresh channel per test run. Root fix is in the backlog.
+
+
+---
+
+## 2026-09-16 — command access
+
+`/invite` was invisible because it declared both a `commandRoles` entry and
+`setDefaultMemberPermissions`; Discord enforces the second by hiding the command, so
+the roles the config grants it to could not see it. Ten commands had this. All ten now
+rely on `command-config.json` alone, and `commandGates.test.js` fails the build if a
+command ever declares both again.
+
+Two commands then turned out to have never worked, because nobody could reach them:
+`/invite emails:...` and `/verify code:...` both built a fake interaction with
+`{ ...interaction }`, which drops prototype members — so `editReply` and the `guild`
+getter were missing. Both now take their value as an argument. `{ ...interaction }`
+appears nowhere in the codebase any more.
+
+Also fixed: the boot-time command hash ignored `default_member_permissions`, so any
+permission change produced an identical hash and never reached Discord.
+
+New: `/set-roles` changes any member's roles, not only those awaiting approval.
+`roleSync.js` owns the managed role list and `/approve` and `/backlog` import it.
+Only managed roles are ever removed, so Verified and Holding cannot be stripped by
+accident.
+
+Commits: 4c7ede6, fb8b75d, 592689f, b8b45c0. Suite 248 -> 264. 42 commands live.
+
+## Open threads
+- FAQ error-lookup design, parked at section 3 (auto-detect watcher + failure
+  behaviour). Sections 1 and 2 agreed: layered matcher, structured entries captured
+  from Discord, corpus learns from its own misses.
+- `STT_PROVIDER` unset on the VM, so meeting transcription runs on Whisper rather than
+  Soniox — the likely cause of the Urdu/Hindi script flapping. One env line + restart,
+  then a short comparison meeting.
