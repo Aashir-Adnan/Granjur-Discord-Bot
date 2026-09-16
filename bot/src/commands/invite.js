@@ -25,7 +25,7 @@ const MAX_BATCH_INVITES = 20
 const allowedDomains = config.allowedDomains
 
 /** Parse raw input into trimmed, lowercased, unique emails (comma / newline / semicolon separated) */
-function parseEmails(raw) {
+export function parseEmails(raw) {
   if (!raw || typeof raw !== 'string') return []
   return [...new Set(
     raw
@@ -36,7 +36,7 @@ function parseEmails(raw) {
 }
 
 /** Basic email format check */
-function isValidEmail(email) {
+export function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
 
@@ -57,23 +57,13 @@ export async function execute(interaction) {
 
     const emailsOpt = interaction.options.getString('emails')
     if (emailsOpt && emailsOpt.trim()) {
-      const all = parseEmails(emailsOpt)
-      const valid = all.filter((e) => isValidEmail(e))
-      const invalid = all.filter((e) => !isValidEmail(e))
-      const toSend = valid.slice(0, MAX_BATCH_INVITES)
-      if (invalid.length) {
-        return interaction.editReply({
-          content: `Invalid email format: ${invalid.slice(0, 5).join(', ')}${invalid.length > 5 ? '…' : ''}.`,
-        })
-      }
-      if (!toSend.length) {
-        return interaction.editReply({ content: 'No valid emails in the list.' })
-      }
-      const fakeModalInteraction = {
-        ...interaction,
-        fields: { getTextInputValue: () => emailsOpt },
-      }
-      return handleInviteModal(fakeModalInteraction)
+      // Pass the addresses as a value. Spreading the interaction to fake a modal
+      // submission drops every method on it — discord.js keeps editReply and the
+      // `guild` getter on the prototype, not as own properties — which is how this
+      // path came to throw "interaction.editReply is not a function".
+      // handleInviteModal owns validation for both entry points, so there is
+      // nothing to pre-check here.
+      return handleInviteModal(interaction, emailsOpt)
     }
 
     const embed = new EmbedBuilder()
@@ -115,11 +105,20 @@ export async function handleInviteButton(interaction) {
   await interaction.showModal(modal)
 }
 
-export async function handleInviteModal(interaction) {
+/**
+ * Send the invites. Reached two ways:
+ *   - the modal, which carries the addresses in `interaction.fields`
+ *   - `/invite emails:...`, which passes them as `rawEmails`
+ * A slash-command interaction has no `fields`, so read it only when it is there.
+ */
+export async function handleInviteModal(interaction, rawEmails = null) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Invalid.' }).catch(() => {})
 
-  const raw = interaction.fields.getTextInputValue('emails') || interaction.fields.getTextInputValue('email') || ''
+  const fromFields = interaction.fields
+    ? interaction.fields.getTextInputValue('emails') || interaction.fields.getTextInputValue('email') || ''
+    : ''
+  const raw = rawEmails ?? fromFields
   const all = parseEmails(raw)
   const valid = all.filter((e) => isValidEmail(e))
   const invalid = all.filter((e) => !isValidEmail(e))
