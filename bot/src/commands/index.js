@@ -19,6 +19,7 @@ import * as faqAnswerCmd from './faq-answer.js'
 import * as scrapCmd from './scrap.js'
 import * as dashboardCmd from './dashboard.js'
 import * as approveCmd from './approve.js'
+import * as setRolesCmd from './set-roles.js'
 import * as reposCmd from './repos.js'
 import * as verifyCmd from './verify.js'
 import * as ticketCmd from './ticket.js'
@@ -69,6 +70,7 @@ const commandModules = [
   scrapCmd,
   dashboardCmd,
   approveCmd,
+  setRolesCmd,
   reposCmd,
   editDocsCmd,
   clockInCmd,

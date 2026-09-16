@@ -12,12 +12,10 @@ import {
 import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { memberPassesRoleGate, roleIdsAreStale, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
+import { MANAGED_ROLES } from '../utils/roleSync.js'
 
-const ROLE_OPTIONS = [
-  'Intern', 'Temp', 'Junior Dev', 'Senior Dev', 'Associate Engineer',
-  'Quality Assurance', 'Project Manager', 'Server Manager', 'CEO',
-  'Frontend', 'UI/UX', 'Designer', 'Server', 'Full-Stack', 'Database',
-]
+// The single list, shared with /set-roles so the two cannot drift apart.
+const ROLE_OPTIONS = MANAGED_ROLES
 const ADD_ROLE_VALUE = '__add_role__'
 
 export const data = new SlashCommandBuilder()

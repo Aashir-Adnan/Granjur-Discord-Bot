@@ -246,12 +246,16 @@ export default async function handleInteractions(interaction) {
   if (interaction.isUserSelectMenu?.()) {
     if (customId.startsWith("mtg_"))
       return (await import("../commands/meetingReview.js")).route(interaction);
+    if (customId === "set_roles_member")
+      return (await import("../commands/set-roles.js")).handleMemberSelect(interaction);
     return;
   }
 
   if (interaction.isStringSelectMenu()) {
     if (customId.startsWith("mtg_"))
       return (await import("../commands/meetingReview.js")).route(interaction);
+    if (customId.startsWith("set_roles_apply:"))
+      return (await import("../commands/set-roles.js")).handleApply(interaction);
     const value = interaction.values?.[0];
     if (customId === "create_task_repo")
       return runCreateTaskHandler(interaction, (i) =>

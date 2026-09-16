@@ -1,44 +1,145 @@
 {
   "commandRoles": {
-    "init": ["CEO", "Server Manager"],
-    "scrap": ["CEO", "Server Manager"],
+    "init": [
+      "CEO",
+      "Server Manager"
+    ],
+    "scrap": [
+      "CEO",
+      "Server Manager"
+    ],
     "verify": [],
-    "invite": ["CEO", "Server Manager"],
-    "backlog": ["CEO", "Server Manager"],
-    "approve": ["CEO", "Server Manager"],
-    "bug": ["Verified"],
-    "ticket": ["Senior Dev", "CEO", "Server Manager"],
-    "feature": ["Verified"],
-    "fetch-my": ["Verified"],
-    "schedule": ["Verified"],
-    "project-db": ["Verified"],
-    "evaluate": ["Senior Dev", "CEO", "Server Manager"],
-    "docs": ["Verified"],
-    "explain": ["Verified"],
-    "faq": ["Verified"],
-    "faq-answer": ["CEO", "Server Manager"],
-    "repos": ["CEO", "Server Manager"],
-    "dashboard": ["CEO", "Server Manager"],
-    "edit-docs": ["CEO", "Server Manager", "Senior Dev"],
-    "clock-in": ["Verified"],
-    "clock-out": ["Verified"],
-    "sql-dump": ["Senior Dev", "CEO", "Server Manager"],
-    "create-task": ["Verified"],
-    "update-task": ["Verified"],
-    "create-project-role": ["CEO", "Server Manager"],
-    "create-project-categories": ["CEO", "Server Manager"],
-    "migrate": ["CEO", "Server Manager"],
+    "invite": [
+      "CEO",
+      "Server Manager"
+    ],
+    "backlog": [
+      "CEO",
+      "Server Manager"
+    ],
+    "approve": [
+      "CEO",
+      "Server Manager"
+    ],
+    "bug": [
+      "Verified"
+    ],
+    "ticket": [
+      "Senior Dev",
+      "CEO",
+      "Server Manager"
+    ],
+    "feature": [
+      "Verified"
+    ],
+    "fetch-my": [
+      "Verified"
+    ],
+    "schedule": [
+      "Verified"
+    ],
+    "project-db": [
+      "Verified"
+    ],
+    "evaluate": [
+      "Senior Dev",
+      "CEO",
+      "Server Manager"
+    ],
+    "docs": [
+      "Verified"
+    ],
+    "explain": [
+      "Verified"
+    ],
+    "faq": [
+      "Verified"
+    ],
+    "faq-answer": [
+      "CEO",
+      "Server Manager"
+    ],
+    "repos": [
+      "CEO",
+      "Server Manager"
+    ],
+    "dashboard": [
+      "CEO",
+      "Server Manager"
+    ],
+    "edit-docs": [
+      "CEO",
+      "Server Manager",
+      "Senior Dev"
+    ],
+    "clock-in": [
+      "Verified"
+    ],
+    "clock-out": [
+      "Verified"
+    ],
+    "sql-dump": [
+      "Senior Dev",
+      "CEO",
+      "Server Manager"
+    ],
+    "create-task": [
+      "Verified"
+    ],
+    "update-task": [
+      "Verified"
+    ],
+    "create-project-role": [
+      "CEO",
+      "Server Manager"
+    ],
+    "create-project-categories": [
+      "CEO",
+      "Server Manager"
+    ],
+    "migrate": [
+      "CEO",
+      "Server Manager"
+    ],
     "close-feature": [],
     "resolve-bug": [],
-    "reconcile": ["CEO", "Server Manager"],
-    "meeting-channel": ["Verified"],
-    "admin-panel": ["CEO", "Server Manager"],
-    "cleanup": ["CEO", "Server Manager"],
-    "create-channel": ["Verified"],
-    "playback": ["CEO", "Server Manager"],
-    "setup": ["CEO", "Server Manager"],
-    "meetings": ["Verified"],
-    "projects": ["CEO", "Server Manager"]
+    "reconcile": [
+      "CEO",
+      "Server Manager"
+    ],
+    "meeting-channel": [
+      "Verified"
+    ],
+    "admin-panel": [
+      "CEO",
+      "Server Manager"
+    ],
+    "cleanup": [
+      "CEO",
+      "Server Manager"
+    ],
+    "create-channel": [
+      "Verified"
+    ],
+    "playback": [
+      "CEO",
+      "Server Manager"
+    ],
+    "setup": [
+      "CEO",
+      "Server Manager"
+    ],
+    "meetings": [
+      "Verified"
+    ],
+    "projects": [
+      "CEO",
+      "Server Manager"
+    ],
+    "set-roles": [
+      "CEO",
+      "Server Manager"
+    ]
   },
   "dedicatedChannels": {
     "init": true,
@@ -253,6 +354,10 @@
       "syntax": "`/meetings`",
       "detail": "Shows your upcoming meetings. Select one to reschedule (new time) or cancel it. CEO/Server Manager can manage everyone's."
     },
-    "projects": { "summary": "List projects, add a project, link a repository", "syntax": "/projects", "detail": "CEO/Server Manager only. A project's docs folder determines which UBS-Doc pages are attributed to it." }
+    "projects": {
+      "summary": "List projects, add a project, link a repository",
+      "syntax": "/projects",
+      "detail": "CEO/Server Manager only. A project's docs folder determines which UBS-Doc pages are attributed to it."
+    }
   }
 }
