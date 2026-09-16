@@ -1,6 +1,5 @@
 import {
   SlashCommandBuilder,
-  PermissionFlagsBits,
   ChannelType,
   ActionRowBuilder,
   ButtonBuilder,
@@ -14,7 +13,6 @@ import { EPHEMERAL } from '../constants.js'
 export const data = new SlashCommandBuilder()
   .setName('scrap')
   .setDescription('Reset server to bare bones — confirm to remove EVERYTHING (one text + one voice channel only)')
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true'
 function debug(...args) {

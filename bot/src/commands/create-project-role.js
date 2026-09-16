@@ -1,10 +1,9 @@
-import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js'
+import { SlashCommandBuilder } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 
 export const data = new SlashCommandBuilder()
   .setName('create-project-role')
   .setDescription('Create a Discord role for a project — only users with this role can access the project category')
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild | PermissionFlagsBits.ManageRoles)
   .addStringOption((o) =>
     o.setName('project').setDescription('Project name (e.g. Fittour)').setRequired(true).setMaxLength(100)
   )

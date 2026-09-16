@@ -1,6 +1,5 @@
 import {
   SlashCommandBuilder,
-  PermissionFlagsBits,
   ActionRowBuilder,
   StringSelectMenuBuilder,
   ButtonBuilder,
@@ -24,7 +23,6 @@ const ADD_ROLE_VALUE = '__add_role__'
 export const data = new SlashCommandBuilder()
   .setName('backlog')
   .setDescription('(CEO/Server Manager) View incoming users in holding and approve + assign roles via modal')
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 
 export async function execute(interaction) {
   try {

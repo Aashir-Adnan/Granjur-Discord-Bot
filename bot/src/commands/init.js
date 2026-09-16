@@ -60,7 +60,6 @@ function debug(...args) {
 export const data = new SlashCommandBuilder()
   .setName('init')
   .setDescription('Set up Granjur roles, onboarding channel, and verification flow for this server')
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 
 export async function execute(interaction) {
   try {

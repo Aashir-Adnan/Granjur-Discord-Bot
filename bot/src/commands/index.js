@@ -122,8 +122,19 @@ export async function loadCommands(client) {
 
     const existingNames = (existing || []).map((c) => c.name).sort().join(',')
     const newNames = payload.map((c) => c.name).sort().join(',')
-    const existingHash = JSON.stringify((existing || []).map((c) => ({ name: c.name, description: c.description, options: c.options })).sort((a, b) => a.name.localeCompare(b.name)))
-    const newHash = JSON.stringify(payload.map((c) => ({ name: c.name, description: c.description, options: c.options })).sort((a, b) => a.name.localeCompare(b.name)))
+    // default_member_permissions belongs in the hash: it is what Discord uses to
+    // decide whether to show a command at all. Leaving it out meant a change to a
+    // command's permissions produced an identical hash, so registration was skipped
+    // and the change never reached Discord — the command kept its old visibility
+    // with nothing in the logs to say so.
+    const shape = (c) => ({
+      name: c.name,
+      description: c.description,
+      options: c.options,
+      default_member_permissions: c.default_member_permissions ?? null,
+    })
+    const existingHash = JSON.stringify((existing || []).map(shape).sort((a, b) => a.name.localeCompare(b.name)))
+    const newHash = JSON.stringify(payload.map(shape).sort((a, b) => a.name.localeCompare(b.name)))
 
     if (existingHash === newHash) {
       console.log(`Slash commands unchanged (${payload.length} commands), skipping registration`)

@@ -1,6 +1,5 @@
 import {
   SlashCommandBuilder,
-  PermissionFlagsBits,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -44,7 +43,6 @@ function isValidEmail(email) {
 export const data = new SlashCommandBuilder()
   .setName('invite')
   .setDescription('Send server invite links via email (batch supported)')
-  .setDefaultMemberPermissions(PermissionFlagsBits.CreateInstantInvite | PermissionFlagsBits.ManageGuild)
   .addStringOption((o) =>
     o.setName('emails').setDescription('Emails (comma/semicolon/newline separated)').setRequired(false).setMaxLength(2000)
   )

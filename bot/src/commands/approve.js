@@ -1,6 +1,5 @@
 import {
   SlashCommandBuilder,
-  PermissionFlagsBits,
   ActionRowBuilder,
   StringSelectMenuBuilder,
   ButtonBuilder,
@@ -20,7 +19,6 @@ const ROLE_OPTIONS = [
 export const data = new SlashCommandBuilder()
   .setName('approve')
   .setDescription('Approve a user in holding and assign roles — step-by-step')
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 
 export async function execute(interaction) {
   const guild = interaction.guild

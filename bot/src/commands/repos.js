@@ -1,6 +1,5 @@
 import {
   SlashCommandBuilder,
-  PermissionFlagsBits,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -17,7 +16,6 @@ import { reattributeGuildDocs } from '../services/docsSync.js'
 export const data = new SlashCommandBuilder()
   .setName('repos')
   .setDescription('Manage repositories — add or list (use options to skip form)')
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
   .addSubcommand((s) => s.setName('list').setDescription('List all repositories'))
   .addSubcommand((s) =>
     s
