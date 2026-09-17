@@ -30,10 +30,16 @@ path") for the write-path shape these items sit inside.
   `helpers.js`.** Same normalization logic written twice instead of reused.
 - **The `'notified'` default literal is duplicated** between `update-task.js` and
   `taskStatusChange.js` rather than defined once and imported.
-- **`Platform Admin` is not in the permission migration's role groups.** It's covered
-  today only via the `seesAll` fallback in `requirePortalPermission`, not because the
-  migration granted it `update_discord_tasks` explicitly — fine while `seesAll` exists,
-  but a trap if that fallback is ever narrowed.
+- **No body size cap on the bot's HTTP server.** `bot/src/server.js` reads the whole
+  request body into memory before handing it to `handleStatusRequest`; the route caps
+  `taskId` at 64 characters but only *after* the body has been buffered, so a large POST
+  to port 4070 is absorbed in full. Harmless while the NSG keeps the port private (see
+  the loopback-bind item above), but the cap belongs on the reader, not the handler.
+- **`TeamLayout.refresh` has no request sequencing.** Two refreshes in flight at once
+  (a drag that succeeds while a filter change is still loading, or the new refetch the
+  Board now fires after a *failed* drop) resolve in whatever order the network gives
+  them, so an older response can overwrite a newer one. Needs a request id or an
+  AbortController, the same way the Tasks page's other fetches would if they raced.
 - **CSAAS `members`/task TEXT payload is uncapped within the endpoint's `LIMIT 2000`
   row cap.** A very large `description`/`scope` field could bloat one response; no
   per-field length cap exists.
@@ -53,10 +59,6 @@ From the 2026-09-17 build. See `.claude/knowledge/project-tasks-site.md`.
   endpoint reads it and finds nothing to show. Not deleted — needs the owner's
   go-ahead. If approved, the statement is:
   `DELETE FROM guildconfig WHERE id = 'b23782a7c09e433bab78d866b' AND guildId = 'guild1';`
-- **Should `GET /api/discord/tasks` require a token?** It currently matches the
-  portal's other read endpoints (public, no `accessToken`), a deliberate spec choice —
-  but it is the first endpoint that exposes task titles, Discord ids and member names
-  to an unauthenticated `curl`. Worth a product decision, not just a technical default.
 - **The endpoint's `LIMIT 2000` on `task` silently drops older blockers.** A task whose
   blocker falls outside the newest 2000 tasks reads as `isBlocked: false` with no
   indication anything was truncated. Fine at current volume; will misreport quietly as

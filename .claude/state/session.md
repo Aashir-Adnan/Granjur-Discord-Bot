@@ -42,7 +42,11 @@ uncapped TEXT payload, raw `task.type` rendering).
      `DISCORD_BOT_SECRET` (same value as `BOT_INTERNAL_SECRET`) in
      `/var/www/CSAAS/CSAAS_Backend/.env` → restart.
    - UBS-Doc (site) to `main`.
-   Production env edits are asked for before they are made (spec §9).
+   Production env edits are asked for before they are made (spec §9). **The order is
+   not cosmetic:** if CSAAS deploys before bot migration 018, the existing Team/Tasks
+   page shows "Could not load tasks" until the bot deploy lands — the CSAAS read selects
+   `roleNames`, a column migration 018 adds, so MySQL answers 1054 (unknown column) and
+   the whole endpoint 500s.
 3. **Live verification**: sign in on the site, open `/tools/team/board`, drag a card,
    confirm the Discord channel post reads "Name (via the site) updated this task:", a
    blocked card shows the warning toast, and moving a blocker to Done still fires the

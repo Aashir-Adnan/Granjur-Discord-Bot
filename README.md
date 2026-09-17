@@ -84,6 +84,7 @@ Without these, the bot will log in with "Used disallowed intents" and exit.
 | `VERIFY_BASE_URL` | Base URL of the verify page (link sent to users), e.g. `http://localhost:3080` |
 | `BOT_VERIFY_URL` | Bot’s verify callback URL (used by verify page to POST), e.g. `http://localhost:4070` |
 | `BOT_VERIFY_PORT` | Port for bot’s verify callback server (default 4070) |
+| `BOT_INTERNAL_SECRET` | Shared secret for the loopback `/internal/tasks/status` route CSAAS calls on the same port; unset means the route refuses every request |
 | `VERIFY_PAGE_PORT` | Port for the verify page server (default 3080) |
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 Web client ID (for verify page Sign in with Google) |
 | `GITHUB_TOKEN` | (Optional) For creating issues from /bug and /docs, /evaluate (repo contents, commits) |

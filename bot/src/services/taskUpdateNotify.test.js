@@ -73,6 +73,18 @@ function harness({ channel = null, taskId = 'aaaaaabbbbbbcccccc123456' } = {}) {
   return { client, guild, dms, created, taskId }
 }
 
+// notifyTaskUpdate defaults `db` to the real default export, which points at
+// the production database (.claude/rules/tests-never-touch-production.md), so
+// every call below passes one. Cases whose path must not reach the database at
+// all pass this fake: it throws rather than returning an empty result, so a
+// lookup that should never happen is loud in the output (notifyTaskUpdate
+// catches and warns around the unblock-notice read) instead of quietly
+// succeeding against the live server.
+const noQueryDb = {
+  taskDependency: { findByBlocker: async () => { throw new Error('test must not query') } },
+  task: { findByIds: async () => { throw new Error('test must not query') } },
+}
+
 test('a newly assigned member is DMed and given a channel that did not exist', async () => {
   const h = harness()
   const task = { id: h.taskId, title: 'Audit encryption', status: 'open', assigneeIds: [], discordChannelId: null }
@@ -83,6 +95,7 @@ test('a newly assigned member is DMed and given a channel that did not exist', a
     before: task,
     updates: { assigneeIds: ['11'] },
     actorId: '99',
+    db: noQueryDb,
   })
   assert.equal(out.created, true)
   assert.equal(out.channelId, 'newchan')
@@ -113,6 +126,7 @@ test('a field edit posts in the task channel and DMs nobody', async () => {
     before: task,
     updates: { passedQaTests: 3 },
     actorId: '99',
+    db: noQueryDb,
   })
   assert.deepEqual(out.dmed, [])
   assert.equal(h.dms.length, 0)
@@ -163,7 +177,7 @@ test('an already-closed task closing again does not re-DM', async () => {
   const task = { id: h.taskId, title: 'T', status: 'closed', assigneeIds: ['11'], discordChannelId: 'own' }
   const out = await notifyTaskUpdate({
     client: h.client, guild: h.guild, task, before: task,
-    updates: { status: 'done' }, actorId: '99',
+    updates: { status: 'done' }, actorId: '99', db: noQueryDb,
   })
   assert.deepEqual(out.dmed, [])
 })
@@ -182,7 +196,7 @@ test('the meeting review channel is never treated as the task channel', async ()
   const task = { id: h.taskId, title: 'T', status: 'open', assigneeIds: [], discordChannelId: 'review' }
   const out = await notifyTaskUpdate({
     client: h.client, guild: h.guild, task, before: task,
-    updates: { assigneeIds: ['11'] }, actorId: '99',
+    updates: { assigneeIds: ['11'] }, actorId: '99', db: noQueryDb,
   })
   // A fresh channel is made instead; the shared review channel is untouched.
   assert.equal(out.created, true)
@@ -196,7 +210,7 @@ test('an unassigned task with no channel notifies nobody and creates nothing', a
   const task = { id: h.taskId, title: 'T', status: 'open', assigneeIds: [], discordChannelId: null }
   const out = await notifyTaskUpdate({
     client: h.client, guild: h.guild, task, before: task,
-    updates: { status: 'in_progress' }, actorId: '99',
+    updates: { status: 'in_progress' }, actorId: '99', db: noQueryDb,
   })
   assert.equal(out.created, false)
   assert.equal(out.channelId, null)
@@ -252,6 +266,7 @@ test('a status-change warning is appended as the last line of the channel post',
     updates: { passedQaTests: 3 },
     actorId: '99',
     warning: '⛔ Still blocked by: **Router** (open)',
+    db: noQueryDb,
   })
   assert.equal(posts.length, 1)
   const lines = posts[0].split('\n')
@@ -353,6 +368,7 @@ async function postWith({ actorId = null, actorLabel = null } = {}) {
     updates: { status: 'in_progress' },
     actorId,
     actorLabel,
+    db: noQueryDb,
   })
   assert.equal(posts.length, 1)
   return posts[0]

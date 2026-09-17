@@ -25,12 +25,15 @@ UBS-Doc /tools/tasks  ---GET--->  CSAAS /api/discord/tasks  ---SQL--->  granjur.
   DB user is ever scoped down from `root`, this endpoint breaks silently (empty
   results, not an error) unless the new user is granted at least `SELECT` on
   `granjur.*`.
-- The endpoint is **public — no token, no encryption, no `accessToken` check** —
-  matching the trust model of the portal's other read endpoints (`/api/portal/users/list`,
-  `/api/projects/tenant/list`). `ToolGuard` protects only the `/tools/tasks` page, not
-  the data. Anyone with the URL can `curl` task titles, Discord ids and names. This was
-  a deliberate spec choice (§2), not an oversight, but it is a real exposure — see the
-  backlog item if it needs revisiting.
+- The endpoint **requires the portal access token** (`verification: { accessToken: true }`,
+  no encryption, `permission` still null — a read needs only proof the caller is signed
+  in). It was public in the 2026-09-17 build, matching the portal's other read endpoints
+  (`/api/portal/users/list`, `/api/projects/tenant/list`), because `ToolGuard` protects
+  the `/tools/tasks` page and not the data — but the Team section added descriptions and
+  scope to the response, and anyone with the URL could `curl` those alongside titles,
+  Discord ids and member names. Closed in the 2026-09-18 build. Every consumer sits
+  behind the portal gate and the site's fetch wrapper already sends the token, so nothing
+  on the site had to change. **A bare `curl` now returns 401** — see "How to verify".
 - The framework wraps a post-process function's return value as `payload.return`. The
   site's fetch helper unwraps `payload.return ?? payload ?? data` — the same pattern
   used for every other portal call (`mwGet`).
@@ -158,7 +161,8 @@ Bot, then CSAAS, then site — each depends on the previous:
    `[memberNameSync] …` lines; `SELECT COUNT(*) FROM guildmember WHERE displayName IS NOT NULL`
    is non-zero.
 2. **CSAAS to `main`.** Auto-deploy. Verify: `curl -s https://api.gobizzi.com/api/discord/tasks | head -c 600`
-   shows `"projects"`.
+   now shows a 401 envelope, not `"projects"` — the endpoint requires the portal token as
+   of the 2026-09-18 build. Check the payload signed-in in the browser instead.
 3. **Site to `main`.** Vercel builds on push. Open `/tools/tasks`.
 4. **Live Discord check:** `/update-task task:<A> blocked_by:<B>`, then
    `/update-task task:<A> status:In progress` shows the warning; `/update-task task:<B> status:Done`
@@ -264,9 +268,14 @@ URDD's role changes — a person who already held the Dev or Admin role before t
 migration ran would never pick up the new group permission on their own. `INSERT IGNORE`
 on the unique pair makes re-running the migration a no-op.
 
-`requirePortalPermission` also has a `seesAll` fallback for role admins, which is how
-**`Platform Admin` is covered without appearing in the migration's groups at all** — it
-wasn't added there on purpose (deferred minor, not an oversight worth fixing).
+`Platform Admin` is in the migration's role lists alongside `Admin` and `Dev`, and gets a
+real URDP row like everyone else. The earlier plan — lean on the `seesAll` fallback in
+`requirePortalPermission` and leave the role out of the groups — **does not work for the
+board**: that fallback only decides what the CSAAS *endpoint* accepts. The site decides
+whether a card is draggable from `useActingPermissions`, which reads the acting URDD's
+permission list and has no admin fallback of its own, so a Platform Admin with no URDP
+row saw the read-only note and never got as far as sending a request. Grant the
+permission; do not rely on `seesAll` for anything the UI also gates on.
 
 ### The drop rule and the override lifecycle (Board.tsx)
 
@@ -293,6 +302,18 @@ an override once the freshly-fetched payload already agrees with it (so a slow-b
 eventually-successful refresh still converges instead of leaving a permanent local
 override).
 
+### The bot route has no guild scope
+
+`handleStatusRequest` resolves the task with `db.task.findFirst({ where: { id: taskId } })`
+— **by id alone**. It never checks which guild the task belongs to, and CSAAS does not
+send one. `update_discord_tasks` is therefore a global grant: a site user who holds it
+can move *any* task in *any* guild the bot serves, provided they can learn its id (the
+read endpoint hands out every id they can see). That is harmless today because the
+deployment is single-guild, and it is the same shape as the read side, which is also
+guild-blind. It stops being harmless the moment a second guild is onboarded — at that
+point the route needs the caller's guild (or the permission needs a guild scope) before
+the write, not after.
+
 ### The error-body shape (read this before parsing a CSAAS error anywhere)
 
 Every CSAAS error response, at every status code, has the same envelope:
@@ -316,9 +337,13 @@ would make the board's permission notice silently never show; see progress ledge
   'content-type: application/json' -d '{}'` (no `x-internal-secret` header) → **401**.
   `curl -s -X POST localhost:4070/internal/tasks/status -H 'content-type: application/json'
   -H 'x-internal-secret: <secret>' -d '{"taskId":"x","status":"bogus"}'` → **400**.
-- **CSAAS:** `curl -s https://api.gobizzi.com/api/discord/tasks | jq '.payload.return.members
-  | length'` for the read side; the write side needs a signed-in token, so it's exercised
-  live from the site instead.
+- **CSAAS:** the read side no longer answers a bare `curl` — `GET /api/discord/tasks`
+  without an access token returns **401**, which is itself the check that the gate
+  landed. To see the data, open `/tools/team` signed in and read the response in the
+  browser's network panel (or replay it from there with the `Authorization` header
+  attached); both sides of this endpoint are now exercised from a signed-in browser
+  rather than from the shell. The write side always needed a token and is likewise
+  exercised live from the site.
 - **Live, end to end:** sign in on the site, drag a card on `/tools/team/board`, and the
   task's Discord channel shows a post starting **"<Name> (via the site) updated this
   task:"** followed by the usual `• field: old → new` bullet lines — the exact text the
