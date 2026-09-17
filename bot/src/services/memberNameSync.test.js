@@ -1,8 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { toNameUpdates, syncGuildMemberNames, syncOneMember } from './memberNameSync.js'
+import { toNameUpdates, syncGuildMemberNames, syncOneMember, roleNamesOf } from './memberNameSync.js'
 
 const m = (id, displayName, username, bot = false) => ({ id, displayName, user: { username, bot } })
+
+const withRoles = (member, names) => ({
+  ...member,
+  roles: { cache: new Map(names.map((n, i) => [String(i), { name: n }])) },
+})
 
 test('toNameUpdates: changed names update, unchanged are skipped, unknown members insert, bots ignored', () => {
   const discord = [m('1', 'Nauraiz', 'nauraiz_101104'), m('2', 'Afaq Khawar', 'afaqkhawar9299'), m('3', 'New Person', 'newp'), m('9', 'Helper', 'helper', true)]
@@ -11,8 +16,8 @@ test('toNameUpdates: changed names update, unchanged are skipped, unknown member
     { id: 'r2', discordId: '2', displayName: 'Afaq', username: null },
   ]
   const out = toNameUpdates(discord, rows)
-  assert.deepEqual(out.updates, [{ id: 'r2', displayName: 'Afaq Khawar', username: 'afaqkhawar9299' }])
-  assert.deepEqual(out.inserts, [{ discordId: '3', displayName: 'New Person', username: 'newp' }])
+  assert.deepEqual(out.updates, [{ id: 'r2', displayName: 'Afaq Khawar', username: 'afaqkhawar9299', roleNames: [] }])
+  assert.deepEqual(out.inserts, [{ discordId: '3', displayName: 'New Person', username: 'newp', roleNames: [] }])
 })
 
 test('toNameUpdates: names are clipped to the column widths', () => {
@@ -42,7 +47,7 @@ test('syncGuildMemberNames writes updates and pending inserts through the seam',
   const n = await syncGuildMemberNames(guild, { db, cfg })
   assert.equal(n, 2)
   assert.equal(findManyWhere.all, true)
-  assert.deepEqual(calls[0], ['update', { where: { id: 'r1' }, data: { displayName: 'Nauraiz', username: 'nauraiz_101104' } }])
+  assert.deepEqual(calls[0], ['update', { where: { id: 'r1' }, data: { displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: [] } }])
   assert.equal(calls[1][0], 'upsert')
   assert.equal(calls[1][1].create.status, 'pending')
   assert.equal(calls[1][1].create.displayName, 'Hassan Abid')
@@ -61,7 +66,7 @@ test('syncOneMember: a member whose stored name differs updates that row', async
   member.guild = { id: 'guild1' }
   await syncOneMember(member, { db })
   assert.equal(calls.length, 1)
-  assert.deepEqual(calls[0], ['update', { where: { id: 'r1' }, data: { displayName: 'Nauraiz', username: 'nauraiz_101104' } }])
+  assert.deepEqual(calls[0], ['update', { where: { id: 'r1' }, data: { displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: [] } }])
 })
 
 test('syncOneMember: a member with no row upserts a pending row', async () => {
@@ -118,4 +123,24 @@ test('syncOneMember: findUnique rejecting resolves rather than throwing, and log
   } finally {
     console.warn = originalWarn
   }
+})
+
+test('roleNamesOf: sorted, no @everyone, capped at 25 names of 100 chars', () => {
+  const member = withRoles(m('1', 'N', 'n'), ['Frontend', '@everyone', 'Senior Dev', 'x'.repeat(150)])
+  assert.deepEqual(roleNamesOf(member), ['Frontend', 'Senior Dev', 'x'.repeat(100)])
+  const many = withRoles(m('1', 'N', 'n'), Array.from({ length: 30 }, (_, i) => `R${String(i).padStart(2, '0')}`))
+  assert.equal(roleNamesOf(many).length, 25)
+})
+
+test('toNameUpdates: a changed role list is an update even when names are unchanged', () => {
+  const discord = [withRoles(m('1', 'Nauraiz', 'nauraiz_101104'), ['Senior Dev'])]
+  const rows = [{ id: 'r1', discordId: '1', displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: '["Frontend"]' }]
+  const out = toNameUpdates(discord, rows)
+  assert.deepEqual(out.updates, [{ id: 'r1', displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: ['Senior Dev'] }])
+})
+
+test('toNameUpdates: an identical role list (stored as JSON text) is not an update', () => {
+  const discord = [withRoles(m('1', 'Nauraiz', 'nauraiz_101104'), ['Frontend', 'Senior Dev'])]
+  const rows = [{ id: 'r1', discordId: '1', displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: '["Frontend","Senior Dev"]' }]
+  assert.deepEqual(toNameUpdates(discord, rows).updates, [])
 })

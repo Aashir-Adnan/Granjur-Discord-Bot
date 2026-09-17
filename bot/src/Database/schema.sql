@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS guildmember (
   email VARCHAR(255),
   displayName VARCHAR(100),
   username VARCHAR(64),
+  roleNames JSON DEFAULT NULL,
   verifiedAt DATETIME(3),
   status VARCHAR(32) DEFAULT 'pending',
   roleIds JSON DEFAULT ('[]'),

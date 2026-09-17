@@ -55,12 +55,26 @@ test('guildmember insert: placeholders equal params, and params follow column or
   })
   const cols = sql.match(/\(([^)]+)\) VALUES/)[1].split(',').map((s) => s.trim())
   assert.equal((sql.match(/\?/g) || []).length, params.length)
-  assert.deepEqual(cols, ['id', 'guildConfigId', 'discordId', 'email', 'verifiedAt', 'status', 'roleIds', 'displayName', 'username'])
-  assert.deepEqual(params, ['gm1', 'g1', 'd1', 'a@granjur.com', '2026-09-17 00:00:00', 'verified', '["r1","r2"]', 'Nauraiz', 'nauraiz_101104'])
+  assert.deepEqual(cols, ['id', 'guildConfigId', 'discordId', 'email', 'verifiedAt', 'status', 'roleIds', 'displayName', 'username', 'roleNames'])
+  assert.deepEqual(params, ['gm1', 'g1', 'd1', 'a@granjur.com', '2026-09-17 00:00:00', 'verified', '["r1","r2"]', 'Nauraiz', 'nauraiz_101104', '[]'])
   assert.match(sql, /INSERT INTO `guildmember`/)
 })
 
 test('guildmember insert: unspecified fields fall back to the insert defaults', () => {
   const { params } = guildMemberInsertSql({ id: 'gm2', guildConfigId: 'g1', discordId: 'd2' })
-  assert.deepEqual(params, ['gm2', 'g1', 'd2', null, null, 'pending', '[]', null, null])
+  assert.deepEqual(params, ['gm2', 'g1', 'd2', null, null, 'pending', '[]', null, null, '[]'])
+})
+
+test('guildmember update sets: roleNames is written as JSON', () => {
+  assert.deepEqual(guildMemberUpdateSets({ roleNames: ['Senior Dev', 'Frontend'] }), {
+    sets: ['roleNames = ?'], vals: ['["Senior Dev","Frontend"]'],
+  })
+})
+
+test('guildmember insert: roleNames is the tenth column and defaults to an empty list', () => {
+  const { sql, params } = guildMemberInsertSql({ id: 'x', guildConfigId: 'g', discordId: 'u' })
+  const cols = sql.match(/\(([^)]+)\) VALUES/)[1].split(',').map((s) => s.trim())
+  assert.equal(cols[9], 'roleNames')
+  assert.equal(params[9], '[]')
+  assert.equal((sql.match(/\?/g) || []).length, params.length)
 })

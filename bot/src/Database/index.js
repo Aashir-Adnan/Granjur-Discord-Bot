@@ -139,6 +139,7 @@ async function guildMemberUpsert({ where, create, update }) {
       status: update.status ?? existing.status,
       displayName: update.displayName,
       username: update.username,
+      roleNames: update.roleNames,
     });
     sets.push("verifiedAt = ?", "updatedAt = CURRENT_TIMESTAMP(3)");
     vals.push(update.verifiedAt ?? existing.verifiedAt);
@@ -175,6 +176,7 @@ export function guildMemberInsertSql(data) {
     ["roleIds", toJson(data.roleIds || [])],
     ["displayName", data.displayName ?? null],
     ["username", data.username ?? null],
+    ["roleNames", toJson(data.roleNames || [])],
   ];
   return {
     sql: `INSERT INTO \`guildmember\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
@@ -190,6 +192,7 @@ export function guildMemberUpdateSets(data = {}) {
   if (data.email !== undefined) { sets.push("email = ?"); vals.push(data.email); }
   if (data.displayName !== undefined) { sets.push("displayName = ?"); vals.push(data.displayName); }
   if (data.username !== undefined) { sets.push("username = ?"); vals.push(data.username); }
+  if (data.roleNames !== undefined) { sets.push("roleNames = ?"); vals.push(toJson(data.roleNames)); }
   return { sets, vals };
 }
 
@@ -2069,6 +2072,7 @@ const db = {
   guildConfig: {
     findUnique: ({ where }) =>
       where?.guildId ? getGuildConfig(where.guildId) : null,
+    findById: getGuildConfigById,
     create: () => {
       throw new Error("Use getOrCreateGuildConfig");
     },

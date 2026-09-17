@@ -10,6 +10,30 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 export const NAME_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000
 const clip = (s, n) => (s == null ? null : String(s).slice(0, n))
 
+/** Discord role names for a member: sorted, no @everyone, capped at 25 names of 100 chars. */
+export function roleNamesOf(member) {
+  const cache = member?.roles?.cache
+  if (!cache) return []
+  return Array.from(cache.values())
+    .map((r) => String(r?.name ?? ''))
+    .filter((n) => n && n !== '@everyone')
+    .map((n) => n.slice(0, 100))
+    .sort((a, b) => a.localeCompare(b))
+    .slice(0, 25)
+}
+const storedRoles = (v) => {
+  if (Array.isArray(v)) return v
+  if (typeof v === 'string' && v) {
+    try {
+      const p = JSON.parse(v)
+      return Array.isArray(p) ? p : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
 /** Pure diff between Discord's members and the stored rows. */
 export function toNameUpdates(discordMembers = [], dbRows = []) {
   const byDiscordId = new Map(dbRows.map((r) => [String(r.discordId), r]))
@@ -19,13 +43,15 @@ export function toNameUpdates(discordMembers = [], dbRows = []) {
     if (member?.user?.bot) continue
     const displayName = clip(member.displayName ?? member.user?.username, 100)
     const username = clip(member.user?.username, 64)
+    const roleNames = roleNamesOf(member)
     const row = byDiscordId.get(String(member.id))
     if (!row) {
-      inserts.push({ discordId: String(member.id), displayName, username })
+      inserts.push({ discordId: String(member.id), displayName, username, roleNames })
       continue
     }
-    if (row.displayName !== displayName || row.username !== username) {
-      updates.push({ id: row.id, displayName, username })
+    const rolesChanged = JSON.stringify(storedRoles(row.roleNames)) !== JSON.stringify(roleNames)
+    if (row.displayName !== displayName || row.username !== username || rolesChanged) {
+      updates.push({ id: row.id, displayName, username, roleNames })
     }
   }
   return { updates, inserts }
@@ -34,13 +60,13 @@ export function toNameUpdates(discordMembers = [], dbRows = []) {
 /** Writes an updates/inserts diff through the db seam. Returns the row count written. */
 async function applyNameWrites(guildId, { updates, inserts }, dbArg) {
   for (const u of updates) {
-    await dbArg.guildMember.update({ where: { id: u.id }, data: { displayName: u.displayName, username: u.username } })
+    await dbArg.guildMember.update({ where: { id: u.id }, data: { displayName: u.displayName, username: u.username, roleNames: u.roleNames } })
   }
   for (const i of inserts) {
     await dbArg.guildMember.upsert({
       where: { guildId_discordId: { guildId, discordId: i.discordId } },
-      create: { guildId, discordId: i.discordId, status: 'pending', displayName: i.displayName, username: i.username },
-      update: { displayName: i.displayName, username: i.username },
+      create: { guildId, discordId: i.discordId, status: 'pending', displayName: i.displayName, username: i.username, roleNames: i.roleNames },
+      update: { displayName: i.displayName, username: i.username, roleNames: i.roleNames },
     })
   }
   return updates.length + inserts.length
