@@ -4,6 +4,67 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Project tasks site — follow-ups
+From the 2026-09-17 build. See `.claude/knowledge/project-tasks-site.md`.
+
+- **Stray production `guildconfig` row awaiting a decision.** Id
+  `b23782a7c09e433bab78d866b`, `guildId = 'guild1'`, inserted 2026-09-17T10:48:49Z by a
+  test run that reached the real database (see `.claude/rules/tests-never-touch-production.md`
+  for how). Confirmed read-only: no row in any `guildConfigId`-keyed table references
+  it, the bot's guild loops use `client.guilds.cache` so it is inert, and the CSAAS
+  endpoint reads it and finds nothing to show. Not deleted — needs the owner's
+  go-ahead. If approved, the statement is:
+  `DELETE FROM guildconfig WHERE id = 'b23782a7c09e433bab78d866b' AND guildId = 'guild1';`
+- **Should `GET /api/discord/tasks` require a token?** It currently matches the
+  portal's other read endpoints (public, no `accessToken`), a deliberate spec choice —
+  but it is the first endpoint that exposes task titles, Discord ids and member names
+  to an unauthenticated `curl`. Worth a product decision, not just a technical default.
+- **The endpoint's `LIMIT 2000` on `task` silently drops older blockers.** A task whose
+  blocker falls outside the newest 2000 tasks reads as `isBlocked: false` with no
+  indication anything was truncated. Fine at current volume; will misreport quietly as
+  the table grows.
+- **Project-registry slug mismatch between the site and the bot.** The site's own
+  project registry (used by `/tools/projects`) and the bot's `project.docsSlug` agree
+  only for `badar-hms`; every other project's deep link from Projects to Tasks lands on
+  a "no tasks match" notice rather than a real filtered view. The Tasks page now says so
+  instead of showing a silent empty page (UBS-Doc `6529af1`), but the underlying slug
+  mismatch is still there and worth reconciling properly.
+- **Dashboard has no blocked marker.** `/dashboard` and `/fetch-my` don't show that a
+  task is blocked — that only surfaces in `/update-task` replies, the notifier's
+  channel posts, and the site. Deliberately left out of the 2026-09-17 build.
+- **`/close-feature` and `/resolve-bug` bypass the notifier.** Both change `task.status`
+  directly instead of going through `notifyTaskUpdate`, so neither one ever posts a
+  blocker warning or an unblock notice — a task closed through either command can
+  silently unblock its dependents with nothing posted anywhere.
+- **No site link from a task back to its project's documentation.** The Tasks screen
+  and the docs browser (`/docs`, `/tools/projects`) are two separate views of the same
+  `project` row with no cross-link between a task and the docs for the project it
+  belongs to.
+- **Deferred minors from the 2026-09-17 build's reviews**, each small enough to pick up
+  opportunistically rather than as its own task:
+  - `handleAssigneesSelect` (`bot/src/commands/create-task.js` ~645) keeps a dead
+    `'none'` filter left over from the string-select era.
+  - No test covers the user-select route for `create_task_assignees` in
+    `bot/src/handlers/interactions.js`.
+  - CSAAS `assembleTasks`: `'No project'` inferred member names are resolved against
+    `orphans[0]`'s guild only — wrong in a multi-guild deployment.
+  - CSAAS `assembleTasks`: a null `updatedAt` sorts first, and one invalid `Date` value
+    throws and 500s the whole response rather than failing just that task.
+  - CSAAS `assembleTasks`: two same-named projects from different guilds are
+    indistinguishable in the response (no guild field).
+  - CSAAS `getDiscordTasks` itself is untested despite having the `__hooks` seam — no
+    assertion on username fallback, timestamp formatting, `docsSlug`, `pending`
+    members, or array/`Date` shaped inputs.
+  - Bot `memberNameSync.js`: `syncGuildMemberNames` has no try/catch of its own; it is
+    only safe today because `syncAll` wraps it.
+  - `/update-task`: naming an already-assigned member as the only `add_assignee` value
+    gets the generic "Provide at least one field" reply instead of a clearer message.
+  - Site `Tasks.tsx`: the `?project=` URL param is read only at mount, so browser
+    back/forward between two `?project=` entries doesn't resync the filter without a
+    full reload.
+
+---
+
 ## Command visibility and access — follow-ups
 From the 2026-09-16 session, after unhiding ten commands.
 

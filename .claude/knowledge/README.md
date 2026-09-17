@@ -16,3 +16,7 @@
   schema differences, and the bot-side orchestration shape. ubs_doc = git clone +
   `UBS_DOC_PATH` mounted read-only in `/docs`.
 - [live-meeting-transcription.md](live-meeting-transcription.md) — per-turn live transcript into the meeting channel; capture-time segmentation, ordering rules, the analyze-live handoff and its fallback.
+- [project-tasks-site.md](project-tasks-site.md) — bot tasks shown live on the UBS-Doc
+  site: the CSAAS cross-database read path, computed-not-stored blocked state,
+  dependency/cycle rules, `/project-members` inferred membership, the member name
+  sync's `LIMIT 25` trap, and deploy order.

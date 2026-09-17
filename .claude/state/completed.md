@@ -4,6 +4,38 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-17 — Project tasks on the UBS-Doc site (built and reviewed on branches, not yet merged)
+
+Every task from the bot's database, grouped by project, with multiple assignees,
+blocking dependencies, and explicit + inferred project members, shown live at
+`/tools/tasks` on the UBS-Doc site. Built with subagent-driven development across 10
+tasks (spec + plan in `docs/superpowers/specs/2026-09-17-project-tasks-site-section-design.md`
+/ `docs/superpowers/plans/2026-09-17-project-tasks-site-section.md`); bot suite
+264 -> 317, 43 slash commands.
+
+Built and reviewed on branches, not yet merged:
+- **Bot** (`Granjur-Discord-Bot`, `feat/project-tasks-site`): `15206fd`, `f94c756`
+  (migration 017 — `taskdependency`, `projectmember`, `guildmember` name columns; DB
+  surface), `e2c98de` (`bot/src/utils/taskDeps.js` — cycle/blocker rules), `c56580c`,
+  `d79c023` (member name sync), `3373316` (`/create-task` assignee picker), `b248442`,
+  `a89967d` (`/update-task` dependency + assignee options), `7947aec` (notifier
+  warnings/unblock notices), `a3cc416` (`/project-members`).
+- **CSAAS** (`CSAAS_Backend`, `feat/discord-tasks-endpoint`): `ab985c2` —
+  `GET /api/discord/tasks`, public, reads `granjur.*` cross-database.
+- **UBS-Doc** (`UBS-Doc`, `feat/tasks-screen`): `5cd1b3b`, `6529af1` — `/tools/tasks`
+  screen, deep link from `/tools/projects`.
+
+One incident during the fix round for the bot's `/update-task` task: a test run against
+a pre-fix seam-incomplete version inserted a live `guildconfig` row into production
+(`b23782a7c09e433bab78d866b`, `guildId 'guild1'`). Confirmed harmless and read-only;
+left in place pending the owner's decision — see `backlog.md`. Closed out with a new
+binding rule, `.claude/rules/tests-never-touch-production.md`.
+
+Knowledge: `.claude/knowledge/project-tasks-site.md`.
+
+**Remaining:** final whole-branch review, then merge and deploy in order bot -> CSAAS
+-> site, then live verification. See `session.md`.
+
 ## 2026-09-07 — Live meeting transcription (deployed 2026-09-09, awaiting a live meeting)
 
 Per-speaker live transcript posted into the meeting channel while a meeting records, and
