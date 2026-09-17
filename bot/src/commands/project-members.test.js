@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { renderMembers, inferredMemberIds, execute, autocomplete } from './project-members.js'
+import { renderMembers, inferredMemberIds, execute, autocomplete, data } from './project-members.js'
 
 test('inferredMemberIds: assignees of the project tasks not already explicit, deduplicated', () => {
   const tasks = [
@@ -23,6 +23,35 @@ test('renderMembers groups by role and lists inferred people separately', () => 
     '',
     '_Also assigned to tasks here:_ Hassan',
   ].join('\n'))
+})
+
+test('renderMembers lists Backend and Frontend Developers as their own groups, in role order', () => {
+  const out = renderMembers({
+    project: { name: 'Framework' },
+    explicit: [
+      { discordId: '3', role: 'frontend_developer' },
+      { discordId: '2', role: 'backend_developer' },
+      { discordId: '4', role: 'qa' },
+      { discordId: '1', role: 'lead' },
+    ],
+    inferredIds: [],
+    nameFor: (id) => ({ 1: 'Aashir', 2: 'Afaq', 3: 'Hamza', 4: 'Mukarram' })[id],
+  })
+  assert.equal(out, [
+    '**Framework**',
+    '**Lead:** Aashir',
+    '**Backend Developer:** Afaq',
+    '**Frontend Developer:** Hamza',
+    '**QA:** Mukarram',
+  ].join('\n'))
+})
+
+test('the role picker offers all six roles with readable labels', () => {
+  const opt = data.toJSON().options.find((o) => o.name === 'add').options.find((o) => o.name === 'role')
+  assert.deepEqual(opt.choices.map((c) => [c.value, c.name]), [
+    ['lead', 'Lead'], ['developer', 'Developer'], ['backend_developer', 'Backend Developer'],
+    ['frontend_developer', 'Frontend Developer'], ['qa', 'QA'], ['design', 'Design'],
+  ])
 })
 
 test('renderMembers with nobody says so', () => {

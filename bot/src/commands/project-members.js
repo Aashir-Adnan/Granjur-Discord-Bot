@@ -3,7 +3,10 @@ import db, { getOrCreateGuildConfig, PROJECT_MEMBER_ROLES } from '../db/index.js
 import { projectChoices } from './update-task.js'
 import { holdersOf } from '../utils/taskLabel.js'
 
-const ROLE_LABEL = { lead: 'Lead', developer: 'Developer', qa: 'QA', design: 'Design' }
+const ROLE_LABEL = {
+  lead: 'Lead', developer: 'Developer', backend_developer: 'Backend Developer',
+  frontend_developer: 'Frontend Developer', qa: 'QA', design: 'Design',
+}
 const roleChoices = PROJECT_MEMBER_ROLES.map((r) => ({ name: ROLE_LABEL[r], value: r }))
 const projectOpt = (o) => o.setName('project').setDescription('Start typing a project name').setRequired(true).setAutocomplete(true)
 

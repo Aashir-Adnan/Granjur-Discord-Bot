@@ -86,7 +86,7 @@ The explicit list.
 | `guildConfigId` | VARCHAR(36) NOT NULL | FK `guildconfig(id)` ON DELETE CASCADE |
 | `projectId` | VARCHAR(36) NOT NULL | FK `project(id)` ON DELETE CASCADE |
 | `discordId` | VARCHAR(64) NOT NULL | |
-| `role` | VARCHAR(32) NOT NULL DEFAULT 'developer' | one of `lead`, `developer`, `qa`, `design` |
+| `role` | VARCHAR(32) NOT NULL DEFAULT 'developer' | one of `lead`, `developer`, `backend_developer`, `frontend_developer`, `qa`, `design` (the last two added 2026-09-17) |
 | `addedBy` | VARCHAR(64) NULL | |
 | `createdAt` | DATETIME(3) | |
 
@@ -185,7 +185,7 @@ blockers, the reply ends with `blockerWarning(...)`.
 Roles: `CEO`, `Server Manager`, `Project Manager` (in `command-config.json`; no
 `setDefaultMemberPermissions`, the guard test forbids both).
 
-- `add project:<autocomplete> member:<user> role:<lead|developer|qa|design>` (role
+- `add project:<autocomplete> member:<user> role:<lead|developer|backend_developer|frontend_developer|qa|design>` (role
   defaults to developer). Upserts; re-adding changes the role.
 - `remove project:<autocomplete> member:<user>`.
 - `list project:<autocomplete>`: explicit members with roles, then "Also assigned to

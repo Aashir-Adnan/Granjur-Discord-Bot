@@ -44,7 +44,7 @@ migration 016, all `COLLATE=utf8mb4_general_ci` at table level (required for the
 1. **`taskdependency`** — one row per "task A is blocked by task B" (`taskId`,
    `blockedByTaskId`). `UNIQUE (taskId, blockedByTaskId)`.
 2. **`projectmember`** — the explicit project-to-developer list (`projectId`,
-   `discordId`, `role` in `lead`/`developer`/`qa`/`design`). `UNIQUE (projectId, discordId)`,
+   `discordId`, `role` in `lead`/`developer`/`backend_developer`/`frontend_developer`/`qa`/`design`). `UNIQUE (projectId, discordId)`,
    upsert on re-add (changes the role).
 3. **`guildmember.displayName` / `guildmember.username`** — two new nullable columns,
    filled by the name sync below.
