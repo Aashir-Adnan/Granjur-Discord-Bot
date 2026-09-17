@@ -98,7 +98,9 @@ export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById 
     if (!blocker) return { lines, error: `No task matches **${String(blockedById).slice(0, 80)}**. Start typing a title and pick one from the list.` }
     const deps = await dbArg.taskDependency.findManyForGuild({ where: { guildConfigId: cfg.id } })
     if (wouldCycle(task.id, blocker.id, deps)) {
-      return { lines, error: `**${blocker.title}** already depends on **${task.title}**, so **${task.title}** cannot be blocked by **${blocker.title}**.` }
+      const b = blocker.title || blocker.id
+      const t = task.title || task.id
+      return { lines, error: `**${b}** already depends on **${t}**, so **${t}** cannot be blocked by **${b}**.` }
     }
     await dbArg.taskDependency.add({ data: { guildConfigId: cfg.id, taskId: task.id, blockedByTaskId: blocker.id, createdBy: actorId } })
     lines.push(`**Blocked by:** ${blocker.title || blocker.id}`)
@@ -106,17 +108,27 @@ export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById 
   if (unblockId) {
     const [blocker] = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: [unblockId] } })
     const { removed } = await dbArg.taskDependency.remove({ where: { taskId: task.id, blockedByTaskId: String(unblockId) } })
-    if (removed > 0) lines.push(`**Unblocked:** ${blocker?.title || unblockId}`)
+    const name = blocker?.title || unblockId
+    lines.push(removed > 0 ? `**Unblocked:** ${name}` : `**Unblock:** ${name} was not blocking this task`)
   }
   return { lines, error: null }
 }
 
-export async function execute(interaction, { db: dbArg = db, notify = notifyTaskUpdate } = {}) {
+/** Same ids, ignoring order. Pure. */
+function sameIds(a, b) {
+  const x = new Set(idList(a))
+  const y = new Set(idList(b))
+  return x.size === y.size && [...x].every((id) => y.has(id))
+}
+
+const WARNING_MAX = 1500
+
+export async function execute(interaction, { db: dbArg = db, notify = notifyTaskUpdate, getConfig = getOrCreateGuildConfig } = {}) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
 
   const taskId = interaction.options.getString('task').trim()
-  const cfg = await getOrCreateGuildConfig(guild.id)
+  const cfg = await getConfig(guild.id)
   const task = await dbArg.task.findFirst({ where: { id: taskId, guildConfigId: cfg.id } })
   if (!task) {
     // Reached by typing free text instead of picking a suggestion: the option
@@ -145,7 +157,7 @@ export async function execute(interaction, { db: dbArg = db, notify = notifyTask
     add: interaction.options.getUser('add_assignee')?.id,
     remove: interaction.options.getUser('remove_assignee')?.id,
   })
-  if (assignees) updates.assigneeIds = assignees
+  if (assignees && !sameIds(assignees, task.assigneeIds)) updates.assigneeIds = assignees
   const implStatus = interaction.options.getString('implementation_status')
   if (implStatus !== null && implStatus !== undefined) updates.implementationStatus = implStatus
   const projectOpt = interaction.options.getString('project')
@@ -184,10 +196,19 @@ export async function execute(interaction, { db: dbArg = db, notify = notifyTask
       await dbArg.task.update({ where: { id: taskId }, data: updates })
 
       if (updates.status && updates.status !== task.status && updates.status !== 'open' && updates.status !== 'pending') {
-        const rows = await dbArg.taskDependency.findByTask({ where: { taskId: task.id } })
-        const blockers = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: rows.map((r) => r.blockedByTaskId) } })
-        const byId = Object.fromEntries(blockers.map((b) => [b.id, b]))
-        warning = blockerWarning(openBlockers(task.id, rows, byId))
+        // The write already succeeded; a failure here must not report "Update failed".
+        try {
+          const rows = await dbArg.taskDependency.findByTask({ where: { taskId: task.id } })
+          const blockers = rows.length
+            ? await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: rows.map((r) => r.blockedByTaskId) } })
+            : []
+          const byId = Object.fromEntries(blockers.map((b) => [b.id, b]))
+          warning = blockerWarning(openBlockers(task.id, rows, byId))
+          if (warning.length > WARNING_MAX) warning = `${warning.slice(0, WARNING_MAX - 1)}…`
+        } catch (e) {
+          console.error('[update-task] blocker warning:', e?.message ?? e)
+          warning = ''
+        }
       }
 
       // The write is what matters; notification is best-effort and must never
@@ -253,11 +274,11 @@ export function projectChoices(projects, term, { withDetach = true } = {}) {
   return (withDetach ? [head, ...rest] : rest).slice(0, 25)
 }
 
-export async function autocomplete(interaction, { db: dbArg = db } = {}) {
+export async function autocomplete(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
   const focused = interaction.options.getFocused(true)
   if (focused.name === 'project') {
     try {
-      const cfg = await getOrCreateGuildConfig(interaction.guild.id)
+      const cfg = await getConfig(interaction.guild.id)
       const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })
       return interaction.respond(projectChoices(projects, focused.value)).catch(() => {})
     } catch (e) {
@@ -267,15 +288,18 @@ export async function autocomplete(interaction, { db: dbArg = db } = {}) {
   }
   if (!['task', 'blocked_by', 'unblock'].includes(focused.name)) return interaction.respond([]).catch(() => {})
   try {
-    const cfg = await getOrCreateGuildConfig(interaction.guild.id)
+    const cfg = await getConfig(interaction.guild.id)
     let rows = await dbArg.task.findMany({ where: { guildConfigId: cfg.id }, orderBy: { updatedAt: 'desc' }, take: 200 })
     if (focused.name === 'unblock') {
-      // With a real task picked, offer only its current blockers.
+      // With a real task picked, offer only its current blockers — an empty
+      // list when it has none. Fall back to all tasks only when `task` is
+      // empty or not a known id.
       const taskId = String(interaction.options.getString('task') || '').trim()
-      const deps = taskId ? await dbArg.taskDependency.findByTask({ where: { taskId } }) : []
-      if (deps.length) {
-        const ids = new Set(deps.map((d) => d.blockedByTaskId))
-        rows = rows.filter((t) => ids.has(t.id))
+      const known = taskId ? await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: [taskId] } }) : []
+      if (known.length) {
+        const deps = await dbArg.taskDependency.findByTask({ where: { taskId } })
+        const ids = deps.map((d) => d.blockedByTaskId)
+        rows = ids.length ? await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids } }) : []
       }
     }
     // Members are resolved from cache only — autocomplete has ~3 seconds and a
