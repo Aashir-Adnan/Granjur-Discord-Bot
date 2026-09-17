@@ -18,6 +18,7 @@ import { startMeetingAutoChannels } from "./services/meetingAutoChannel.js";
 import { startTicketReminder } from "./services/ticketReminder.js";
 import { startMeetingPipelineWorker } from "./services/meetingPipelineWorker.js";
 import { startDocsSync } from "./services/docsSync.js";
+import { startMemberNameSync, syncOneMember } from "./services/memberNameSync.js";
 import {
   isRateLimitError,
   getRetryAfter,
@@ -51,6 +52,7 @@ client.once(Events.ClientReady, async () => {
   startTicketReminder(client);
   startMeetingPipelineWorker(client);
   startDocsSync(client);
+  startMemberNameSync(client);
   console.log(`Logged in as ${client.user.tag}`);
 });
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -294,6 +296,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 client.on(Events.GuildMemberAdd, handleMemberAdd);
+client.on(Events.GuildMemberUpdate, (_old, member) => syncOneMember(member));
 client.on(Events.MessageCreate, handleMeetingMessageCreate);
 client.on(Events.VoiceStateUpdate, handleVoiceStateUpdate);
 
