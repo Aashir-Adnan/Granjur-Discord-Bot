@@ -31,33 +31,18 @@ recompute per keystroke, `storedRoles`/`ensureStringArray` duplication, duplicat
 `'notified'` default literal, `Platform Admin` missing from the permission groups,
 uncapped TEXT payload, raw `task.type` rendering).
 
-## What remains
-1. **Final whole-branch review** across all three repos together (the per-task reviews
-   are done; this build hasn't had the cross-repo pass the 2026-09-17 build got before
-   its own deploy).
-2. **Deploy, in order** (load-bearing — see the knowledge doc's "Deploy order" section):
-   - Bot to `main` → migration 018 applies → set `BOT_INTERNAL_SECRET` in
-     `~/Granjur-Discord-Bot/.env` → `pm2 restart granjur-bot`.
-   - CSAAS to `main` → migration applies at boot → set `DISCORD_BOT_URL` +
-     `DISCORD_BOT_SECRET` (same value as `BOT_INTERNAL_SECRET`) in
-     `/var/www/CSAAS/CSAAS_Backend/.env` → restart.
-   - UBS-Doc (site) to `main`.
-   Production env edits are asked for before they are made (spec §9). **The order is
-   not cosmetic:** if CSAAS deploys before bot migration 018, the existing Team/Tasks
-   page shows "Could not load tasks" until the bot deploy lands — the CSAAS read selects
-   `roleNames`, a column migration 018 adds, so MySQL answers 1054 (unknown column) and
-   the whole endpoint 500s.
-3. **Live verification**: sign in on the site, open `/tools/team/board`, drag a card,
-   confirm the Discord channel post reads "Name (via the site) updated this task:", a
-   blocked card shows the warning toast, and moving a blocker to Done still fires the
-   unblock notice on its dependents. Also spot-check `/tools/team` (People) and the
-   dependency graph toggle on a project with a blocker.
+## Deployed (2026-09-18)
+All three branches merged to `main` and live, in order. Bot `8f03f3e`: migration 018
+applied, `[internal] status route enabled` after `BOT_INTERNAL_SECRET` was set (both
+`.env` files backed up as `.env.bak-20260918`); from the VM the route answers 401 without
+the header and 400 on a bad status. CSAAS `a689eda`: migration applied (permission granted
+to 7 Admin, 20 Dev, 2 Platform Admin URDDs); both `/api/discord/tasks` endpoints return 401
+without a token. UBS-Doc `d0660cf`: Vercel build. Feature branches deleted.
 
-## Knowledge / skills in use
-- `.claude/knowledge/project-tasks-site.md` (this feature; extended this session).
-- `.claude/rules/tests-never-touch-production.md` (binding for any further test work —
-  unchanged this session, but every test run in this build had to honour the `db`/
-  `getConfig` seams per that rule).
+## What remains
+Signed-in browser checks: open `/tools/team`, the Board, drag a card; confirm the Discord
+channel post "Name (via the site) updated this task"; a warning toast on a blocked card;
+an unblock notice when a blocker moves to Done.
 
 ## Open threads (parked)
 - FAQ error-lookup design, section 3.

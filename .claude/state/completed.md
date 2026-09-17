@@ -4,7 +4,7 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
-## 2026-09-18 — Team section: people, task detail, dependency graph, kanban board (built and reviewed on branches, not yet merged or deployed)
+## 2026-09-18 — Team section: people, task detail, dependency graph, kanban board (merged and deployed 2026-09-18)
 
 Turns the read-only `/tools/tasks` page into a four-view Team section, and adds the
 site's first *write* back into Discord data: dragging a board card changes the task's
