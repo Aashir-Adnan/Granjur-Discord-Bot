@@ -62,6 +62,26 @@ From the 2026-09-17 build. See `.claude/knowledge/project-tasks-site.md`.
   - Site `Tasks.tsx`: the `?project=` URL param is read only at mount, so browser
     back/forward between two `?project=` entries doesn't resync the filter without a
     full reload.
+  - `/project-members list` is not capped at Discord's 2000-character message limit. A
+    large project would make `editReply` throw and show a raw Discord error. The final
+    review called this the deferred item most likely to bite.
+  - `admin-panel.js:216` and `approve.js:32` read `guildMember.findMany` without
+    `all: true`, so they stop at 25 rows. The name sync now creates a row for every
+    server member, so this old cap is now reachable and those views truncate silently.
+  - `/update-task` autocomplete for `unblock` makes five database round trips when the
+    task is known; the 200-row `findMany` is fetched and then discarded. Skip it in that
+    case.
+  - `/update-task` writes the dependency row before `task.update`; if the update throws,
+    the row stays and the reply says "Update failed".
+  - `projectMemberUpsertSql` uses `VALUES(role)` in `ON DUPLICATE KEY UPDATE`, deprecated
+    since MySQL 8.0.20 (warning only).
+  - CSAAS `iso()` can return `null` for a timestamp while the site types it as `string`;
+    unused on the site today.
+  - Site `mwGet` throws the raw response body, so a CSAAS error shows as a JSON blob
+    under "Could not load tasks".
+  - Site project filter hides projects whose `docsSlug` is null.
+  - Spec §7 says the confirm step gains an Assignees row; the code adds it for feature
+    tasks only, since bug tasks use tagged members. Worth one clarifying line in the spec.
 
 ---
 
