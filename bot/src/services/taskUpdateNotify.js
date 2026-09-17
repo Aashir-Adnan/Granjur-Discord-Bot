@@ -12,7 +12,8 @@
 
 import { holdersOf, idList } from '../utils/taskLabel.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
-import { TERMINAL_STATUSES } from '../utils/taskDeps.js'
+import { openBlockers, TERMINAL_STATUSES, unblockNotice } from '../utils/taskDeps.js'
+import db from '../db/index.js'
 
 export { TERMINAL_STATUSES }
 
@@ -72,12 +73,34 @@ export function ownsChannel(taskId, channelName) {
 }
 
 /**
+ * When `blockerTask` reaches a terminal status, what to tell each task it was
+ * holding. Only tasks with a channel of their own get a notice — nowhere else
+ * to post it. Pure aside from the db reads.
+ */
+export async function unblockNotices({ db: dbArg = db, guildConfigId, blockerTask }) {
+  const holding = await dbArg.taskDependency.findByBlocker({ where: { blockedByTaskId: blockerTask.id } })
+  if (!holding.length) return []
+  const blocked = await dbArg.task.findByIds({ where: { guildConfigId, ids: holding.map((r) => r.taskId) } })
+  const out = []
+  for (const t of blocked) {
+    if (!t.discordChannelId) continue
+    const rows = await dbArg.taskDependency.findByTask({ where: { taskId: t.id } })
+    const others = await dbArg.task.findByIds({ where: { guildConfigId, ids: rows.map((r) => r.blockedByTaskId) } })
+    const byId = Object.fromEntries(others.map((o) => [o.id, o]))
+    // The blocker is terminal now; count what else is still holding this task.
+    const remaining = openBlockers(t.id, rows, byId).filter((o) => o.id !== blockerTask.id).length
+    out.push({ channelId: t.discordChannelId, text: unblockNotice(blockerTask, remaining) })
+  }
+  return out
+}
+
+/**
  * Apply the consequences of an update. Every step is best-effort: a task must
  * stay updated even when Discord refuses a DM or a permission edit.
  *
  * @returns {Promise<{channelId: string|null, dmed: string[], created: boolean}>}
  */
-export async function notifyTaskUpdate({ client, guild, task, before, updates, actorId }) {
+export async function notifyTaskUpdate({ client, guild, task, before, updates, actorId, warning = '', db: dbArg = db }) {
   const out = { channelId: task?.discordChannelId || null, dmed: [], created: false }
   if (!guild || !task) return out
 
@@ -138,6 +161,7 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
     const lines = changeSummary(before, updates)
     if (added.length) lines.unshift(`**assigned to** ${added.map((id) => `<@${id}>`).join(' ')}`)
     if (removed.length) lines.push(`**unassigned** ${removed.map((id) => `<@${id}>`).join(' ')}`)
+    if (warning) lines.push(warning)
     if (lines.length) {
       const who = actorId ? `<@${actorId}>` : 'Someone'
       await channel
@@ -174,6 +198,26 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
         out.dmed.push(id)
       } catch (e) {
         console.warn(`[taskUpdate] closure DM to ${id} failed:`, e?.message || e)
+      }
+    }
+
+    // Tell every task this one was holding. The guild config id comes off the
+    // task row itself — never a fresh lookup here, which would always reach
+    // the real database even under test.
+    const guildConfigId = task.guildConfigId
+    if (!guildConfigId) {
+      console.warn('[taskUpdate] unblock notices skipped: task has no guildConfigId')
+    } else {
+      try {
+        const notices = await unblockNotices({ db: dbArg, guildConfigId, blockerTask: { ...task, ...updates } })
+        for (const n of notices) {
+          const ch = await client?.channels?.fetch(n.channelId).catch(() => null)
+          if (ch?.isTextBased?.()) {
+            await ch.send(n.text).catch((e) => console.warn('[taskUpdate] unblock notice failed:', e?.message || e))
+          }
+        }
+      } catch (e) {
+        console.warn('[taskUpdate] unblock notices:', e?.message || e)
       }
     }
   }

@@ -5,6 +5,7 @@ import {
   changeSummary,
   ownsChannel,
   notifyTaskUpdate,
+  unblockNotices,
   TERMINAL_STATUSES,
 } from './taskUpdateNotify.js'
 
@@ -131,7 +132,7 @@ test('closing a task DMs its holders once, and reassignment revokes access', asy
     permissionOverwrites: { edit: async () => {}, delete: async (id) => revoked.push(id) },
   }
   const h = harness({ channel })
-  const task = { id: h.taskId, title: 'T', status: 'in_progress', assigneeIds: ['11'], discordChannelId: 'own' }
+  const task = { id: h.taskId, title: 'T', status: 'in_progress', assigneeIds: ['11'], discordChannelId: 'own', guildConfigId: 'g1' }
   const out = await notifyTaskUpdate({
     client: h.client,
     guild: h.guild,
@@ -139,6 +140,9 @@ test('closing a task DMs its holders once, and reassignment revokes access', asy
     before: task,
     updates: { status: 'closed', assigneeIds: ['22'] },
     actorId: '99',
+    // This task becomes terminal, which would otherwise reach the real db's
+    // default export for unblock-notice lookups — a fake keeps it off it.
+    db: { taskDependency: { findByBlocker: async () => [] } },
   })
   assert.deepEqual(revoked, ['11'])
   // '22' is DMed as a new assignee; it must not also get the closure DM.
@@ -198,4 +202,131 @@ test('an unassigned task with no channel notifies nobody and creates nothing', a
   assert.equal(out.channelId, null)
   assert.deepEqual(out.dmed, [])
   assert.equal(h.created.length, 0)
+})
+
+// --- unblockNotices ---------------------------------------------------------
+
+test('unblockNotices: one notice per task the blocker was holding, counting what remains open', async () => {
+  const blocker = { id: 'C', title: 'Error handling', status: 'done' }
+  const tasks = {
+    A: { id: 'A', title: 'Git Sync', status: 'open', discordChannelId: 'chA' },
+    B: { id: 'B', title: 'Router', status: 'open', discordChannelId: null },
+    D: { id: 'D', title: 'Other blocker', status: 'in_progress' },
+    C: blocker,
+  }
+  const deps = [
+    { taskId: 'A', blockedByTaskId: 'C' }, { taskId: 'A', blockedByTaskId: 'D' },
+    { taskId: 'B', blockedByTaskId: 'C' },
+  ]
+  const db = {
+    taskDependency: {
+      findByBlocker: async ({ where }) => deps.filter((d) => d.blockedByTaskId === where.blockedByTaskId),
+      findByTask: async ({ where }) => deps.filter((d) => d.taskId === where.taskId),
+    },
+    task: { findByIds: async ({ where }) => where.ids.map((i) => tasks[i]).filter(Boolean) },
+  }
+  const out = await unblockNotices({ db, guildConfigId: 'g1', blockerTask: blocker })
+  assert.deepEqual(out, [
+    { channelId: 'chA', text: '✅ Blocker **Error handling** is done. 1 blocker still open.' },
+  ])
+})
+
+// --- warning line + unblock notices wired into notifyTaskUpdate ------------
+
+test('a status-change warning is appended as the last line of the channel post', async () => {
+  const posts = []
+  const channel = {
+    id: 'own',
+    name: 'feature-123456',
+    guild: { id: 'g1' },
+    send: async (m) => posts.push(m),
+    permissionOverwrites: { edit: async () => {}, delete: async () => {} },
+  }
+  const h = harness({ channel })
+  const task = { id: h.taskId, title: 'T', status: 'open', assigneeIds: ['11'], discordChannelId: 'own' }
+  await notifyTaskUpdate({
+    client: h.client,
+    guild: h.guild,
+    task,
+    before: task,
+    updates: { passedQaTests: 3 },
+    actorId: '99',
+    warning: '⛔ Still blocked by: **Router** (open)',
+  })
+  assert.equal(posts.length, 1)
+  const lines = posts[0].split('\n')
+  assert.equal(lines[lines.length - 1], '• ⛔ Still blocked by: **Router** (open)')
+})
+
+test('moving a task to done posts an unblock notice into each dependent task channel', async () => {
+  const notices = []
+  const channels = {
+    chA: { id: 'chA', isTextBased: () => true, send: async (m) => notices.push(m) },
+  }
+  const client = {
+    channels: { fetch: async (id) => channels[id] || null },
+    users: { fetch: async (id) => ({ send: async () => {} }) },
+  }
+  const guild = { id: 'g1' }
+  // No assignees and no channel of its own, so only the unblock-notice path
+  // under test runs.
+  const task = {
+    id: 'taskC',
+    title: 'Error handling',
+    status: 'in_progress',
+    assigneeIds: [],
+    discordChannelId: null,
+    guildConfigId: 'g1cfg',
+  }
+  const db = {
+    taskDependency: {
+      findByBlocker: async ({ where }) =>
+        where.blockedByTaskId === 'taskC' ? [{ taskId: 'A', blockedByTaskId: 'taskC' }] : [],
+      findByTask: async ({ where }) =>
+        where.taskId === 'A' ? [{ taskId: 'A', blockedByTaskId: 'taskC' }] : [],
+    },
+    task: {
+      findByIds: async ({ where }) =>
+        where.ids.includes('A') ? [{ id: 'A', title: 'Git Sync', status: 'open', discordChannelId: 'chA' }] : [],
+    },
+  }
+  await notifyTaskUpdate({
+    client,
+    guild,
+    task,
+    before: task,
+    updates: { status: 'done' },
+    actorId: '99',
+    db,
+  })
+  assert.deepEqual(notices, ['✅ Blocker **Error handling** is done. This task is no longer blocked.'])
+})
+
+test('a task with no guildConfigId skips the unblock-notice lookup entirely, without throwing', async () => {
+  const originalWarn = console.warn
+  const warnings = []
+  console.warn = (...args) => warnings.push(args)
+  try {
+    let dbTouched = false
+    const db = {
+      taskDependency: {
+        findByBlocker: async () => {
+          dbTouched = true
+          return []
+        },
+      },
+    }
+    const client = {
+      channels: { fetch: async () => null },
+      users: { fetch: async () => ({ send: async () => {} }) },
+    }
+    const guild = { id: 'g1' }
+    const task = { id: 'taskD', title: 'X', status: 'in_progress', assigneeIds: [], discordChannelId: null }
+    await assert.doesNotReject(
+      notifyTaskUpdate({ client, guild, task, before: task, updates: { status: 'closed' }, actorId: '99', db }),
+    )
+    assert.equal(dbTouched, false)
+  } finally {
+    console.warn = originalWarn
+  }
 })
