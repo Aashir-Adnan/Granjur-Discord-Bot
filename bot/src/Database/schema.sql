@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS guildmember (
   guildConfigId VARCHAR(36) NOT NULL,
   discordId VARCHAR(64) NOT NULL,
   email VARCHAR(255),
+  displayName VARCHAR(100),
+  username VARCHAR(64),
   verifiedAt DATETIME(3),
   status VARCHAR(32) DEFAULT 'pending',
   roleIds JSON DEFAULT ('[]'),
@@ -479,4 +481,35 @@ CREATE TABLE IF NOT EXISTS docsource (
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY uniq_docsource_guild (guildConfigId),
   FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `taskdependency` (
+  `id`              VARCHAR(36) NOT NULL,
+  `guildConfigId`   VARCHAR(36) NOT NULL,
+  `taskId`          VARCHAR(36) NOT NULL,
+  `blockedByTaskId` VARCHAR(36) NOT NULL,
+  `createdBy`       VARCHAR(64) DEFAULT NULL,
+  `createdAt`       DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_taskdependency_pair` (`taskId`, `blockedByTaskId`),
+  KEY `idx_taskdependency_guild` (`guildConfigId`),
+  KEY `idx_taskdependency_blocker` (`blockedByTaskId`),
+  CONSTRAINT `fk_taskdependency_guild` FOREIGN KEY (`guildConfigId`) REFERENCES `guildconfig`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_taskdependency_task` FOREIGN KEY (`taskId`) REFERENCES `task`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_taskdependency_blocker` FOREIGN KEY (`blockedByTaskId`) REFERENCES `task`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `projectmember` (
+  `id`            VARCHAR(36) NOT NULL,
+  `guildConfigId` VARCHAR(36) NOT NULL,
+  `projectId`     VARCHAR(36) NOT NULL,
+  `discordId`     VARCHAR(64) NOT NULL,
+  `role`          VARCHAR(32) NOT NULL DEFAULT 'developer',
+  `addedBy`       VARCHAR(64) DEFAULT NULL,
+  `createdAt`     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_projectmember_pair` (`projectId`, `discordId`),
+  KEY `idx_projectmember_guild` (`guildConfigId`),
+  CONSTRAINT `fk_projectmember_guild` FOREIGN KEY (`guildConfigId`) REFERENCES `guildconfig`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_projectmember_project` FOREIGN KEY (`projectId`) REFERENCES `project`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

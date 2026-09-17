@@ -134,22 +134,23 @@ async function guildMemberFindUnique({ where }) {
 async function guildMemberUpsert({ where, create, update }) {
   const existing = await guildMemberFindUnique({ where });
   if (existing) {
-    await query(
-      "UPDATE `guildmember` SET email = ?, verifiedAt = ?, status = ?, updatedAt = CURRENT_TIMESTAMP(3) WHERE id = ?",
-      [
-        update.email ?? existing.email,
-        update.verifiedAt ?? existing.verifiedAt,
-        update.status ?? existing.status,
-        existing.id,
-      ],
-    );
+    const { sets, vals } = guildMemberUpdateSets({
+      email: update.email ?? existing.email,
+      status: update.status ?? existing.status,
+      displayName: update.displayName,
+      username: update.username,
+    });
+    sets.push("verifiedAt = ?", "updatedAt = CURRENT_TIMESTAMP(3)");
+    vals.push(update.verifiedAt ?? existing.verifiedAt);
+    vals.push(existing.id);
+    await query(`UPDATE \`guildmember\` SET ${sets.join(", ")} WHERE id = ?`, vals);
     return guildMemberFindUnique({ where });
   }
   const pk = id();
   const cfg = await getOrCreateGuildConfig(create.guildId);
   await query(
-    `INSERT INTO \`guildmember\` (id, guildConfigId, discordId, email, verifiedAt, status, roleIds)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO \`guildmember\` (id, guildConfigId, discordId, email, verifiedAt, status, roleIds, displayName, username)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       pk,
       cfg.id,
@@ -158,6 +159,8 @@ async function guildMemberUpsert({ where, create, update }) {
       create.verifiedAt ?? null,
       create.status ?? "pending",
       toJson(create.roleIds || []),
+      create.displayName ?? null,
+      create.username ?? null,
     ],
   );
   return guildMemberFindUnique({
@@ -170,28 +173,23 @@ async function guildMemberUpsert({ where, create, update }) {
   });
 }
 
-async function guildMemberUpdate({ where, data }) {
-  const idVal = where.id;
+export function guildMemberUpdateSets(data = {}) {
   const sets = [];
   const vals = [];
-  if (data.status !== undefined) {
-    sets.push("status = ?");
-    vals.push(data.status);
-  }
-  if (data.roleIds !== undefined) {
-    sets.push("roleIds = ?");
-    vals.push(toJson(data.roleIds));
-  }
-  if (data.email !== undefined) {
-    sets.push("email = ?");
-    vals.push(data.email);
-  }
+  if (data.status !== undefined) { sets.push("status = ?"); vals.push(data.status); }
+  if (data.roleIds !== undefined) { sets.push("roleIds = ?"); vals.push(toJson(data.roleIds)); }
+  if (data.email !== undefined) { sets.push("email = ?"); vals.push(data.email); }
+  if (data.displayName !== undefined) { sets.push("displayName = ?"); vals.push(data.displayName); }
+  if (data.username !== undefined) { sets.push("username = ?"); vals.push(data.username); }
+  return { sets, vals };
+}
+
+async function guildMemberUpdate({ where, data }) {
+  const idVal = where.id;
+  const { sets, vals } = guildMemberUpdateSets(data);
   if (sets.length === 0) return guildMemberFindUnique({ where: { id: idVal } });
   vals.push(idVal);
-  await query(
-    `UPDATE \`guildmember\` SET ${sets.join(", ")} WHERE id = ?`,
-    vals,
-  );
+  await query(`UPDATE \`guildmember\` SET ${sets.join(", ")} WHERE id = ?`, vals);
   return guildMemberFindUnique({ where: { id: idVal } });
 }
 
@@ -289,6 +287,16 @@ async function taskFindFirst({ where }) {
       where.externalId,
     ]);
   return null;
+}
+
+async function taskFindByIds({ where }) {
+  const ids = (where?.ids || []).filter(Boolean).map(String);
+  if (!where?.guildConfigId || ids.length === 0) return [];
+  const placeholders = ids.map(() => "?").join(", ");
+  return query(
+    `SELECT * FROM \`task\` WHERE guildConfigId = ? AND id IN (${placeholders})`,
+    [where.guildConfigId, ...ids],
+  );
 }
 
 async function taskCreate({ data }) {
@@ -1030,6 +1038,71 @@ async function projectReposAdd({ data }) {
     "INSERT IGNORE INTO `project_repos` (project_id, repository_id) VALUES (?, ?)",
     [data.project_id, data.repository_id],
   );
+}
+
+// ---------- taskdependency ("taskId is blocked by blockedByTaskId") ----------
+export function taskDependencyInsertSql(data) {
+  const columns = [
+    ["id", data.id],
+    ["guildConfigId", data.guildConfigId],
+    ["taskId", data.taskId],
+    ["blockedByTaskId", data.blockedByTaskId],
+    ["createdBy", data.createdBy ?? null],
+  ];
+  return {
+    // IGNORE: the unique pair makes a repeat add a no-op rather than an error.
+    sql: `INSERT IGNORE INTO \`taskdependency\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    params: columns.map(([, v]) => v),
+  };
+}
+async function taskDependencyAdd({ data }) {
+  const { sql, params } = taskDependencyInsertSql({ ...data, id: id() });
+  await query(sql, params);
+  return queryOne("SELECT * FROM `taskdependency` WHERE taskId = ? AND blockedByTaskId = ?", [data.taskId, data.blockedByTaskId]);
+}
+async function taskDependencyRemove({ where }) {
+  const res = await query("DELETE FROM `taskdependency` WHERE taskId = ? AND blockedByTaskId = ?", [where.taskId, where.blockedByTaskId]);
+  return { removed: Number(res?.affectedRows ?? 0) };
+}
+async function taskDependencyFindByTask({ where }) {
+  return query("SELECT * FROM `taskdependency` WHERE taskId = ? ORDER BY createdAt ASC LIMIT 200", [where.taskId]);
+}
+async function taskDependencyFindByBlocker({ where }) {
+  return query("SELECT * FROM `taskdependency` WHERE blockedByTaskId = ? ORDER BY createdAt ASC LIMIT 200", [where.blockedByTaskId]);
+}
+async function taskDependencyFindManyForGuild({ where }) {
+  return query("SELECT * FROM `taskdependency` WHERE guildConfigId = ? LIMIT 5000", [where.guildConfigId]);
+}
+
+// ---------- projectmember (explicit project membership) ----------
+export const PROJECT_MEMBER_ROLES = ["lead", "developer", "qa", "design"];
+export function projectMemberUpsertSql(data) {
+  const columns = [
+    ["id", data.id],
+    ["guildConfigId", data.guildConfigId],
+    ["projectId", data.projectId],
+    ["discordId", data.discordId],
+    ["role", data.role ?? "developer"],
+    ["addedBy", data.addedBy ?? null],
+  ];
+  return {
+    sql:
+      `INSERT INTO \`projectmember\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ` +
+      "ON DUPLICATE KEY UPDATE role = VALUES(role), addedBy = VALUES(addedBy)",
+    params: columns.map(([, v]) => v),
+  };
+}
+async function projectMemberAdd({ data }) {
+  const { sql, params } = projectMemberUpsertSql({ ...data, id: id() });
+  await query(sql, params);
+  return queryOne("SELECT * FROM `projectmember` WHERE projectId = ? AND discordId = ?", [data.projectId, data.discordId]);
+}
+async function projectMemberRemove({ where }) {
+  const res = await query("DELETE FROM `projectmember` WHERE projectId = ? AND discordId = ?", [where.projectId, where.discordId]);
+  return { removed: Number(res?.affectedRows ?? 0) };
+}
+async function projectMemberFindByProject({ where }) {
+  return query("SELECT * FROM `projectmember` WHERE projectId = ? ORDER BY role ASC, createdAt ASC LIMIT 200", [where.projectId]);
 }
 
 // ---------- Faq ----------
@@ -2038,6 +2111,7 @@ const db = {
   task: {
     findMany: taskFindMany,
     findFirst: taskFindFirst,
+    findByIds: taskFindByIds,
     create: taskCreate,
     update: taskUpdate,
     count: taskCount,
@@ -2100,6 +2174,18 @@ const db = {
   projectRepos: {
     findMany: projectReposFindMany,
     add: projectReposAdd,
+  },
+  taskDependency: {
+    add: taskDependencyAdd,
+    remove: taskDependencyRemove,
+    findByTask: taskDependencyFindByTask,
+    findByBlocker: taskDependencyFindByBlocker,
+    findManyForGuild: taskDependencyFindManyForGuild,
+  },
+  projectMember: {
+    add: projectMemberAdd,
+    remove: projectMemberRemove,
+    findByProject: projectMemberFindByProject,
   },
   faq: {
     findMany: faqFindMany,
