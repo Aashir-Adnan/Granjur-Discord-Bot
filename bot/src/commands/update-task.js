@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
-import { taskChoiceLabel, holdersOf } from '../utils/taskLabel.js'
+import { taskChoiceLabel, holdersOf, idList } from '../utils/taskLabel.js'
+import { wouldCycle, openBlockers, blockerWarning } from '../utils/taskDeps.js'
 import { notifyTaskUpdate } from '../services/taskUpdateNotify.js'
 
 /** Parse space-separated @mentions or Discord user IDs into array of IDs. */
@@ -67,17 +68,56 @@ export const data = new SlashCommandBuilder()
       .setRequired(false)
       .setAutocomplete(true)
   )
+  .addUserOption((o) => o.setName('add_assignee').setDescription('Add one more assignee').setRequired(false))
+  .addUserOption((o) => o.setName('remove_assignee').setDescription('Take one assignee off the task').setRequired(false))
+  .addStringOption((o) => o.setName('blocked_by').setDescription('This task cannot proceed until that task is done (pick from the list)').setRequired(false).setAutocomplete(true))
+  .addStringOption((o) => o.setName('unblock').setDescription('Remove a blocker from this task (pick from the list)').setRequired(false).setAutocomplete(true))
 
 /** Sentinel value for "detach from any project" in the project picker. */
 export const NO_PROJECT = 'none'
 
-export async function execute(interaction) {
+/** Next assignee list, or null when no assignee option was given. Pure. */
+export function nextAssignees(current, { replace, add, remove } = {}) {
+  if (replace === undefined && !add && !remove) return null
+  const out = new Set(idList(replace !== undefined ? replace : current))
+  if (add) out.add(String(add))
+  if (remove) out.delete(String(remove))
+  return [...out]
+}
+
+/**
+ * Record / remove one dependency for `task`. Validates before writing, so a
+ * refused change leaves the table untouched.
+ * @returns {{ lines: string[], error: string|null }}
+ */
+export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById = null, unblockId = null, actorId = null }) {
+  const lines = []
+  if (blockedById) {
+    if (String(blockedById) === String(task.id)) return { lines, error: 'A task cannot be blocked by itself.' }
+    const [blocker] = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: [blockedById] } })
+    if (!blocker) return { lines, error: `No task matches **${String(blockedById).slice(0, 80)}**. Start typing a title and pick one from the list.` }
+    const deps = await dbArg.taskDependency.findManyForGuild({ where: { guildConfigId: cfg.id } })
+    if (wouldCycle(task.id, blocker.id, deps)) {
+      return { lines, error: `**${blocker.title}** already depends on **${task.title}**, so **${task.title}** cannot be blocked by **${blocker.title}**.` }
+    }
+    await dbArg.taskDependency.add({ data: { guildConfigId: cfg.id, taskId: task.id, blockedByTaskId: blocker.id, createdBy: actorId } })
+    lines.push(`**Blocked by:** ${blocker.title || blocker.id}`)
+  }
+  if (unblockId) {
+    const [blocker] = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: [unblockId] } })
+    const { removed } = await dbArg.taskDependency.remove({ where: { taskId: task.id, blockedByTaskId: String(unblockId) } })
+    if (removed > 0) lines.push(`**Unblocked:** ${blocker?.title || unblockId}`)
+  }
+  return { lines, error: null }
+}
+
+export async function execute(interaction, { db: dbArg = db, notify = notifyTaskUpdate } = {}) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
 
   const taskId = interaction.options.getString('task').trim()
   const cfg = await getOrCreateGuildConfig(guild.id)
-  const task = await db.task.findFirst({ where: { id: taskId, guildConfigId: cfg.id } })
+  const task = await dbArg.task.findFirst({ where: { id: taskId, guildConfigId: cfg.id } })
   if (!task) {
     // Reached by typing free text instead of picking a suggestion: the option
     // carries whatever was typed, not an id.
@@ -100,7 +140,12 @@ export async function execute(interaction) {
   const description = interaction.options.getString('description')
   if (description !== null && description !== undefined) updates.description = description.trim() || null
   const assigneesStr = interaction.options.getString('assignees')
-  if (assigneesStr !== null && assigneesStr !== undefined) updates.assigneeIds = parseUserIds(assigneesStr)
+  const assignees = nextAssignees(task.assigneeIds, {
+    replace: assigneesStr !== null && assigneesStr !== undefined ? parseUserIds(assigneesStr) : undefined,
+    add: interaction.options.getUser('add_assignee')?.id,
+    remove: interaction.options.getUser('remove_assignee')?.id,
+  })
+  if (assignees) updates.assigneeIds = assignees
   const implStatus = interaction.options.getString('implementation_status')
   if (implStatus !== null && implStatus !== undefined) updates.implementationStatus = implStatus
   const projectOpt = interaction.options.getString('project')
@@ -111,7 +156,7 @@ export async function execute(interaction) {
     } else {
       // The picker's value is a project id; free text typed past the
       // suggestions arrives as-is and must not be written as an id.
-      const row = await db.project.findFirst({ where: { id: projectOpt } }).catch(() => null)
+      const row = await dbArg.project.findFirst({ where: { id: projectOpt } }).catch(() => null)
       if (!row || row.guildConfigId !== cfg.id) {
         return interaction.editReply({ content: `No project matches **${projectOpt.slice(0, 80)}**. Start typing a project name and pick one from the list.` })
       }
@@ -120,40 +165,61 @@ export async function execute(interaction) {
     }
   }
 
-  if (Object.keys(updates).length === 0) {
-    return interaction.editReply({
-      content: 'Provide at least one field to update (e.g. `status`, `passed_api_tests`, `title`, `assignees`).',
-    })
+  const blockedById = interaction.options.getString('blocked_by')?.trim() || null
+  const unblockId = interaction.options.getString('unblock')?.trim() || null
+  const hasUpdates = Object.keys(updates).length > 0
+  if (!hasUpdates && !blockedById && !unblockId) {
+    return interaction.editReply({ content: 'Provide at least one field to update (e.g. `status`, `add_assignee`, `blocked_by`).' })
   }
 
   try {
-    await db.task.update({ where: { id: taskId }, data: updates })
+    // Every refusal returns here, before the task row is written, so a refused
+    // dependency never leaves a half-applied update.
+    const dep = await applyDependencyChange({ db: dbArg, cfg, task, blockedById, unblockId, actorId: interaction.user.id })
+    if (dep.error) return interaction.editReply({ content: dep.error })
 
-    // The write is what matters; notification is best-effort and must never
-    // turn a successful update into a failed command.
     let notified = { channelId: task.discordChannelId || null, created: false, dmed: [] }
-    try {
-      notified = await notifyTaskUpdate({
-        client: interaction.client,
-        guild,
-        task,
-        before: task,
-        updates,
-        actorId: interaction.user.id,
-      })
-    } catch (e) {
-      console.error('[update-task] notify:', e?.message ?? e)
+    let warning = ''
+    if (hasUpdates) {
+      await dbArg.task.update({ where: { id: taskId }, data: updates })
+
+      if (updates.status && updates.status !== task.status && updates.status !== 'open' && updates.status !== 'pending') {
+        const rows = await dbArg.taskDependency.findByTask({ where: { taskId: task.id } })
+        const blockers = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: rows.map((r) => r.blockedByTaskId) } })
+        const byId = Object.fromEntries(blockers.map((b) => [b.id, b]))
+        warning = blockerWarning(openBlockers(task.id, rows, byId))
+      }
+
+      // The write is what matters; notification is best-effort and must never
+      // turn a successful update into a failed command.
+      try {
+        notified = await notify({
+          client: interaction.client,
+          guild,
+          task,
+          before: task,
+          updates,
+          actorId: interaction.user.id,
+          warning,
+          db: dbArg,
+        })
+      } catch (e) {
+        console.error('[update-task] notify:', e?.message ?? e)
+      }
     }
 
     const embed = new EmbedBuilder()
       .setTitle('Task updated')
-      .setDescription(`**${task.title || taskId}**`)
+      .setDescription(warning ? `**${task.title || taskId}**\n${warning}` : `**${task.title || taskId}**`)
       .addFields(Object.entries(updates).map(([k, v]) => ({
         name: k,
         value: Array.isArray(v) ? (v.length ? v.map((id) => `<@${id}>`).join(' ') : 'None') : String(v ?? 'null'),
         inline: true,
       })))
       .setColor(0x57f287)
+    if (dep.lines.length) {
+      embed.addFields({ name: 'Dependencies', value: dep.lines.join('\n'), inline: false })
+    }
     if (notified.channelId) {
       embed.addFields({
         name: notified.created ? 'Channel created' : 'Task channel',
@@ -177,36 +243,41 @@ export async function execute(interaction) {
  * holder while the value stays the id.
  */
 /** Project picker choices: "No project" first, then names matching the typed text. Pure. */
-export function projectChoices(projects, term) {
+export function projectChoices(projects, term, { withDetach = true } = {}) {
   const t = String(term || '').trim().toLowerCase()
   const head = { name: 'No project — detach from any project', value: NO_PROJECT }
   const rest = (projects || [])
     .filter((p) => !t || String(p.name || '').toLowerCase().includes(t))
     .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }))
     .map((p) => ({ name: String(p.name || p.id).slice(0, 100), value: String(p.id) }))
-  return [head, ...rest].slice(0, 25)
+  return (withDetach ? [head, ...rest] : rest).slice(0, 25)
 }
 
-export async function autocomplete(interaction) {
+export async function autocomplete(interaction, { db: dbArg = db } = {}) {
   const focused = interaction.options.getFocused(true)
   if (focused.name === 'project') {
     try {
       const cfg = await getOrCreateGuildConfig(interaction.guild.id)
-      const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
+      const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })
       return interaction.respond(projectChoices(projects, focused.value)).catch(() => {})
     } catch (e) {
       console.error('[update-task] project autocomplete:', e?.message ?? e)
       return interaction.respond([]).catch(() => {})
     }
   }
-  if (focused.name !== 'task') return interaction.respond([]).catch(() => {})
+  if (!['task', 'blocked_by', 'unblock'].includes(focused.name)) return interaction.respond([]).catch(() => {})
   try {
     const cfg = await getOrCreateGuildConfig(interaction.guild.id)
-    const rows = await db.task.findMany({
-      where: { guildConfigId: cfg.id },
-      orderBy: { updatedAt: 'desc' },
-      take: 200,
-    })
+    let rows = await dbArg.task.findMany({ where: { guildConfigId: cfg.id }, orderBy: { updatedAt: 'desc' }, take: 200 })
+    if (focused.name === 'unblock') {
+      // With a real task picked, offer only its current blockers.
+      const taskId = String(interaction.options.getString('task') || '').trim()
+      const deps = taskId ? await dbArg.taskDependency.findByTask({ where: { taskId } }) : []
+      if (deps.length) {
+        const ids = new Set(deps.map((d) => d.blockedByTaskId))
+        rows = rows.filter((t) => ids.has(t.id))
+      }
+    }
     // Members are resolved from cache only — autocomplete has ~3 seconds and a
     // fetch per assignee would blow it. An unresolved id shows as the id.
     const nameFor = (id) => interaction.guild.members.cache.get(id)?.displayName ?? null
