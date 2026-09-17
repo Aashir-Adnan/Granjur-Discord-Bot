@@ -21,24 +21,33 @@ export function startVerifyServer(discordClient) {
       return
     }
     if (req.method === 'POST' && req.url === '/internal/tasks/status') {
-      let ibody = ''
-      for await (const chunk of req) ibody += chunk
-      let idata
       try {
-        idata = JSON.parse(ibody)
-      } catch {
-        res.writeHead(400)
-        res.end(JSON.stringify({ ok: false, message: 'Invalid JSON' }))
-        return
+        req.setEncoding('utf8')
+        let ibody = ''
+        for await (const chunk of req) ibody += chunk
+        let idata
+        try {
+          idata = JSON.parse(ibody)
+        } catch {
+          res.writeHead(400)
+          res.end(JSON.stringify({ ok: false, message: 'Invalid JSON' }))
+          return
+        }
+        const r = await handleStatusRequest({
+          headers: req.headers,
+          body: idata,
+          client: discordClient,
+          secret: process.env.BOT_INTERNAL_SECRET || '',
+        })
+        res.writeHead(r.status)
+        res.end(JSON.stringify(r.body))
+      } catch (e) {
+        console.error('[internal] status route:', e?.message ?? e)
+        if (!res.headersSent) {
+          res.writeHead(500)
+          res.end(JSON.stringify({ ok: false, message: 'internal error' }))
+        }
       }
-      const r = await handleStatusRequest({
-        headers: req.headers,
-        body: idata,
-        client: discordClient,
-        secret: process.env.BOT_INTERNAL_SECRET || '',
-      })
-      res.writeHead(r.status)
-      res.end(JSON.stringify(r.body))
       return
     }
     if (req.method !== 'POST' || req.url !== '/verify') {

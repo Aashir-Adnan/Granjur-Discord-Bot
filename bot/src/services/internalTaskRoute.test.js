@@ -16,7 +16,22 @@ test('401 on a missing or wrong secret', async () => {
 })
 test('400 on an unknown status or missing taskId', async () => {
   assert.equal((await handleStatusRequest({ ...ok, body: { ...ok.body, status: 'flying' }, db, client: {}, secret: 's3cret' })).status, 400)
-  assert.equal((await handleStatusRequest({ ...ok, body: { status: 'open' }, db, client: {}, secret: 's3cret' })).status, 400)
+  const r = await handleStatusRequest({ ...ok, body: { status: 'open' }, db, client: {}, secret: 's3cret' })
+  assert.equal(r.status, 400)
+  assert.equal(r.body.message, 'taskId is required')
+})
+test('400 when taskId is over the length cap', async () => {
+  const r = await handleStatusRequest({ ...ok, body: { ...ok.body, taskId: 'x'.repeat(65) }, db, client: {}, secret: 's3cret' })
+  assert.equal(r.status, 400)
+  assert.equal(r.body.message, 'taskId is too long (max 64)')
+})
+test('a null or non-object body is treated as empty, not a crash', async () => {
+  const r1 = await handleStatusRequest({ headers: ok.headers, body: null, db, client: {}, secret: 's3cret' })
+  assert.equal(r1.status, 400)
+  assert.equal(r1.body.message, 'taskId is required')
+  const r2 = await handleStatusRequest({ headers: ok.headers, body: 'x', db, client: {}, secret: 's3cret' })
+  assert.equal(r2.status, 400)
+  assert.equal(r2.body.message, 'taskId is required')
 })
 test('404 when the task does not exist', async () => {
   assert.equal((await handleStatusRequest({ ...ok, body: { ...ok.body, taskId: 'Z' }, db, client: {}, secret: 's3cret' })).status, 404)
