@@ -4,6 +4,51 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-18 — Team section: people, task detail, dependency graph, kanban board (built and reviewed on branches, not yet merged or deployed)
+
+Turns the read-only `/tools/tasks` page into a four-view Team section, and adds the
+site's first *write* back into Discord data: dragging a board card changes the task's
+status through the bot, via CSAAS, using the same helper and warnings/notices
+`/update-task` already produces. Built with subagent-driven development across 11 tasks
+(spec `docs/superpowers/specs/2026-09-18-team-board-previews-design.md`, plan
+`docs/superpowers/plans/2026-09-18-team-board-previews.md`, ledger
+`.superpowers/sdd/2026-09-18-team-board-previews/progress.md`).
+
+- **Bot** (`Granjur-Discord-Bot`, `feat/team-board`, suite 320 → 340): `0e116e4` —
+  migration 018 `guildmember.roleNames`, name sync stores role names,
+  `db.guildConfig.findById`. `21e4f9a` — `bot/src/services/taskStatusChange.js`
+  (`applyTaskUpdate`, shared by `/update-task` and the new route), `TASK_STATUSES`
+  exported from `taskDeps.js`, notifier gains `actorLabel`. `f6528f1` — `POST
+  /internal/tasks/status` on the bot's port-4070 HTTP server, guarded by
+  `x-internal-secret` / `BOT_INTERNAL_SECRET`, disabled with 503 until the env is set.
+  `7045f99` — fix so a bad/`null` JSON body never hangs the route instead of erroring.
+- **CSAAS** (`CSAAS_Backend`, `feat/discord-tasks-status`): `c7762b0`, `30931eb` — read
+  endpoint gains task detail fields and a top-level `members` list, scoped per guild.
+  `534b793`, `481d6c1` — `POST /api/discord/tasks/status` → `DiscordTasksStatus_object`,
+  token + actor binding + `requirePortalPermission('update_discord_tasks')`, loopback
+  call to the bot, audit label only from a verified identity; migration
+  `data/migrations/20260918_1_update_discord_tasks_permission.sql` seeds the permission
+  into the Dev and Admin groups and backfills existing users; `sample_env` gained
+  `DISCORD_BOT_URL`/`DISCORD_BOT_SECRET`.
+- **UBS-Doc** (`UBS-Doc`, `feat/team-section`, vitest 123 → 194): `5149d8a` — pure logic
+  (`boardLogic`, `graphLayout`, `teamLogic`, `redirect`, `setTaskStatus` with
+  `ApiError`). `a7a1a18` — Team layout, tabs, `/tools/tasks` redirect, nav. `72fa833` —
+  People, TaskDetail. `b74888d`, `d886ab9` — Board with drag-to-status, toasts, override
+  lifecycle. `e6edc8f`, `0fadfd4` — dependency graph.
+
+Every task passed its own review round (several needed one fix round: bot Task 3's
+null-body hang, CSAAS Task 4's guild-scoping and Task 5's actor-binding fixes, site
+Task 9's override-clearing race, Task 10's graph accessibility). No Critical findings
+survived to the end of any lane.
+
+Knowledge: `.claude/knowledge/project-tasks-site.md` ("Team section and the write path").
+
+**Not merged, not deployed.** Remaining before it can go live: a final whole-branch
+review across all three repos, then deploy in order bot → CSAAS → site, hand-setting
+`BOT_INTERNAL_SECRET` after the bot deploy and `DISCORD_BOT_URL`/`DISCORD_BOT_SECRET`
+after the CSAAS deploy, then live verification (board drag, Discord channel post,
+blocked-card toast, unblock notice). See `session.md`.
+
 ## 2026-09-17 — Project tasks on the UBS-Doc site (merged and deployed 2026-09-17)
 
 Every task from the bot's database, grouped by project, with multiple assignees,

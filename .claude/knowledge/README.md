@@ -19,4 +19,7 @@
 - [project-tasks-site.md](project-tasks-site.md) — bot tasks shown live on the UBS-Doc
   site: the CSAAS cross-database read path, computed-not-stored blocked state,
   dependency/cycle rules, `/project-members` inferred membership, the member name
-  sync's `LIMIT 25` trap, and deploy order.
+  sync's `LIMIT 25` trap, deploy order, and (Team section) the site's write path back
+  into Discord — three-hop status-change with exact headers/env, the
+  `update_discord_tasks` permission and its backfill, the board's drop/override rules,
+  and the CSAAS error-body shape.

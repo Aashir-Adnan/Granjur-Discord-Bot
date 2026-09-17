@@ -174,6 +174,169 @@ Bot, then CSAAS, then site — each depends on the previous:
 
 Both are additive later; neither required any schema or endpoint change to add now.
 
+## Team section and the write path
+
+Built 2026-09-18 (spec `docs/superpowers/specs/2026-09-18-team-board-previews-design.md`,
+ledger `.superpowers/sdd/2026-09-18-team-board-previews/progress.md`). Turns the read-only
+Tasks page into a four-view Team section and adds the first *write* from the site back
+into Discord data. Built and reviewed on branches in all three repos; **not merged or
+deployed** as of this writing — see `session.md` for what remains.
+
+### Routes (site)
+
+`/tools/team` (`TeamLayout`, one shared fetch + filter bar) with children: index →
+People, `tasks` → `TasksList` (former `Tasks.tsx` body), `tasks/:taskId` → `TaskDetail`,
+`board` → `Board`. `/tools/tasks` is now `<Navigate to="/tools/team/tasks<search>" />`,
+preserving the query string (so `?project=` deep links still work). Dependency graph is
+not a route — it's a per-project "Graph" toggle inside `TasksList`'s project cards,
+shown only when the project has ≥1 dependency edge.
+
+### The write path: three hops, one shared secret, one shared helper
+
+A board drag only ever *reads* Discord state; the actual mutation happens exactly where
+`/update-task` already does it — in the bot, against `granjur.*`. CSAAS never writes the
+bot's tables. Hop by hop:
+
+1. **Site → CSAAS.** `setTaskStatus(taskId, status)` in
+   `src/components/discordTasks/api.ts` calls `mwPost('/discord/tasks/status', { task_id,
+   status })`. The site's patched `window.fetch` (`installApiAuth()` in `src/app/main.tsx`)
+   adds the `accesstoken` header because the URL is under `API_BASE_URL` — no code in
+   `setTaskStatus` itself has to know about auth.
+2. **CSAAS: `POST /api/discord/tasks/status` → `DiscordTasksStatus_object`.** Declared
+   `accessToken: true`, `bindActorToToken: true` (sets `actor_email` +
+   `actionPerformerURDD` from the verified token), `permission: null` (the permission
+   check happens inside the handler, not the framework step, matching
+   `PortalUsersRole_object`'s shape). Handler `setTaskStatus(req, decryptedPayload)`:
+   `requirePortalPermission(req, decryptedPayload, "update_discord_tasks")`, validates
+   `task_id` (non-empty, ≤64 chars) and `status` (one of the six `TASK_STATUSES`), then
+   calls the bot.
+3. **CSAAS → bot (loopback).** `fetch(`${DISCORD_BOT_URL}/internal/tasks/status`, {
+   method: 'POST', headers: { 'content-type': 'application/json', 'x-internal-secret':
+   DISCORD_BOT_SECRET }, body: { taskId, status, actor: { email: actor_email, name } },
+   signal: AbortSignal.timeout(15000) })`. Env names: `DISCORD_BOT_URL` (default
+   `http://127.0.0.1:4070`), `DISCORD_BOT_SECRET` (required — missing means CSAAS returns
+   503 "not configured" and never makes the call at all, so the bot never sees a
+   secret-less request from this path).
+4. **Bot: `POST /internal/tasks/status`** (`bot/src/server.js`, dispatches into
+   `bot/src/services/internalTaskRoute.js` `handleStatusRequest({ headers, body, db,
+   client, secret, apply })` — pure and socket-free, so it's unit tested without a real
+   HTTP server). Body `{ taskId, status, actor: { email, name } }`. The header is checked
+   against `process.env.BOT_INTERNAL_SECRET` with `safeEqual` (`node:crypto`
+   `timingSafeEqual`, both buffers must be non-empty and equal length first — an empty
+   secret can never match, so an unset env can't accidentally be satisfied by an empty
+   header). On success it calls the same `applyTaskUpdate` helper `/update-task` uses
+   (`bot/src/services/taskStatusChange.js`), with `actor: { label: '<name-or-email> (via
+   the site)' }` and no `discordId` (the site user isn't a Discord identity).
+
+The bot route's status codes, in check order: **503** `internal route not configured` if
+`BOT_INTERNAL_SECRET` is unset (checked before anything else, including the header) —
+`server.js` logs `[internal] status route enabled`/`disabled` once at startup based on
+this same env var. **401** `unauthorized` if the header is missing or wrong. **400** for
+a missing/over-length `taskId` (>64 chars) or a `status` not in `TASK_STATUSES`. **404**
+`Task not found` if `db.task.findFirst` misses. **200** `{ ok: true, task: { id, status },
+warning: '', unchanged: true }` with **no write** if the task is already at that status.
+**200** `{ ok: true, task: { id, status }, warning }` otherwise, after the write. **500**
+`{ ok: false, message }` for anything thrown (logged with a `[internal]` prefix) — the
+whole handler body runs inside one try/catch specifically so a bad/`null` JSON body can
+never reach `.taskId` and hang the response (that was a real bug, fixed in `7045f99`
+after the first review round; body is normalized to `{}` before any property read).
+
+CSAAS maps the bot's response onto its own status codes rather than passing them
+through: bot 404 → CSAAS 404 "Task not found"; bot 400 → CSAAS 400 (message passed
+through); bot 401 or 503 → CSAAS 502 "Discord bot rejected the request (configuration)"
+(a secret mismatch or a disabled route both mean "the loopback trust is misconfigured",
+never surfaced to the site as a permission problem); a network error or the 15 s
+`AbortSignal` timeout → CSAAS 502 "Discord bot is not reachable"; bot 200 → CSAAS returns
+`{ task, warning, unchanged }` unwrapped. On success CSAAS logs
+`[discord-tasks] <email> set <taskId> -> <status>`.
+
+### The permission and its backfill
+
+New permission `update_discord_tasks`, seeded by
+`data/migrations/20260918_1_update_discord_tasks_permission.sql`:
+`INSERT IGNORE INTO permissions (permission_name, status) VALUES
+('update_discord_tasks','active')`, added to the `Role - Dev` and `Role - Admin`
+permission groups, then **backfilled directly into
+`user_role_designation_permissions`** for every URDD whose role is one of those two.
+The direct backfill is necessary, not belt-and-suspenders: `applyRoleDefaults` only
+materialises a role group's permissions into a URDD at URDD-creation time or when the
+URDD's role changes — a person who already held the Dev or Admin role before this
+migration ran would never pick up the new group permission on their own. `INSERT IGNORE`
+on the unique pair makes re-running the migration a no-op.
+
+`requirePortalPermission` also has a `seesAll` fallback for role admins, which is how
+**`Platform Admin` is covered without appearing in the migration's groups at all** — it
+wasn't added there on purpose (deferred minor, not an oversight worth fixing).
+
+### The drop rule and the override lifecycle (Board.tsx)
+
+On a card drop: (1) if the acting user lacks `update_discord_tasks`, cards aren't
+`draggable` in the first place and a note above the board reads "You can view the board.
+Ask an admin for the update_discord_tasks permission to move cards." — no drop event to
+even reach; (2) dropping on the card's current column is a no-op; (3) otherwise the move
+is optimistic — the card jumps columns locally, then `setTaskStatus(id,
+statusForColumn(col))` fires; (4) on success the move stays, a non-empty `warning` (e.g.
+a blocker warning) shows as an 8 s toast, then `refresh()` runs in the background so
+counts/blocked state catch up — a refresh that itself fails just leaves stale counts
+until the next refresh, not a wrong board; (5) on failure the card snaps back and a toast
+shows the message, with two overrides: HTTP 403 becomes the permission sentence, HTTP 502
+becomes "Discord bot is offline, try again".
+
+**Override lifecycle**, fixed in a review round (Task 9, `d886ab9`): the optimistic
+per-card status override used to be cleared unconditionally right after `refresh()`
+resolved, which raced two ways — a `refresh()` that failed left a stale card snapped back
+even though the write had succeeded, and two quick drops on the same card could have the
+first drop's cleanup wipe out the second drop's still-pending override. The fix made
+clearing **ownership-checked** — `clearOverride(id, status)` only clears an override if
+it still matches the status that call itself wrote — plus a separate effect that retires
+an override once the freshly-fetched payload already agrees with it (so a slow-but-
+eventually-successful refresh still converges instead of leaving a permanent local
+override).
+
+### The error-body shape (read this before parsing a CSAAS error anywhere)
+
+Every CSAAS error response, at every status code, has the same envelope:
+`{ status, message, payload, source, scc }`. `message` is **generic catalogue text**
+(one fixed string per `scc` code — 400 is `E10`, 403 is `E31`, 404 is `E50`, 502/503 are
+both `E99`); the specific, useful text lives in `payload`, not `message`. `setTaskStatus`
+on the site therefore reads `payload` first (when it's a non-empty string), falls back to
+`message`, then to `res.statusText`, and — separately — classifies 403/502/503 by HTTP
+**status code first**, never by sniffing message text, because the generic `message` is
+identical across unrelated failures. Getting this backwards (reading `message` before
+`payload`, or classifying by string content) was flagged mid-build as the one thing that
+would make the board's permission notice silently never show; see progress ledger
+"Task 5: FACT for Task 9".
+
+### How to verify (post-deploy)
+
+- **Bot, from the VM, before the secret is set:** any request to the route returns 503;
+  `pm2 logs` shows `[internal] status route disabled: BOT_INTERNAL_SECRET unset`. After
+  setting `BOT_INTERNAL_SECRET` and restarting: `pm2 logs` shows `... enabled`.
+- **Bot, with the secret set:** `curl -s -X POST localhost:4070/internal/tasks/status -H
+  'content-type: application/json' -d '{}'` (no `x-internal-secret` header) → **401**.
+  `curl -s -X POST localhost:4070/internal/tasks/status -H 'content-type: application/json'
+  -H 'x-internal-secret: <secret>' -d '{"taskId":"x","status":"bogus"}'` → **400**.
+- **CSAAS:** `curl -s https://api.gobizzi.com/api/discord/tasks | jq '.payload.return.members
+  | length'` for the read side; the write side needs a signed-in token, so it's exercised
+  live from the site instead.
+- **Live, end to end:** sign in on the site, drag a card on `/tools/team/board`, and the
+  task's Discord channel shows a post starting **"<Name> (via the site) updated this
+  task:"** followed by the usual `• field: old → new` bullet lines — the exact text the
+  notifier already sends for a Discord-originated update, just with a name instead of a
+  `<@mention>` because the actor has no Discord id in this path. A blocked card shows the
+  blocker-warning toast; moving a blocker to Done still fires the unblock notice in the
+  dependent task's channel, same as `/update-task`.
+
+### Deploy order (load-bearing, same shape as the 2026-09-17 build)
+
+Bot → CSAAS → site, and two env values must be hand-set on the VM between the first two
+steps: `BOT_INTERNAL_SECRET` in `~/Granjur-Discord-Bot/.env` (bot deploy, then set, then
+`pm2 restart granjur-bot`), then `DISCORD_BOT_URL` + `DISCORD_BOT_SECRET` (same value as
+`BOT_INTERNAL_SECRET`) in `/var/www/CSAAS/CSAAS_Backend/.env` (CSAAS deploy, then set,
+then restart). The CSAAS read endpoint's `members[].roleNames` field only exists after
+the bot's migration 018 has run, so CSAAS cannot go out ahead of the bot even for the
+read side.
+
 ## Related
 
 [[project-docs]] (the other bot-to-site data path, UBS-Doc markdown into MySQL — this

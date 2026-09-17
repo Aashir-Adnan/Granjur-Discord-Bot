@@ -4,6 +4,44 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Team section — follow-ups
+From the 2026-09-18 build (built and reviewed on branches, not yet merged/deployed — see
+`session.md`). See `.claude/knowledge/project-tasks-site.md` ("Team section and the write
+path") for the write-path shape these items sit inside.
+
+- **Loopback bind for the bot's HTTP server.** `bot/src/server.js` binds all interfaces;
+  the Azure NSG blocking port 4070 from outside is the only thing keeping it private
+  today. A `BOT_HTTP_HOST` env (default `127.0.0.1`) would tighten this properly, but was
+  deferred because it would also change reachability for `/verify` and any other on-VM
+  caller currently using the public IP — needs a look at who else calls in before
+  narrowing the bind.
+- **`portalAuthz`'s `pickFrom` falls back to `req.body` for a null
+  `actionPerformerURDD`.** Pre-existing in CSAAS, surfaced again during the Task 5
+  review of `DiscordTasksStatus_object`; not touched by this build.
+- **People page search placeholder wording.** The search box filters People by name but
+  the placeholder text wasn't reworded for the new page (carried over from the Tasks
+  search copy) — flagged as a possible Task 10 cleanup and left as-is.
+- **No keyboard path for moving a board card.** The board's drag-and-drop is native
+  HTML5 DnD only; there's no keyboard-accessible way to change a card's column.
+- **Dependency graph layout recomputes on every keystroke.** `graphLayout`'s
+  `layoutGraph` re-runs on each filter-bar keystroke rather than being debounced or
+  memoized — harmless at current data volumes, reviewed and accepted as-is.
+- **`storedRoles` in the member name sync duplicates `ensureStringArray` from
+  `helpers.js`.** Same normalization logic written twice instead of reused.
+- **The `'notified'` default literal is duplicated** between `update-task.js` and
+  `taskStatusChange.js` rather than defined once and imported.
+- **`Platform Admin` is not in the permission migration's role groups.** It's covered
+  today only via the `seesAll` fallback in `requirePortalPermission`, not because the
+  migration granted it `update_discord_tasks` explicitly — fine while `seesAll` exists,
+  but a trap if that fallback is ever narrowed.
+- **CSAAS `members`/task TEXT payload is uncapped within the endpoint's `LIMIT 2000`
+  row cap.** A very large `description`/`scope` field could bloat one response; no
+  per-field length cap exists.
+- **`task.type` is rendered raw on the Task Detail page.** No label mapping — whatever
+  string is stored (`feature`, `bug`, etc.) is shown verbatim.
+
+---
+
 ## Project tasks site — follow-ups
 From the 2026-09-17 build. See `.claude/knowledge/project-tasks-site.md`.
 
