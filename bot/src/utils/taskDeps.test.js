@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { openBlockers, wouldCycle, blockerWarning, unblockNotice, isTerminal, TERMINAL_STATUSES } from './taskDeps.js'
+import { openBlockers, wouldCycle, blockerWarning, unblockNotice, isTerminal, TERMINAL_STATUSES, TASK_STATUSES } from './taskDeps.js'
 import { TERMINAL_STATUSES as TERMINAL_STATUSES_FROM_NOTIFY } from '../services/taskUpdateNotify.js'
 
 const tasks = {
@@ -60,4 +60,8 @@ test('unblockNotice says how many remain, or that the task is free', () => {
 
 test('TERMINAL_STATUSES exported from taskUpdateNotify.js is the same object as from taskDeps.js', () => {
   assert.equal(TERMINAL_STATUSES_FROM_NOTIFY, TERMINAL_STATUSES)
+})
+
+test('TASK_STATUSES lists every status a task can hold, in board order', () => {
+  assert.deepEqual(TASK_STATUSES, ['open', 'pending', 'in_progress', 'resolved', 'closed', 'done'])
 })

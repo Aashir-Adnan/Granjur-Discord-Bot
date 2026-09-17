@@ -5,6 +5,9 @@
 
 export const TERMINAL_STATUSES = new Set(['closed', 'done', 'resolved'])
 
+/** Every status a task can hold, in the order the board and the pickers use. */
+export const TASK_STATUSES = ['open', 'pending', 'in_progress', 'resolved', 'closed', 'done']
+
 export const STATUS_LABEL = {
   open: 'open',
   pending: 'pending',

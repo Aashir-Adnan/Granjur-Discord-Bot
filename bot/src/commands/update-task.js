@@ -1,8 +1,9 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import { taskChoiceLabel, holdersOf, idList } from '../utils/taskLabel.js'
-import { wouldCycle, openBlockers, blockerWarning } from '../utils/taskDeps.js'
+import { wouldCycle } from '../utils/taskDeps.js'
 import { notifyTaskUpdate } from '../services/taskUpdateNotify.js'
+import { applyTaskUpdate } from '../services/taskStatusChange.js'
 
 /** Parse space-separated @mentions or Discord user IDs into array of IDs. */
 function parseUserIds(str) {
@@ -121,8 +122,6 @@ function sameIds(a, b) {
   return x.size === y.size && [...x].every((id) => y.has(id))
 }
 
-const WARNING_MAX = 1500
-
 export async function execute(interaction, { db: dbArg = db, notify = notifyTaskUpdate, getConfig = getOrCreateGuildConfig } = {}) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
@@ -193,40 +192,15 @@ export async function execute(interaction, { db: dbArg = db, notify = notifyTask
     let notified = { channelId: task.discordChannelId || null, created: false, dmed: [] }
     let warning = ''
     if (hasUpdates) {
-      await dbArg.task.update({ where: { id: taskId }, data: updates })
-
-      if (updates.status && updates.status !== task.status && updates.status !== 'open' && updates.status !== 'pending') {
-        // The write already succeeded; a failure here must not report "Update failed".
-        try {
-          const rows = await dbArg.taskDependency.findByTask({ where: { taskId: task.id } })
-          const blockers = rows.length
-            ? await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: rows.map((r) => r.blockedByTaskId) } })
-            : []
-          const byId = Object.fromEntries(blockers.map((b) => [b.id, b]))
-          warning = blockerWarning(openBlockers(task.id, rows, byId))
-          if (warning.length > WARNING_MAX) warning = `${warning.slice(0, WARNING_MAX - 1)}…`
-        } catch (e) {
-          console.error('[update-task] blocker warning:', e?.message ?? e)
-          warning = ''
-        }
-      }
-
-      // The write is what matters; notification is best-effort and must never
-      // turn a successful update into a failed command.
-      try {
-        notified = await notify({
-          client: interaction.client,
-          guild,
-          task,
-          before: task,
-          updates,
-          actorId: interaction.user.id,
-          warning,
-          db: dbArg,
-        })
-      } catch (e) {
-        console.error('[update-task] notify:', e?.message ?? e)
-      }
+      ;({ warning, notified } = await applyTaskUpdate({
+        db: dbArg,
+        client: interaction.client,
+        guild,
+        task,
+        updates,
+        actor: { discordId: interaction.user.id },
+        notify,
+      }))
     }
 
     const embed = new EmbedBuilder()

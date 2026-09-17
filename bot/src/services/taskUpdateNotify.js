@@ -100,7 +100,7 @@ export async function unblockNotices({ db: dbArg = db, guildConfigId, blockerTas
  *
  * @returns {Promise<{channelId: string|null, dmed: string[], created: boolean}>}
  */
-export async function notifyTaskUpdate({ client, guild, task, before, updates, actorId, warning = '', db: dbArg = db }) {
+export async function notifyTaskUpdate({ client, guild, task, before, updates, actorId, actorLabel = null, warning = '', db: dbArg = db }) {
   const out = { channelId: task?.discordChannelId || null, dmed: [], created: false }
   if (!guild || !task) return out
 
@@ -163,7 +163,9 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
     if (removed.length) lines.push(`**unassigned** ${removed.map((id) => `<@${id}>`).join(' ')}`)
     if (warning) lines.push(warning)
     if (lines.length) {
-      const who = actorId ? `<@${actorId}>` : 'Someone'
+      // No Discord id when the change came from the site; `actorLabel` then
+      // names the person so the post is not anonymous.
+      const who = actorId ? `<@${actorId}>` : actorLabel || 'Someone'
       await channel
         .send(`${who} updated this task:\n${lines.map((l) => `• ${l}`).join('\n')}`)
         .catch((e) => console.warn('[taskUpdate] channel post failed:', e?.message || e))

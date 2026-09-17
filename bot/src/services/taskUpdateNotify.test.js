@@ -330,3 +330,40 @@ test('a task with no guildConfigId skips the unblock-notice lookup entirely, wit
     console.warn = originalWarn
   }
 })
+
+// --- actorLabel: who the post says made the change --------------------------
+
+/** One post into a task's own channel; returns the text that was sent. */
+async function postWith({ actorId = null, actorLabel = null } = {}) {
+  const posts = []
+  const channel = {
+    id: 'own',
+    name: 'feature-123456',
+    guild: { id: 'g1' },
+    send: async (m) => posts.push(m),
+    permissionOverwrites: { edit: async () => {}, delete: async () => {} },
+  }
+  const h = harness({ channel })
+  const task = { id: h.taskId, title: 'T', status: 'open', assigneeIds: ['11'], discordChannelId: 'own' }
+  await notifyTaskUpdate({
+    client: h.client,
+    guild: h.guild,
+    task,
+    before: task,
+    updates: { status: 'in_progress' },
+    actorId,
+    actorLabel,
+  })
+  assert.equal(posts.length, 1)
+  return posts[0]
+}
+
+test('actorLabel names the person when there is no Discord id to mention', async () => {
+  const text = await postWith({ actorId: null, actorLabel: 'Afaq (via the site)' })
+  assert.ok(text.startsWith('Afaq (via the site) updated this task'), text)
+})
+
+test('with neither an actor id nor a label the post falls back to "Someone"', async () => {
+  const text = await postWith()
+  assert.ok(text.startsWith('Someone updated this task'), text)
+})
