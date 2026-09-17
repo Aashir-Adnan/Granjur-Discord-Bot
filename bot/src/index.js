@@ -186,7 +186,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       "create_task_type_bug",
       "create_task_members",
       "create_task_members_next",
-      "create_task_assignees",
       "create_task_metric_api",
       "create_task_metric_qa",
       "create_task_metric_ac",

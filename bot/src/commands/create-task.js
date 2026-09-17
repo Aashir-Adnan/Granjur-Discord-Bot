@@ -2,6 +2,7 @@ import {
   SlashCommandBuilder,
   ActionRowBuilder,
   StringSelectMenuBuilder,
+  UserSelectMenuBuilder,
   EmbedBuilder,
   ModalBuilder,
   TextInputBuilder,
@@ -549,6 +550,18 @@ export async function handleMembersNext(interaction) {
   }
 }
 
+/** The confirm step's assignee picker. Exported for its test. */
+export function assigneeRow(state = {}) {
+  const menu = new UserSelectMenuBuilder()
+    .setCustomId('create_task_assignees')
+    .setPlaceholder('Assignees (optional) — pick anyone on the server')
+    .setMinValues(0)
+    .setMaxValues(25)
+  const current = (state.assigneeIds || []).filter(Boolean).slice(0, 25)
+  if (current.length) menu.setDefaultUsers(current)
+  return new ActionRowBuilder().addComponents(menu)
+}
+
 async function showConfirmStep(interaction, state, guild) {
   try {
     const cfg = await getOrCreateGuildConfig(guild.id)
@@ -581,7 +594,8 @@ async function showConfirmStep(interaction, state, guild) {
     ...(isFeature ? [new ButtonBuilder().setCustomId('create_task_edit').setLabel('Edit details').setStyle(ButtonStyle.Secondary)] : []),
     new ButtonBuilder().setCustomId('create_task_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
   )
-  await respond(interaction, { embeds: [embed], components: [rowButtons] })
+  const components = isFeature ? [assigneeRow(state), rowButtons] : [rowButtons]
+  await respond(interaction, { embeds: [embed], components })
   } catch (e) {
     console.error('[create-task] showConfirmStep error:', e)
     await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})

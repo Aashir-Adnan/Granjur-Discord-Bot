@@ -248,6 +248,10 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/meetingReview.js")).route(interaction);
     if (customId === "set_roles_member")
       return (await import("../commands/set-roles.js")).handleMemberSelect(interaction);
+    if (customId === "create_task_assignees")
+      return runCreateTaskHandler(interaction, (i) =>
+        createTaskCmd.handleAssigneesSelect(i),
+      );
     return;
   }
 
@@ -272,10 +276,6 @@ export default async function handleInteractions(interaction) {
     if (customId === "create_task_members")
       return runCreateTaskHandler(interaction, (i) =>
         createTaskCmd.handleMembersSelect(i),
-      );
-    if (customId === "create_task_assignees")
-      return runCreateTaskHandler(interaction, (i) =>
-        createTaskCmd.handleAssigneesSelect(i),
       );
     if (customId === "create_task_metric_api")
       return runCreateTaskHandler(interaction, (i) =>
