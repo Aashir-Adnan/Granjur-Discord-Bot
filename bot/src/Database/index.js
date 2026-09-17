@@ -148,21 +148,12 @@ async function guildMemberUpsert({ where, create, update }) {
   }
   const pk = id();
   const cfg = await getOrCreateGuildConfig(create.guildId);
-  await query(
-    `INSERT INTO \`guildmember\` (id, guildConfigId, discordId, email, verifiedAt, status, roleIds, displayName, username)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      pk,
-      cfg.id,
-      create.discordId,
-      create.email ?? null,
-      create.verifiedAt ?? null,
-      create.status ?? "pending",
-      toJson(create.roleIds || []),
-      create.displayName ?? null,
-      create.username ?? null,
-    ],
-  );
+  const { sql, params } = guildMemberInsertSql({
+    id: pk,
+    guildConfigId: cfg.id,
+    ...create,
+  });
+  await query(sql, params);
   return guildMemberFindUnique({
     where: {
       guildId_discordId: {
@@ -171,6 +162,24 @@ async function guildMemberUpsert({ where, create, update }) {
       },
     },
   });
+}
+
+export function guildMemberInsertSql(data) {
+  const columns = [
+    ["id", data.id],
+    ["guildConfigId", data.guildConfigId],
+    ["discordId", data.discordId],
+    ["email", data.email ?? null],
+    ["verifiedAt", data.verifiedAt ?? null],
+    ["status", data.status ?? "pending"],
+    ["roleIds", toJson(data.roleIds || [])],
+    ["displayName", data.displayName ?? null],
+    ["username", data.username ?? null],
+  ];
+  return {
+    sql: `INSERT INTO \`guildmember\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    params: columns.map(([, v]) => v),
+  };
 }
 
 export function guildMemberUpdateSets(data = {}) {

@@ -4,6 +4,7 @@ import {
   taskDependencyInsertSql,
   projectMemberUpsertSql,
   guildMemberUpdateSets,
+  guildMemberInsertSql,
 } from './index.js'
 
 // Column list and params must come from ONE array. The utterance table's
@@ -44,4 +45,22 @@ test('guildmember update sets: name columns are written only when given', () => 
   })
   assert.deepEqual(guildMemberUpdateSets({ status: 'holding' }), { sets: ['status = ?'], vals: ['holding'] })
   assert.deepEqual(guildMemberUpdateSets({}), { sets: [], vals: [] })
+})
+
+test('guildmember insert: placeholders equal params, and params follow column order', () => {
+  const { sql, params } = guildMemberInsertSql({
+    id: 'gm1', guildConfigId: 'g1', discordId: 'd1', email: 'a@granjur.com',
+    verifiedAt: '2026-09-17 00:00:00', status: 'verified', roleIds: ['r1', 'r2'],
+    displayName: 'Nauraiz', username: 'nauraiz_101104',
+  })
+  const cols = sql.match(/\(([^)]+)\) VALUES/)[1].split(',').map((s) => s.trim())
+  assert.equal((sql.match(/\?/g) || []).length, params.length)
+  assert.deepEqual(cols, ['id', 'guildConfigId', 'discordId', 'email', 'verifiedAt', 'status', 'roleIds', 'displayName', 'username'])
+  assert.deepEqual(params, ['gm1', 'g1', 'd1', 'a@granjur.com', '2026-09-17 00:00:00', 'verified', '["r1","r2"]', 'Nauraiz', 'nauraiz_101104'])
+  assert.match(sql, /INSERT INTO `guildmember`/)
+})
+
+test('guildmember insert: unspecified fields fall back to the insert defaults', () => {
+  const { params } = guildMemberInsertSql({ id: 'gm2', guildConfigId: 'g1', discordId: 'd2' })
+  assert.deepEqual(params, ['gm2', 'g1', 'd2', null, null, 'pending', '[]', null, null])
 })
