@@ -5,6 +5,7 @@
  */
 import http from 'http'
 import { completeVerification } from './commands/verify.js'
+import { handleStatusRequest } from './services/internalTaskRoute.js'
 
 const PORT = parseInt(process.env.BOT_VERIFY_PORT || '4070', 10)
 
@@ -17,6 +18,27 @@ export function startVerifyServer(discordClient) {
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
       res.writeHead(204)
       res.end()
+      return
+    }
+    if (req.method === 'POST' && req.url === '/internal/tasks/status') {
+      let ibody = ''
+      for await (const chunk of req) ibody += chunk
+      let idata
+      try {
+        idata = JSON.parse(ibody)
+      } catch {
+        res.writeHead(400)
+        res.end(JSON.stringify({ ok: false, message: 'Invalid JSON' }))
+        return
+      }
+      const r = await handleStatusRequest({
+        headers: req.headers,
+        body: idata,
+        client: discordClient,
+        secret: process.env.BOT_INTERNAL_SECRET || '',
+      })
+      res.writeHead(r.status)
+      res.end(JSON.stringify(r.body))
       return
     }
     if (req.method !== 'POST' || req.url !== '/verify') {
@@ -48,6 +70,7 @@ export function startVerifyServer(discordClient) {
 
   server.listen(PORT, () => {
     console.log(`Verify callback server on port ${PORT}`)
+    console.log(process.env.BOT_INTERNAL_SECRET ? '[internal] status route enabled' : '[internal] status route disabled: BOT_INTERNAL_SECRET unset')
   })
   return server
 }
