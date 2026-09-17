@@ -12,9 +12,9 @@
 
 import { holdersOf, idList } from '../utils/taskLabel.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
+import { TERMINAL_STATUSES } from '../utils/taskDeps.js'
 
-/** A status that ends someone's involvement — worth a DM. */
-export const TERMINAL_STATUSES = new Set(['closed', 'done', 'resolved'])
+export { TERMINAL_STATUSES }
 
 const FIELD_LABELS = {
   status: 'status',
