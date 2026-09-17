@@ -28,16 +28,18 @@ back clean. Bot suite 318, site suite 122. Collation of `task`, `project` and
 017's foreign keys will attach. The deploy workflow now starts with `set -e`, so a
 failed migration stops the restart.
 
+## Deployed (2026-09-17)
+Merged to `main` and live in all three repos, in order: bot `9161c7b` (migration 017
+applied, 43 commands, 13 members named), CSAAS `a6fbb12` (endpoint returns 200 with
+projects), UBS-Doc `93f8df0` (Vercel build). Feature branches deleted.
+
+Note for next time: CSAAS's deploy runs `npm ci` before `pm2 restart`, so the API
+returns 502 for roughly a minute mid-deploy. That is expected, not a failure.
+
 ## What remains
-1. Merge and deploy **in order**: bot -> `main` first, then CSAAS -> `main`, then
-   UBS-Doc -> `main`. Each stage depends on the previous one being live (CSAAS's
-   endpoint needs migration 017 on the bot's DB; the site needs CSAAS's endpoint).
-2. Live verification per `docs/superpowers/plans/2026-09-17-project-tasks-site-section.md`
-   section "Verification after deploy": pm2 logs show 43 commands + `[memberNameSync]`
-   lines; `curl https://api.gobizzi.com/api/discord/tasks` returns `"projects"`; open
-   `/tools/tasks`; in Discord, `/update-task ... blocked_by:` then mark the blocker done
-   and confirm the warning and unblock notice; `/project-members add` then refresh the
-   page.
+Discord-side checks: `/update-task ... blocked_by:`, move that task to in progress and
+see the warning, mark the blocker done and see the unblock notice in the dependent
+task's channel; `/project-members add`, then refresh `/tools/tasks`.
 
 ## Knowledge / skills in use
 - `.claude/knowledge/project-tasks-site.md` (this feature, just written).
