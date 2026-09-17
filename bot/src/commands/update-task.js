@@ -239,7 +239,9 @@ export async function execute(interaction, { db: dbArg = db, notify = notifyTask
       })))
       .setColor(0x57f287)
     if (dep.lines.length) {
-      embed.addFields({ name: 'Dependencies', value: dep.lines.join('\n'), inline: false })
+      let depValue = dep.lines.join('\n')
+      if (depValue.length > 1024) depValue = `${depValue.slice(0, 1023)}…`
+      embed.addFields({ name: 'Dependencies', value: depValue, inline: false })
     }
     if (notified.channelId) {
       embed.addFields({

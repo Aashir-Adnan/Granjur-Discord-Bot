@@ -228,6 +228,18 @@ test('execute: add_assignee writes the extended list', async () => {
   assert.deepEqual(db.calls[0][1].data, { assigneeIds: ['1', '2'] })
 })
 
+test('execute: a Dependencies field over 1024 characters is capped with an ellipsis', async () => {
+  const longTitle = 't'.repeat(1100)
+  const longBlocker = { id: 'L', title: longTitle, status: 'open' }
+  const db = fakeDb({ tasks: [A, longBlocker] })
+  const notify = fakeNotify()
+  const it = fakeInteraction({ task: 'A', blocked_by: 'L' })
+  await execute(it, { db, notify, getConfig })
+  const depField = embedOf(it.replies[0]).fields.find((f) => f.name === 'Dependencies')
+  assert.equal(depField.value.length, 1024)
+  assert.ok(depField.value.endsWith('…'))
+})
+
 test('autocomplete: unblock lists only the picked task blockers, empty when it has none', async () => {
   const C = { id: 'C', title: 'Old', status: 'open' }
   const withDep = fakeDb({ tasks: [A, B, C], deps: [{ taskId: 'A', blockedByTaskId: 'B' }] })
