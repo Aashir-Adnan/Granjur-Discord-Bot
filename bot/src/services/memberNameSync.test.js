@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { toNameUpdates, syncGuildMemberNames } from './memberNameSync.js'
+import { toNameUpdates, syncGuildMemberNames, syncOneMember } from './memberNameSync.js'
 
 const m = (id, displayName, username, bot = false) => ({ id, displayName, user: { username, bot } })
 
@@ -23,9 +23,13 @@ test('toNameUpdates: names are clipped to the column widths', () => {
 
 test('syncGuildMemberNames writes updates and pending inserts through the seam', async () => {
   const calls = []
+  let findManyWhere = null
   const db = {
     guildMember: {
-      findMany: async () => [{ id: 'r1', discordId: '1', displayName: 'Old', username: 'nauraiz_101104' }],
+      findMany: async ({ where }) => {
+        findManyWhere = where
+        return [{ id: 'r1', discordId: '1', displayName: 'Old', username: 'nauraiz_101104' }]
+      },
       update: async (a) => { calls.push(['update', a]) },
       upsert: async (a) => { calls.push(['upsert', a]) },
     },
@@ -37,8 +41,81 @@ test('syncGuildMemberNames writes updates and pending inserts through the seam',
   const cfg = { id: 'g1', guildId: 'guild1' }
   const n = await syncGuildMemberNames(guild, { db, cfg })
   assert.equal(n, 2)
+  assert.equal(findManyWhere.all, true)
   assert.deepEqual(calls[0], ['update', { where: { id: 'r1' }, data: { displayName: 'Nauraiz', username: 'nauraiz_101104' } }])
   assert.equal(calls[1][0], 'upsert')
   assert.equal(calls[1][1].create.status, 'pending')
   assert.equal(calls[1][1].create.displayName, 'Hassan Abid')
+})
+
+test('syncOneMember: a member whose stored name differs updates that row', async () => {
+  const calls = []
+  const db = {
+    guildMember: {
+      findUnique: async () => ({ id: 'r1', discordId: '1', displayName: 'Old', username: 'oldname' }),
+      update: async (a) => { calls.push(['update', a]) },
+      upsert: async (a) => { calls.push(['upsert', a]) },
+    },
+  }
+  const member = m('1', 'Nauraiz', 'nauraiz_101104')
+  member.guild = { id: 'guild1' }
+  await syncOneMember(member, { db })
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0], ['update', { where: { id: 'r1' }, data: { displayName: 'Nauraiz', username: 'nauraiz_101104' } }])
+})
+
+test('syncOneMember: a member with no row upserts a pending row', async () => {
+  const calls = []
+  const db = {
+    guildMember: {
+      findUnique: async () => null,
+      update: async (a) => { calls.push(['update', a]) },
+      upsert: async (a) => { calls.push(['upsert', a]) },
+    },
+  }
+  const member = m('3', 'New Person', 'newp')
+  member.guild = { id: 'guild1' }
+  await syncOneMember(member, { db })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], 'upsert')
+  assert.equal(calls[0][1].create.status, 'pending')
+  assert.equal(calls[0][1].create.displayName, 'New Person')
+  assert.equal(calls[0][1].create.username, 'newp')
+})
+
+test('syncOneMember: a bot member makes no db calls', async () => {
+  const calls = []
+  const db = {
+    guildMember: {
+      findUnique: async () => { calls.push('findUnique'); return null },
+      update: async () => { calls.push('update') },
+      upsert: async () => { calls.push('upsert') },
+    },
+  }
+  const member = m('9', 'Helper', 'helper', true)
+  member.guild = { id: 'guild1' }
+  await syncOneMember(member, { db })
+  assert.deepEqual(calls, [])
+})
+
+test('syncOneMember: findUnique rejecting resolves rather than throwing, and logs a warning', async () => {
+  const originalWarn = console.warn
+  const warnCalls = []
+  console.warn = (...args) => { warnCalls.push(args) }
+  try {
+    const db = {
+      guildMember: {
+        findUnique: async () => { throw new Error('db down') },
+        update: async () => {},
+        upsert: async () => {},
+      },
+    }
+    const member = m('1', 'Nauraiz', 'nauraiz_101104')
+    member.guild = { id: 'guild1' }
+    await assert.doesNotReject(syncOneMember(member, { db }))
+    assert.equal(warnCalls.length, 1)
+    assert.ok(String(warnCalls[0][0]).startsWith('[memberNameSync]'))
+  } finally {
+    console.warn = originalWarn
+  }
 })

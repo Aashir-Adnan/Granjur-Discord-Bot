@@ -31,42 +31,38 @@ export function toNameUpdates(discordMembers = [], dbRows = []) {
   return { updates, inserts }
 }
 
-/** Sync every non-bot member of one guild. Returns the number of rows written. */
-export async function syncGuildMemberNames(guild, { db: dbArg = db, cfg = null } = {}) {
-  const config = cfg ?? (await getOrCreateGuildConfig(guild.id))
-  const collection = await guild.members.fetch()
-  const discordMembers = Array.from(collection.values())
-  const rows = await dbArg.guildMember.findMany({ where: { guildConfigId: config.id } })
-  const { updates, inserts } = toNameUpdates(discordMembers, rows)
+/** Writes an updates/inserts diff through the db seam. Returns the row count written. */
+async function applyNameWrites(guildId, { updates, inserts }, dbArg) {
   for (const u of updates) {
     await dbArg.guildMember.update({ where: { id: u.id }, data: { displayName: u.displayName, username: u.username } })
   }
   for (const i of inserts) {
     await dbArg.guildMember.upsert({
-      where: { guildId_discordId: { guildId: guild.id, discordId: i.discordId } },
-      create: { guildId: guild.id, discordId: i.discordId, status: 'pending', displayName: i.displayName, username: i.username },
+      where: { guildId_discordId: { guildId, discordId: i.discordId } },
+      create: { guildId, discordId: i.discordId, status: 'pending', displayName: i.displayName, username: i.username },
       update: { displayName: i.displayName, username: i.username },
     })
   }
   return updates.length + inserts.length
 }
 
+/** Sync every non-bot member of one guild. Returns the number of rows written. */
+export async function syncGuildMemberNames(guild, { db: dbArg = db, cfg = null } = {}) {
+  const config = cfg ?? (await getOrCreateGuildConfig(guild.id))
+  const collection = await guild.members.fetch()
+  const discordMembers = Array.from(collection.values())
+  const rows = await dbArg.guildMember.findMany({ where: { guildConfigId: config.id, all: true } })
+  const diff = toNameUpdates(discordMembers, rows)
+  return applyNameWrites(guild.id, diff, dbArg)
+}
+
 /** GuildMemberUpdate handler: one member, one row. */
 export async function syncOneMember(member, { db: dbArg = db } = {}) {
   try {
     if (!member?.guild || member.user?.bot) return
-    const cfg = await getOrCreateGuildConfig(member.guild.id)
-    const rows = await dbArg.guildMember.findMany({ where: { guildConfigId: cfg.id } })
-    const mine = rows.filter((r) => String(r.discordId) === String(member.id))
-    const { updates, inserts } = toNameUpdates([member], mine)
-    for (const u of updates) await dbArg.guildMember.update({ where: { id: u.id }, data: { displayName: u.displayName, username: u.username } })
-    for (const i of inserts) {
-      await dbArg.guildMember.upsert({
-        where: { guildId_discordId: { guildId: member.guild.id, discordId: i.discordId } },
-        create: { guildId: member.guild.id, discordId: i.discordId, status: 'pending', displayName: i.displayName, username: i.username },
-        update: { displayName: i.displayName, username: i.username },
-      })
-    }
+    const row = await dbArg.guildMember.findUnique({ where: { guildId_discordId: { guildId: member.guild.id, discordId: member.id } } })
+    const diff = toNameUpdates([member], row ? [row] : [])
+    await applyNameWrites(member.guild.id, diff, dbArg)
   } catch (e) {
     console.warn('[memberNameSync] one member:', e?.message ?? e)
   }
