@@ -24,8 +24,11 @@ import {
   planProjectSection,
   applyProjectSection,
   syncProjectRoleMembers,
+  claimedSectionIds,
+  projectSlug,
   cut,
 } from '../services/projectSection.js'
+import { ensureMembersPanel } from '../services/projectMembersPanel.js'
 
 /** Discord's hard limit on a message. */
 const REPLY_LIMIT = 2000
@@ -59,6 +62,12 @@ export const data = new SlashCommandBuilder()
   .addBooleanOption((o) =>
     o.setName('preview').setDescription('Show what would change and do nothing else').setRequired(false)
   )
+  .addBooleanOption((o) =>
+    o
+      .setName('adopt_role')
+      .setDescription('Adopt an existing role of the same name even though people already hold it')
+      .setRequired(false)
+  )
 
 // ---------------------------------------------------------------------------
 // Rendering. Both of these are pure: same arguments, same string, no Discord.
@@ -68,6 +77,7 @@ const CHANNEL_WORDS = [
   ['create', 'to create'],
   ['rename', 'to rename'],
   ['move', 'to move'],
+  ['grant', 'to open to the project role'],
   ['reuse', 'already right'],
 ]
 
@@ -79,16 +89,62 @@ const TASK_WORDS = [
   ['none', 'already right'],
 ]
 
-/** '9 to create, 1 to move' — counts per action, in the given order, zeros dropped. */
+/**
+ * '9 to create, 1 to move' — counts per action, in the given order, zeros
+ * dropped.
+ *
+ * An entry marked `opens` is renamed or moved AND opened to the project role in
+ * the same single edit, so the count says so. Without that, "22 to rename and
+ * move" reads as housekeeping while what it means is that 22 channels visible
+ * only to their assignees become visible to everyone holding the project role —
+ * at backfill, whoever was handed the legacy role by hand. The `grant` word
+ * already says it, so a `grant` entry never carries `opens`.
+ */
 function summarise(entries, words) {
   const list = Array.isArray(entries) ? entries : []
   if (!list.length) return ''
-  const counts = new Map()
-  for (const entry of list) counts.set(entry?.action, (counts.get(entry?.action) ?? 0) + 1)
-  return words
-    .filter(([action]) => counts.get(action))
-    .map(([action, word]) => `${counts.get(action)} ${word}`)
-    .join(', ')
+  const byAction = new Map()
+  for (const entry of list) {
+    const bucket = byAction.get(entry?.action) ?? { n: 0, opens: 0 }
+    bucket.n += 1
+    if (entry?.opens) bucket.opens += 1
+    byAction.set(entry?.action, bucket)
+  }
+  const parts = []
+  for (const [action, word] of words) {
+    const bucket = byAction.get(action)
+    if (!bucket?.n) continue
+    let text = `${bucket.n} ${word}`
+    if (bucket.opens === bucket.n) text += ' (and open to the project role)'
+    else if (bucket.opens) text += ` (${bucket.opens} of them also open to the project role)`
+    parts.push(text)
+  }
+  return parts.join(', ')
+}
+
+/** 'Ada, Bob and 4 more' — never an unbounded list of names in a reply. */
+function namesList(names, max = 12) {
+  const list = (names ?? []).map((n) => String(n))
+  if (!list.length) return 'nobody'
+  if (list.length <= max) return list.join(', ')
+  return `${list.slice(0, max).join(', ')}, and ${list.length - max} more`
+}
+
+/**
+ * The role decision in words an operator can act on: which role gates the
+ * section, and whether this run chose it, inherited it or refused to guess.
+ */
+function roleLine(role) {
+  if (role.action === 'refuse') {
+    return `Role: refused — ${role.reason || `"${role.name}" is a managed role.`}`
+  }
+  if (role.decision === 'stored') return `Role: reuse (this project's own) **${role.name}**`
+  if (role.decision === 'empty') return `Role: reuse (already exists, nobody holds it) **${role.name}**`
+  if (role.decision === 'adopt') {
+    const held = role.holderIds?.length ?? 0
+    return `Role: ADOPTING the existing **${role.name}** — ${held} member(s) hold it today`
+  }
+  return `Role: ${role.action} **${role.name}**`
 }
 
 /**
@@ -129,13 +185,7 @@ export function renderPlan(project, plan = {}) {
   const lines = []
 
   const role = plan?.role
-  if (role) {
-    lines.push(
-      role.action === 'refuse'
-        ? `Role: refused — ${role.reason || `"${role.name}" is a managed role.`}`
-        : `Role: ${role.action} **${role.name}**`
-    )
-  }
+  if (role) lines.push(roleLine(role))
   if (plan?.category) lines.push(`Category: ${plan.category.action} **${plan.category.name}**`)
 
   const channels = summarise(plan?.channels, CHANNEL_WORDS)
@@ -167,6 +217,7 @@ export function renderResult(project, result = {}) {
   const renamed = result?.renamed ?? []
   const moved = result?.moved ?? []
   const granted = result?.granted ?? []
+  const opened = result?.opened ?? []
   const taskCount = Number(result?.tasks ?? 0)
 
   const done = []
@@ -184,6 +235,15 @@ export function renderResult(project, result = {}) {
 
   const lines = [`**${name}** — ${summary}${breakdown}.`]
 
+  // A rename or a move that also carried the role's allow is already counted
+  // above as a rename or a move, so it is said here instead of added there:
+  // one channel, two true things about it, not two channels.
+  if (opened.length) {
+    lines.push(
+      `${opened.length} of those channel(s) were also opened to the project role in the same edit — they are now visible to everyone holding it.`
+    )
+  }
+
   const sync = result?.roleSync
   const role = result?.role ?? null
   if (role || sync) {
@@ -200,6 +260,11 @@ export function renderResult(project, result = {}) {
       if (sync?.revokeSkipped) counts.push('nobody removed — see the warning below')
       const head = role.name ? `Role **${role.name}**` : 'Role'
       lines.push(counts.length ? `${head} — ${counts.join(', ')}.` : `${head} — nobody to add or remove.`)
+      // "3 revoked" cannot be put back by hand. Name them, and the ids are in
+      // the log beside the names.
+      if (sync?.revoked?.length) {
+        lines.push(`Removed from the role: ${namesList(sync.revokedNames ?? sync.revoked)}.`)
+      }
     }
     lines.push(...failureLines(sync?.failed))
   }
@@ -297,28 +362,38 @@ async function pickProjects(interaction, cfg, dbArg, { all, picked }) {
  *
  * `syncProjectRoleMembers` works out who to revoke from by reading the role's
  * member cache, so without a full fetch it sees no holders and revokes from
- * nobody. A preview syncs nothing, so it does not pay for the fetch.
+ * nobody.
+ *
+ * A PREVIEW fetches too, and that is not an optimisation to undo. The planner
+ * decides whether to adopt an existing role of the project's name by counting
+ * its holders, and that count also comes from the member cache: unfetched, a
+ * role held by twenty people reads as empty, gets adopted, and its allow goes
+ * on the new category — every holder of an unrelated role can then see the
+ * section, and since no revoke runs on a preview the revoke guard never
+ * notices. `members.fetch()` is a read; a preview that states a role decision
+ * has to state the real one.
  *
  * Swallowing a failure here is exactly what the "fetch before sync" contract
  * exists to prevent: the sync would read an empty cache, revoke from nobody,
  * and report a clean run while a stale holder keeps the project role. So the
- * failure is kept, said out loud, and the revoke pass does not run.
+ * failure is kept, said out loud, the revoke pass does not run, and
+ * `rolesFetched` goes false so nothing is adopted on a count nobody earned.
  *
  * @param {import('discord.js').Guild} guild
- * @param {{preview?: boolean, botUserId?: string|null}} [opts]
+ * @param {{preview?: boolean, botUserId?: string|null, adoptRole?: boolean}} [opts]
  */
-export async function prepareSectionRun(guild, { preview = false, botUserId = null } = {}) {
+export async function prepareSectionRun(guild, { preview = false, botUserId = null, adoptRole = false } = {}) {
   let fetchFailure = null
-  if (!preview) {
-    try {
-      await guild.members.fetch()
-    } catch (e) {
-      fetchFailure = e?.message || String(e)
-      console.error('[project-setup] members.fetch:', e)
-    }
+  try {
+    await guild.members.fetch()
+  } catch (e) {
+    fetchFailure = e?.message || String(e)
+    console.error('[project-setup] members.fetch:', e)
   }
   const nameFor = (id) => guild.members.cache.get(id)?.displayName ?? id
-  return { preview, fetchFailure, nameFor, botUserId }
+  // Set ONLY when the fetch demonstrably succeeded. The planner defaults it to
+  // false, so a caller that forgets it refuses rather than guesses.
+  return { preview, fetchFailure, rolesFetched: !fetchFailure, nameFor, botUserId, adoptRole }
 }
 
 /**
@@ -334,7 +409,32 @@ export async function prepareSectionRun(guild, { preview = false, botUserId = nu
  * @returns {Promise<{block: string, plan: object, result?: object, roleSync?: object}>}
  */
 export async function setupProjectSection(guild, project, { db: dbArg, cfg, run }) {
-  const { preview, fetchFailure, nameFor, botUserId } = run
+  const { preview, fetchFailure, rolesFetched = false, nameFor, botUserId, adoptRole = false } = run
+
+  // Read fresh, per project, and never from the list the walk started with.
+  // Two things depend on it, and both break on a stale read: during `all:true`
+  // project A stores its brand-new category id partway through the walk, so a
+  // list loaded before the walk would let project B adopt that category by
+  // name, and the slug check below would miss a project added mid-run.
+  const siblings = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })) ?? []
+  const slug = projectSlug(project)
+  const clashes = siblings.filter((p) => p && p.id !== project.id && projectSlug(p) === slug)
+  if (clashes.length) {
+    // Spec §13. Both projects would want the same ten channel names, so
+    // whichever runs without stored ids adopts the other's channels and plans
+    // a move — and they trade the same channels back and forth, two edits
+    // each, on every run. Nothing is touched until a human picks a slug.
+    const others = clashes.map((p) => `**${p.name}**`).join(', ')
+    return {
+      plan: null,
+      block: cut(
+        `**${project?.name}** — refused: its channel slug \`${slug}\` is also ${clashes.length === 1 ? 'used by' : 'used by'} ${others}, so both would want the same ten section channel names and each run would drag them between the two categories. Nothing was changed. Give one of them a different docs folder in **/projects**, then run **/project-setup** again.`,
+        REPLY_LIMIT
+      ),
+    }
+  }
+  const claimedIds = claimedSectionIds(siblings, project.id)
+
   const tasks =
     (await dbArg.task.findMany({
       where: { guildConfigId: cfg.id, projectId: project.id },
@@ -350,40 +450,87 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
     )
   }
 
-  const observed = observeProjectSection(guild, project, tasks)
-  const plan = planProjectSection(project, observed)
+  const observed = observeProjectSection(guild, project, tasks, { rolesFetched, claimedIds })
+  const plan = planProjectSection(project, observed, { adoptRole })
 
   if (preview) {
+    if (adoptRole && fetchFailure) {
+      extra.push(
+        `This server's member list could not be read (${fetchFailure}), so who would gain and lose the role could not be worked out. Nothing would be adopted on this run either.`
+      )
+    }
+    if (plan.role?.decision === 'adopt') {
+      extra.push(await adoptionPreview(dbArg, project, plan.role, nameFor))
+    }
     return { plan, block: renderPlan(project, { ...plan, warnings: mergeWarnings(extra, plan.warnings) }) }
   }
 
   // The roster is passed on purpose: `members` is a tri-state, and omitting
   // it would leave every pinned members panel showing yesterday's list.
   const members = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
-  const truncatedRoster = members.length >= ROSTER_LIMIT
   if (fetchFailure) {
     extra.push(
       `This server's member list could not be read (${fetchFailure}), so nobody was removed from the project role. Run /project-setup again once the bot can read this server's members.`
     )
   }
+
+  const result = await applyProjectSection(guild, project, plan, { db: dbArg, members, nameFor, botUserId })
+
+  // The apply can run for minutes — up to twelve creates and twenty-odd
+  // rate-limited edits — and the revoke half decides who is no longer a member
+  // by comparing a live `role.members` read against THIS roster. Read against
+  // the roster from before the apply, a `/project-members add` that landed
+  // mid-run looks like "a holder who is not a member" and the role is taken
+  // straight back off them; a `/project-members remove` is undone the same way,
+  // in reverse. Both silently. So the roster is read again, here, and the sync
+  // uses only this one.
+  let roster = members
+  let rosterFailure = null
+  try {
+    roster = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+  } catch (e) {
+    // The first read worked, so the roster is stale rather than unknown — but
+    // stale is exactly what must not drive a revoke.
+    roster = members
+    rosterFailure = e?.message || String(e)
+    console.error(`[project-setup] re-reading the roster for ${project?.name}:`, e)
+  }
+  if (!sameRoster(members, roster)) {
+    extra.push(
+      `The members of "${project?.name}" changed while its section was being built, so the newer list was used for the role and the pinned panel.`
+    )
+    // `ensureMembersPanel` edits its own pin and swallows its own failures, so
+    // running it twice costs one message edit and cannot make things worse.
+    if (result.membersChannel) {
+      await ensureMembersPanel(result.membersChannel, project, roster, { botUserId, nameFor }).catch(() => {})
+    }
+  }
+
+  const truncatedRoster = roster.length >= ROSTER_LIMIT
   if (truncatedRoster) {
     extra.push(
       `Only the first ${ROSTER_LIMIT} members of "${project?.name}" could be read, so nobody was removed from the project role — members past that limit would have looked as though they had left the project.`
     )
   }
+  if (rosterFailure) {
+    extra.push(
+      `The members of "${project?.name}" could not be read again after the section was built (${rosterFailure}), so nobody was removed from the project role — the list in hand was from before the build.`
+    )
+  }
 
-  const result = await applyProjectSection(guild, project, plan, { db: dbArg, members, nameFor, botUserId })
   const roleId = result.role?.id ?? null
   // Say it as a flag, not by padding the roster with every current holder:
   // "do not revoke" is what this means, and a roster the service happens to
   // find nothing to revoke from would stop meaning that the moment the
   // service changed how it reads its holders.
-  const grantOnly = Boolean(fetchFailure) || truncatedRoster
-  const roleSync = await syncProjectRoleMembers(guild, project, members, {
+  const grantOnly = Boolean(fetchFailure) || truncatedRoster || Boolean(rosterFailure)
+  const roleSync = await syncProjectRoleMembers(guild, project, roster, {
     roleId,
     revoke: !grantOnly,
   })
   if (grantOnly) roleSync.revokeSkipped = true
+  // Ids are in the log; the reply needs names, and only the command has them.
+  roleSync.revokedNames = roleSync.revoked.map((id) => nameFor(id))
 
   const block = renderResult(project, {
     ...result,
@@ -391,6 +538,37 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
     roleSync,
   })
   return { block, plan, result, roleSync }
+}
+
+/** Two roster reads holding the same people in the same project roles. */
+function sameRoster(a, b) {
+  const key = (rows) =>
+    (rows ?? [])
+      .map((m) => `${m?.discordId ?? ''}:${m?.role ?? ''}`)
+      .sort()
+      .join('|')
+  return key(a) === key(b)
+}
+
+/**
+ * What `preview:true adopt_role:true` prints before anything happens: the
+ * people who would LOSE the role, by display name, and the people who would
+ * gain it. An operator cannot consent to "2 revoked"; they can consent to a
+ * list of names. Read-only — the roster read is the same one the real run does.
+ */
+async function adoptionPreview(dbArg, project, role, nameFor) {
+  let roster = []
+  try {
+    roster = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+  } catch (e) {
+    return `Adopting **${role.name}** would change who holds it, but this project's members could not be read (${e?.message ?? String(e)}), so who gains and loses it cannot be shown. Do not run this without preview until that read works.`
+  }
+  const wanted = new Set(roster.map((m) => m?.discordId).filter(Boolean))
+  const holders = Array.isArray(role.holderIds) ? role.holderIds : []
+  const held = new Set(holders)
+  const losing = holders.filter((id) => !wanted.has(id))
+  const gaining = [...wanted].filter((id) => !held.has(id))
+  return `Adopting the existing role **${role.name}**: ${losing.length} member(s) would LOSE it — ${namesList(losing.map(nameFor))} — and ${gaining.length} would gain it — ${namesList(gaining.map(nameFor))}. Everyone who keeps or gains it can see this project's section.`
 }
 
 /**
@@ -401,10 +579,15 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
  *
  * @param {import('discord.js').Guild} guild
  * @param {object} project
+ * It never passes `adoptRole`, and must not be given the option: `/projects` →
+ * Add project and `/create-project-role` run through here, and creating a
+ * project must never be able to take a role off somebody or show a new section
+ * to holders of an unrelated role that happens to share its name.
+ *
  * @param {{db: object, cfg: {id: string}, botUserId?: string|null}} deps
  */
 export async function setupOneProject(guild, project, { db: dbArg, cfg, botUserId = null }) {
-  const run = await prepareSectionRun(guild, { preview: false, botUserId })
+  const run = await prepareSectionRun(guild, { preview: false, botUserId, adoptRole: false })
   return setupProjectSection(guild, project, { db: dbArg, cfg, run })
 }
 
@@ -415,12 +598,16 @@ export async function setupOneProject(guild, project, { db: dbArg, cfg, botUserI
  * run exactly this.
  *
  * @param {import('discord.js').ChatInputCommandInteraction} interaction already deferred
- * @param {{all?: boolean, picked?: string, preview?: boolean}} opts
+ * `adoptRole` reaches here only from `/project-setup`'s own `adopt_role`
+ * option. `/create-project-categories` calls this with `{ all: true }` and
+ * nothing else, so the walk it runs can never adopt a held role either.
+ *
+ * @param {{all?: boolean, picked?: string, preview?: boolean, adoptRole?: boolean}} opts
  * @param {{db?: object, getConfig?: (guildId: string) => Promise<{id: string}>}} deps
  */
 export async function runProjectSetup(
   interaction,
-  { all = false, picked = '', preview = false } = {},
+  { all = false, picked = '', preview = false, adoptRole = false } = {},
   { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}
 ) {
   const guild = interaction.guild
@@ -430,7 +617,11 @@ export async function runProjectSetup(
   const projects = await pickProjects(interaction, cfg, dbArg, { all, picked })
   if (!projects) return
 
-  const run = await prepareSectionRun(guild, { preview, botUserId: interaction.client?.user?.id ?? null })
+  const run = await prepareSectionRun(guild, {
+    preview,
+    adoptRole,
+    botUserId: interaction.client?.user?.id ?? null,
+  })
 
   const blocks = []
   // `pickProjects` checks `all` first, so `project:` was read and thrown away.
@@ -485,6 +676,7 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
 
   const all = interaction.options.getBoolean('all') ?? false
   const preview = interaction.options.getBoolean('preview') ?? false
+  const adoptRole = interaction.options.getBoolean('adopt_role') ?? false
   const picked = String(interaction.options.getString('project') || '').trim()
   if (!picked && !all) {
     return interaction.editReply({
@@ -493,7 +685,7 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     })
   }
 
-  return runProjectSetup(interaction, { all, picked, preview }, { db: dbArg, getConfig })
+  return runProjectSetup(interaction, { all, picked, preview, adoptRole }, { db: dbArg, getConfig })
 }
 
 export async function autocomplete(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {

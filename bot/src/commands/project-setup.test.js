@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ChannelType } from 'discord.js'
+import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
 import {
   data,
   execute,
@@ -42,6 +42,8 @@ function fakeGuild({ channels = [], roles = [], members = [] } = {}) {
     fetchedAll: 0,
     roles: {
       cache: new Map(roles.map((r) => [r.id, r])),
+      // The yardstick for "is this same-named role also a power role".
+      everyone: { id: 'G1', name: '@everyone', permissions: 0n },
       calls: [],
       async create(opts) {
         guild.roles.calls.push(opts)
@@ -297,7 +299,11 @@ test('preview:true creates nothing, edits nothing, writes nothing, and prints th
   assert.equal(guild.roles.calls.length, 0, 'no role was created')
   assert.equal(strayChannel.edits.length, 0, 'no channel was edited')
   assert.equal(strayChannel.sent.length, 0, 'no members panel was posted')
-  assert.equal(guild.fetchedAll, 0, 'a preview does not need the member list')
+  // A preview DOES fetch the member list: it is a read, and the role decision
+  // it prints is decided by how many people hold the same-named role. Reading
+  // that off an unfetched cache would print "nobody holds it" for a role
+  // twenty people hold, and the real run would then adopt it.
+  assert.equal(guild.fetchedAll, 1, 'a preview reads the member list so its role decision is the real one')
   assert.deepEqual(db.calls.filter((c) => c[0] === 'project.update'), [], 'nothing was saved')
   const content = it.replies[0].content
   assert.match(content, /Preview/)
@@ -671,4 +677,279 @@ test('autocomplete offers this guild\'s projects and never a detach entry', asyn
     { name: 'Bravo', value: 'p2' },
     { name: 'Framework', value: 'p1' },
   ])
+})
+
+// ---------------------------------------------------------------------------
+// The role rules end to end: who can see what, and who keeps their role
+// ---------------------------------------------------------------------------
+
+/** A guild role a human made, with `permissions` so the subset test can read it. */
+function guildRole(id, name, holders = [], over = {}) {
+  for (const member of holders) member.roles.cache.add(id)
+  return { id, name, permissions: 0n, managed: false, members: new Map(holders.map((m) => [m.id, m])), ...over }
+}
+
+/** A task channel as /create-task makes it: @everyone denied, its assignee allowed. */
+function ticket(id, name, parentId, overwriteIds = ['G1', 'assignee']) {
+  const ch = fakeChannel(id, name, { parentId })
+  ch.topic = 'Feature: Git Sync | Assigner + assignees'
+  ch.permissionOverwrites = {
+    cache: new Map(overwriteIds.map((i) => [i, { id: i, type: OverwriteType.Role, allow: 0n, deny: 0n }])),
+  }
+  return ch
+}
+
+test('adopt_role is an optional boolean beside the other three', () => {
+  const byName = Object.fromEntries(data.toJSON().options.map((o) => [o.name, o]))
+  assert.equal(byName.adopt_role.required ?? false, false)
+  assert.equal(byName.adopt_role.type, 5, 'boolean')
+})
+
+test('a same-named role held by somebody is refused, and the section is built shut', async () => {
+  // The backfill's NORMAL path: legacy roles named after projects, handed out
+  // by hand, with only five `projectmember` rows across four of nine projects.
+  const holder = fakeMember('u1', 'Aashir')
+  const role = guildRole('r9', 'Framework', [holder])
+  const db = fakeDb({ projects: [PROJECT] })
+  const guild = fakeGuild({ roles: [role], members: [holder] })
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.equal(guild.roles.calls.length, 0, 'no second role of the same name was created either')
+  assert.ok(holder.roles.cache.has('r9'), 'and nothing was taken off the holder')
+  // Fail closed: @everyone denied, nothing allowed. Nobody but the bot.
+  const category = guild.channels.calls[0]
+  assert.deepEqual(category.permissionOverwrites, [
+    { id: 'G1', type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+  ])
+  const content = it.replies.at(-1).content
+  assert.match(content, /held by 1 member\(s\)/)
+  assert.match(content, /visible to nobody but the bot/)
+  assert.match(content, /Rename the project or the role/)
+  assert.match(content, /adopt_role:true/)
+})
+
+test('a preview reads the member list, so a role two people hold is not called empty', async () => {
+  const a = fakeMember('u1', 'Aashir')
+  const b = fakeMember('u2', 'Afaq')
+  const db = fakeDb({ projects: [PROJECT] })
+  const guild = fakeGuild({ roles: [guildRole('r9', 'Framework', [a, b])], members: [a, b] })
+  const it = fakeInteraction({ guild, opts: { project: 'p1', preview: true } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.equal(guild.fetchedAll, 1)
+  assert.equal(guild.channels.calls.length, 0, 'a preview still changes nothing')
+  assert.match(it.replies.at(-1).content, /Role: refused — Role "Framework" already exists and is held by 2 member\(s\)/)
+})
+
+test('a member fetch that fails during a PREVIEW refuses adoption rather than guessing', async () => {
+  // Unfetched, `role.members` is empty and the role looks free to take. A
+  // preview that printed "reuse (nobody holds it)" would be telling the
+  // operator the opposite of the truth.
+  const holder = fakeMember('u1', 'Aashir')
+  const db = fakeDb({ projects: [PROJECT] })
+  const guild = fakeGuild({ roles: [guildRole('r9', 'Framework', [holder])], members: [holder] })
+  guild.members.fetch = async () => {
+    throw new Error('Missing Access')
+  }
+  const it = fakeInteraction({ guild, opts: { project: 'p1', preview: true } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const content = it.replies.at(-1).content
+  assert.match(content, /Role: refused/)
+  assert.match(content, /member list could not be read/)
+  assert.doesNotMatch(content, /nobody holds it/)
+})
+
+test('preview with adopt_role names everyone who would lose the role and everyone who would gain it', async () => {
+  const stale1 = fakeMember('u1', 'Aashir')
+  const stale2 = fakeMember('u2', 'Afaq')
+  const joining = fakeMember('u3', 'Ada')
+  const db = fakeDb({
+    projects: [PROJECT],
+    members: [{ projectId: 'p1', discordId: 'u3', role: 'lead' }],
+  })
+  const guild = fakeGuild({
+    roles: [guildRole('r9', 'Framework', [stale1, stale2])],
+    members: [stale1, stale2, joining],
+  })
+  const it = fakeInteraction({ guild, opts: { project: 'p1', preview: true, adopt_role: true } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const content = it.replies.at(-1).content
+  assert.match(content, /Role: ADOPTING the existing \*\*Framework\*\* — 2 member\(s\) hold it today/)
+  // By display name, before anything happens: nobody can consent to "2 revoked".
+  assert.match(content, /2 member\(s\) would LOSE it — Aashir, Afaq/)
+  assert.match(content, /1 would gain it — Ada/)
+  assert.equal(guild.channels.calls.length, 0, 'and still nothing was changed')
+  assert.ok(stale1.roles.cache.has('r9'))
+})
+
+test('the preview says that a task channel being moved is also opened to the project role', async () => {
+  // "22 to rename and move" reads as housekeeping. What it means is that 22
+  // channels visible only to their assignees become visible to everyone
+  // holding the project role.
+  const category = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const taskChannel = ticket('tc1', 'feature-0145e3', 'OUTSIDE')
+  const db = fakeDb({
+    projects: [{ ...PROJECT, discordCategoryId: 'c1', discordRoleId: 'r1' }],
+    tasks: [{ id: 't1', projectId: 'p1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' }],
+  })
+  const guild = fakeGuild({ channels: [category, taskChannel], roles: [guildRole('r1', 'Framework')] })
+  const it = fakeInteraction({ guild, opts: { project: 'p1', preview: true } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.match(it.replies.at(-1).content, /Task channels: 1 to rename and move \(and open to the project role\)/)
+})
+
+test('a real run says how many channels its renames and moves also opened', async () => {
+  const category = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const taskChannel = ticket('tc1', 'feature-0145e3', 'OUTSIDE')
+  const db = fakeDb({
+    projects: [{ ...PROJECT, discordCategoryId: 'c1', discordRoleId: 'r1' }],
+    tasks: [{ id: 't1', projectId: 'p1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' }],
+  })
+  const guild = fakeGuild({ channels: [category, taskChannel], roles: [guildRole('r1', 'Framework')] })
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.equal(taskChannel.edits.length, 1, 'still one edit carrying everything')
+  assert.ok(taskChannel.edits[0].permissionOverwrites.some((o) => o.id === 'r1'))
+  assert.match(it.replies.at(-1).content, /1 of those channel\(s\) were also opened to the project role/)
+})
+
+// ---------------------------------------------------------------------------
+// A4: never revoke against a roster read before a long apply
+// ---------------------------------------------------------------------------
+
+test('somebody added to the project WHILE the section is built is not revoked straight back', async () => {
+  // A manager runs `/project-members add` during an `all:true` backfill. The
+  // row is written and the role granted, so the member is in `role.members`
+  // by the time the sync reads it — but the roster the walk started with
+  // predates them, and reads them as "a holder who is no longer a member".
+  const joined = fakeMember('u1', 'Aashir')
+  const role = guildRole('r1', 'Framework', [joined])
+  const db = fakeDb({ projects: [{ ...PROJECT, discordRoleId: 'r1' }] })
+  let reads = 0
+  db.projectMember.findByProject = async () => {
+    reads += 1
+    // Read once before the apply, and again immediately before the sync.
+    return reads === 1 ? [] : [{ projectId: 'p1', discordId: 'u1', role: 'lead' }]
+  }
+  const guild = fakeGuild({ roles: [role], members: [joined] })
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.ok(reads >= 2, 'the roster is read again after the apply')
+  assert.ok(joined.roles.cache.has('r1'), 'the member the manager just added kept the role')
+  const content = it.replies.at(-1).content
+  assert.doesNotMatch(content, /revoked/)
+  assert.match(content, /members of "Framework" changed while its section was being built/)
+})
+
+test('a roster that changed mid-run refreshes the pinned panel with the newer list', async () => {
+  const joined = fakeMember('u1', 'Aashir')
+  const db = fakeDb({ projects: [PROJECT] })
+  let reads = 0
+  db.projectMember.findByProject = async () => {
+    reads += 1
+    return reads === 1 ? [] : [{ projectId: 'p1', discordId: 'u1', role: 'lead' }]
+  }
+  const guild = fakeGuild({ members: [joined] })
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const panel = [...guild.channels.cache.values()].find((c) => c.name === 'framework-members')
+  assert.equal(panel.sent.length, 2, 'posted with the stale list, then again with the fresh one')
+  assert.equal(panel.sent.at(-1).embeds[0].toJSON().fields[0].value, 'Aashir')
+})
+
+test('a roster read that fails after the apply skips the revoke pass and says so', async () => {
+  const stale = fakeMember('u9', 'Stale')
+  const db = fakeDb({ projects: [{ ...PROJECT, discordRoleId: 'r1' }] })
+  let reads = 0
+  db.projectMember.findByProject = async () => {
+    reads += 1
+    if (reads > 1) throw new Error('database went away')
+    return []
+  }
+  const guild = fakeGuild({ roles: [guildRole('r1', 'Framework', [stale])], members: [stale] })
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.ok(stale.roles.cache.has('r1'), 'a stale roster must never drive a revoke')
+  assert.match(it.replies.at(-1).content, /could not be read again after the section was built/)
+})
+
+test('a run that DOES revoke names who lost the role', async () => {
+  // "3 revoked" cannot be undone by hand.
+  const stale = fakeMember('u9', 'Stale Sam')
+  const db = fakeDb({ projects: [{ ...PROJECT, discordRoleId: 'r1' }] })
+  const guild = fakeGuild({ roles: [guildRole('r1', 'Framework', [stale])], members: [stale] })
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.ok(!stale.roles.cache.has('r1'))
+  const content = it.replies.at(-1).content
+  assert.match(content, /1 revoked/)
+  assert.match(content, /Removed from the role: Stale Sam\./)
+})
+
+// ---------------------------------------------------------------------------
+// A6: effective slugs
+// ---------------------------------------------------------------------------
+
+test('a project whose EFFECTIVE slug collides with another is refused, and nothing is touched', async () => {
+  // The legacy row has a NULL `docsSlug`, so its effective slug is
+  // `slugify(name)` — the same ten channel names the new one wants.
+  const projects = [
+    { id: 'p1', name: 'UBS-Doc', docsSlug: 'ubs-doc', guildConfigId: 'g1' },
+    { id: 'p2', name: 'UBS Doc', docsSlug: null, guildConfigId: 'g1' },
+  ]
+  const db = fakeDb({ projects })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.equal(guild.channels.calls.length, 0, 'nothing was created')
+  assert.equal(guild.roles.calls.length, 0)
+  assert.deepEqual(db.calls.filter((c) => c[0] === 'project.update'), [], 'and nothing was saved')
+  const content = it.replies.at(-1).content
+  assert.match(content, /refused: its channel slug `ubs-doc` is also used by \*\*UBS Doc\*\*/)
+  assert.match(content, /Give one of them a different docs folder/)
+})
+
+test('all:true reads the project rows again per project, so a mid-walk category is not adopted twice', async () => {
+  // Project A stores its brand-new category id partway through the walk. The
+  // list the walk started with does not have it, so only a fresh read stops
+  // project B adopting that category by name.
+  const projects = [
+    { id: 'p1', name: 'Framework', docsSlug: 'framework', guildConfigId: 'g1' },
+    { id: 'p2', name: 'framework-two', docsSlug: 'framework-two', guildConfigId: 'g1' },
+  ]
+  const db = fakeDb({ projects })
+  const reads = []
+  const findMany = db.project.findMany
+  db.project.findMany = async (args) => {
+    reads.push(args)
+    return findMany(args)
+  }
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { all: true } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  // Once to pick the projects, then once per project before observing it.
+  assert.ok(reads.length >= 3, `only ${reads.length} reads of the project rows`)
 })

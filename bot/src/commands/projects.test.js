@@ -3,7 +3,7 @@
 // The root `.env` points at production; see .claude/rules/tests-never-touch-production.md.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ChannelType } from 'discord.js'
+import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
 import { handleAddModal } from './projects.js'
 
 // --- fakes ------------------------------------------------------------------
@@ -36,6 +36,7 @@ function fakeGuild() {
     fetchedAll: 0,
     roles: {
       cache: new Map(),
+      everyone: { id: 'G1', name: '@everyone', permissions: 0n },
       calls: [],
       async create(opts) {
         guild.roles.calls.push(opts)
@@ -261,4 +262,53 @@ test('through the real routine, a new project gets its role, category, channels 
   assert.equal(members.sent.length, 1, 'the panel was posted')
   assert.match(members.sent[0].embeds[0].data.description, /No members yet/)
   assert.match(it.replies.at(-1).content, /ready in \*\*📂 FRAMEWORK\*\*/)
+})
+
+test('a slug that collides with a legacy project’s EFFECTIVE slug is refused', async () => {
+  // `UBS Doc` predates the docsSlug column, so its slug is NULL and its
+  // effective slug is `slugify(name)` — the same `ubs-doc` the new project
+  // wants, and the same ten section channel names. Comparing the columns
+  // alone let both in, and then each /project-setup run dragged those ten
+  // channels into whichever project ran last.
+  const db = fakeDb({ projects: [{ id: 'p1', name: 'UBS Doc', docsSlug: null, guildConfigId: 'g1' }] })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, name: 'UBS-Doc' })
+  let ran = 0
+
+  await handleAddModal(it, { db, getConfig, reattribute, setup: async () => ran++ })
+
+  assert.equal(ran, 0)
+  assert.deepEqual(db.calls.filter((c) => c[0] === 'project.create'), [])
+  assert.match(it.replies.at(-1).content, /`ubs-doc` is already used by \*\*UBS Doc\*\*/)
+})
+
+test('Add project never adopts a role somebody already holds', async () => {
+  // Since Task 10 every add builds the section, so the add flow is the one
+  // that must never be able to revoke a role or show a new section to the
+  // holders of an unrelated role that happens to share its name. It passes no
+  // adopt_role, and there is no option on it to pass.
+  const holder = { id: 'u1', displayName: 'Aashir', roles: { cache: new Set(['r9']), add: async () => {}, remove: async () => { throw new Error('should never be called') } } }
+  const db = fakeDb()
+  const guild = fakeGuild()
+  guild.roles.cache.set('r9', {
+    id: 'r9',
+    name: 'Framework',
+    permissions: 0n,
+    managed: false,
+    members: new Map([['u1', holder]]),
+  })
+  guild.members.cache.set('u1', holder)
+  const it = fakeInteraction({ guild })
+
+  await quiet(() => handleAddModal(it, { db, getConfig, reattribute }))
+
+  assert.equal(guild.roles.calls.length, 0, 'and no second role of the same name was made either')
+  assert.ok(holder.roles.cache.has('r9'), 'the holder kept the role')
+  const category = guild.channels.calls[0]
+  assert.deepEqual(
+    category.permissionOverwrites,
+    [{ id: 'G1', type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] }],
+    'the section is built shut, not gated on a role two strangers hold'
+  )
+  assert.match(it.replies.at(-1).content, /held by 1 member\(s\)/)
 })

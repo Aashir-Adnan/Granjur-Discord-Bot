@@ -13,7 +13,7 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { slugify } from '../utils/docPath.js'
 import { reattributeGuildDocs } from '../services/docsSync.js'
-import { cut } from '../services/projectSection.js'
+import { cut, projectSlug } from '../services/projectSection.js'
 import { EPHEMERAL } from '../constants.js'
 import { setupOneProject } from './project-setup.js'
 
@@ -130,7 +130,12 @@ export async function handleAddModal(
   }
 
   const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })
-  const slugConflict = projects.find((p) => p.docsSlug === slug)
+  // Against the EFFECTIVE slug, not the stored column. A legacy project with a
+  // NULL `docsSlug` still occupies `slugify(name)` — that is what its ten
+  // section channels are named after — so comparing `p.docsSlug` lets `UBS-Doc`
+  // in beside a NULL-slugged `UBS Doc`, and then each `/project-setup` run
+  // drags the same ten channels into whichever category ran last.
+  const slugConflict = projects.find((p) => projectSlug(p) === slug)
   if (slugConflict) {
     return interaction
       .editReply({ content: `Docs folder \`${slug}\` is already used by **${slugConflict.name}** — pick another slug.` })

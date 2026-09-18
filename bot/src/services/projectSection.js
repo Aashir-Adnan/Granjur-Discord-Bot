@@ -12,11 +12,20 @@
  * `projectmember`.
  *
  * The plan, per spec §7:
- *   role:     { action: 'create' | 'reuse' | 'refuse', name, id?, reason? }
+ *   role:     { action: 'create' | 'reuse' | 'refuse', name, id?, reason?,
+ *               decision?: 'create' | 'stored' | 'empty' | 'adopt',
+ *               kind?: 'managed-name' | 'role', gateRoleId, holderIds? }
  *   category: { action: 'create' | 'reuse' | 'rename', id?, name }
- *   channels: [{ key, action: 'create' | 'reuse' | 'rename' | 'move', id?, name, type }]
- *   tasks:    [{ taskId, channelId, action: 'rename' | 'move' | 'both' | 'grant' | 'none', name, topic }]
+ *   channels: [{ key, action: 'create' | 'reuse' | 'rename' | 'move' | 'grant', id?, name, type, opens? }]
+ *   tasks:    [{ taskId, channelId, action: 'rename' | 'move' | 'both' | 'grant' | 'none', name, topic, opens? }]
  *   warnings: string[]
+ *
+ * `gateRoleId` is the one answer to "which role will this section be gated on";
+ * the channel planner and the applier both read it, so they cannot disagree
+ * about the same run. `grant` means one edit carrying nothing but overwrites,
+ * and `opens` means a rename or a move whose single edit ALSO carries the
+ * role's allow — a permission change that the preview and the reply have to
+ * name out loud, because "22 to rename and move" does not sound like one.
  *
  * Every non-`reuse` channel entry carries the FINAL desired `name`, so the
  * applier can send `{ name, parent }` in a single `edit()` whatever the action
@@ -68,8 +77,17 @@ export function cut(text, max) {
   return last >= 0xd800 && last <= 0xdbff ? sliced.slice(0, -1) : sliced
 }
 
-/** The project's channel-name slug: its stored docsSlug, else one from its name. */
-function projectSlug(project) {
+/**
+ * The project's channel-name slug: its stored docsSlug, else one from its name.
+ *
+ * Exported because this is the EFFECTIVE slug — a legacy project with a NULL
+ * `docsSlug` still occupies `slugify(name)`, and every caller that checks for a
+ * slug collision has to compare the same thing the channel names are built
+ * from. Comparing raw `docsSlug` columns lets `UBS-Doc` and a NULL-slugged
+ * `UBS Doc` both claim `ubs-doc`, and then each run of `/project-setup` drags
+ * the same ten channels back into its own category.
+ */
+export function projectSlug(project) {
   return project?.docsSlug || slugify(project?.name)
 }
 
@@ -125,19 +143,131 @@ export function projectFromChannel(projects, channel) {
   return distinct.size === 1 ? matches[0] : null
 }
 
-function planRole(project, observed, warnings) {
+/**
+ * Decide which role gates this project's section, and refuse rather than guess.
+ *
+ * Adopting a role that already exists is the one decision in this feature that
+ * can change somebody's permissions without anyone asking for it, in BOTH
+ * directions: the role's holders gain sight of a section they were never put
+ * on, and the very next role sync takes the role off every holder who is not a
+ * `projectmember` row. A guild role `Marketing` held by two people, plus a new
+ * project called `Marketing`, is enough. So adoption is fail-closed: it happens
+ * only when it demonstrably cannot do either of those things, and otherwise the
+ * name is REFUSED — the section is still built, but its category keeps the
+ * `@everyone` deny with no allow, so only the bot can see it until an operator
+ * says what to do.
+ *
+ * The order matters. Rules 1 and 2 are about THIS project's own role and never
+ * touch anyone else's; everything after is about a stranger that happens to
+ * share the name.
+ *
+ * `adoptRole` (from `/project-setup adopt_role:true`) overrides exactly one
+ * refusal — "someone holds it" — because that is the one an operator can
+ * knowingly accept. A managed role, `@everyone`, a role carrying real power, or
+ * a role that opens other channels is refused whatever the operator passes:
+ * those are not decisions about this project.
+ *
+ * @param {{name?: string}} project
+ * @param {object} observed the snapshot, including `roleCandidate` and `rolesFetched`
+ * @param {string[]} warnings collected in place
+ * @param {{adoptRole?: boolean}} [opts]
+ */
+function planRole(project, observed, warnings, { adoptRole = false } = {}) {
   const name = String(project?.name ?? '').trim()
+  // `gateRoleId` is the single answer to "which role will this section be gated
+  // on" that the channel planner and the applier BOTH read. Before it existed,
+  // `lacksRoleAllow` said "no role" for a refusal while the applier happily put
+  // a kept role's allow on the moved channels, so the two disagreed about the
+  // same run.
+  const kept = observed?.roleId ?? null
+
   if (MANAGED_FOLDED.has(fold(name))) {
     const reason = `"${name}" is a managed role — one of the job roles the bot assigns — so it cannot also be a project role.`
     warnings.push(
       `Project "${name}" shares its name with a managed role, so no project role was planned. Rename the project to give it its own access.`
     )
-    return { action: 'refuse', name, reason }
+    // `managed-name` and `role` are refused for different reasons and the
+    // category treats them differently: a managed NAME can never have a role,
+    // so a deny with nothing to allow would hide the section from everyone
+    // forever with no way back. A refused same-named ROLE has two ways back
+    // (rename, or adopt_role), so that one fails closed.
+    return { action: 'refuse', kind: 'managed-name', name, reason, gateRoleId: kept }
   }
-  if (observed?.roleId) return { action: 'reuse', id: observed.roleId, name }
-  const existing = observed?.roleNames?.get?.(name)
-  if (existing) return { action: 'reuse', id: existing, name }
-  return { action: 'create', name }
+
+  // 1. This project's own stored role, always, exactly as before.
+  if (kept) return { action: 'reuse', decision: 'stored', id: kept, name, gateRoleId: kept }
+
+  const candidate = observed?.roleCandidate ?? null
+  // 2. Nothing of this name exists: make one. Nobody else is affected.
+  if (!candidate) return { action: 'create', decision: 'create', name, gateRoleId: null }
+
+  const holderIds = Array.isArray(candidate.holderIds) ? candidate.holderIds : []
+  const refuse = (reason, advice, hard = true) => {
+    const ignored = hard && adoptRole ? ' **adopt_role** does not override this.' : ''
+    warnings.push(`${reason} ${advice}${ignored}`)
+    return {
+      action: 'refuse',
+      kind: 'role',
+      name,
+      reason,
+      gateRoleId: null,
+      candidateId: candidate.id,
+      holderIds,
+    }
+  }
+  const stillPrivate = `The section was still built, but its category is visible to nobody but the bot until this is resolved.`
+
+  if (candidate.isEveryone) {
+    return refuse(
+      `Role "${name}" is this server's @everyone role, so it cannot gate a project — gating on it would show the section to the whole server.`,
+      `Rename the project. ${stillPrivate}`
+    )
+  }
+  if (candidate.managed) {
+    return refuse(
+      `Role "${name}" is managed by Discord or an integration (a bot or booster role), so it cannot be handed out as a project role.`,
+      `Rename the project, or rename that role. ${stillPrivate}`
+    )
+  }
+  if (candidate.overPermissioned) {
+    return refuse(
+      `Role "${name}" carries server permissions beyond @everyone's, so it was not adopted — a project gate must never also be a power role, or every project member would inherit that power.`,
+      `Rename the project, or rename that role. ${stillPrivate}`
+    )
+  }
+  const elsewhere = Array.isArray(candidate.elsewhere) ? candidate.elsewhere : []
+  if (elsewhere.length) {
+    const shown = elsewhere.slice(0, 3).join(', ')
+    const more = elsewhere.length > 3 ? `, and ${elsewhere.length - 3} more` : ''
+    return refuse(
+      `Role "${name}" already has permission overwrites on ${elsewhere.length} channel(s) outside this project (${shown}${more}), so it was not adopted — granting it to every project member would hand them those channels too.`,
+      `Rename the project, or rename that role. ${stillPrivate}`
+    )
+  }
+  // 3. The holder count comes from the member cache, so an unfetched cache
+  //    reads as "nobody holds it" — the exact shape of the leak this whole
+  //    function exists to stop. Never adopt on a count we did not earn.
+  if (!observed?.rolesFetched) {
+    return refuse(
+      `Role "${name}" already exists, but this server's member list could not be read, so there is no way to tell who holds it and it was not adopted.`,
+      `Run /project-setup again once the bot can read this server's members. ${stillPrivate}`
+    )
+  }
+  // 4. Held by nobody: adopting it can neither strip a role nor show anything
+  //    to anyone. This is the legacy `/create-project-role` role nobody ever
+  //    got round to assigning.
+  if (holderIds.length === 0) {
+    return { action: 'reuse', decision: 'empty', id: candidate.id, name, gateRoleId: candidate.id, holderIds }
+  }
+  // 5. Held, and otherwise harmless: the operator's call, and only theirs.
+  if (adoptRole) {
+    return { action: 'reuse', decision: 'adopt', id: candidate.id, name, gateRoleId: candidate.id, holderIds }
+  }
+  return refuse(
+    `Role "${name}" already exists and is held by ${holderIds.length} member(s), so it was NOT adopted — adopting it would show this project's section to all of them, and the role sync would then take the role away from every holder who is not a project member.`,
+    `Rename the project or the role, or run /project-setup with **adopt_role:true** — add **preview:true** first to see exactly who would gain and lose it. ${stillPrivate}`,
+    false
+  )
 }
 
 function planCategory(project, observed) {
@@ -149,7 +279,25 @@ function planCategory(project, observed) {
   return { action: 'rename', id, name }
 }
 
-function planChannels(project, observed) {
+/**
+ * The ten section channels.
+ *
+ * A section channel is created with no overwrites of its own, so Discord COPIES
+ * the category's set onto it — at creation time, once. Discord does not cascade
+ * a later overwrite edit on the category down to children that already exist
+ * (that is what the client's "Sync Now" button is for), so a channel created
+ * under a deny-only category keeps a deny-only copy forever. The role rules
+ * above make that the ordinary path: a project whose same-named role is refused
+ * gets a private category and ten channels copied from it, and adopting the
+ * role later would fix the category and the task channels and leave these ten
+ * invisible to everyone but the bot, with no run that ever repairs them and
+ * nothing in this feature allowed to delete a channel.
+ *
+ * So they get the same treatment task channels already have: a channel that is
+ * being renamed or moved anyway carries the role's allow in that SAME single
+ * edit (`opens`), and one that is otherwise correct gets a standalone `grant`.
+ */
+function planChannels(project, observed, role) {
   const parentId = observed?.categoryId ?? null
   const seen = observed?.channels ?? {}
   return SECTIONS.map(({ key, suffix, type }) => {
@@ -159,22 +307,38 @@ function planChannels(project, observed) {
     const nameOk = channel.name === name
     // With no category yet there is nothing to sit under, so the channel moves.
     const parentOk = Boolean(parentId) && channel.parentId === parentId
-    if (nameOk && parentOk) return { key, action: 'reuse', id: channel.id, name, type }
-    if (parentOk) return { key, action: 'rename', id: channel.id, name, type }
-    return { key, action: 'move', id: channel.id, name, type }
+    const needsAllow = lacksRoleAllow(channel.overwriteIds, role)
+    if (nameOk && parentOk) {
+      // Already named and placed; the only thing left that can be wrong is who
+      // can see it. `grant` is one edit carrying nothing but the overwrites.
+      return { key, action: needsAllow ? 'grant' : 'reuse', id: channel.id, name, type }
+    }
+    const entry = { key, action: parentOk ? 'rename' : 'move', id: channel.id, name, type }
+    // Not a second edit: the applier folds the allow into the rename/move.
+    if (needsAllow) entry.opens = true
+    return entry
   })
 }
 
 /**
- * True when a task channel inside the section is known to lack the project
- * role's overwrite. A role about to be created is on no channel yet; an
- * unreadable overwrite list is never guessed at.
+ * True when a channel inside the section is known to lack the project role's
+ * overwrite. A role about to be created is on no channel yet; an unreadable
+ * overwrite list is never guessed at; and a section with no gate role — a
+ * refused name that kept nothing — has no allow to be missing.
+ *
+ * Reads `role.gateRoleId`, the one answer the applier also uses, so a refused
+ * name that KEPT the project's old role repairs channels against that role
+ * instead of quietly doing half of it.
+ *
+ * @param {string[]|null|undefined} overwriteIds the channel's overwrite ids, or null when unreadable
+ * @param {{action?: string, gateRoleId?: string|null}|null} role the role plan
  */
-function lacksRoleAllow(task, role) {
-  if (!Array.isArray(task?.overwriteIds)) return false
-  if (!role || role.action === 'refuse') return false
+function lacksRoleAllow(overwriteIds, role) {
+  if (!Array.isArray(overwriteIds)) return false
+  if (!role) return false
   if (role.action === 'create') return true
-  return Boolean(role.id) && !task.overwriteIds.includes(role.id)
+  const gate = role.gateRoleId ?? null
+  return Boolean(gate) && !overwriteIds.includes(gate)
 }
 
 function planTasks(project, observed, channels, role, warnings) {
@@ -224,7 +388,8 @@ function planTasks(project, observed, channels, role, warnings) {
     // replaced role existed. A move or rename carries the allow in its own
     // edit; this one needs an edit of its own, or its project's members never
     // see it. Only on what the snapshot can read, and never for a refused role.
-    if (action === 'none' && lacksRoleAllow(task, role)) action = 'grant'
+    const needsAllow = lacksRoleAllow(task.overwriteIds, role)
+    if (action === 'none' && needsAllow) action = 'grant'
 
     if (action === 'move' || action === 'both') {
       if (room > 0) room -= 1
@@ -238,12 +403,20 @@ function planTasks(project, observed, channels, role, warnings) {
     // `feature-0145e3` to `feature-add-booking-rules` keeping its old topic
     // would match neither the old name nor the new `Task <id>` marker, and
     // /update-task would open a duplicate beside it on every update.
+    // A rename/move edit ALSO carries the role's allow when the channel ends up
+    // inside the category — the applier folds it into the same single edit. The
+    // preview has to say so: "22 to rename and move" reads as a tidy-up, while
+    // what it means is that 22 channels visible only to their assignees become
+    // visible to everyone holding the project role. A `rename` left outside by
+    // the category cap lands nowhere new, so it opens to nobody.
+    const landsInside = action === 'move' || action === 'both' || (action === 'rename' && parentOk)
     planned.push({
       taskId: task.id,
       channelId: task.channelId,
       action,
       name,
       topic: taskChannelTopic({ type: task.type, title: task.title, taskId: task.id }),
+      ...(needsAllow && landsInside ? { opens: true } : {}),
     })
   }
 
@@ -268,21 +441,27 @@ function planTasks(project, observed, channels, role, warnings) {
  * @param {{id: string, name: string, docsSlug?: string|null}} project
  * @param {{
  *   roleId?: string|null,
- *   roleNames?: Map<string,string>,
+ *   roleCandidate?: {id: string, name: string, managed: boolean, isEveryone: boolean, overPermissioned: boolean, holderIds: string[], elsewhere: string[]}|null,
+ *   rolesFetched?: boolean,
  *   categoryId?: string|null,
  *   categoryName?: string|null,
  *   categoryChannelCount?: number,
- *   channels?: Object<string, {id: string, name: string, parentId: string|null}>,
+ *   channels?: Object<string, {id: string, name: string, parentId: string|null, overwriteIds?: string[]|null}>,
  *   tasks?: Array<{id: string, title: string, type: string, channelId: string, channelName: string, parentId: string|null, overwriteIds?: string[]|null}>,
  *   sharedTaskChannels?: number,
  *   takenNames?: Set<string>,
  * }} observed a plain snapshot the caller gathers — no Discord objects
+ * @param {{adoptRole?: boolean}} [opts] `adopt_role:true`, and only ever from
+ *   `/project-setup`: `/projects` → Add project and the two wrapper commands
+ *   must never be able to revoke a role or open a section by creating a project.
  */
-export function planProjectSection(project, observed = {}) {
+export function planProjectSection(project, observed = {}, opts = {}) {
   const warnings = []
-  const role = planRole(project, observed, warnings)
+  const role = planRole(project, observed, warnings, opts)
   const category = planCategory(project, observed)
-  const channels = planChannels(project, observed)
+  // After the role: every channel decision depends on which role gates the
+  // section, and on a refusal there may be none.
+  const channels = planChannels(project, observed, role)
   const tasks = planTasks(project, observed, channels, role, warnings)
   return { role, category, channels, tasks, warnings }
 }
@@ -332,17 +511,132 @@ function storedChannels(project) {
 }
 
 /**
+ * Every id a project other than this one has recorded as part of ITS section:
+ * its category and its ten section channels. The observer refuses to adopt any
+ * of them by NAME.
+ *
+ * Under a case-sensitive collation `Framework` and `framework` both want
+ * `📂 FRAMEWORK`, and two projects whose effective slugs collide want the same
+ * ten channel names, so without this the second project adopts the first's
+ * category and channels and merges its own role's allow into them — an
+ * unrequested permission change — and the two then drag the same channels back
+ * and forth, two edits each, every run.
+ *
+ * The caller must read these rows FRESH, at observation time. During
+ * `all:true`, project A stores its brand-new category id partway through the
+ * walk, and the list `pickProjects` loaded before the walk started would not
+ * have it, so project B would still adopt it by name.
+ *
+ * @param {Array<object>} projects every project row in the guild, read just now
+ * @param {string|null|undefined} exceptId the project being set up
+ * @returns {Set<string>}
+ */
+export function claimedSectionIds(projects, exceptId) {
+  const claimed = new Set()
+  for (const p of projects ?? []) {
+    if (!p || (exceptId && p.id === exceptId)) continue
+    if (p.discordCategoryId) claimed.add(p.discordCategoryId)
+    for (const id of Object.values(storedChannels(p))) if (id) claimed.add(id)
+  }
+  return claimed
+}
+
+/**
+ * A permission bitfield as a BigInt, from whatever shape it arrives in: a
+ * discord.js `PermissionsBitField`, a BigInt, a number, a decimal string.
+ * Null when it cannot be read — never 0n, because "no permissions" and "could
+ * not tell" must not be the same answer to a question about adopting a role.
+ */
+function bitsOf(permissions) {
+  if (permissions === null || permissions === undefined) return null
+  try {
+    if (typeof permissions === 'bigint') return permissions
+    if (typeof permissions === 'number') return BigInt(permissions)
+    if (typeof permissions === 'string') return BigInt(permissions)
+    const raw = permissions.bitfield ?? permissions.valueOf?.()
+    if (raw === null || raw === undefined || typeof raw === 'object') return null
+    return BigInt(raw)
+  } catch {
+    return null
+  }
+}
+
+/** True when the overwrite hands out ViewChannel. Unreadable reads as "no". */
+function grantsView(overwrite) {
+  const bits = bitsOf(overwrite?.allow)
+  if (bits === null) return false
+  return (bits & PermissionFlagsBits.ViewChannel) !== 0n
+}
+
+/**
+ * True when the role carries any guild permission `@everyone` does not.
+ *
+ * Discord creates a new role with exactly the `@everyone` set, so the legacy
+ * `/create-project-role` roles this branch has to adopt still pass, while
+ * anything carrying extra power is refused. A subset test rather than a
+ * deny-list on purpose: the deny-list this replaces was missing MoveMembers,
+ * MuteMembers, DeafenMembers, ManageWebhooks, ManageNicknames, ManageThreads,
+ * ManageEvents and ViewAuditLog, and the next one would miss whatever Discord
+ * adds next.
+ *
+ * Either bitfield unreadable means "cannot prove it is harmless", which is a
+ * refusal, not a pass.
+ */
+function overPermissioned(role, everyone) {
+  const roleBits = bitsOf(role?.permissions)
+  const everyoneBits = bitsOf(everyone?.permissions)
+  if (roleBits === null || everyoneBits === null) return true
+  return (roleBits & ~everyoneBits) !== 0n
+}
+
+/**
+ * The plain snapshot of a same-named role the planner needs to decide whether
+ * adopting it can hurt anyone. No Discord objects cross this line.
+ *
+ * `elsewhere` is the names of channels OUTSIDE the project's own category that
+ * carry an overwrite for this role. A role with no holders can still open
+ * doors: a dormant `Design` role left on `#design-private`. Adopt it, grant it
+ * to every project member, and they all get `#design-private` too.
+ */
+function describeRoleCandidate(guild, role, categoryId, channels) {
+  const elsewhere = []
+  for (const channel of channels) {
+    if (!channel) continue
+    if (categoryId && (channel.id === categoryId || channel.parentId === categoryId)) continue
+    // A channel whose overwrites we cannot read cannot be asserted about. Real
+    // guild channels always carry the cache; this only guards odd fakes.
+    if (channel.permissionOverwrites?.cache?.has?.(role.id)) elsewhere.push(channel.name)
+  }
+  return {
+    id: role.id,
+    name: role.name,
+    managed: Boolean(role.managed),
+    isEveryone: role.id === guild?.id,
+    overPermissioned: overPermissioned(role, guild?.roles?.everyone),
+    // From the member cache, which is only populated by a `guild.members.fetch()`
+    // — hence `rolesFetched` beside it in the snapshot. An unfetched cache makes
+    // every role look empty, and an empty role is one the planner adopts.
+    holderIds: [...(role.members?.keys?.() ?? [])],
+    elsewhere,
+  }
+}
+
+/**
  * The category's overwrites.
  *
  * With a role: the two from spec §5 — @everyone denied, the role allowed.
- * Refused a role, and holding none: nothing at all. The project's name is a
- * managed job role, so a role by that name will never exist, and a deny with
- * nothing to allow would be a category nobody could see.
- * No role because creating it failed: the deny alone. That is a transient
+ * `openWhenRoleless`, and holding no role: nothing at all. That is only ever
+ * the managed-NAME refusal — the project is called `Database`, so a role by
+ * that name will never exist for it, and a deny with nothing to allow would be
+ * a category nobody but the bot could ever see, with no way back.
+ * A refused same-named ROLE is not that case and does not pass the flag: it
+ * gets the deny alone and fails closed, because `adopt_role` and renaming are
+ * both ways back.
+ * No role because creating it failed: the deny alone too. That is a transient
  * failure, the section is meant to be private, and the next run adds the allow.
  */
-function categoryOverwrites(guild, roleId, refused = false) {
-  if (!roleId && refused) return []
+function categoryOverwrites(guild, roleId, openWhenRoleless = false) {
+  if (!roleId && openWhenRoleless) return []
   const overwrites = [
     // The guild id is @everyone, a ROLE. Passing the wrong overwrite type makes
     // Discord drop the overwrite without an error — that is what hid
@@ -428,24 +722,38 @@ function roleAllowMerged(channel, roleId) {
  * @param {Array<{id: string, title: string, type?: string, discordChannelId?: string|null}>} tasks
  *   the project's task rows; one without a channel, or with a channel that no
  *   longer exists, is left out of the snapshot because there is nothing to move.
+ * @param {{rolesFetched?: boolean, claimedIds?: Set<string>|null}} [opts]
+ *   `rolesFetched` says `guild.members.fetch()` demonstrably succeeded, so the
+ *   holder counts on `roleCandidate` are real. It defaults to FALSE: a caller
+ *   that forgets it gets the fail-closed answer, never a silent adoption based
+ *   on an empty cache. `claimedIds` comes from `claimedSectionIds`.
  */
-export function observeProjectSection(guild, project, tasks = []) {
+export function observeProjectSection(guild, project, tasks = [], opts = {}) {
+  const { rolesFetched = false, claimedIds = null } = opts
+  const claimed = claimedIds instanceof Set ? claimedIds : new Set()
   const all = valuesOf(guild?.channels?.cache)
   const byId = new Map(all.map((c) => [c.id, c]))
 
-  const roleNames = new Map()
   let roleId = null
+  let sameNamed = null
+  const wantedRole = String(project?.name ?? '').trim()
   for (const role of valuesOf(guild?.roles?.cache)) {
-    if (!roleNames.has(role.name)) roleNames.set(role.name, role.id)
     if (project?.discordRoleId && role.id === project.discordRoleId) roleId = role.id
+    // First match wins, as the old name map did.
+    if (!sameNamed && role.name === wantedRole) sameNamed = role
   }
 
   let category = project?.discordCategoryId ? byId.get(project.discordCategoryId) ?? null : null
   if (!category) {
     const wanted = categoryNameFor(project)
-    category = all.find((c) => c.type === ChannelType.GuildCategory && c.name === wanted) ?? null
+    category =
+      all.find((c) => c.type === ChannelType.GuildCategory && c.name === wanted && !claimed.has(c.id)) ?? null
   }
   const categoryId = category?.id ?? null
+
+  // After the category, because a candidate's "does it open channels elsewhere"
+  // test has to know where this project's own category is.
+  const roleCandidate = sameNamed ? describeRoleCandidate(guild, sameNamed, categoryId, all) : null
 
   const stored = storedChannels(project)
   const channels = {}
@@ -453,9 +761,34 @@ export function observeProjectSection(guild, project, tasks = []) {
     const wanted = channelNameFor(project, suffix)
     let channel = stored[key] ? byId.get(stored[key]) ?? null : null
     if (!channel) {
-      channel = all.find((c) => c.name === wanted && c.type !== ChannelType.GuildCategory) ?? null
+      channel =
+        all.find(
+          (c) =>
+            c.name === wanted &&
+            c.type !== ChannelType.GuildCategory &&
+            !claimed.has(c.id) &&
+            // A channel the bot SIGNED as a ticket is some task's channel, not
+            // a section channel. A project slugged `feature` wants
+            // `feature-members`, and a task titled "Members" in another
+            // project is named exactly that — adopting it would rename and
+            // move somebody's task channel into this project's section. The
+            // topic decides, never the name: the bot's own section channels
+            // carry no topic at all, so this can only ever match a ticket.
+            !(c.topic && isTicketChannel(c))
+        ) ?? null
     }
-    if (channel) channels[key] = { id: channel.id, name: channel.name, parentId: channel.parentId ?? null }
+    if (channel) {
+      channels[key] = {
+        id: channel.id,
+        name: channel.name,
+        parentId: channel.parentId ?? null,
+        // Discord copies the category's overwrites onto a section channel when
+        // it is CREATED and never again, so a channel that predates the role
+        // carries a copy without it. Null when unreadable: the planner only
+        // plans a permissions edit on what it can see.
+        overwriteIds: overwriteIdsOf(channel),
+      }
+    }
   }
 
   // A channel more than one task row points at is NOT a task channel, and
@@ -505,7 +838,8 @@ export function observeProjectSection(guild, project, tasks = []) {
 
   return {
     roleId,
-    roleNames,
+    roleCandidate,
+    rolesFetched: Boolean(rolesFetched),
     categoryId,
     categoryName: category?.name ?? null,
     categoryChannelCount: categoryId ? all.filter((c) => c.parentId === categoryId).length : 0,
@@ -534,8 +868,13 @@ export function observeProjectSection(guild, project, tasks = []) {
  * so". A default of `[]` would let a repair run that only wanted the channels
  * fixed rewrite every panel it touched to "No members yet."
  *
+ * `granted` is the channels that got a standalone permissions edit; `opened` is
+ * the ones whose rename or move carried the role's allow in the same edit. Both
+ * are permission changes and both are reported, but they are not the same
+ * count, and adding them together would describe one channel as two objects.
+ *
  * @param {{db: object, members?: Array<{discordId: string, role: string}>, nameFor?: (id: string) => string, botUserId?: string|null}} deps
- * @returns {Promise<{role: object|null, category: object|null, created: string[], renamed: string[], moved: string[], granted: string[], tasks: number, warnings: string[]}>}
+ * @returns {Promise<{role: object|null, category: object|null, created: string[], renamed: string[], moved: string[], granted: string[], opened: string[], membersChannel: object|null, tasks: number, warnings: string[]}>}
  */
 export async function applyProjectSection(
   guild,
@@ -543,7 +882,18 @@ export async function applyProjectSection(
   plan,
   { db, members, nameFor = (id) => id, botUserId = null } = {}
 ) {
-  const result = { role: null, category: null, created: [], renamed: [], moved: [], granted: [], tasks: 0, warnings: [] }
+  const result = {
+    role: null,
+    category: null,
+    created: [],
+    renamed: [],
+    moved: [],
+    granted: [],
+    opened: [],
+    membersChannel: null,
+    tasks: 0,
+    warnings: [],
+  }
   const channelIds = storedChannels(project)
   const resolved = new Map()
 
@@ -577,7 +927,14 @@ export async function applyProjectSection(
     note(result.warnings, `role "${rolePlan.name}"`, e)
   }
   const roleId = result.role?.id ?? null
-  const refused = rolePlan.action === 'refuse'
+  // Only the managed-NAME refusal leaves a roleless category open; a refused
+  // same-named role fails closed. See `categoryOverwrites`.
+  const openWhenRoleless = rolePlan.action === 'refuse' && rolePlan.kind !== 'role'
+  // The role the section is actually gated on, for every channel below. The
+  // planner used `role.gateRoleId` to decide the same thing; resolving it here
+  // guards the window between the read and the write, where the role can be
+  // deleted. A newly created role is in the cache by now.
+  const projectRoleId = roleId && guild.roles?.cache?.has?.(roleId) ? roleId : null
 
   // 2. The category.
   const categoryPlan = plan?.category ?? null
@@ -586,7 +943,7 @@ export async function applyProjectSection(
       result.category = await guild.channels.create({
         name: categoryPlan.name,
         type: ChannelType.GuildCategory,
-        permissionOverwrites: categoryOverwrites(guild, roleId, refused),
+        permissionOverwrites: categoryOverwrites(guild, roleId, openWhenRoleless),
         reason: REASON,
       })
       result.created.push(categoryPlan.name)
@@ -597,7 +954,7 @@ export async function applyProjectSection(
       const needsName = categoryPlan.action === 'rename'
       // A role created on a later run has to reach a category that predates
       // it, and a category that lost its @everyone deny has to get it back.
-      const required = categoryOverwrites(guild, roleId, refused)
+      const required = categoryOverwrites(guild, roleId, openWhenRoleless)
       const needsPerms = missingOverwrites(existing, required)
       if (needsName || needsPerms) {
         const payload = { name: categoryPlan.name }
@@ -643,9 +1000,35 @@ export async function applyProjectSection(
         }
         const channel = guild.channels.cache.get(entry.id)
         if (!channel) throw new Error(`channel ${entry.id} no longer exists`)
-        await channel.edit({ name: entry.name, parent: categoryId })
         channelIds[entry.key] = channel.id
         resolved.set(entry.key, channel)
+
+        if (entry.action === 'grant') {
+          // Named and placed already; the only thing wrong is that the role
+          // cannot see it. Discord copies a category's overwrites onto a
+          // section channel once, at creation, and never cascades a later
+          // change, so this is the ONLY thing that ever repairs the ten
+          // channels of a project whose role arrived after they did. Merged,
+          // never `lockPermissions()`: a hand-added grant on one of these
+          // channels is not ours to drop.
+          const overwrites = roleAllowMerged(channel, projectRoleId)
+          // Nothing to add after all (no role that resolves, an unreadable
+          // overwrite list, or the allow landed since the snapshot): no edit,
+          // and the channel is otherwise correct, so nothing else to do.
+          if (!overwrites) continue
+          await channel.edit({ permissionOverwrites: overwrites })
+          result.granted.push(channel.name ?? entry.name)
+          continue
+        }
+
+        // A rename or a move is one edit, and the allow rides in it.
+        const payload = { name: entry.name, parent: categoryId }
+        const overwrites = entry.opens ? roleAllowMerged(channel, projectRoleId) : null
+        if (overwrites) {
+          payload.permissionOverwrites = overwrites
+          result.opened.push(entry.name)
+        }
+        await channel.edit(payload)
         ;(entry.action === 'move' ? result.moved : result.renamed).push(entry.name)
       } catch (e) {
         note(result.warnings, `channel "${entry.name}"`, e)
@@ -668,7 +1051,6 @@ export async function applyProjectSection(
     //        the project.
     //    No resolvable role, or no readable overwrite list: the allow is
     //    skipped, never the rest of the edit.
-    const projectRoleId = roleId && guild.roles?.cache?.has?.(roleId) ? roleId : null
     for (const task of plan?.tasks ?? []) {
       if (task.action === 'none') continue
       try {
@@ -692,7 +1074,13 @@ export async function applyProjectSection(
 
         const payload = { name: task.name, parent }
         if (task.topic) payload.topic = task.topic
-        if (overwrites) payload.permissionOverwrites = overwrites
+        if (overwrites) {
+          payload.permissionOverwrites = overwrites
+          // A rename or a move that ALSO opens the channel to the project role
+          // is a permission change wearing a tidy-up's name. Counted, so the
+          // reply can say so.
+          result.opened.push(task.name)
+        }
         await channel.edit(payload)
         result.tasks += 1
         ;(task.action === 'rename' ? result.renamed : result.moved).push(task.name)
@@ -730,6 +1118,10 @@ export async function applyProjectSection(
   //    members channel that is somehow not a text channel.
   const membersChannel =
     resolved.get('members') ?? (channelIds.members ? guild.channels.cache.get(channelIds.members) ?? null : null)
+  // Returned whether or not a roster was brought, so a caller that re-reads the
+  // roster after this long apply can refresh the panel without hunting for the
+  // channel again.
+  result.membersChannel = membersChannel ?? null
   if (membersChannel && members !== undefined) {
     try {
       await ensureMembersPanel(membersChannel, project, members, { botUserId, nameFor })
@@ -738,7 +1130,41 @@ export async function applyProjectSection(
     }
   }
 
+  // 7. Say who else can see the category.
+  //
+  //    `mergedOverwrites` keeps every overwrite it did not put there, by
+  //    design — dropping a hand-added grant would itself be an unrequested
+  //    permission change. But that also means a project whose role was
+  //    REPLACED leaves the old role's allow sitting on the category, and its
+  //    holders keep seeing the section forever. Removing it silently is not an
+  //    option and neither is leaving it unsaid, so it is reported.
+  for (const id of foreignRoleAllows(result.category, guild?.id, roleId)) {
+    const name = guild?.roles?.cache?.get?.(id)?.name ?? id
+    result.warnings.push(
+      `The category for "${project?.name}" also lets the role "${name}" see it, and that is not this project's role. Anyone holding it can read this section. /project-setup never removes an overwrite — take it off the category by hand if that is not intended.`
+    )
+  }
+
   return result
+}
+
+/**
+ * The ids of roles OTHER than @everyone and the project's own that are allowed
+ * ViewChannel on the category. A leftover from a replaced role, or a moderator
+ * role someone added. Empty when the overwrites cannot be read.
+ */
+function foreignRoleAllows(category, guildId, roleId) {
+  const cache = category?.permissionOverwrites?.cache
+  if (!cache?.values) return []
+  const out = []
+  for (const overwrite of cache.values()) {
+    if (!overwrite) continue
+    if (overwrite.type !== OverwriteType.Role) continue
+    if (overwrite.id === guildId || (roleId && overwrite.id === roleId)) continue
+    if (!grantsView(overwrite)) continue
+    out.push(overwrite.id)
+  }
+  return out
 }
 
 /**
@@ -799,6 +1225,11 @@ export async function syncProjectRoleMembers(guild, project, members = [], { rol
     try {
       await member.roles.remove(target)
       out.revoked.push(id)
+      // Logged one at a time, as it happens. "3 revoked" in a reply cannot be
+      // undone by hand: an operator restoring a role taken off the wrong
+      // person needs the ids, and needs them even if the run dies on the next
+      // member.
+      console.warn(`[projectSection] role sync for "${project?.name}" — removed role ${roleId} from ${id}`)
     } catch (e) {
       fail(id, e)
     }

@@ -10,10 +10,29 @@ import {
   observeProjectSection,
   applyProjectSection,
   syncProjectRoleMembers,
+  claimedSectionIds,
+  projectSlug,
 } from './projectSection.js'
 
 const project = { id: 'p1', name: 'Framework', docsSlug: 'framework' }
-const empty = { roleId: null, roleNames: new Map(), categoryId: null, categoryName: null, categoryChannelCount: 0, channels: {}, tasks: [], takenNames: new Set() }
+const empty = { roleId: null, roleCandidate: null, rolesFetched: true, categoryId: null, categoryName: null, categoryChannelCount: 0, channels: {}, tasks: [], takenNames: new Set() }
+
+/**
+ * A same-named role the planner may look at: harmless by default, so each test
+ * spells out only the one thing it is about.
+ */
+function candidate(over = {}) {
+  return {
+    id: 'r9',
+    name: 'Framework',
+    managed: false,
+    isEveryone: false,
+    overPermissioned: false,
+    holderIds: [],
+    elsewhere: [],
+    ...over,
+  }
+}
 
 test('names follow the spec', () => {
   assert.equal(categoryNameFor(project), '📂 FRAMEWORK')
@@ -63,9 +82,12 @@ test('a fresh project creates the role, the category and all ten channels', () =
   assert.equal(plan.warnings.length, 0)
 })
 
-test('an existing role of the same name is reused, not created again', () => {
-  const plan = planProjectSection(project, { ...empty, roleNames: new Map([['Framework', 'r9']]) })
-  assert.deepEqual([plan.role.action, plan.role.id], ['reuse', 'r9'])
+test('an existing role of the same name that NOBODY holds is reused, not created again', () => {
+  // The legacy `/create-project-role` role that was made and never assigned.
+  // Reusing an empty role can neither strip anyone nor show anyone anything.
+  const plan = planProjectSection(project, { ...empty, rolesFetched: true, roleCandidate: candidate() })
+  assert.deepEqual([plan.role.action, plan.role.decision, plan.role.id], ['reuse', 'empty', 'r9'])
+  assert.equal(plan.warnings.length, 0)
 })
 
 test('a project named after a job role is refused a role, with a reason', () => {
@@ -234,11 +256,14 @@ function fakeChannel(id, name, opts = {}) {
   return c
 }
 
-function fakeGuild({ channels = [], roles = [], createFails = null } = {}) {
+function fakeGuild({ channels = [], roles = [], createFails = null, everyonePermissions = 0n } = {}) {
   const guild = {
     id: 'G1',
     roles: {
       cache: new Map(roles.map((r) => [r.id, r])),
+      // Every real guild has one, and it is the yardstick the "is this role
+      // also a power role" test measures against.
+      everyone: { id: 'G1', name: '@everyone', permissions: everyonePermissions },
       calls: [],
       async create(opts) {
         guild.roles.calls.push(opts)
@@ -293,11 +318,17 @@ test('observeProjectSection resolves the stored ids and takes names from the who
   ])
 
   assert.equal(observed.roleId, 'r1')
-  assert.equal(observed.roleNames.get('Framework'), 'r1')
+  assert.equal(observed.roleCandidate.id, 'r1')
   assert.equal(observed.categoryId, 'c1')
   assert.equal(observed.categoryName, '📂 FRAMEWORK')
   assert.equal(observed.categoryChannelCount, 1)
-  assert.deepEqual(observed.channels.members, { id: 'm1', name: 'framework-members', parentId: 'c1' })
+  assert.deepEqual(observed.channels.members, {
+    id: 'm1',
+    name: 'framework-members',
+    parentId: 'c1',
+    // Unreadable on this fake, so the planner never plans a permissions edit.
+    overwriteIds: null,
+  })
   assert.equal(observed.channels.documentation, undefined)
   assert.deepEqual(observed.tasks, [
     { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-0145e3', parentId: 'FEATURES', overwriteIds: null },
@@ -993,4 +1024,490 @@ test('syncProjectRoleMembers collects a per-member failure instead of throwing',
 test('syncProjectRoleMembers does nothing at all without a role id', async () => {
   const out = await syncProjectRoleMembers(fakeGuild(), project, [{ discordId: 'u1' }], { roleId: null })
   assert.deepEqual(out, { granted: [], revoked: [], failed: [] })
+})
+
+// ---------------------------------------------------------------------------
+// The role rules: adoption is fail-closed, and every refusal says why.
+// ---------------------------------------------------------------------------
+
+test('a same-named role somebody already HOLDS is refused, not adopted', () => {
+  // The Task 10 reviewer's case: a guild role `Framework` held by two people,
+  // plus a project called `Framework`. Adopting it would show the new section
+  // to both of them and then take the role off both, because neither is a
+  // `projectmember` row.
+  const plan = planProjectSection(project, {
+    ...empty,
+    roleCandidate: candidate({ holderIds: ['u1', 'u2'] }),
+  })
+  assert.equal(plan.role.action, 'refuse')
+  assert.equal(plan.role.kind, 'role')
+  assert.equal(plan.role.gateRoleId, null, 'a refused role gates nothing')
+  const text = plan.warnings.join(' | ')
+  assert.match(text, /held by 2 member\(s\)/)
+  // Both ways out, named.
+  assert.match(text, /Rename the project or the role/)
+  assert.match(text, /adopt_role:true/)
+  assert.match(text, /preview:true/)
+})
+
+test('adopt_role adopts a held role and remembers who holds it', () => {
+  const plan = planProjectSection(
+    project,
+    { ...empty, roleCandidate: candidate({ holderIds: ['u1', 'u2'] }) },
+    { adoptRole: true }
+  )
+  assert.deepEqual(
+    [plan.role.action, plan.role.decision, plan.role.id, plan.role.gateRoleId],
+    ['reuse', 'adopt', 'r9', 'r9']
+  )
+  assert.deepEqual(plan.role.holderIds, ['u1', 'u2'])
+  assert.equal(plan.warnings.length, 0)
+})
+
+test('adopt_role does NOT override a managed, @everyone, powerful or door-opening role', () => {
+  const cases = [
+    [candidate({ managed: true, holderIds: ['u1'] }), /managed by Discord or an integration/],
+    [candidate({ isEveryone: true }), /@everyone role/],
+    [candidate({ overPermissioned: true }), /permissions beyond @everyone/],
+    [candidate({ elsewhere: ['design-private', 'finance'] }), /overwrites on 2 channel\(s\) outside this project/],
+  ]
+  for (const [roleCandidate, expected] of cases) {
+    const plan = planProjectSection(project, { ...empty, roleCandidate }, { adoptRole: true })
+    assert.equal(plan.role.action, 'refuse', `${expected} should refuse`)
+    assert.equal(plan.role.gateRoleId, null)
+    const text = plan.warnings.join(' | ')
+    assert.match(text, expected)
+    assert.match(text, /adopt_role\*\* does not override this/, text)
+  }
+})
+
+test('a door-opening role names the channels it would hand over', () => {
+  const plan = planProjectSection(project, {
+    ...empty,
+    roleCandidate: candidate({ elsewhere: ['design-private', 'finance', 'legal', 'exec'] }),
+  })
+  assert.match(plan.warnings.join(' | '), /design-private, finance, legal, and 1 more/)
+})
+
+test('an unfetched member cache refuses adoption instead of reading it as "nobody holds it"', () => {
+  // The whole leak in one line: `role.members` is the member cache, so without
+  // a fetch every role looks empty, and an empty role is one the planner
+  // adopts. The flag, not the count, is what decides.
+  const plan = planProjectSection(project, {
+    ...empty,
+    rolesFetched: false,
+    roleCandidate: candidate({ holderIds: [] }),
+  })
+  assert.equal(plan.role.action, 'refuse')
+  assert.match(plan.warnings.join(' | '), /member list could not be read/)
+  // With the fetch, the very same snapshot adopts it.
+  const fetched = planProjectSection(project, { ...empty, rolesFetched: true, roleCandidate: candidate() })
+  assert.equal(fetched.role.decision, 'empty')
+})
+
+test("the project's own stored role wins over everything a same-named role could be", () => {
+  const plan = planProjectSection(project, {
+    ...empty,
+    roleId: 'stored1',
+    rolesFetched: false,
+    roleCandidate: candidate({ managed: true, overPermissioned: true, holderIds: ['u1'] }),
+  })
+  assert.deepEqual(
+    [plan.role.action, plan.role.decision, plan.role.id, plan.role.gateRoleId],
+    ['reuse', 'stored', 'stored1', 'stored1']
+  )
+  assert.equal(plan.warnings.length, 0)
+})
+
+test('a refused name that KEPT an old role repairs channels against THAT role', () => {
+  // The managed-name refusal: the project was renamed onto `Database`, so no
+  // role of that name will ever be made, but the role it already had still
+  // gates the section. The planner and the applier have to agree which role
+  // that is — before `gateRoleId` the planner said "no role, plan nothing"
+  // while the applier put the kept role's allow on every moved channel.
+  const renamed = { id: 'p2', name: 'Database', docsSlug: 'database', discordRoleId: 'r7' }
+  const task = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1', overwriteIds: ['G1'] }
+  const plan = planProjectSection(renamed, {
+    ...empty,
+    roleId: 'r7',
+    categoryId: 'c1',
+    categoryName: '📂 DATABASE',
+    tasks: [task],
+  })
+  assert.equal(plan.role.action, 'refuse')
+  assert.equal(plan.role.kind, 'managed-name')
+  assert.equal(plan.role.gateRoleId, 'r7')
+  assert.equal(plan.tasks[0].action, 'grant', 'the kept role reaches the task channel too')
+})
+
+test('a refused role with nothing kept plans no channel permission work at all', () => {
+  const task = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1', overwriteIds: ['G1'] }
+  const channels = { members: { id: 'm1', name: 'framework-members', parentId: 'c1', overwriteIds: ['G1'] } }
+  const plan = planProjectSection(project, {
+    ...empty,
+    categoryId: 'c1',
+    categoryName: '📂 FRAMEWORK',
+    channels,
+    tasks: [task],
+    roleCandidate: candidate({ holderIds: ['u1'] }),
+  })
+  assert.equal(plan.role.action, 'refuse')
+  assert.equal(plan.tasks[0].action, 'none')
+  assert.equal(plan.channels.find((c) => c.key === 'members').action, 'reuse')
+})
+
+// ---------------------------------------------------------------------------
+// A1: the ten section channels get the role allow when the role arrives later
+// ---------------------------------------------------------------------------
+
+/** The ten section channels as the observer reports them, all right but for perms. */
+function placedSections(overwriteIds) {
+  const channels = {}
+  for (const s of SECTIONS) {
+    channels[s.key] = {
+      id: `id-${s.key}`,
+      name: channelNameFor(project, s.suffix),
+      parentId: 'c1',
+      overwriteIds,
+    }
+  }
+  return channels
+}
+
+test('a section channel that lacks the role allow is planned a standalone grant', () => {
+  // Discord copies a category's overwrites onto a channel when the channel is
+  // CREATED and never cascades a later change, so ten channels created under a
+  // deny-only category keep a deny-only copy forever.
+  const plan = planProjectSection(project, {
+    ...empty,
+    roleId: 'r1',
+    categoryId: 'c1',
+    categoryName: '📂 FRAMEWORK',
+    channels: placedSections(['G1']),
+  })
+  assert.ok(plan.channels.every((c) => c.action === 'grant'), plan.channels.map((c) => c.action).join(','))
+})
+
+test('a section channel that already has the role allow is left completely alone', () => {
+  const plan = planProjectSection(project, {
+    ...empty,
+    roleId: 'r1',
+    categoryId: 'c1',
+    categoryName: '📂 FRAMEWORK',
+    channels: placedSections(['G1', 'r1']),
+  })
+  assert.ok(plan.channels.every((c) => c.action === 'reuse'))
+})
+
+test('a section channel whose overwrites cannot be read skips the repair, not the channel', () => {
+  const channels = placedSections(null)
+  channels.members = { id: 'm1', name: 'WRONG', parentId: 'c1', overwriteIds: null }
+  const plan = planProjectSection(project, {
+    ...empty,
+    roleId: 'r1',
+    categoryId: 'c1',
+    categoryName: '📂 FRAMEWORK',
+    channels,
+  })
+  const byKey = Object.fromEntries(plan.channels.map((c) => [c.key, c]))
+  assert.equal(byKey.members.action, 'rename', 'the rename still happens')
+  assert.equal(byKey.members.opens, undefined, 'but nothing is guessed about its permissions')
+  assert.equal(byKey.meetings.action, 'reuse')
+})
+
+test('a section channel being moved carries the allow in that SAME edit', () => {
+  const channels = placedSections(['G1', 'r1'])
+  channels.members = { id: 'm1', name: 'framework-members', parentId: 'ELSEWHERE', overwriteIds: ['G1'] }
+  const plan = planProjectSection(project, {
+    ...empty,
+    roleId: 'r1',
+    categoryId: 'c1',
+    categoryName: '📂 FRAMEWORK',
+    channels,
+  })
+  const members = plan.channels.find((c) => c.key === 'members')
+  assert.equal(members.action, 'move')
+  assert.equal(members.opens, true, 'not a second edit — two per channel per ten minutes')
+})
+
+test('a role about to be CREATED means every readable section channel needs the allow', () => {
+  const plan = planProjectSection(project, {
+    ...empty,
+    categoryId: 'c1',
+    categoryName: '📂 FRAMEWORK',
+    channels: placedSections([]),
+  })
+  assert.equal(plan.role.action, 'create')
+  assert.ok(plan.channels.every((c) => c.action === 'grant'))
+})
+
+test('a section channel lacking the allow gets exactly ONE merged repair edit', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  // As Discord made it: copied from the category back when it was deny-only,
+  // plus a grant somebody added by hand afterwards.
+  const mem = fakeChannel('m1', 'framework-members', {
+    parentId: 'c1',
+    overwrites: [
+      { id: 'G1', type: OverwriteType.Role, allow: 0n, deny: PermissionFlagsBits.ViewChannel },
+      { id: 'u9', type: OverwriteType.Member, allow: PermissionFlagsBits.ViewChannel, deny: 0n },
+    ],
+  })
+  const role = { id: 'r1', name: 'Framework', members: new Map(), permissions: 0n }
+  const guild = fakeGuild({ channels: [cat, mem], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { members: 'm1' } }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
+  assert.equal(plan.channels.find((c) => c.key === 'members').action, 'grant')
+
+  const out = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+
+  assert.equal(mem.edits.length, 1, 'one edit, and nothing but the overwrites')
+  assert.deepEqual(Object.keys(mem.edits[0]), ['permissionOverwrites'])
+  const byId = new Map(mem.edits[0].permissionOverwrites.map((o) => [o.id, o]))
+  assert.deepEqual(byId.get('r1'), { id: 'r1', type: OverwriteType.Role, allow: ALLOW })
+  assert.equal(byId.get('G1').deny, PermissionFlagsBits.ViewChannel, 'the deny stays')
+  assert.equal(byId.get('u9').type, OverwriteType.Member, 'the hand-added grant stays')
+  assert.equal(mem.edits[0].permissionOverwrites.length, 3)
+  assert.ok(out.granted.includes('framework-members'))
+  // The name and the parent were already right, so nothing else moved.
+  assert.equal(mem.name, 'framework-members')
+  assert.equal(mem.parentId, 'c1')
+})
+
+test('a section channel already holding the allow gets NO edit', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const mem = fakeChannel('m1', 'framework-members', { parentId: 'c1', overwriteIds: ['G1', 'r1'] })
+  const role = { id: 'r1', name: 'Framework', members: new Map(), permissions: 0n }
+  const guild = fakeGuild({ channels: [cat, mem], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { members: 'm1' } }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
+
+  await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+
+  assert.equal(mem.edits.length, 0)
+})
+
+test('a section channel renamed, moved AND opened is still exactly one edit', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const mem = fakeChannel('m1', 'old-members-channel', {
+    parentId: 'ELSEWHERE',
+    overwrites: [{ id: 'G1', type: OverwriteType.Role, allow: 0n, deny: PermissionFlagsBits.ViewChannel }],
+  })
+  const role = { id: 'r1', name: 'Framework', members: new Map(), permissions: 0n }
+  const guild = fakeGuild({ channels: [cat, mem], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { members: 'm1' } }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
+
+  const out = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+
+  assert.equal(mem.edits.length, 1, 'two channel edits per ten minutes — never split this')
+  assert.equal(mem.edits[0].name, 'framework-members')
+  assert.equal(mem.edits[0].parent, 'c1')
+  assert.ok(mem.edits[0].permissionOverwrites.some((o) => o.id === 'r1'))
+  assert.deepEqual(out.opened, ['framework-members'])
+  assert.ok(out.moved.includes('framework-members'))
+})
+
+test('a refused same-named role builds the section shut, and a later adopt_role repairs all ten', async () => {
+  // The whole A1 path end to end: nine existing projects come out of the
+  // backfill like this, and a run that left them permanently invisible with no
+  // repair would not be a fix — nothing here may delete a channel.
+  const held = { id: 'r9', name: 'Framework', members: new Map([['u1', {}]]), permissions: 0n }
+  const guild = fakeGuild({ roles: [held] })
+  const fresh = { ...project }
+  const plan1 = planProjectSection(fresh, observeProjectSection(guild, fresh, [], { rolesFetched: true }))
+  assert.equal(plan1.role.action, 'refuse')
+
+  const db1 = fakeDb()
+  await applyProjectSection(guild, fresh, plan1, { db: db1 })
+
+  // The category is shut: @everyone denied, nothing allowed. Not open, and not
+  // gated on a role a stranger holds.
+  assert.deepEqual(guild.channels.calls[0].permissionOverwrites, [
+    { id: 'G1', type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+  ])
+  assert.equal(guild.roles.calls.length, 0, 'and no second role of the same name')
+
+  // Discord copies the category's set onto each new channel, so the ten of them
+  // now carry the deny and nothing else. Mirror that onto the fakes.
+  const saved = db1.calls[0].data
+  for (const id of Object.values(saved.discordChannels)) {
+    guild.channels.cache.get(id).permissionOverwrites = {
+      cache: new Map([['G1', { id: 'G1', type: OverwriteType.Role, allow: 0n, deny: PermissionFlagsBits.ViewChannel }]]),
+    }
+  }
+
+  // Now the operator adopts the role. Same guild, same channels.
+  const stored = { ...fresh, discordCategoryId: saved.discordCategoryId, discordChannels: saved.discordChannels }
+  const plan2 = planProjectSection(
+    stored,
+    observeProjectSection(guild, stored, [], { rolesFetched: true }),
+    { adoptRole: true }
+  )
+  assert.equal(plan2.role.decision, 'adopt')
+  assert.equal(plan2.channels.filter((c) => c.action === 'grant').length, 10)
+
+  const out = await applyProjectSection(guild, stored, plan2, { db: fakeDb() })
+
+  assert.equal(out.granted.length, 10, 'every section channel was repaired')
+  for (const id of Object.values(saved.discordChannels)) {
+    const made = guild.channels.cache.get(id)
+    assert.equal(made.edits.length, 1, `${made.name} took more than one edit`)
+    const ids = made.edits[0].permissionOverwrites.map((o) => o.id)
+    assert.ok(ids.includes('r9'), `${made.name} still cannot be seen`)
+    assert.ok(ids.includes('G1'), `${made.name} lost its @everyone deny`)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// A7: say what happened to roles
+// ---------------------------------------------------------------------------
+
+test('a role allow on the category that is not the project’s is reported, never removed', async () => {
+  // `mergedOverwrites` keeps what it did not add, by design — so a REPLACED
+  // role's allow sits on the category forever and its holders keep seeing the
+  // section. Removing it silently would itself be an unrequested permission
+  // change, so it is said out loud instead.
+  const denyAll = { id: 'G1', type: OverwriteType.Role, allow: 0n, deny: PermissionFlagsBits.ViewChannel }
+  const mine = { id: 'r1', type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: 0n }
+  const stale = { id: 'rOld', type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: 0n }
+  const byHand = { id: 'u9', type: OverwriteType.Member, allow: PermissionFlagsBits.ViewChannel, deny: 0n }
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', {
+    type: ChannelType.GuildCategory,
+    overwrites: [denyAll, mine, stale, byHand],
+  })
+  const guild = fakeGuild({
+    channels: [cat],
+    roles: [
+      { id: 'r1', name: 'Framework', members: new Map(), permissions: 0n },
+      { id: 'rOld', name: 'Framework (old)', members: new Map(), permissions: 0n },
+    ],
+  })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
+
+  const out = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+
+  assert.equal(cat.edits.length, 0, 'nothing was taken off the category')
+  const said = out.warnings.filter((w) => /also lets the role/.test(w))
+  assert.equal(said.length, 1, out.warnings.join(' | '))
+  assert.match(said[0], /Framework \(old\)/)
+  assert.doesNotMatch(said[0], /u9/, 'a member overwrite is not a role')
+})
+
+test('syncProjectRoleMembers logs every id it takes the role from', async () => {
+  const log = []
+  const holder = roleMember('u2', log)
+  const role = { id: 'r1', name: 'Framework', members: new Map([['u2', holder]]) }
+  const guild = fakeGuild({ roles: [role] })
+  guild.members = { fetch: async (id) => roleMember(id, log) }
+  const lines = []
+  const real = console.warn
+  console.warn = (line) => lines.push(String(line))
+  try {
+    await syncProjectRoleMembers(guild, project, [], { roleId: 'r1' })
+  } finally {
+    console.warn = real
+  }
+  // "3 revoked" cannot be undone by hand; the ids can.
+  assert.ok(lines.some((l) => /removed role r1 from u2/.test(l)), lines.join(' | '))
+})
+
+// ---------------------------------------------------------------------------
+// The observer: role candidates, and ids another project already claims
+// ---------------------------------------------------------------------------
+
+test('observeProjectSection describes a same-named role without trusting it', () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const inside = fakeChannel('in1', 'framework-members', { parentId: 'c1', overwriteIds: ['r9'] })
+  const outside = fakeChannel('out1', 'design-private', { parentId: 'OTHER', overwriteIds: ['r9'] })
+  const role = { id: 'r9', name: 'Framework', managed: false, permissions: 0n, members: new Map([['u1', {}], ['u2', {}]]) }
+  const guild = fakeGuild({ channels: [cat, inside, outside], roles: [role] })
+
+  const observed = observeProjectSection(guild, { ...project, discordCategoryId: 'c1' }, [], { rolesFetched: true })
+
+  assert.equal(observed.rolesFetched, true)
+  assert.deepEqual(observed.roleCandidate.holderIds, ['u1', 'u2'])
+  assert.equal(observed.roleCandidate.managed, false)
+  assert.equal(observed.roleCandidate.isEveryone, false)
+  assert.equal(observed.roleCandidate.overPermissioned, false)
+  // Inside the project's own category does not count; anywhere else does.
+  assert.deepEqual(observed.roleCandidate.elsewhere, ['design-private'])
+})
+
+test('observeProjectSection defaults rolesFetched to FALSE, so a forgetful caller refuses', () => {
+  const role = { id: 'r9', name: 'Framework', permissions: 0n, members: new Map() }
+  const guild = fakeGuild({ roles: [role] })
+  const observed = observeProjectSection(guild, project, [])
+  assert.equal(observed.rolesFetched, false)
+  assert.equal(planProjectSection(project, observed).role.action, 'refuse')
+})
+
+test('a role carrying one permission @everyone lacks is over-permissioned', () => {
+  const only = (roles, everyonePermissions = 0n) =>
+    observeProjectSection(fakeGuild({ roles, everyonePermissions }), project, [], { rolesFetched: true })
+      .roleCandidate.overPermissioned
+
+  assert.equal(only([{ id: 'r9', name: 'Framework', permissions: PermissionFlagsBits.ManageMessages, members: new Map() }]), true)
+  assert.equal(only([{ id: 'r8', name: 'Framework', permissions: 0n, members: new Map() }]), false)
+  // Exactly what @everyone holds — what Discord makes by default, and what the
+  // legacy /create-project-role roles are.
+  assert.equal(
+    only([{ id: 'r7', name: 'Framework', permissions: PermissionFlagsBits.SendMessages, members: new Map() }], PermissionFlagsBits.SendMessages),
+    false
+  )
+  // An unreadable bitfield cannot prove the role is harmless, so it is not.
+  assert.equal(only([{ id: 'r6', name: 'Framework', members: new Map() }]), true)
+})
+
+test('a category or section channel another project stores is never adopted by name', () => {
+  // `Framework` and `framework` both want '📂 FRAMEWORK', and two projects
+  // whose effective slugs collide want the same ten channel names.
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const mem = fakeChannel('m1', 'framework-members', { parentId: 'c1' })
+  const guild = fakeGuild({ channels: [cat, mem] })
+  const other = { id: 'pOther', discordCategoryId: 'c1', discordChannels: { members: 'm1' } }
+  const mine = { id: 'p1', name: 'framework', docsSlug: 'framework' }
+
+  const claimedIds = claimedSectionIds([other, mine], 'p1')
+  assert.deepEqual([...claimedIds].sort(), ['c1', 'm1'])
+
+  const observed = observeProjectSection(guild, mine, [], { rolesFetched: true, claimedIds })
+  assert.equal(observed.categoryId, null, 'the other project keeps its category')
+  assert.equal(observed.channels.members, undefined, 'and its members channel')
+
+  // Without the guard, the second project merges its own role's allow into the
+  // first project's category and plans a move, and the two trade the same
+  // channels back and forth on every run.
+  assert.equal(observeProjectSection(guild, mine, [], { rolesFetched: true }).categoryId, 'c1')
+})
+
+test('claimedSectionIds skips the project being set up and survives a JSON string column', () => {
+  const rows = [
+    { id: 'p1', discordCategoryId: 'cMine', discordChannels: { members: 'mMine' } },
+    { id: 'p2', discordCategoryId: 'cOther', discordChannels: '{"meetings":"mOther"}' },
+    { id: 'p3', discordCategoryId: null, discordChannels: null },
+    null,
+  ]
+  assert.deepEqual([...claimedSectionIds(rows, 'p1')].sort(), ['cOther', 'mOther'])
+})
+
+test('projectSlug is the EFFECTIVE slug: the column, else one from the name', () => {
+  assert.equal(projectSlug({ name: 'UBS Doc', docsSlug: null }), 'ubs-doc')
+  assert.equal(projectSlug({ name: 'UBS Doc', docsSlug: 'ubs-documentation' }), 'ubs-documentation')
+})
+
+test('a section channel is never adopted by name from a channel the bot signed as a ticket', () => {
+  // A project slugged `feature` wants `feature-members`; a task titled
+  // "Members" in some other project is named exactly that. The topic decides —
+  // the bot's own section channels carry none.
+  const slugged = { id: 'p5', name: 'Feature', docsSlug: 'feature' }
+  const someoneElses = fakeChannel('tc9', 'feature-members', { parentId: 'OTHER' })
+  someoneElses.topic = 'Feature: Members — Task tzzz'
+  const plain = fakeChannel('s9', 'feature-documentation', { parentId: 'OTHER' })
+  const guild = fakeGuild({ channels: [someoneElses, plain] })
+
+  const observed = observeProjectSection(guild, slugged, [], { rolesFetched: true })
+
+  assert.equal(observed.channels.members, undefined, "another project's task channel is left alone")
+  assert.equal(observed.channels.documentation.id, 's9', 'a topicless one is still adopted')
 })
