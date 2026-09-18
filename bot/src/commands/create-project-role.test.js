@@ -234,3 +234,79 @@ test('through the real routine it creates the role and the whole section', async
   assert.ok(db.calls.some((c) => c[0] === 'project.update'), 'the ids were saved through the db seam')
   assert.match(it.replies.at(-1).content, /Role \*\*Framework\*\*/)
 })
+
+// ---------------------------------------------------------------------------
+// B6: an ambiguous name is said to be ambiguous, never resolved by coin toss
+// ---------------------------------------------------------------------------
+
+test('two projects this database cannot tell apart: the name is called ambiguous, nothing is built', async () => {
+  // `project.findByName` is `name = ?` against utf8mb4_general_ci columns,
+  // which ignore case AND accents, so its `queryOne` returns an arbitrary one
+  // of the matching rows. Building a role and opening a section for a guess
+  // is not on.
+  const rows = [
+    { id: 'p1', name: 'Éclair', docsSlug: 'eclair-1', guildConfigId: 'g1' },
+    { id: 'p2', name: 'Eclair', docsSlug: 'eclair-2', guildConfigId: 'g1' },
+  ]
+  const db = fakeDb(rows)
+  const guild = fakeGuild()
+  const it = fakeInteraction(guild, 'eclair')
+  let ran = 0
+
+  await execute(it, { db, getConfig: async () => CFG, setup: async () => ran++ })
+
+  assert.equal(ran, 0)
+  assert.match(it.replies[0].content, /is ambiguous/)
+  assert.match(it.replies[0].content, /Éclair/)
+  assert.match(it.replies[0].content, /Eclair/)
+  assert.match(it.replies[0].content, /Nothing was created/)
+  assert.equal(guild.roles.calls.length, 0)
+  assert.equal(guild.channels.calls.length, 0)
+})
+
+test('one match is still one match, whatever its case', async () => {
+  const db = fakeDb([FRAMEWORK])
+  const seen = []
+  await execute(fakeInteraction(fakeGuild(), 'FRAMEWORK'), {
+    db,
+    getConfig: async () => CFG,
+    setup: async (g, project) => {
+      seen.push(project)
+      return { block: 'ok', result: { category: { name: '📂 FRAMEWORK' } } }
+    },
+  })
+  assert.deepEqual(seen, [FRAMEWORK])
+})
+
+// ---------------------------------------------------------------------------
+// D3: a refusal is not a permissions failure
+// ---------------------------------------------------------------------------
+
+test('a refused run does not tell the operator to grant Manage Channels', async () => {
+  const db = fakeDb([FRAMEWORK])
+  const it = fakeInteraction(fakeGuild(), 'Framework')
+  const block = '**Framework** — refused: its channel slug `framework` is also used by **Framework Two**.'
+
+  await execute(it, {
+    db,
+    getConfig: async () => CFG,
+    setup: async () => ({ block, plan: null, refused: true }),
+  })
+
+  const content = it.replies.at(-1).content
+  assert.match(content, /the run was refused/)
+  assert.match(content, /refused the same way until/)
+  assert.doesNotMatch(content, /Manage Channels/)
+  assert.match(content, /slug/)
+})
+
+test('a genuine build failure still points at the permissions', async () => {
+  const db = fakeDb([FRAMEWORK])
+  const it = fakeInteraction(fakeGuild(), 'Framework')
+  await execute(it, {
+    db,
+    getConfig: async () => CFG,
+    setup: async () => ({ block: '**Framework** — nothing to change.', result: { role: null, category: null } }),
+  })
+  assert.match(it.replies.at(-1).content, /Manage Channels/)
+})

@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, ChannelType } from 'discord.js'
+import { SlashCommandBuilder, ChannelType, PermissionFlagsBits, RESTJSONErrorCodes } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import { ensureMeetingChannel } from '../services/meetingListener.js'
 import { ensureGuidelinesPinned } from '../config/meetingGuidelines.js'
@@ -87,19 +87,40 @@ async function resolveProject(interaction, cfg, dbArg) {
 /**
  * The project's own category when it can take this meeting's two channels,
  * else `{ category: null, note }` saying why the meeting falls back to the
- * global category.
+ * global category, else `{ error }` when nothing at all should be created.
  */
 async function projectCategoryFor(guild, project) {
   const id = project?.discordCategoryId ? String(project.discordCategoryId) : null
   const noSection = `**${project?.name}** has no section yet — run \`/project-setup\` — so this meeting went to the global **${CATEGORY_MEETINGS}** category instead.`
   if (!id) return { category: null, note: noSection }
-  const cached = guild.channels?.cache?.get?.(id)
-  const category =
-    cached ?? (await Promise.resolve(guild.channels?.fetch?.(id)).catch(() => null)) ?? null
+  let category = guild.channels?.cache?.get?.(id) ?? null
+  if (!category) {
+    try {
+      category = (await Promise.resolve(guild.channels?.fetch?.(id))) ?? null
+    } catch (e) {
+      // ONLY 10003, Unknown Channel, means the stored id is stale. A rate
+      // limit or a 5xx means we do not know — and treating "do not know" as
+      // "stale" puts a project's meeting in the public category and tells the
+      // operator to repair a section that is not broken.
+      if (e?.code !== RESTJSONErrorCodes.UnknownChannel) {
+        return {
+          error: `Discord could not be reached to check **${project?.name}**'s section (${e?.message ?? String(e)}), so nothing was created. Try again in a moment.`,
+        }
+      }
+      category = null
+    }
+  }
   if (!category || category.type !== ChannelType.GuildCategory) {
     return { category: null, note: noSection }
   }
-  const children = valuesOf(guild.channels?.cache).filter((c) => c?.parentId === category.id).length
+  // Counted from the CATEGORY, not from the guild cache. A category found only
+  // through `fetch` has children the guild cache never loaded, and counting
+  // those would report an almost-full section as empty and push it past
+  // Discord's cap.
+  const own = category.children?.cache
+  const children = own
+    ? valuesOf(own).length
+    : valuesOf(guild.channels?.cache).filter((c) => c?.parentId === category.id).length
   if (children + CHANNELS_PER_MEETING > CATEGORY_SOFT_CAP) {
     return {
       category: null,
@@ -107,6 +128,26 @@ async function projectCategoryFor(guild, project) {
     }
   }
   return { category, note: null }
+}
+
+/**
+ * True only when the caller can demonstrably open the project's section: they
+ * hold its gate role, or they are an Administrator and no overwrite applies to
+ * them. Anything unreadable — no stored role, no role cache — counts as "not
+ * known to see it", because the reply's job is not to promise a link opens.
+ *
+ * This command is gated at `Verified`, and its `project` autocomplete lists
+ * every project, so a caller with no claim on a project can still start a
+ * meeting inside its private section. Refusing them was the alternative; it
+ * would block a lead or an operator who legitimately sets a meeting up for a
+ * team they are not on, and for a project whose role was refused there is no
+ * role to check against at all. So the reply says it plainly instead.
+ */
+function callerCanSeeSection(interaction, project) {
+  if (interaction.member?.permissions?.has?.(PermissionFlagsBits.Administrator)) return true
+  const roleId = project?.discordRoleId ? String(project.discordRoleId) : null
+  if (!roleId) return false
+  return Boolean(interaction.member?.roles?.cache?.has?.(roleId))
 }
 
 async function globalMeetingsCategory(guild) {
@@ -143,6 +184,7 @@ export async function execute(
   const project = resolved.project
 
   const placement = project ? await projectCategoryFor(guild, project) : { category: null, note: null }
+  if (placement.error) return interaction.editReply({ content: placement.error })
   // In the project's own category both channels are created with NO overwrites,
   // so Discord copies the category's (@everyone denied, the project role
   // allowed). Anywhere else the creation calls are exactly as they always were,
@@ -199,6 +241,11 @@ export async function execute(
     `DB link: meeting ${meetingChannel?.meetingId || 'pending'}`,
   ]
   if (placement.note) lines.push(placement.note)
+  if (inProject && !callerCanSeeSection(interaction, project)) {
+    lines.push(
+      `Both channels sit inside **${project.name}**'s private section, so only people holding its project role can open them — you do not hold it, so those two links will not work for you. Ask to be added with **/project-members add**.`
+    )
+  }
   await interaction.editReply({ content: lines.join('\n') })
 }
 

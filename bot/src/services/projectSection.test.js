@@ -736,11 +736,23 @@ test('applyProjectSection persists the three columns in ONE update, keeping what
   assert.equal(Object.keys(data.discordChannels).length, 10)
 })
 
-test('a refused role with no role to fall back on leaves the category open, and is warned about once', async () => {
+// B4: this test used to assert the opposite — `permissionOverwrites: []`, a
+// fully PUBLIC category, on the reasoning that a managed NAME can never have a
+// role of its own, so a deny with nothing to allow would hide the section from
+// everyone with no way back. Part A made a refused HELD role keep the deny,
+// which changed that trade: hidden is recoverable (rename the project, re-run
+// /project-setup, get a real role and a repaired section) while public
+// silently shows the project's ten channels, and every task channel moved into
+// them, to the whole server. Both refusals now fail closed.
+test('a refused role with no role to fall back on leaves the category HIDDEN, and is warned about once', async () => {
   const dbProject = { id: 'p2', name: 'Database', docsSlug: 'database' }
   const guild = fakeGuild()
   const plan = planProjectSection(dbProject, empty)
   assert.equal(plan.role.action, 'refuse')
+  assert.ok(
+    plan.warnings.some((w) => /HIDDEN/.test(w) && /rename the project/i.test(w)),
+    plan.warnings.join(' | ')
+  )
 
   const out = await applyProjectSection(guild, dbProject, plan, { db: fakeDb() })
 
@@ -748,7 +760,11 @@ test('a refused role with no role to fall back on leaves the category open, and 
   assert.equal(out.role, null)
   const catCall = guild.channels.calls[0]
   assert.equal(catCall.type, ChannelType.GuildCategory)
-  assert.deepEqual(catCall.permissionOverwrites, [], 'no @everyone deny, or nobody could see it')
+  assert.deepEqual(
+    catCall.permissionOverwrites,
+    [{ id: 'G1', type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] }],
+    'the @everyone deny stands: a hidden section is repairable, a public one is a leak'
+  )
   // The planner already said it, in words that tell the operator what to do
   // about it. The applier restating it would burn a second of the five warning
   // slots a caller shows for nothing.
@@ -1510,4 +1526,103 @@ test('a section channel is never adopted by name from a channel the bot signed a
 
   assert.equal(observed.channels.members, undefined, "another project's task channel is left alone")
   assert.equal(observed.channels.documentation.id, 's9', 'a topicless one is still adopted')
+})
+
+// ---------------------------------------------------------------------------
+// D1: a permission change is counted only once Discord has accepted it
+// ---------------------------------------------------------------------------
+
+test('a section channel whose opening edit THROWS is not reported as opened', async () => {
+  // The push used to happen before the await, so a `Missing Permissions`
+  // throw landed in the catch and the reply said the channel had been opened
+  // to the project role, beside "nothing to change". In a feature whose whole
+  // point is telling an operator which permissions changed, that is the worst
+  // possible lie.
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const stray = fakeChannel('m1', 'wrong-name', {
+    parentId: 'OUTSIDE',
+    overwriteIds: ['G1'],
+    fail: 'Missing Permissions',
+  })
+  const guild = fakeGuild({ channels: [cat, stray], roles: [{ id: 'r1', name: 'Framework', members: new Map() }] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { members: 'm1' } }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, []))
+  assert.equal(plan.channels.find((c) => c.key === 'members').opens, true, 'the plan does open it')
+
+  const out = await quiet(() => applyProjectSection(guild, stored, plan, { db: fakeDb() }))
+
+  assert.equal(stray.edits.length, 1, 'the one edit was attempted')
+  assert.deepEqual(out.opened, [], 'and nothing was claimed for it')
+  assert.deepEqual(out.moved, [])
+  assert.ok(out.warnings.some((w) => /Missing Permissions/.test(w)), out.warnings.join(' | '))
+})
+
+test('a task channel whose opening edit THROWS is not reported as opened either', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const taskChannel = fakeChannel('tc1', 'feature-0145e3', {
+    parentId: 'OUTSIDE',
+    overwriteIds: ['G1'],
+    fail: 'Missing Permissions',
+  })
+  const guild = fakeGuild({ channels: [cat, taskChannel], roles: [{ id: 'r1', name: 'Framework', members: new Map() }] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' }]
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, tasks))
+
+  const out = await quiet(() => applyProjectSection(guild, stored, plan, { db: fakeDb() }))
+
+  assert.deepEqual(out.opened, [])
+  assert.equal(out.tasks, 0, 'a task channel that threw is not counted as done')
+})
+
+test('an edit that SUCCEEDS still reports the channel as opened', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const stray = fakeChannel('m1', 'wrong-name', { parentId: 'OUTSIDE', overwriteIds: ['G1'] })
+  const guild = fakeGuild({ channels: [cat, stray], roles: [{ id: 'r1', name: 'Framework', members: new Map() }] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { members: 'm1' } }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, []))
+
+  const out = await quiet(() => applyProjectSection(guild, stored, plan, { db: fakeDb() }))
+
+  assert.deepEqual(out.opened, ['framework-members'])
+  assert.equal(stray.edits.length, 1, 'name, parent and overwrites in ONE edit')
+  assert.ok(stray.edits[0].permissionOverwrites)
+})
+
+// ---------------------------------------------------------------------------
+// D2: a channel with a topic is never adopted by name
+// ---------------------------------------------------------------------------
+
+test('a hand-made channel that happens to match a section name is not adopted', async () => {
+  // The guard used to read `!(c.topic && isTicketChannel(c))`, so only a
+  // channel whose topic was a TICKET signature was refused. A private
+  // `framework-meetings` a human made, with a human topic, was adopted by
+  // name — and adoption merges the project role's allow into it, so everyone
+  // holding the role could suddenly read it.
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const handMade = fakeChannel('h1', 'framework-meetings', {
+    parentId: 'PRIVATE',
+    overwriteIds: ['G1'],
+  })
+  handMade.topic = 'Leads only — do not add anyone'
+  const guild = fakeGuild({ channels: [cat, handMade], roles: [{ id: 'r1', name: 'Framework', members: new Map() }] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+
+  const observed = observeProjectSection(guild, stored, [])
+  assert.equal(observed.channels.meetings, undefined, 'it was not adopted')
+
+  const plan = planProjectSection(stored, observed)
+  assert.equal(plan.channels.find((c) => c.key === 'meetings').action, 'create')
+
+  await quiet(() => applyProjectSection(guild, stored, plan, { db: fakeDb() }))
+  assert.equal(handMade.edits.length, 0, 'and it was never touched')
+})
+
+test('a topicless channel of the right name is still adopted, as before', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const ours = fakeChannel('h1', 'framework-meetings', { parentId: 'c1' })
+  const guild = fakeGuild({ channels: [cat, ours], roles: [{ id: 'r1', name: 'Framework', members: new Map() }] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const observed = observeProjectSection(guild, stored, [])
+  assert.equal(observed.channels.meetings?.id, 'h1')
 })

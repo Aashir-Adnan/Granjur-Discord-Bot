@@ -312,3 +312,39 @@ test('Add project never adopts a role somebody already holds', async () => {
   )
   assert.match(it.replies.at(-1).content, /held by 1 member\(s\)/)
 })
+
+// ---------------------------------------------------------------------------
+// D4: the slug typed into the modal is normalised before anything sees it
+// ---------------------------------------------------------------------------
+
+test('a slug typed with a space is slugified before it is stored or compared', async () => {
+  // Stored raw, `UBS Doc` slips past the effective-slug check here AND
+  // /project-setup's duplicate-slug refusal, and `channelNameFor` then builds
+  // `UBS Doc-members` — a name Discord normalises server-side, so the name
+  // fallback never matches it again and ten fresh channels appear every run.
+  const db = fakeDb({ projects: [] })
+  const it = fakeInteraction({ guild: fakeGuild(), name: 'UBS Doc', slug: 'UBS Doc' })
+
+  await quiet(() => handleAddModal(it, { db, getConfig, reattribute, setup: async () => ({ block: 'ok', result: {} }) }))
+
+  const create = db.calls.find((c) => c[0] === 'project.create')
+  assert.equal(create[1].docsSlug, 'ubs-doc')
+})
+
+test('a typed slug that slugifies to nothing falls back to the project name', async () => {
+  const db = fakeDb({ projects: [] })
+  const it = fakeInteraction({ guild: fakeGuild(), name: 'Framework', slug: '!!!' })
+  await quiet(() => handleAddModal(it, { db, getConfig, reattribute, setup: async () => ({ block: 'ok', result: {} }) }))
+  const create = db.calls.find((c) => c[0] === 'project.create')
+  assert.equal(create[1].docsSlug, 'framework')
+})
+
+test('a normalised slug is caught by the effective-slug conflict check', async () => {
+  const db = fakeDb({ projects: [{ id: 'p1', name: 'UBS Doc', docsSlug: null, guildConfigId: 'g1' }] })
+  const it = fakeInteraction({ guild: fakeGuild(), name: 'Other', slug: 'UBS Doc' })
+  let ran = 0
+  await quiet(() => handleAddModal(it, { db, getConfig, reattribute, setup: async () => ran++ }))
+  assert.equal(ran, 0)
+  assert.deepEqual(db.calls.filter((c) => c[0] === 'project.create'), [])
+  assert.match(it.replies.at(-1).content, /`ubs-doc` is already used by \*\*UBS Doc\*\*/)
+})

@@ -217,6 +217,18 @@ export async function execute(interaction, { db: dbArg = db, notify = notifyTask
       if (depValue.length > 1024) depValue = `${depValue.slice(0, 1023)}…`
       embed.addFields({ name: 'Dependencies', value: depValue, inline: false })
     }
+    // Moving a task between projects moves the ROW, not the channel: nothing
+    // here re-parents it, and the overwrite merge that repairs task channels
+    // keeps the old project role's allow, so the old project's members go on
+    // seeing a task that is no longer theirs until the section is rebuilt.
+    // Saying so is the whole fix — a silent half-move is the thing to avoid.
+    if ('projectId' in updates && updates.projectId !== (task.projectId ?? null)) {
+      embed.addFields({
+        name: 'Project changed',
+        value: `This task now belongs to ${updates.projectName ? `**${updates.projectName}**` : 'no project'}, but its channel has not moved and still lets the previous project's role see it. Run **/project-setup** — pick the project from the **project:** option's suggestions — to move the channel into the right section.`,
+        inline: false,
+      })
+    }
     if (notified.channelId) {
       embed.addFields({
         name: notified.created ? 'Channel created' : 'Task channel',

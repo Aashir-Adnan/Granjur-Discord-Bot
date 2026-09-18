@@ -118,7 +118,13 @@ export async function handleAddModal(
   }
   const cfg = await getConfig(guild.id)
   const name = interaction.fields.getTextInputValue('name').trim()
-  const slug = (interaction.fields.getTextInputValue('slug') || '').trim() || slugify(name)
+  // `slugify`, never the raw field. A slug typed as `UBS Doc` is stored raw,
+  // slips past the effective-slug conflict check below AND `/project-setup`'s
+  // §13 duplicate-slug refusal, and then `channelNameFor` builds
+  // `UBS Doc-members`, which Discord normalises server-side — so the name
+  // fallback never matches what was created and ten fresh channels appear on
+  // every run. One call here is the whole fix.
+  const slug = slugify((interaction.fields.getTextInputValue('slug') || '').trim()) || slugify(name)
   const paths = (interaction.fields.getTextInputValue('paths') || '')
     .split(',')
     .map((s) => s.trim().replace(/^\/+|\/+$/g, ''))
@@ -160,20 +166,27 @@ export async function handleAddModal(
   // truth, and the build is the slow part.
   await interaction.editReply({ content: `${added}\n\nBuilding its private section…` }).catch(() => {})
 
-  const later = `You can create it later with **/project-setup project:${cut(name, 80)}** once the bot has **Manage Channels** and **Manage Roles**.`
+  // `project:` takes an id from its own autocomplete, so telling the operator
+  // to type the name would earn them "No project matches". Name the option and
+  // send them to its suggestions instead.
+  const later = `You can create it later with **/project-setup** — pick **${cut(name, 80)}** from the **project:** option's suggestions — once the bot has **Manage Channels** and **Manage Roles**.`
   let section
   if (!project?.id) {
     section = `Its private section was not built: the new project could not be read back. ${later}`
   } else {
     try {
-      const { block, result } = await setup(guild, project, {
+      const { block, result, refused } = await setup(guild, project, {
         db: dbArg,
         cfg,
         botUserId: interaction.client?.user?.id ?? null,
       })
+      // A refusal is not a permissions failure, and `later` would send the
+      // operator to grant permissions that are already there.
       section = result?.category?.name
         ? `Its private section is ready in **${result.category.name}**.\n${block}`
-        : `Its private section could not be built. ${later}\n${block}`
+        : refused
+          ? `Its private section was not built: the run was refused for the reason below, nothing was changed, and re-running refuses the same way until that is resolved.\n${block}`
+          : `Its private section could not be built. ${later}\n${block}`
     } catch (e) {
       console.error(`[projects] section for ${name}:`, e)
       section = `Its private section could not be built: ${e?.message ?? String(e)}. ${later}`

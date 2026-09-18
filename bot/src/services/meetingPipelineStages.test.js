@@ -847,3 +847,107 @@ test('analyzing still calls CSAAS on the fallback path', async () => {
   assert.equal(called, true)
   assert.equal(out.patch.dataJson.analysis.summary, 'from-analyze')
 })
+
+// ---------------------------------------------------------------------------
+// B11: the meeting's own project places a task CSaaS could not attribute
+// ---------------------------------------------------------------------------
+
+test("a task CSaaS could not attribute is placed in the MEETING's project section", async () => {
+  // CSaaS never sees `meeting.projectId`, so `matchProject` cannot produce it.
+  // Without this the task channel lands in the global Features category even
+  // though the meeting was held inside the project's own section.
+  const guildCreates = []
+  const cache = new Map([['cat-fw', { id: 'cat-fw', name: '📂 FRAMEWORK', type: ChannelType.GuildCategory }]])
+  const guild = {
+    id: 'g1',
+    channels: {
+      cache: Object.assign(cache, { find: () => null }),
+      create: async (opts) => {
+        guildCreates.push(opts)
+        if (opts.type === ChannelType.GuildCategory) return { id: 'cat-new', name: opts.name }
+        return { id: `task-${guildCreates.length}`, send: async () => ({ id: 'm' }) }
+      },
+    },
+  }
+  const reviewChannel = { id: 'tc1', guild, send: async () => ({ id: 'x' }) }
+  const client = {
+    user: { id: 'bot' },
+    channels: { fetch: async () => reviewChannel },
+    users: { fetch: async () => ({ send: async () => {} }) },
+  }
+  const project = { id: 'p1', name: 'Framework', docsSlug: 'framework', discordCategoryId: 'cat-fw' }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1', projectId: 'p1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [project] },
+    projectRepos: { findMany: async () => [] },
+    task: {
+      findFirst: async () => null,
+      create: async ({ data }) => ({ id: 'dbtask1', ...data }),
+      update: async () => ({}),
+    },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j',
+    meetingId: 'M',
+    csaasMeetingId: 'm',
+    guildConfigId: 'g',
+    dataJson: {
+      title: 'Sprint sync',
+      approvedBy: '99',
+      // No `project` on the CSaaS task: matchProject finds nothing.
+      tasks: [{ task_id: 'a', goal_of_task: 'Do A' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: '11', rejected: false }] },
+    },
+  }
+
+  await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+
+  const taskChannel = guildCreates.find((c) => c.type !== ChannelType.GuildCategory)
+  assert.equal(taskChannel.parent, 'cat-fw', 'the channel went into the project section')
+  assert.equal(guildCreates.filter((c) => c.type === ChannelType.GuildCategory).length, 0, 'no global category was made')
+})
+
+test('a meeting with no project still places the task channel exactly as before', async () => {
+  const guildCreates = []
+  const guild = {
+    id: 'g1',
+    channels: {
+      cache: Object.assign(new Map(), { find: () => null }),
+      create: async (opts) => {
+        guildCreates.push(opts)
+        if (opts.type === ChannelType.GuildCategory) return { id: 'cat-new', name: opts.name }
+        return { id: `task-${guildCreates.length}`, send: async () => ({ id: 'm' }) }
+      },
+    },
+  }
+  const reviewChannel = { id: 'tc1', guild, send: async () => ({ id: 'x' }) }
+  const client = {
+    user: { id: 'bot' },
+    channels: { fetch: async () => reviewChannel },
+    users: { fetch: async () => ({ send: async () => {} }) },
+  }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1', projectId: null }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
+    task: { findFirst: async () => null, create: async () => ({ id: 'dbtask1' }), update: async () => ({}) },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      approvedBy: '99',
+      tasks: [{ task_id: 'a', goal_of_task: 'Do A' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: '11', rejected: false }] },
+    },
+  }
+
+  await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+
+  assert.equal(guildCreates.filter((c) => c.type === ChannelType.GuildCategory).length, 1, 'the global category, as today')
+})

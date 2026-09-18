@@ -28,6 +28,12 @@ export async function ensureMeetingChannel(guild, voiceChannelId, options = {}) 
     data: {
       guildConfigId: cfg.id,
       channelId: voiceChannelId,
+      // UNTESTED: no test covers this pass-through. `/meeting-channel`'s tests
+      // stop at a fake `ensureMeeting`, and the meeting-insert builder test
+      // starts after this call. Delete the spread and the whole suite still
+      // passes while every project meeting records `projectId = NULL`.
+      // Covering it needs a `db` seam here, and the voice listener calls this
+      // function too, so that is deliberately out of scope.
       ...(projectId ? { projectId } : {}),
     },
   })

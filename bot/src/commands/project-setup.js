@@ -16,7 +16,7 @@
  * the revoke pass is skipped outright and said so, because "revoked 0" and
  * "read nothing" are indistinguishable in the reply.
  */
-import { SlashCommandBuilder } from 'discord.js'
+import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import { projectChoices } from './update-task.js'
 import {
@@ -293,9 +293,32 @@ function mergeWarnings(...lists) {
   return out
 }
 
-/** The "… and N more not shown" line, so a truncated reply always admits it. */
+/**
+ * Every warning also goes to the console, once, named by project.
+ *
+ * `capReply` always keeps blocks from the FRONT of the list, so on `all:true`
+ * the last projects' blocks — refusals included — are dropped from every
+ * posted version and the operator never sees them. The applier's own `note()`
+ * already logs its failures; without this the PLANNER's refusals (a managed
+ * name, a role that was not adopted, a slug clash) were the only record that
+ * existed nowhere but a message that was never sent. A backfill has to stay
+ * diagnosable after the fact.
+ */
+function logWarnings(project, warnings) {
+  const who = project?.name ?? project?.id ?? 'project'
+  for (const warning of warnings ?? []) console.warn(`[project-setup] ${who}: ${warning}`)
+}
+
+/**
+ * The "… and N more not shown" line, so a truncated reply always admits it.
+ *
+ * The advice names the option but never a project NAME: `project:` takes an id
+ * from its autocomplete, so a pasted name is answered with "No project
+ * matches". Telling the operator to pick from the suggestions is the only
+ * instruction that works.
+ */
 function droppedTail(dropped) {
-  return `… and ${dropped} more not shown. Run \`/project-setup project:<name>\` one at a time for the rest.`
+  return `… and ${dropped} more not shown. Run **/project-setup** again and pick each remaining project from the **project:** option's suggestions.`
 }
 
 /** Join the per-project blocks, dropping whole blocks off the end to fit one message. */
@@ -329,6 +352,27 @@ function capReply(blocks) {
 // ---------------------------------------------------------------------------
 // The command.
 // ---------------------------------------------------------------------------
+
+/**
+ * A warning, never a refusal: the section still gets built, and a bot without
+ * Administrator simply cannot see it afterwards.
+ *
+ * Every section category denies `@everyone` and carries no allow for the bot,
+ * so without Administrator the bot loses sight of the ten channels it just
+ * created: the pinned members panel fails, posts fail, and the recorder cannot
+ * join a project meeting's voice channel. Granting the bot itself an overwrite
+ * on the category is NOT the fix — a bot that cannot manage permissions cannot
+ * write that overwrite either, so it would fail in exactly the case it targets.
+ */
+const NO_ADMINISTRATOR =
+  '⚠ This bot does not have **Administrator**. Every project section denies **@everyone** and carries no allow for the bot, so the bot will not be able to see the private sections below once they exist: pinned panels and posts inside them fail silently, and meeting recording cannot join their voice channels. Give the bot **Administrator**, then run this again.'
+
+/** True only when the bot's permissions were READ and Administrator is absent. */
+function botLacksAdministrator(guild) {
+  const has = guild?.members?.me?.permissions?.has
+  if (typeof has !== 'function') return false
+  return !guild.members.me.permissions.has(PermissionFlagsBits.Administrator)
+}
 
 async function pickProjects(interaction, cfg, dbArg, { all, picked }) {
   if (all) {
@@ -425,8 +469,18 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
     // a move — and they trade the same channels back and forth, two edits
     // each, on every run. Nothing is touched until a human picks a slug.
     const others = clashes.map((p) => `**${p.name}**`).join(', ')
+    logWarnings(project, [
+      `refused: channel slug "${slug}" is also used by ${clashes.map((p) => p?.name).join(', ')}, so nothing was changed.`,
+    ])
     return {
       plan: null,
+      // A REFUSAL, not a failure. Without this flag the single-project callers
+      // (`/create-project-role`, `/projects` → Add project) print "the
+      // category could not be built — run /project-setup once the bot has
+      // Manage Channels and Manage Roles" above a block that says the slug
+      // collides: permissions are not the problem and re-running changes
+      // nothing until a human picks a different slug.
+      refused: true,
       block: cut(
         `**${project?.name}** — refused: its channel slug \`${slug}\` is also ${clashes.length === 1 ? 'used by' : 'used by'} ${others}, so both would want the same ten section channel names and each run would drag them between the two categories. Nothing was changed. Give one of them a different docs folder in **/projects**, then run **/project-setup** again.`,
         REPLY_LIMIT
@@ -462,7 +516,9 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
     if (plan.role?.decision === 'adopt') {
       extra.push(await adoptionPreview(dbArg, project, plan.role, nameFor))
     }
-    return { plan, block: renderPlan(project, { ...plan, warnings: mergeWarnings(extra, plan.warnings) }) }
+    const previewWarnings = mergeWarnings(extra, plan.warnings)
+    logWarnings(project, previewWarnings)
+    return { plan, block: renderPlan(project, { ...plan, warnings: previewWarnings }) }
   }
 
   // The roster is passed on purpose: `members` is a tri-state, and omitting
@@ -532,11 +588,9 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   // Ids are in the log; the reply needs names, and only the command has them.
   roleSync.revokedNames = roleSync.revoked.map((id) => nameFor(id))
 
-  const block = renderResult(project, {
-    ...result,
-    warnings: mergeWarnings(extra, plan.warnings, result.warnings),
-    roleSync,
-  })
+  const warnings = mergeWarnings(extra, plan.warnings, result.warnings)
+  logWarnings(project, warnings)
+  const block = renderResult(project, { ...result, warnings, roleSync })
   return { block, plan, result, roleSync }
 }
 
@@ -624,6 +678,7 @@ export async function runProjectSetup(
   })
 
   const blocks = []
+  if (botLacksAdministrator(guild)) blocks.push(NO_ADMINISTRATOR)
   // `pickProjects` checks `all` first, so `project:` was read and thrown away.
   if (all && picked) {
     blocks.push(

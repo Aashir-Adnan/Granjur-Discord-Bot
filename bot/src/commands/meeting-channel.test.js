@@ -3,7 +3,7 @@
 // .claude/rules/tests-never-touch-production.md.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ChannelType } from 'discord.js'
+import { ChannelType, RESTJSONErrorCodes } from 'discord.js'
 import { execute, autocomplete, data } from './meeting-channel.js'
 
 const GUILD_ID = 'guild1'
@@ -18,7 +18,7 @@ class FakeCache extends Map {
   }
 }
 
-function fakeGuild({ channels = [], fetchable = [] } = {}) {
+function fakeGuild({ channels = [], fetchable = [], fetchError = null } = {}) {
   const cache = new FakeCache(channels.map((c) => [c.id, c]))
   const created = []
   let n = 0
@@ -29,7 +29,10 @@ function fakeGuild({ channels = [], fetchable = [] } = {}) {
     created,
     channels: {
       cache,
-      fetch: async (id) => fetchable.find((c) => c.id === id) ?? null,
+      fetch: async (id) => {
+        if (fetchError) throw fetchError
+        return fetchable.find((c) => c.id === id) ?? null
+      },
       create: async (opts) => {
         created.push(opts)
         const ch = { id: `new-${++n}`, type: opts.type, name: opts.name, parentId: opts.parent ?? null }
@@ -61,11 +64,12 @@ function fakeDb(projects = [FRAMEWORK, OTHER]) {
   })
 }
 
-function fakeInteraction(guild, { project = null, name = null, channel = null } = {}) {
+function fakeInteraction(guild, { project = null, name = null, channel = null, member } = {}) {
   const replies = []
   return {
     guild,
     channel,
+    member,
     replies,
     options: { getString: (k) => (k === 'project' ? project : k === 'name' ? name : null) },
     editReply: async (r) => { replies.push(r); return r },
@@ -290,4 +294,102 @@ test('autocomplete offers the server\'s projects, with no detach entry', async (
     respond: async (c) => { answered = c },
   }, { db: deps.db, getConfig: deps.getConfig })
   assert.deepEqual(answered, [{ name: 'Framework', value: 'p1' }])
+})
+
+// ---------------------------------------------------------------------------
+// B2: only "Unknown Channel" means the section is gone
+// ---------------------------------------------------------------------------
+
+const discordError = (code, message) => Object.assign(new Error(message), { code })
+
+test('a 10003 on the category fetch is a stale section: the global category, with the note', async () => {
+  const guild = fakeGuild({
+    channels: [globalCategory()],
+    fetchError: discordError(RESTJSONErrorCodes.UnknownChannel, 'Unknown Channel'),
+  })
+  const { deps, meetingCalls } = seams()
+  const i = fakeInteraction(guild, { project: 'p1' })
+  await execute(i, deps)
+  assertTodayShapes(guild, GLOBAL_CAT)
+  assert.equal(meetingCalls[0].opts.projectId, 'p1')
+  assert.match(i.replies[0].content, /no section yet/)
+})
+
+test('any OTHER category fetch error creates nothing and says to try again', async () => {
+  // A rate limit or a 5xx is not evidence the section is gone. Treating it as
+  // one used to put a project meeting in the public category and tell the
+  // operator to repair a section that is not broken.
+  for (const e of [discordError(500, 'Internal Server Error'), discordError(undefined, 'ECONNRESET')]) {
+    const guild = fakeGuild({ channels: [globalCategory()], fetchError: e })
+    const { deps, meetingCalls } = seams()
+    const i = fakeInteraction(guild, { project: 'p1' })
+    await execute(i, deps)
+    assert.equal(guild.created.length, 0, 'nothing was created')
+    assert.equal(meetingCalls.length, 0, 'no meeting row')
+    assert.match(i.replies[0].content, /Discord could not be reached/)
+    assert.match(i.replies[0].content, /Try again/)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// B9: the cap is counted from the category that was found
+// ---------------------------------------------------------------------------
+
+test('a category found only by fetch has its children counted from the category itself', async () => {
+  // The guild cache holds none of them, so the old count said 0 and would
+  // have pushed an almost-full section past the cap.
+  const cat = category(PROJ_CAT)
+  cat.children = {
+    cache: new FakeCache(Array.from({ length: 48 }, (_, k) => [`c${k}`, textIn(`c${k}`, PROJ_CAT)])),
+  }
+  const guild = fakeGuild({ channels: [globalCategory()], fetchable: [cat] })
+  const { deps } = seams()
+  const i = fakeInteraction(guild, { project: 'p1' })
+  await execute(i, deps)
+  assertTodayShapes(guild, GLOBAL_CAT)
+  assert.match(i.replies[0].content, /49-channel cap/)
+})
+
+// ---------------------------------------------------------------------------
+// B10: a caller outside the project is told the links will not open
+// ---------------------------------------------------------------------------
+
+const GATED = { ...FRAMEWORK, discordRoleId: 'role-fw' }
+const memberWith = (...roleIds) => ({
+  roles: { cache: new Map(roleIds.map((id) => [id, { id }])) },
+  permissions: { has: () => false },
+})
+
+test('a caller who does not hold the project role is told the two links will not open', async () => {
+  const guild = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const { deps } = seams([GATED, OTHER])
+  const i = fakeInteraction(guild, { project: 'p1', member: memberWith('role-other') })
+  await execute(i, deps)
+  assertProjectShapes(guild)
+  assert.match(i.replies[0].content, /you do not hold it/)
+})
+
+test('a caller who holds the project role is told nothing of the kind', async () => {
+  const guild = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const { deps } = seams([GATED, OTHER])
+  const i = fakeInteraction(guild, { project: 'p1', member: memberWith('role-fw') })
+  await execute(i, deps)
+  assert.doesNotMatch(i.replies[0].content, /you do not hold it/)
+})
+
+test('an Administrator can see every section, so no such line', async () => {
+  const guild = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const { deps } = seams([GATED, OTHER])
+  const admin = { roles: { cache: new Map() }, permissions: { has: () => true } }
+  const i = fakeInteraction(guild, { project: 'p1', member: admin })
+  await execute(i, deps)
+  assert.doesNotMatch(i.replies[0].content, /you do not hold it/)
+})
+
+test('a meeting that fell back to the public category carries no privacy line', async () => {
+  const guild = fakeGuild({ channels: [globalCategory()] })
+  const { deps } = seams([{ ...GATED, discordCategoryId: null }])
+  const i = fakeInteraction(guild, { project: 'p1', member: memberWith() })
+  await execute(i, deps)
+  assert.doesNotMatch(i.replies[0].content, /you do not hold it/)
 })

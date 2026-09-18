@@ -18,6 +18,13 @@ import { setupOneProject } from './project-setup.js'
 const REPLY_LIMIT = 2000
 
 const fold = (s) => String(s ?? '').trim().toLowerCase()
+/**
+ * What this database already treats as one name: `utf8mb4_general_ci` ignores
+ * case and accents alike, so `Éclair` and `Eclair` are the same row to it.
+ * Kept separate from `fold` on purpose — the managed-role check must not start
+ * refusing `Désign` because a job role is called `Design`.
+ */
+const loose = (s) => fold(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
 const MANAGED_FOLDED = new Set(MANAGED_ROLES.map(fold))
 
 export const data = new SlashCommandBuilder()
@@ -27,14 +34,26 @@ export const data = new SlashCommandBuilder()
     o.setName('project').setDescription('Project name (e.g. Fittour)').setRequired(true).setMaxLength(100)
   )
 
-/** The project row whose name matches, exactly first, then ignoring case. */
+/**
+ * The project row whose name matches, exactly first, then ignoring case.
+ *
+ * The full sweep runs BEFORE `findByName` is trusted, not after it comes back
+ * empty. `project.findByName` is a plain `name = ?` and this database's tables
+ * are `utf8mb4_general_ci`, which ignores case AND accents, so the "exact"
+ * step can match several rows and `queryOne` hands back an arbitrary one of
+ * them. This command creates a role and opens a private section, so picking a
+ * project by coin toss is not an option: say the name is ambiguous instead.
+ *
+ * @returns {Promise<{project: object|null, ambiguous?: string[]}>}
+ */
 async function findProject(dbArg, cfg, name) {
-  const exact = await dbArg.project.findByName({ guildConfigId: cfg.id, name })
-  if (exact) return exact
   const rows = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })) ?? []
-  const matches = rows.filter((p) => fold(p?.name) === fold(name))
-  // Two projects differing only in case: naming one would be a guess.
-  return matches.length === 1 ? matches[0] : null
+  const matches = rows.filter((p) => loose(p?.name) === loose(name))
+  // Two projects the database cannot tell apart: naming one would be a guess.
+  if (matches.length > 1) return { project: null, ambiguous: matches.map((p) => String(p?.name ?? p?.id)) }
+  if (matches.length === 1) return { project: matches[0] }
+  const exact = await dbArg.project.findByName({ guildConfigId: cfg.id, name })
+  return { project: exact ?? null }
 }
 
 /**
@@ -61,7 +80,15 @@ export async function execute(
   }
 
   const cfg = await getConfig(guild.id)
-  const project = await findProject(dbArg, cfg, projectName)
+  const { project, ambiguous } = await findProject(dbArg, cfg, projectName)
+  if (ambiguous) {
+    return interaction.editReply({
+      content: cut(
+        `**${cut(projectName, 100)}** is ambiguous — ${ambiguous.length} projects in this server go by that name (${ambiguous.map((n) => `**${cut(n, 60)}**`).join(', ')}), and picking one of them would be a guess. Nothing was created. Rename one of them in **/projects**, then run this again.`,
+        REPLY_LIMIT
+      ),
+    })
+  }
   if (!project) {
     return interaction.editReply({
       content: `No project named **${cut(projectName, 100)}**. Add it with **/projects** → Add project — a new project gets its role and private section straight away.`,
@@ -69,15 +96,19 @@ export async function execute(
   }
 
   try {
-    const { block, result } = await setup(guild, project, {
+    const { block, result, refused } = await setup(guild, project, {
       db: dbArg,
       cfg,
       botUserId: interaction.client?.user?.id ?? null,
     })
     const role = result?.role?.name ? `**${result.role.name}**` : 'the project role'
+    // A refusal is not a failure: nothing was touched, permissions are not the
+    // problem, and running it again refuses identically until a human acts.
     const head = result?.category
       ? `This does more than create a role: ${role} gates **${project.name}**'s private section, so the section's category and channels were created or repaired too.`
-      : `This does more than create a role: it creates or repairs **${project.name}**'s whole private section. The section's category could not be built — see below, and run **/project-setup** once the bot has **Manage Channels** and **Manage Roles**.`
+      : refused
+        ? `This does more than create a role: it creates or repairs **${project.name}**'s whole private section. Nothing was created or changed — the run was refused, for the reason below, and it will be refused the same way until that is resolved.`
+        : `This does more than create a role: it creates or repairs **${project.name}**'s whole private section. The section's category could not be built — see below, and run **/project-setup** once the bot has **Manage Channels** and **Manage Roles**.`
     return interaction.editReply({ content: cut(`${head}\n\n${block}`, REPLY_LIMIT) })
   } catch (e) {
     console.error('[create-project-role]', e)

@@ -953,3 +953,92 @@ test('all:true reads the project rows again per project, so a mid-walk category 
   // Once to pick the projects, then once per project before observing it.
   assert.ok(reads.length >= 3, `only ${reads.length} reads of the project rows`)
 })
+
+// ---------------------------------------------------------------------------
+// B3: the bot needs Administrator to see the sections it builds
+// ---------------------------------------------------------------------------
+
+/** A guild whose bot member reports a readable permission set. */
+function withBotPermissions(guild, admin) {
+  guild.members.me = { permissions: { has: () => admin } }
+  return guild
+}
+
+test('a bot without Administrator is warned that it will not see the sections it creates', async () => {
+  const db = fakeDb({ projects: [PROJECT] })
+  const guild = withBotPermissions(fakeGuild(), false)
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const content = it.replies.at(-1).content
+  assert.match(content, /does not have \*\*Administrator\*\*/)
+  assert.match(content, /will not be able to see the private sections/)
+  // A warning, never a refusal: the section is still built.
+  assert.equal(guild.roles.calls.length, 1, 'the role was still created')
+  assert.equal(guild.channels.calls.length, 11, 'the category and its ten channels were still created')
+})
+
+test('a bot WITH Administrator is not warned', async () => {
+  const db = fakeDb({ projects: [PROJECT] })
+  const guild = withBotPermissions(fakeGuild(), true)
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+  await quiet(() => execute(it, { db, getConfig }))
+  assert.doesNotMatch(it.replies.at(-1).content, /Administrator/)
+})
+
+test('permissions that cannot be read are not claimed either way', async () => {
+  const db = fakeDb({ projects: [PROJECT] })
+  const guild = fakeGuild() // no `members.me` at all
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+  await quiet(() => execute(it, { db, getConfig }))
+  assert.doesNotMatch(it.replies.at(-1).content, /Administrator/)
+})
+
+// ---------------------------------------------------------------------------
+// B5: `project:` takes an id from autocomplete, so no reply may tell an
+// operator to type a project NAME into it.
+// ---------------------------------------------------------------------------
+
+test('the truncation tail sends the operator to the option\'s suggestions, not to a typed name', async () => {
+  const projects = Array.from({ length: 30 }, (_, i) => ({
+    id: `p${i}`,
+    name: `Project Number ${i}`,
+    docsSlug: `project-number-${i}`,
+    guildConfigId: 'g1',
+  }))
+  const db = fakeDb({ projects })
+  const it = fakeInteraction({ guild: fakeGuild(), opts: { all: true } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const content = it.replies.at(-1).content
+  assert.match(content, /more not shown/)
+  assert.match(content, /pick each remaining project from the \*\*project:\*\* option's suggestions/)
+  assert.doesNotMatch(content, /project:<name>/)
+})
+
+// ---------------------------------------------------------------------------
+// D6: `capReply` keeps blocks from the front, so the last projects' warnings
+// are never posted. They have to survive somewhere.
+// ---------------------------------------------------------------------------
+
+test('a planner warning reaches the console even when its block is dropped from the reply', async () => {
+  const project = { id: 'p2', name: 'Project Manager', docsSlug: 'project-manager', guildConfigId: 'g1' }
+  const db = fakeDb({ projects: [project] })
+  const logged = []
+  const warn = console.warn
+  const error = console.error
+  console.warn = (...args) => logged.push(args.join(' '))
+  console.error = () => {}
+  try {
+    await execute(fakeInteraction({ guild: fakeGuild(), opts: { project: 'p2' } }), { db, getConfig })
+  } finally {
+    console.warn = warn
+    console.error = error
+  }
+  assert.ok(
+    logged.some((line) => line.startsWith('[project-setup] Project Manager:') && /managed role/.test(line)),
+    logged.join(' | ')
+  )
+})
