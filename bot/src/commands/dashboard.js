@@ -5,6 +5,8 @@ import {
   EmbedBuilder,
 } from 'discord.js'
 import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
+import { memberPassesRoleGate, roleIdsAreStale, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
+import { holdersOf } from '../utils/taskLabel.js'
 
 const TWO_MONTHS_MS = 60 * 24 * 60 * 60 * 1000
 function twoMonthsAgo() {
@@ -20,6 +22,27 @@ const MODULES = [
   { value: 'faqs', label: 'FAQs', description: 'Unanswered vs total' },
 ]
 
+// One line per task, OUTSIDE a code fence so `<@id>` renders as a name. The old
+// monospace table printed the assignee column as "2 assignee(s)" — a count, which
+// never answers the only question that column exists for — and collapsed status
+// into implementationStatus, hiding the real one. Shared by the Tasks, Bugs and
+// Features views so all three say who holds a task and where it stands.
+function taskLine(t) {
+  const holders = holdersOf(t)
+  const who = holders.length ? holders.map((id) => `<@${id}>`).join(' ') : '_unassigned_'
+  const status = t.status || 'open'
+  const impl =
+    t.implementationStatus && t.implementationStatus !== 'not_started'
+      ? ` · impl \`${t.implementationStatus}\``
+      : ''
+  const mark = (v) => (v === 1 ? '✅' : v === 0 ? '❌' : '–')
+  const tests = ` · API ${mark(t.passedApiTests)} QA ${mark(t.passedQaTests)} AC ${mark(t.passedAcceptanceCriteria)}`
+  const typ = t.type || (t.is_bug ? 'bug' : 'feature')
+  const title = String(t.title || t.id)
+  const head = title.length > 60 ? `${title.slice(0, 59)}…` : title
+  return `• \`${typ}\` **${head}** · \`${status}\`${impl}\n  ${who}${tests}`
+}
+
 export const data = new SlashCommandBuilder()
   .setName('dashboard')
   .setDescription('(CEO/Server Manager) View analytics — select module')
@@ -32,10 +55,10 @@ export async function execute(interaction) {
 
   const member = await guild.members.fetch(interaction.user.id).catch(() => null)
   const dashboardIds = ensureStringArray(cfg.dashboardRoleIds)
-  const canDashboard =
-    (dashboardIds.length && member?.roles.cache.some((r) => dashboardIds.includes(r.id))) ||
-    member?.permissions.has('Administrator')
-  if (!canDashboard) {
+  if (roleIdsAreStale(guild, dashboardIds)) {
+    console.warn(`[dashboard] guildconfig.dashboardRoleIds names no live role in ${guild.id} — falling back to role names; re-run /init`)
+  }
+  if (!memberPassesRoleGate(guild, member, dashboardIds, LEADERSHIP_ROLE_NAMES)) {
     return interaction.editReply({ content: 'Only CEO or Server Manager can use the dashboard.' })
   }
 
@@ -56,25 +79,96 @@ export async function execute(interaction) {
   })
 }
 
+const PROJECT_MODULES = new Set(['tasks', 'bugs', 'features'])
+
+function moduleSelectRow(current) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('dashboard_select')
+      .setPlaceholder('Select what to view (details / analytics)')
+      .addOptions(
+        MODULES.map((m) => ({
+          label: m.label,
+          value: m.value,
+          description: m.description,
+          default: m.value === current,
+        })),
+      ),
+  )
+}
+
+// The project filter for the task views. 'all' is no filter, 'none' is tasks
+// with no project attached, anything else is a project id.
+function projectWhere(filter) {
+  if (filter === 'none') return { projectId: null }
+  if (filter && filter !== 'all') return { projectId: filter }
+  return {}
+}
+
+function projectLabel(filter, projects) {
+  if (filter === 'none') return 'No project'
+  if (!filter || filter === 'all') return 'All projects'
+  return projects.find((p) => p.id === filter)?.name || 'Project'
+}
+
+function projectSelectRow(module, filter, projects) {
+  const options = [
+    { label: 'All projects', value: 'all', default: !filter || filter === 'all' },
+    // 22 leaves room for "All projects" and "No project" inside Discord's 25.
+    ...projects.slice(0, 22).map((p) => ({
+      label: String(p.name).slice(0, 100),
+      value: p.id,
+      default: filter === p.id,
+    })),
+    {
+      label: 'No project',
+      value: 'none',
+      description: 'Tasks not attached to any project',
+      default: filter === 'none',
+    },
+  ]
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`dashboard_project:${module}`)
+      .setPlaceholder('Filter by project')
+      .addOptions(options),
+  )
+}
+
 export async function handleModuleSelect(interaction) {
-  const guild = interaction.guild
-  if (!guild) return
   const value = interaction.values?.[0]
   if (!value) return
+  return renderModule(interaction, value, 'all')
+}
+
+/** `dashboard_project:<module>` — re-render that module filtered by the project picked. */
+export async function handleProjectSelect(interaction) {
+  const module = interaction.customId.slice('dashboard_project:'.length)
+  return renderModule(interaction, module, interaction.values?.[0] || 'all')
+}
+
+async function renderModule(interaction, value, filter) {
+  const guild = interaction.guild
+  if (!guild) return
 
   const cfg = await getOrCreateGuildConfig(guild.id)
   const since = twoMonthsAgo()
-  const [bugCount, featureCount, meetingCount, faqOpen, faqTotal] = await Promise.all([
+  const [bugCount, featureCount, meetingCount, faqOpen, faqTotal, projects] = await Promise.all([
     db.task.count({ where: { guildConfigId: cfg.id, is_bug: 1, createdAtSince: since } }),
     db.task.count({ where: { guildConfigId: cfg.id, is_feature: 1, createdAtSince: since } }),
     db.scheduledMeeting.count({ where: { guildConfigId: cfg.id } }),
     db.faq.count({ where: { guildConfigId: cfg.id, status: 'open' } }),
     db.faq.count({ where: { guildConfigId: cfg.id } }),
+    PROJECT_MODULES.has(value)
+      ? db.project.findMany({ where: { guildConfigId: cfg.id } }).catch(() => [])
+      : Promise.resolve([]),
   ])
+  const scope = projectLabel(filter, projects)
+  const where = { guildConfigId: cfg.id, createdAtSince: since, ...projectWhere(filter) }
 
   let embed
   if (value === 'tasks') {
-    const tasks = await db.task.findMany({ where: { guildConfigId: cfg.id, createdAtSince: since }, take: 200 })
+    const tasks = await db.task.findMany({ where, take: 200 })
     const byModule = {}
     const noModule = []
     for (const t of tasks) {
@@ -83,48 +177,28 @@ export async function handleModuleSelect(interaction) {
       else for (const m of mods) { (byModule[m] = byModule[m] || []).push(t) }
     }
     const sectionLines = []
-    const pad = (s, n) => (s ?? '—').slice(0, n).padEnd(n)
-    const header = '```\n' +
-      pad('Type', 8) + ' | ' + pad('Title', 28) + ' | ' + pad('Handlers', 18) + ' | ' + pad('Status', 12) + ' | ' +
-      'API Test  | QA Test  | AC   | ' + pad('Scope', 20) + '\n' +
-      '—'.repeat(8) + '—'.repeat(32) + '—'.repeat(22) + '—'.repeat(14) + '—'.repeat(28) + '\n'
-    const fmt = (t) => {
-      const assignees = ensureStringArray(t.is_feature ? t.assigneeIds : t.taggedMemberIds)
-      const handlerStr = assignees.length ? `${assignees.length} assignee(s)` : '—'
-      const status = (t.implementationStatus ?? t.status ?? '—').slice(0, 10)
-      const api = t.passedApiTests === 1 ? 'Pass' : t.passedApiTests === 0 ? 'Fail' : 'N/A'
-      const qa = t.passedQaTests === 1 ? 'Pass' : t.passedQaTests === 0 ? 'Fail' : 'N/A'
-      const ac = t.passedAcceptanceCriteria === 1 ? 'Pass' : t.passedAcceptanceCriteria === 0 ? 'Fail' : 'N/A'
-      const scope = (t.scope || '—').slice(0, 18)
-      const title = (t.title || t.id).slice(0, 26)
-      const typ = (t.type || (t.is_bug ? 'bug' : 'feature')).slice(0, 7)
-      return pad(typ, 8) + ' | ' + pad(title, 28) + ' | ' + pad(handlerStr, 18) + ' | ' + pad(status, 12) + ' | ' +
-        pad(api, 7) + ' | ' + pad(qa, 7) + ' | ' + pad(ac, 4) + ' | ' + pad(scope, 20)
+    const section = (heading, rows) => {
+      sectionLines.push(`\n**${heading}**`)
+      sectionLines.push(rows.slice(0, 12).map((t) => taskLine(t)).join('\n'))
+      if (rows.length > 12) sectionLines.push(`_… and ${rows.length - 12} more_`)
     }
-    const moduleNames = Object.keys(byModule).sort()
-    for (const mod of moduleNames) {
-      sectionLines.push(`\n**Module: ${mod}**`)
-      sectionLines.push(header + byModule[mod].slice(0, 12).map(fmt).join('\n') + '\n```')
-      if (byModule[mod].length > 12) sectionLines.push(`_… and ${byModule[mod].length - 12} more_`)
-    }
-    if (noModule.length > 0) {
-      sectionLines.push('\n**Module: (none)**')
-      sectionLines.push(header + noModule.slice(0, 12).map(fmt).join('\n') + '\n```')
-      if (noModule.length > 12) sectionLines.push(`_… and ${noModule.length - 12} more_`)
-    }
+    for (const mod of Object.keys(byModule).sort()) section(`Module: ${mod}`, byModule[mod])
+    if (noModule.length > 0) section('Module: (none)', noModule)
     const desc = sectionLines.length
       ? sectionLines.join('\n').slice(0, 3900)
-      : 'No tasks yet. Use **/create-task** to add tasks.'
+      : filter === 'all'
+        ? 'No tasks yet. Use **/create-task** to add tasks.'
+        : `No tasks for **${scope}** in the last two months.`
     embed = new EmbedBuilder()
-      .setTitle('Dashboard — Tasks')
+      .setTitle(`Dashboard — Tasks · ${scope}`)
       .setDescription(desc)
       .addFields({
         name: 'Legend',
-        value: '**Handlers** = assignees (who the task is assigned to). **API Test** = API tests pass/fail. **QA Test** = QA tests pass/fail. **AC** = Acceptance criteria met.',
+        value: 'The second line of each task is who holds it. **API / QA / AC** — ✅ passing, ❌ failing, – not recorded. Change any of it with **/update-task**.',
         inline: false,
       })
       .setColor(0x5865f2)
-      .setFooter({ text: `Total: ${tasks.length} (≤2mo) | Grouped by module` })
+      .setFooter({ text: `Total: ${tasks.length} (≤2mo) | ${scope} | Grouped by module` })
   } else if (value === 'overview') {
     embed = new EmbedBuilder()
       .setTitle('Dashboard — Overview')
@@ -134,37 +208,27 @@ export async function handleModuleSelect(interaction) {
       .setColor(0x5865f2)
       .setFooter({ text: 'Granjur · Bugs/features: last 2 months' })
   } else if (value === 'bugs') {
-    const recent = await db.task.findMany({
-      where: { guildConfigId: cfg.id, is_bug: 1, createdAtSince: since },
-      take: 15,
-    })
-    const pad = (s, n) => (String(s ?? '—').slice(0, n)).padEnd(n)
-    const lines = recent.length
-      ? '```\n' + pad('Status', 10) + ' | ' + pad('Title', 48) + ' | ' + pad('Created', 10) + '\n' + '—'.repeat(70) + '\n' +
-        recent.map((b) => pad(b.status ?? '—', 10) + ' | ' + pad((b.title || b.id).slice(0, 46), 48) + ' | ' + pad(b.createdAt ? new Date(b.createdAt).toISOString().slice(0, 10) : '—', 10)).join('\n') + '\n```'
-      : 'No bug tasks (≤2mo).'
+    const rows = await db.task.findMany({ where: { ...where, is_bug: 1 }, take: 200 })
+    const lines = rows.length
+      ? rows.slice(0, 15).map((b) => taskLine(b)).join('\n').slice(0, 3900)
+      : `No bug tasks (≤2mo) for ${scope}.`
     embed = new EmbedBuilder()
-      .setTitle('Dashboard — Bugs')
+      .setTitle(`Dashboard — Bugs · ${scope}`)
       .setDescription(lines)
-      .addFields({ name: 'Total (≤2mo)', value: String(bugCount), inline: true })
+      .addFields({ name: 'Total (≤2mo)', value: String(filter === 'all' ? bugCount : rows.length), inline: true })
       .setColor(0xed4245)
-      .setFooter({ text: 'Last 2 months' })
+      .setFooter({ text: `Last 2 months | ${scope}` })
   } else if (value === 'features') {
-    const recent = await db.task.findMany({
-      where: { guildConfigId: cfg.id, is_feature: 1, createdAtSince: since },
-      take: 15,
-    })
-    const pad = (s, n) => (String(s ?? '—').slice(0, n)).padEnd(n)
-    const lines = recent.length
-      ? '```\n' + pad('Status', 10) + ' | ' + pad('Title', 48) + ' | ' + pad('Created', 10) + '\n' + '—'.repeat(70) + '\n' +
-        recent.map((f) => pad(f.status ?? '—', 10) + ' | ' + pad((f.title || f.id).slice(0, 46), 48) + ' | ' + pad(f.createdAt ? new Date(f.createdAt).toISOString().slice(0, 10) : '—', 10)).join('\n') + '\n```'
-      : 'No feature tasks (≤2mo).'
+    const rows = await db.task.findMany({ where: { ...where, is_feature: 1 }, take: 200 })
+    const lines = rows.length
+      ? rows.slice(0, 15).map((f) => taskLine(f)).join('\n').slice(0, 3900)
+      : `No feature tasks (≤2mo) for ${scope}.`
     embed = new EmbedBuilder()
-      .setTitle('Dashboard — Features')
+      .setTitle(`Dashboard — Features · ${scope}`)
       .setDescription(lines)
-      .addFields({ name: 'Total (≤2mo)', value: String(featureCount), inline: true })
+      .addFields({ name: 'Total (≤2mo)', value: String(filter === 'all' ? featureCount : rows.length), inline: true })
       .setColor(0x5865f2)
-      .setFooter({ text: 'Last 2 months' })
+      .setFooter({ text: `Last 2 months | ${scope}` })
   } else if (value === 'meetings') {
     const meetings = await db.scheduledMeeting.findMany({
       where: { guildConfigId: cfg.id },
@@ -185,7 +249,11 @@ export async function handleModuleSelect(interaction) {
       .setColor(0xfee75c)
   }
 
-  await interaction.editReply({ embeds: [embed], components: [] })
+  // Keep the module picker on screen so the next view is one click away, and
+  // add the project filter on the views where a task can have a project.
+  const components = [moduleSelectRow(value)]
+  if (PROJECT_MODULES.has(value)) components.push(projectSelectRow(value, filter, projects))
+  await interaction.editReply({ embeds: [embed], components })
 }
 
 export async function handleModule(interaction) {

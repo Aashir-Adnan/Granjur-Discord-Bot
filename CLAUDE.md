@@ -55,5 +55,6 @@ Exactly three files:
 
 ## Rules (binding — see `.claude/rules/`)
 
-<!-- Add one bullet per rule file, e.g.: -->
-<!-- - `.claude/rules/testing.md` — how and when to run/verify tests -->
+- `.claude/rules/tests-never-touch-production.md` — the root `.env` points at
+  production; tests must use `db`/`getConfig` seams, always, with no exception for a
+  first "red" run.

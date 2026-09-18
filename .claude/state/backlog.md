@@ -4,18 +4,304 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
-## Verify migrations 010 + 011 applied on the live DB
-`010_guild_timezone.sql` (guildconfig.timezone), `011_scheduled_meeting_cancelled.sql`
-(scheduledmeeting.cancelled). Run `npm run db:migrate`. Until then `/setup timezone`,
-`/meetings` cancel, and the cancelled-row filters will error on the missing columns.
+## Team section — follow-ups
+From the 2026-09-18 build (built and reviewed on branches, not yet merged/deployed — see
+`session.md`). See `.claude/knowledge/project-tasks-site.md` ("Team section and the write
+path") for the write-path shape these items sit inside.
 
-## ffmpeg-static — approve install script on fresh deploys
-DONE locally: `node_modules/ffmpeg-static/ffmpeg.exe` = 82 MB, `ffmpeg -version`
-returns 0, prism-media detects it, package.json + package-lock.json both updated.
-BUT this npm has `allowScripts` gating — `npm install` warns ffmpeg-static's
-`install: node install.js` is "not yet covered". On a clean prod/CI install run
-`npm approve-scripts ffmpeg-static` (or `--allow-scripts`) or the binary won't
-download and the seek buttons stay disabled.
+- **Loopback bind for the bot's HTTP server.** `bot/src/server.js` binds all interfaces;
+  the Azure NSG blocking port 4070 from outside is the only thing keeping it private
+  today. A `BOT_HTTP_HOST` env (default `127.0.0.1`) would tighten this properly, but was
+  deferred because it would also change reachability for `/verify` and any other on-VM
+  caller currently using the public IP — needs a look at who else calls in before
+  narrowing the bind.
+- **`portalAuthz`'s `pickFrom` falls back to `req.body` for a null
+  `actionPerformerURDD`.** Pre-existing in CSAAS, surfaced again during the Task 5
+  review of `DiscordTasksStatus_object`; not touched by this build.
+- **People page search placeholder wording.** The search box filters People by name but
+  the placeholder text wasn't reworded for the new page (carried over from the Tasks
+  search copy) — flagged as a possible Task 10 cleanup and left as-is.
+- **No keyboard path for moving a board card.** The board's drag-and-drop is native
+  HTML5 DnD only; there's no keyboard-accessible way to change a card's column.
+- **Dependency graph layout recomputes on every keystroke.** `graphLayout`'s
+  `layoutGraph` re-runs on each filter-bar keystroke rather than being debounced or
+  memoized — harmless at current data volumes, reviewed and accepted as-is.
+- **`storedRoles` in the member name sync duplicates `ensureStringArray` from
+  `helpers.js`.** Same normalization logic written twice instead of reused.
+- **The `'notified'` default literal is duplicated** between `update-task.js` and
+  `taskStatusChange.js` rather than defined once and imported.
+- **No body size cap on the bot's HTTP server.** `bot/src/server.js` reads the whole
+  request body into memory before handing it to `handleStatusRequest`; the route caps
+  `taskId` at 64 characters but only *after* the body has been buffered, so a large POST
+  to port 4070 is absorbed in full. Harmless while the NSG keeps the port private (see
+  the loopback-bind item above), but the cap belongs on the reader, not the handler.
+- **`TeamLayout.refresh` has no request sequencing.** Two refreshes in flight at once
+  (a drag that succeeds while a filter change is still loading, or the new refetch the
+  Board now fires after a *failed* drop) resolve in whatever order the network gives
+  them, so an older response can overwrite a newer one. Needs a request id or an
+  AbortController, the same way the Tasks page's other fetches would if they raced.
+- **CSAAS `members`/task TEXT payload is uncapped within the endpoint's `LIMIT 2000`
+  row cap.** A very large `description`/`scope` field could bloat one response; no
+  per-field length cap exists.
+- **`task.type` is rendered raw on the Task Detail page.** No label mapping — whatever
+  string is stored (`feature`, `bug`, etc.) is shown verbatim.
+
+---
+
+## Project tasks site — follow-ups
+From the 2026-09-17 build. See `.claude/knowledge/project-tasks-site.md`.
+
+- **Stray production `guildconfig` row awaiting a decision.** Id
+  `b23782a7c09e433bab78d866b`, `guildId = 'guild1'`, inserted 2026-09-17T10:48:49Z by a
+  test run that reached the real database (see `.claude/rules/tests-never-touch-production.md`
+  for how). Confirmed read-only: no row in any `guildConfigId`-keyed table references
+  it, the bot's guild loops use `client.guilds.cache` so it is inert, and the CSAAS
+  endpoint reads it and finds nothing to show. Not deleted — needs the owner's
+  go-ahead. If approved, the statement is:
+  `DELETE FROM guildconfig WHERE id = 'b23782a7c09e433bab78d866b' AND guildId = 'guild1';`
+- **The endpoint's `LIMIT 2000` on `task` silently drops older blockers.** A task whose
+  blocker falls outside the newest 2000 tasks reads as `isBlocked: false` with no
+  indication anything was truncated. Fine at current volume; will misreport quietly as
+  the table grows.
+- **Project-registry slug mismatch between the site and the bot.** The site's own
+  project registry (used by `/tools/projects`) and the bot's `project.docsSlug` agree
+  only for `badar-hms`; every other project's deep link from Projects to Tasks lands on
+  a "no tasks match" notice rather than a real filtered view. The Tasks page now says so
+  instead of showing a silent empty page (UBS-Doc `6529af1`), but the underlying slug
+  mismatch is still there and worth reconciling properly.
+- **Dashboard has no blocked marker.** `/dashboard` and `/fetch-my` don't show that a
+  task is blocked — that only surfaces in `/update-task` replies, the notifier's
+  channel posts, and the site. Deliberately left out of the 2026-09-17 build.
+- **`/close-feature` and `/resolve-bug` bypass the notifier.** Both change `task.status`
+  directly instead of going through `notifyTaskUpdate`, so neither one ever posts a
+  blocker warning or an unblock notice — a task closed through either command can
+  silently unblock its dependents with nothing posted anywhere.
+- **No site link from a task back to its project's documentation.** The Tasks screen
+  and the docs browser (`/docs`, `/tools/projects`) are two separate views of the same
+  `project` row with no cross-link between a task and the docs for the project it
+  belongs to.
+- **Deferred minors from the 2026-09-17 build's reviews**, each small enough to pick up
+  opportunistically rather than as its own task:
+  - `handleAssigneesSelect` (`bot/src/commands/create-task.js` ~645) keeps a dead
+    `'none'` filter left over from the string-select era.
+  - No test covers the user-select route for `create_task_assignees` in
+    `bot/src/handlers/interactions.js`.
+  - CSAAS `assembleTasks`: `'No project'` inferred member names are resolved against
+    `orphans[0]`'s guild only — wrong in a multi-guild deployment.
+  - CSAAS `assembleTasks`: a null `updatedAt` sorts first, and one invalid `Date` value
+    throws and 500s the whole response rather than failing just that task.
+  - CSAAS `assembleTasks`: two same-named projects from different guilds are
+    indistinguishable in the response (no guild field).
+  - CSAAS `getDiscordTasks` itself is untested despite having the `__hooks` seam — no
+    assertion on username fallback, timestamp formatting, `docsSlug`, `pending`
+    members, or array/`Date` shaped inputs.
+  - Bot `memberNameSync.js`: `syncGuildMemberNames` has no try/catch of its own; it is
+    only safe today because `syncAll` wraps it.
+  - `/update-task`: naming an already-assigned member as the only `add_assignee` value
+    gets the generic "Provide at least one field" reply instead of a clearer message.
+  - Site `Tasks.tsx`: the `?project=` URL param is read only at mount, so browser
+    back/forward between two `?project=` entries doesn't resync the filter without a
+    full reload.
+  - `/project-members list` is not capped at Discord's 2000-character message limit. A
+    large project would make `editReply` throw and show a raw Discord error. The final
+    review called this the deferred item most likely to bite.
+  - `admin-panel.js:216` and `approve.js:32` read `guildMember.findMany` without
+    `all: true`, so they stop at 25 rows. The name sync now creates a row for every
+    server member, so this old cap is now reachable and those views truncate silently.
+  - `/update-task` autocomplete for `unblock` makes five database round trips when the
+    task is known; the 200-row `findMany` is fetched and then discarded. Skip it in that
+    case.
+  - `/update-task` writes the dependency row before `task.update`; if the update throws,
+    the row stays and the reply says "Update failed".
+  - `projectMemberUpsertSql` uses `VALUES(role)` in `ON DUPLICATE KEY UPDATE`, deprecated
+    since MySQL 8.0.20 (warning only).
+  - CSAAS `iso()` can return `null` for a timestamp while the site types it as `string`;
+    unused on the site today.
+  - Site `mwGet` throws the raw response body, so a CSAAS error shows as a JSON blob
+    under "Could not load tasks".
+  - Site project filter hides projects whose `docsSlug` is null.
+  - Spec §7 says the confirm step gains an Assignees row; the code adds it for feature
+    tasks only, since bug tasks use tagged members. Worth one clarifying line in the spec.
+
+---
+
+## Command visibility and access — follow-ups
+From the 2026-09-16 session, after unhiding ten commands.
+
+- **No member has an email stored.** All 11 `guildmember` rows have `email` empty,
+  because the DM verification path (`handleGetCode`) saves `email: ''` and never asks
+  for one. Only `handleEmailModal` stores an address and nobody uses it. Anything that
+  matches a person by email cannot work: looking someone up for a role grant, the
+  meeting roster, and the per-speaker recording filenames all fall back to Discord
+  display names. Decide whether the DM path should collect an email, or drop email as
+  an identifier.
+- **`/scrap`, `/migrate` and `/reconcile` have never been run.** They were hidden by the
+  permission bug until now, and they are the destructive ones. `{ ...interaction }` is
+  gone from the codebase so they do not share the bug that broke `/invite` and
+  `/verify`, but that only rules out one defect class — nothing else about them has
+  been exercised. Read them before running on live data.
+- **The repo's root `.env` points at the production database.** A test that reaches the
+  default `db` export queries the live server; this has now bitten twice (Task 8 of the
+  transcription plan, and `verify.test.js`). `handleOtpModal` and `guildIdFor` take a
+  `db` seam for this reason. A separate test database would remove the hazard entirely.
+
+---
+
+## Live meeting transcription — follow-ups
+Found during the 2026-09-07 build and its reviews. See
+`.claude/knowledge/live-meeting-transcription.md`.
+
+- **`/record` should pass `forceNewMeeting: true`.** `ensureMeetingChannel` returns the
+  same `meetingId` forever for a persistent voice channel, so re-recording the same room
+  reuses it. `clearStaleLiveSession` now wipes the previous session's utterance rows to
+  stop them being half-overwritten, which means a previous recording whose pipeline job
+  had not run yet loses its live transcript and falls back. The root fix touches
+  `/playback` grouping and the recordings directory, so it was left out of scope.
+- **`/meeting-retry` cannot re-arm the live path** — it resets status and attempts but
+  leaves `dataJson`, so `liveTranscriptFailed` survives forever. A meeting that hit a
+  transient Claude outage is stuck on the whole-file fallback permanently.
+- **Extract `endMeetingSession` into a module-level factory.** Two tests currently assert
+  against the *source text* of `voiceCapture.js` because those closures need a live voice
+  socket and the repo has no module mocking. A `createSessionEnder({...})` factory would
+  make the re-entrancy guard a two-line behavioural test and let both source-text tests go.
+- **Consent notice needs a channel.** If `resolveMeetingChannel` returns null, nothing is
+  posted and nothing warns loudly — the remaining hole in the consent surface.
+- **`transcriptFeed`'s queue is unbounded** and `degraded` trips on failures, not on
+  slowness. A backend answering every call in 29 s grows the queue all meeting, each entry
+  holding up to ~240 KB of Opus, and makes teardown take `queueLength/3 x 30 s`.
+- **`transcribeAudio.js` builds `new OpenAI()` at module load**, so the CSAAS utterance
+  test needs `OPENAI_API_KEY` even under `STT_PROVIDER=soniox`. A CI blocker, not a merge
+  blocker.
+- **`bot/src/Database/schema.sql` was not updated** with `meetingutterance` or
+  `meeting.csaasMeetingId`; migration 016 covers a fresh install but the schema dump is
+  now an incomplete picture.
+- Smaller: `total_duration_sec` is sent to `analyze-live` and never read; `dataJson.analysis`
+  holds a different shape on the live vs fallback path; the empty-channel log says
+  "5-minute grace period" while the constant and the new pinned guidelines both say 2.
+
+---
+
+## /explain — follow-ups
+- **Drop `MultiEdit` from `EXTRA_ARGS`** — CLI 2.1.186 warns `deny rule "MultiEdit" matches no
+  known tool` on every explain run (harmless, noisy). `explainAgent.js`, spec §4, tests.
+- **`CLAUDE_CLI_ARGS_JSON` is an escape hatch** — an operator template containing
+  `--dangerously-skip-permissions` would re-open the read jail regardless of
+  `skipPermissions:false`. Either strip that flag from the template for explain calls or
+  document it as forbidden. Final-review out-of-scope note, 2026-09-05.
+- **`spawnSync` blocks the CSAAS event loop** for the whole CLI run (30–90 s). The 110 s
+  per-call timeout and the one-in-flight guard bound it; the durable fix is an async spawn.
+  Pre-existing for meeting analysis too.
+- **`/home/azureuser/.claude/.credentials.json` is root-owned** (root's pm2 refreshes the
+  token) — azureuser's own `claude` reports "Not logged in". The endpoint is unaffected.
+  Fix: run CSAAS as azureuser, or `chown` after each refresh. Observed 2026-09-05.
+
+**Code as a second source** once the fresh Badar HMS clone is on the VM (`--add-dir` 
+or a second `cwd` root; renderer needs a `file:line` form).
+
+**Threads / follow-up mode** (CLI `--resume` per Discord thread, idle timeout).
+
+**Multiple `docsPaths` per project** (only the first is used).
+
+
+---
+
+## Meeting → tasks integration — remaining gaps
+Ran end to end and shipped to production (see `completed.md` 2026-09-04). What is
+still unexercised or wrong:
+- **Assignment has never been exercised live.** The one live run mirrored an
+  unassigned task, so the new per-task ticket channel, the assignee DM and the
+  `assigneeIds` write have unit tests but no live run behind them. Next recording
+  should assign a task in `/meeting-review` before approving.
+- **The GitHub `[Agent Call]` push is untested live** — `issue_syncing` has only run
+  with zero github-flagged tasks. It also needs a working `GITHUB_TOKEN` (see below).
+- **Project linkage is broken.** CSAAS reports the project as `Badar_HMS`; the
+  repository row is named `Badar_HMS_Node`, so `mirroredStage`'s exact-name
+  `repository.findFirst` misses and every mirrored task lands with `projectId` and
+  `repositoryId` null. Needs fuzzier matching (or a stored alias). Until then
+  `issue_syncing` cannot resolve a repo slug either.
+- **No project-wise task view.** `/dashboard` groups by module. Nothing lists tasks
+  per project, which is what a manager asks for after a meeting.
+- **Review lands in the voice channel's own chat** for a `/record` meeting, because
+  `meetingchannel.textChannelId` is null unless a dedicated meeting channel was set
+  up. Consider falling back to the guild's meeting/summary channel.
+- **Seven other `LIMIT ?` sites in `bot/src/Database/index.js`** (lines ~490, 493, 964,
+  1027, 1030, 1663, 1716) have the same prepared-statement failure that broke the first
+  pipeline tick (`Incorrect arguments to mysqld_stmt_execute`). Pre-existing, outside the
+  meeting work; any command that reaches them with a bound LIMIT will error.
+- **`/meeting-review latest` unsupported** — no `db.meetingPipelineJob.findLatest`;
+  the command needs an explicit meetingId.
+- **`stopMeetingRecording` in `voiceCapture.js` is dead code (no callers)** — the
+  pipeline enqueue actually fires from `endMeetingSession` (empty-channel grace timer
+  + max-duration timer, the real meeting-end paths). Delete it or wire it in.
+- **Stale-`working` reaper threshold == `MEETING_STAGE_TIMEOUT_MS`** with no margin
+  (`bot/src/Database/index.js` `claim`/`claimBatch`). Fine single-process; give it a
+  2x multiplier before running multiple worker processes.
+- **Migration `015` leaves a redundant plain `idx_task_externalId`** on fresh installs
+  (`014` adds the plain key, `015` no-ops because the unique key from `schema.sql` is
+  already present). Harmless; tidy `014` to skip when a unique key exists.
+
+## Live Discord acceptance for the project-docs branch
+Task 10 of `docs/superpowers/plans/2026-09-03-project-docs-preview.md` — click through
+`/docs`, `/projects`, `/edit-docs` and the `#documentation` channel on branch
+`feat/project-docs`. Everything else about that branch is verified automatically; this is the
+only unverified part. Procedure is in `session.md`.
+## `Task` vs `task` — the table-case bug reached beyond the pipeline
+`taskCreate`/`taskUpdate` wrote `` `Task` ``, which MySQL on Linux treats as a
+different table. Fixed in `099179d`, but it means task writes had **never** worked on
+this server — `/create-task`, `/bug` and `/feature` share those functions. Worth a
+sweep for other capitalised table identifiers in `bot/src/Database/index.js`.
+
+## Four commands still read a table with zero rows
+`/create-task`, `/feature`, `/project-db` and `/create-project-categories` all read
+`db.projectSchema`, i.e. the `projectschema` table, which has **0 rows** in production. The
+table holding data is `project_schemas`, an unrelated dump-versioning table with a different
+shape. Their project pickers are therefore empty. `/edit-docs` and the `#documentation`
+channel had the same bug and were repointed at `docpage` on `feat/project-docs`; these four
+were out of that plan's scope. See [[project-docs]].
+
+## Replace the dead `GITHUB_TOKEN`
+The token in `.env` returns `401 Bad credentials`. The docs sync detects this, warns once and
+continues unauthenticated against the public repository, so documentation still works — but
+`/bug` issue creation and any other authenticated GitHub call are broken, and the sync runs on
+the 60/hr unauthenticated budget instead of 5000/hr.
+
+## Deferred findings from the project-docs final review
+None blocks use; the reviewer triaged each as "can wait".
+
+- **`docsPaths` overlap between projects is unchecked**, and ties resolve by SELECT order, so
+  with overlapping prefixes a page can flip owners between syncs. Needs a precedence rule
+  (longest prefix wins? first created?) — a product decision. Only one project has
+  `docsPaths` today.
+- **`/scrap` destroys Discord-authored documentation.** It deletes `guildconfig`, which
+  cascades `docpage`. `source='local'` pages exist nowhere else, and the confirmation does not
+  mention it.
+- **A permanently unfetchable file freezes the delete pass.** One file that 404s forever means
+  the head SHA is never recorded, so upstream *deletions* stop propagating until it is fixed.
+  Fails toward stale content rather than data loss. A retry counter would bound it.
+- **`/edit-docs` says "Updated" on a raced no-op** — `affectedRows` is not inspected.
+- **`docId` is not unique-keyed**, so a `foo.md`/`foo.mdx` pair could make the read-and-refuse
+  guard inspect the wrong row. No clobber results; the message could mis-fire.
+- **`projects.js` swallows a re-attribution failure** into "No synced pages match those paths
+  yet", so a database error reads as a normal empty result.
+- **`/setup`'s Sync button can outlive Discord's interaction token** on a cold sync, leaving
+  the user on "Syncing documentation…". Now that the button forces a full pass, a cold sync is
+  reachable again.
+- **`rootOptions` truncates at 25 with no paging** — past 25 projects plus sections, entries
+  become unreachable.
+- **`docs_browse:sec:<section>` customId** would exceed Discord's 100-character cap for a
+  section name over ~84 characters.
+- **`docPageSearch`'s LIKE fallback does not escape `%` or `_`**, so a search containing `%`
+  behaves as a wildcard. The term is bound; there is no injection.
+- Minor: no index on `docpage.docId`; `DOCS_SYNC_INTERVAL_MS` is unvalidated (a non-numeric
+  value yields a 1 ms interval); migration 012 seeds `docsSlug` with a SQL expression that is
+  not `slugify()`; `proj:` and `sec:` scopes nest at different depths; two concurrent
+  `/projects` link flows share one flow-store key; `projects` has no `dedicatedChannels` entry.
+
+## Phase 2: write documentation back to UBS-Doc
+Deliberately out of scope for Phase 1 and shaped to be additive — the `source` column already
+distinguishes local pages, so Phase 2 is "commit the `'local'` rows as a PR per doc, flip them
+to `'repo'` on merge". Needs a GitHub PAT with Contents: write and Pull requests: write on
+`Aashir-Adnan/UBS-Doc`. A page's site link stays dead until the merge triggers a Vercel build.
 
 ## `/meetings` — manager filter is name-based
 `isManager()` matches role names `CEO` / `Server Manager` (plus owner / ManageGuild).
@@ -29,3 +315,12 @@ reusing `guildConfig` role-id lists instead.
 ## `/schedule` — still open
 - Per-user timezone override (deliberately skipped — per-guild only for now).
 - Voice-channel picker step (currently `voiceChannelId` is always null).
+
+---
+
+## Dead vendored `bot/src/Database/*` files — remove or repair
+15 files under `bot/src/Database/` fail to import (missing `../../SysFunctions/*`,
+extension-less relative imports, and a duplicate `getColumnNameFromMapper` declaration
+in `executeQueryWithPagination.js` that is a hard SyntaxError). Nothing on the live
+path imports them — the real DB layer is only `connection.js`, `helpers.js`,
+`index.js`. Decide: delete, or fix if the abstraction is wanted.

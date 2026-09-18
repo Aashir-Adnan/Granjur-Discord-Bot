@@ -1,6 +1,5 @@
 import {
   SlashCommandBuilder,
-  PermissionFlagsBits,
   ActionRowBuilder,
   StringSelectMenuBuilder,
   ButtonBuilder,
@@ -12,18 +11,16 @@ import {
 } from 'discord.js'
 import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
+import { memberPassesRoleGate, roleIdsAreStale, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
+import { MANAGED_ROLES } from '../utils/roleSync.js'
 
-const ROLE_OPTIONS = [
-  'Intern', 'Temp', 'Junior Dev', 'Senior Dev', 'Associate Engineer',
-  'Quality Assurance', 'Project Manager', 'Server Manager', 'CEO',
-  'Frontend', 'UI/UX', 'Designer', 'Server', 'Full-Stack', 'Database',
-]
+// The single list, shared with /set-roles so the two cannot drift apart.
+const ROLE_OPTIONS = MANAGED_ROLES
 const ADD_ROLE_VALUE = '__add_role__'
 
 export const data = new SlashCommandBuilder()
   .setName('backlog')
   .setDescription('(CEO/Server Manager) View incoming users in holding and approve + assign roles via modal')
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 
 export async function execute(interaction) {
   try {
@@ -35,10 +32,10 @@ export async function execute(interaction) {
 
     const dashboardIds = ensureStringArray(cfg.dashboardRoleIds)
     const member = await guild.members.fetch(interaction.user.id).catch(() => null)
-    const canBacklog =
-      (dashboardIds.length && member?.roles.cache.some((r) => dashboardIds.includes(r.id))) ||
-      member?.permissions.has('Administrator')
-    if (!canBacklog) {
+    if (roleIdsAreStale(guild, dashboardIds)) {
+      console.warn(`[backlog] guildconfig.dashboardRoleIds names no live role in ${guild.id} — falling back to role names; re-run /init`)
+    }
+    if (!memberPassesRoleGate(guild, member, dashboardIds, LEADERSHIP_ROLE_NAMES)) {
       return interaction.editReply({ content: 'Only CEO or Server Manager can view the backlog.' })
     }
 

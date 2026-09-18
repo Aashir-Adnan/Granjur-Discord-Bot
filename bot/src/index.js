@@ -5,6 +5,7 @@ import {
   handleCommand,
   handleAutocomplete,
   isModalFirstCommand,
+  isPublicReplyCommand,
 } from "./commands/index.js";
 import { handleMemberAdd } from "./events/memberAdd.js";
 import { handleMeetingMessageCreate } from "./events/messageCreate.js";
@@ -15,6 +16,9 @@ import handleInteractions from "./handlers/interactions.js";
 import { startMeetingReminder } from "./services/meetingReminder.js";
 import { startMeetingAutoChannels } from "./services/meetingAutoChannel.js";
 import { startTicketReminder } from "./services/ticketReminder.js";
+import { startMeetingPipelineWorker } from "./services/meetingPipelineWorker.js";
+import { startDocsSync } from "./services/docsSync.js";
+import { startMemberNameSync, syncOneMember } from "./services/memberNameSync.js";
 import {
   isRateLimitError,
   getRetryAfter,
@@ -46,6 +50,9 @@ client.once(Events.ClientReady, async () => {
   startMeetingReminder(client);
   startMeetingAutoChannels(client);
   startTicketReminder(client);
+  startMeetingPipelineWorker(client);
+  startDocsSync(client);
+  startMemberNameSync(client);
   console.log(`Logged in as ${client.user.tag}`);
 });
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -69,7 +76,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     !isModalFirstCommand(interaction.commandName)
   ) {
     try {
-      await interaction.deferReply({ flags: EPHEMERAL });
+      await interaction.deferReply(
+        isPublicReplyCommand(interaction.commandName) ? {} : { flags: EPHEMERAL },
+      );
     } catch (e) {
       if (isRateLimitError(e)) {
         const retry = getRetryAfter(e);
@@ -151,6 +160,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   if (
     interaction.isStringSelectMenu() ||
+    interaction.isUserSelectMenu?.() ||
     interaction.isButton() ||
     interaction.isModalSubmit()
   ) {
@@ -176,17 +186,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
       "create_task_type_bug",
       "create_task_members",
       "create_task_members_next",
-      "create_task_assignees",
       "create_task_metric_api",
       "create_task_metric_qa",
       "create_task_metric_ac",
+      "projects_add",
+      "edit_docs_select", // project select → new-page modal
     ];
     const customId = interaction.customId || "";
     const skipDefer =
       (interaction.isButton() || interaction.isStringSelectMenu()) &&
-      noDeferComponentIds.some(
-        (id) => customId === id || customId.startsWith(id + ":"),
-      );
+      (customId.startsWith("mtg_") ||
+        noDeferComponentIds.some(
+          (id) => customId === id || customId.startsWith(id + ":"),
+        ));
     // Modals that defer inside their handler to avoid "already acknowledged" (40060)
     const noDeferModalIds = ["create_task_modal"];
     const skipModalDefer =
@@ -283,6 +295,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 client.on(Events.GuildMemberAdd, handleMemberAdd);
+client.on(Events.GuildMemberUpdate, (_old, member) => syncOneMember(member));
 client.on(Events.MessageCreate, handleMeetingMessageCreate);
 client.on(Events.VoiceStateUpdate, handleVoiceStateUpdate);
 

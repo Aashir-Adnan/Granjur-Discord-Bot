@@ -67,11 +67,12 @@ export async function execute(interaction) {
 
   const codeOpt = interaction.options.getString('code')
   if (codeOpt && codeOpt.trim().length === 6) {
-    const fakeModalInteraction = {
-      ...interaction,
-      fields: { getTextInputValue: () => codeOpt.trim() },
-    }
-    return handleOtpModal(fakeModalInteraction)
+    // Pass the code as a value. Spreading the interaction to fake a modal
+    // submission drops every method and getter on it — discord.js keeps
+    // editReply and `guild` on the prototype, not as own properties — so the
+    // handler saw no guild, took its "Invalid." branch, and then died there on
+    // the missing editReply.
+    return handleOtpModal(interaction, { code: codeOpt.trim() })
   }
 
   const embed = new EmbedBuilder()
@@ -227,12 +228,22 @@ export async function handleEnterOtpButton(interaction) {
   await interaction.showModal(modal)
 }
 
-export async function handleOtpModal(interaction) {
+/**
+ * Complete verification from a 6-digit code. Reached two ways:
+ *   - the modal, which carries the code in `interaction.fields`
+ *   - `/verify code:123456`, which passes it as `opts.code`
+ * A slash-command interaction has no `fields`, so read it only when it is there.
+ *
+ * `opts.db` exists so tests can run this without a database. The production
+ * callers never pass it, so they keep the real one.
+ */
+export async function handleOtpModal(interaction, { code: rawCode = null, db: dbArg = db } = {}) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Invalid.' }).catch(() => {})
 
-  const code = (interaction.fields.getTextInputValue('code') || '').trim()
-  const row = await db.verificationOtp.findValidByCode(guild.id, interaction.user.id, code)
+  const fromFields = interaction.fields ? interaction.fields.getTextInputValue('code') || '' : ''
+  const code = String(rawCode ?? fromFields).trim()
+  const row = await dbArg.verificationOtp.findValidByCode(guild.id, interaction.user.id, code)
   if (!row) {
     return interaction.editReply({
       content: 'Invalid or expired code. Run **/verify** and request a new code.',
@@ -243,7 +254,7 @@ export async function handleOtpModal(interaction) {
   try {
     const cfg = await getOrCreateGuildConfig(guild.id).catch(() => {})
 
-    await db.guildMember.upsert({
+    await dbArg.guildMember.upsert({
       where: { guildId_discordId: { guildId: guild.id, discordId: interaction.user.id } },
       create: {
         guildId: guild.id,
@@ -254,7 +265,7 @@ export async function handleOtpModal(interaction) {
       },
       update: { email: email ?? undefined, verifiedAt: new Date(), status: 'holding' },
     })
-    await db.verificationOtp.delete({ where: { guildId_discordId: { guildId: guild.id, discordId: interaction.user.id } } }).catch(() => {})
+    await dbArg.verificationOtp.delete({ where: { guildId_discordId: { guildId: guild.id, discordId: interaction.user.id } } }).catch(() => {})
     flowStore.clear(interaction.user.id, guild.id, 'verify_otp')
 
     let member

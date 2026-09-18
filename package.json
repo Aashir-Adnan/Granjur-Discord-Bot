@@ -5,6 +5,7 @@
   "main": "bot/src/index.js",
   "type": "module",
   "scripts": {
+    "test": "node --test",
     "start": "node bot/src/index.js",
     "dev": "node --watch bot/src/index.js",
     "db:init": "node bot/scripts/init-db.js",

@@ -1,10 +1,13 @@
 import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
 import {
-  startRecording,
-  stopRecording,
+  startMeetingRecording,
+  stopMeetingRecording,
   isRecording,
 } from "../services/voiceCapture.js";
 import { ensureMeetingChannel } from "../services/meetingListener.js";
+import { resolveMeetingChannel } from "../services/meetingPipelineStages.js";
+import { ensureGuidelinesPinned } from "../config/meetingGuidelines.js";
+import db from "../db/index.js";
 
 export const data = new SlashCommandBuilder()
   .setName("record")
@@ -44,7 +47,22 @@ export async function execute(interaction) {
         content: "Already recording this meeting.",
       });
     }
-    startRecording(voiceChannel, meetingChannel.meetingId);
+    // The unified session: per-user capture, MeetingRecordingStatus row, empty-channel
+    // grace timer, and the meeting-pipeline enqueue when the session ends.
+    await startMeetingRecording(voiceChannel, guild, meetingChannel.meetingId, voiceChannel.id);
+    // The channel the transcript and the review will land in gets the guidelines.
+    // Recording is already running by this point, so a database blip here must not
+    // reach the command's error path: "Something went wrong, please try again" for
+    // a live recording invites the user to start a second one.
+    try {
+      const target = await resolveMeetingChannel(interaction.client, db, {
+        meetingId: meetingChannel.meetingId,
+        guildConfigId: meetingChannel.guildConfigId,
+      });
+      if (target) await ensureGuidelinesPinned(target, guild.client.user.id);
+    } catch (e) {
+      console.warn(`[record] could not pin the guidelines: ${e?.message || e}`);
+    }
     const embed = new EmbedBuilder()
       .setTitle("Recording started")
       .setDescription(
@@ -54,7 +72,7 @@ export async function execute(interaction) {
     return interaction.editReply({ embeds: [embed] });
   }
 
-  const stopped = stopRecording(meetingChannel.meetingId);
+  const stopped = await stopMeetingRecording(meetingChannel.meetingId);
   const embed = new EmbedBuilder()
     .setTitle(stopped ? "Recording stopped" : "Not recording")
     .setDescription(

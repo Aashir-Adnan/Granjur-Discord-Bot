@@ -1,14 +1,15 @@
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
-import { getRepoFileContent } from '../services/github.js'
 import { buildDocTraversalPayload, getDocTraversalCustomIds } from '../services/docTraversal.js'
+import { docUrl } from '../utils/docRender.js'
 
 const BACK_CUSTOM_ID = 'doc_traversal_back'
-const MAX_EMBED_DESC = 4096
+const MAX_TITLE_LEN = 100
+const MAX_DESC_LEN = 4000 // headroom under Discord's 4096 embed-description cap
 
-function truncate(str, max = MAX_EMBED_DESC - 20) {
-  if (!str || str.length <= max) return str
-  return str.slice(0, max) + '\n…'
+function truncateTitle(title) {
+  const t = String(title || '').trim()
+  return t.length > MAX_TITLE_LEN ? `${t.slice(0, MAX_TITLE_LEN - 1)}…` : t
 }
 
 export async function handleDocTraversalSelect(interaction) {
@@ -20,62 +21,60 @@ export async function handleDocTraversalSelect(interaction) {
   const cfg = await getOrCreateGuildConfig(guild.id)
 
   if (value === '__none__') {
-    return interaction.editReply({ content: 'No projects yet. Add repos with **/repos** and click **Refresh list**.', components: [], embeds: [] }).catch(() => {})
-  }
-
-  let content = null
-  let projectName = value
-  let isMarkdown = false
-
-  if (value.startsWith('schema:')) {
-    const projectId = value.slice('schema:'.length)
-    const s = await db.projectSchema.findFirst({
-      where: { guildConfigId: cfg.id, projectId },
-    })
-    if (s) {
-      content = s.readme || s.schemaContent
-      projectName = s.projectName || s.projectId
-      isMarkdown = !!s.readme
-    }
-  } else if (value.startsWith('repo:')) {
-    const repoId = value.slice('repo:'.length)
-    const repo = await db.repository.findFirst({
-      where: { guildConfigId: cfg.id, id: repoId },
-    })
-    if (repo) {
-      projectName = repo.name
-      const readme = await getRepoFileContent(repo.url, 'README.md')
-      if (readme) {
-        content = readme
-        isMarkdown = true
-      } else {
-        const s = await db.projectSchema.findFirst({
-          where: { guildConfigId: cfg.id, projectId: repo.id },
-        })
-        content = s?.readme || s?.schemaContent || `No README.md in repo and no stored doc for ${repo.name}. Use **/edit-docs** or **/project-db** to add one.`
-      }
-    }
+    return interaction
+      .editReply({
+        content: 'No documentation synced yet. A manager can run **/setup** and press **Sync docs now**.',
+        components: [],
+        embeds: [],
+      })
+      .catch(() => {})
   }
 
   try {
-    if (!content) {
-      return interaction.editReply({ content: 'No documentation found for this project.', components: [], embeds: [] }).catch(() => {})
+    const projectId = value.startsWith('proj:') ? value.slice('proj:'.length) : value
+    const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
+    const project = projects.find((p) => p.id === projectId)
+    if (!project) {
+      return interaction
+        .editReply({ content: 'That project no longer exists.', components: [], embeds: [] })
+        .catch(() => {})
     }
 
-    const desc = isMarkdown ? truncate(content) : `\`\`\`sql\n${truncate(content, 3900)}\n\`\`\``
+    const index = await db.docPage.listIndex({ guildConfigId: cfg.id })
+    const pages = index.filter((r) => r.projectId === projectId)
+    const source = await db.docSource.get({ guildConfigId: cfg.id })
+    const siteUrl = source?.siteUrl || ''
+
+    const lines = pages.slice(0, 25).map((r) => {
+      const title = truncateTitle(r.title)
+      return r.source === 'local' || !siteUrl
+        ? `📝 ${title}`
+        : `📄 [${title}](${docUrl(siteUrl, r.docId)})`
+    })
+    const more = pages.length > 25 ? `\n\n…and ${pages.length - 25} more — use **/docs** to browse them all.` : ''
+
+    let description = lines.length
+      ? `${lines.join('\n')}${more}`
+      : 'No documentation pages for this project yet.'
+    if (description.length > MAX_DESC_LEN) {
+      description = `${description.slice(0, MAX_DESC_LEN - 1)}…`
+    }
+
     const embed = new EmbedBuilder()
-      .setTitle(`📚 ${projectName}`)
-      .setDescription(desc)
+      .setTitle(`📚 ${project.name}`)
+      .setDescription(description)
       .setColor(0x5865f2)
-      .setFooter({ text: `${content.length} chars · Click Back to return to list` })
+      .setFooter({ text: `${pages.length} page(s) · read them in Discord with /docs` })
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(BACK_CUSTOM_ID).setLabel('Back to list').setStyle(ButtonStyle.Secondary)
     )
 
-    await interaction.editReply({ embeds: [embed], components: [row] }).catch(() => {})
+    return interaction.editReply({ embeds: [embed], components: [row], content: null }).catch(() => {})
   } catch (e) {
-    await interaction.editReply({ content: `Failed: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
+    return interaction
+      .editReply({ content: `Could not load that project's documentation: ${e?.message ?? String(e)}`, components: [], embeds: [] })
+      .catch(() => {})
   }
 }
 

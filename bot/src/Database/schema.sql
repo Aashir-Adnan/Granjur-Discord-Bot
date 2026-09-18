@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS guildmember (
   guildConfigId VARCHAR(36) NOT NULL,
   discordId VARCHAR(64) NOT NULL,
   email VARCHAR(255),
+  displayName VARCHAR(100),
+  username VARCHAR(64),
+  roleNames JSON DEFAULT NULL,
   verifiedAt DATETIME(3),
   status VARCHAR(32) DEFAULT 'pending',
   roleIds JSON DEFAULT ('[]'),
@@ -82,6 +85,8 @@ CREATE TABLE IF NOT EXISTS task (
   passedApiTests TINYINT(1),
   passedQaTests TINYINT(1),
   passedAcceptanceCriteria TINYINT(1),
+  externalId VARCHAR(128) DEFAULT NULL,
+  meetingId VARCHAR(36) DEFAULT NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   KEY (guildConfigId),
@@ -91,6 +96,8 @@ CREATE TABLE IF NOT EXISTS task (
   KEY (status),
   KEY (discordChannelId),
   KEY (createdAt),
+  UNIQUE KEY uq_task_externalId (externalId),
+  KEY idx_task_meetingId (meetingId),
   FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
   FOREIGN KEY (repositoryId) REFERENCES repository(id) ON DELETE SET NULL
 );
@@ -288,6 +295,27 @@ CREATE TABLE IF NOT EXISTS MeetingRecording (
   FOREIGN KEY (meetingId) REFERENCES Meeting(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS meeting_pipeline_job (
+  id              VARCHAR(36) PRIMARY KEY,
+  guildConfigId   VARCHAR(36) NOT NULL,
+  meetingId       VARCHAR(36) NOT NULL,
+  csaasMeetingId  VARCHAR(64) DEFAULT NULL,
+  stage           VARCHAR(32) NOT NULL DEFAULT 'created',
+  status          VARCHAR(16) NOT NULL DEFAULT 'pending',
+  attempts        INT NOT NULL DEFAULT 0,
+  nextAttemptAt   DATETIME(3) DEFAULT NULL,
+  lastError       TEXT DEFAULT NULL,
+  reviewMessageId VARCHAR(64) DEFAULT NULL,
+  dataJson        JSON DEFAULT NULL,
+  createdAt       DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  updatedAt       DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uniq_meeting (meetingId),
+  KEY idx_status (status),
+  KEY idx_next (nextAttemptAt),
+  CONSTRAINT mpj_guild_fk FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
+  CONSTRAINT mpj_meeting_fk FOREIGN KEY (meetingId) REFERENCES meeting(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 CREATE TABLE IF NOT EXISTS faq (
   id VARCHAR(36) PRIMARY KEY,
   guildConfigId VARCHAR(36) NOT NULL,
@@ -363,6 +391,8 @@ CREATE TABLE IF NOT EXISTS project (
   name VARCHAR(255) NOT NULL,
   readme TEXT,
   owner_emails JSON DEFAULT ('[]'),
+  docsSlug VARCHAR(128) NULL,
+  docsPaths JSON NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, name),
@@ -414,3 +444,73 @@ CREATE TABLE IF NOT EXISTS clockentry (
 );
 
 -- Note: project_schemas.latest_dump_id logically references dump_versions(id). No FK to keep schema idempotent (re-runnable).
+
+-- Docs mirrored from the UBS-Doc repository, plus per-guild sync state.
+CREATE TABLE IF NOT EXISTS docpage (
+  id VARCHAR(36) PRIMARY KEY,
+  guildConfigId VARCHAR(36) NOT NULL,
+  path VARCHAR(512) NOT NULL,
+  docId VARCHAR(512) NOT NULL,
+  section VARCHAR(128) NOT NULL,
+  projectId VARCHAR(36) NULL,
+  title VARCHAR(512) NOT NULL,
+  content MEDIUMTEXT,
+  source VARCHAR(16) NOT NULL DEFAULT 'repo',
+  blobSha VARCHAR(64) NULL,
+  size INT NOT NULL DEFAULT 0,
+  createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uniq_docpage_path (guildConfigId, path),
+  KEY idx_docpage_project (guildConfigId, projectId),
+  KEY idx_docpage_section (guildConfigId, section),
+  FULLTEXT KEY ft_docpage (title, content),
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
+  FOREIGN KEY (projectId) REFERENCES project(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS docsource (
+  id VARCHAR(36) PRIMARY KEY,
+  guildConfigId VARCHAR(36) NOT NULL,
+  owner VARCHAR(255) NOT NULL,
+  repo VARCHAR(255) NOT NULL,
+  branch VARCHAR(255) NOT NULL DEFAULT 'main',
+  siteUrl VARCHAR(512) NOT NULL,
+  lastCommitSha VARCHAR(64) NULL,
+  lastSyncedAt DATETIME(3) NULL,
+  lastError TEXT NULL,
+  createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uniq_docsource_guild (guildConfigId),
+  FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `taskdependency` (
+  `id`              VARCHAR(36) NOT NULL,
+  `guildConfigId`   VARCHAR(36) NOT NULL,
+  `taskId`          VARCHAR(36) NOT NULL,
+  `blockedByTaskId` VARCHAR(36) NOT NULL,
+  `createdBy`       VARCHAR(64) DEFAULT NULL,
+  `createdAt`       DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_taskdependency_pair` (`taskId`, `blockedByTaskId`),
+  KEY `idx_taskdependency_guild` (`guildConfigId`),
+  KEY `idx_taskdependency_blocker` (`blockedByTaskId`),
+  CONSTRAINT `fk_taskdependency_guild` FOREIGN KEY (`guildConfigId`) REFERENCES `guildconfig`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_taskdependency_task` FOREIGN KEY (`taskId`) REFERENCES `task`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_taskdependency_blocker` FOREIGN KEY (`blockedByTaskId`) REFERENCES `task`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `projectmember` (
+  `id`            VARCHAR(36) NOT NULL,
+  `guildConfigId` VARCHAR(36) NOT NULL,
+  `projectId`     VARCHAR(36) NOT NULL,
+  `discordId`     VARCHAR(64) NOT NULL,
+  `role`          VARCHAR(32) NOT NULL DEFAULT 'developer',
+  `addedBy`       VARCHAR(64) DEFAULT NULL,
+  `createdAt`     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_projectmember_pair` (`projectId`, `discordId`),
+  KEY `idx_projectmember_guild` (`guildConfigId`),
+  CONSTRAINT `fk_projectmember_guild` FOREIGN KEY (`guildConfigId`) REFERENCES `guildconfig`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_projectmember_project` FOREIGN KEY (`projectId`) REFERENCES `project`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

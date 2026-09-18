@@ -8,6 +8,7 @@ import { completeVerification } from './commands/verify.js'
 import { config } from './config.js'
 import { RateLimiter } from './security/rateLimiter.js'
 import { getClientIp } from './security/ipUtils.js'
+import { handleStatusRequest } from './services/internalTaskRoute.js'
 
 const { port: PORT, allowedOrigin: ALLOWED_ORIGIN, trustProxy: TRUST_PROXY, maxBodyBytes: MAX_BODY_BYTES, rateLimit: RATE_LIMIT } =
   config.verifyServer
@@ -55,7 +56,36 @@ export function startVerifyServer(discordClient) {
       res.end()
       return
     }
-
+    if (req.method === 'POST' && req.url === '/internal/tasks/status') {
+      try {
+        req.setEncoding('utf8')
+        let ibody = ''
+        for await (const chunk of req) ibody += chunk
+        let idata
+        try {
+          idata = JSON.parse(ibody)
+        } catch {
+          res.writeHead(400)
+          res.end(JSON.stringify({ ok: false, message: 'Invalid JSON' }))
+          return
+        }
+        const r = await handleStatusRequest({
+          headers: req.headers,
+          body: idata,
+          client: discordClient,
+          secret: process.env.BOT_INTERNAL_SECRET || '',
+        })
+        res.writeHead(r.status)
+        res.end(JSON.stringify(r.body))
+      } catch (e) {
+        console.error('[internal] status route:', e?.message ?? e)
+        if (!res.headersSent) {
+          res.writeHead(500)
+          res.end(JSON.stringify({ ok: false, message: 'internal error' }))
+        }
+      }
+      return
+    }
     if (req.method !== 'POST' || req.url !== '/verify') {
       send(res, 404, { ok: false, message: 'Not found' })
       return
@@ -116,6 +146,7 @@ export function startVerifyServer(discordClient) {
 
   server.listen(PORT, () => {
     console.log(`Verify callback server on port ${PORT}`)
+    console.log(process.env.BOT_INTERNAL_SECRET ? '[internal] status route enabled' : '[internal] status route disabled: BOT_INTERNAL_SECRET unset')
   })
   return server
 }

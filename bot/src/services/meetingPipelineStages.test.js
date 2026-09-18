@@ -1,0 +1,790 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { stageRunners, resolveRepoSlug } from './meetingPipelineStages.js'
+
+test('resolveRepoSlug parses ssh + https', () => {
+  assert.deepEqual(resolveRepoSlug({ url: 'git@github.com:granjur/bot.git' }), { owner: 'granjur', repo: 'bot' })
+  assert.deepEqual(resolveRepoSlug({ url: 'https://github.com/granjur/bot' }), { owner: 'granjur', repo: 'bot' })
+  assert.equal(resolveRepoSlug({ url: '' }), null)
+  assert.equal(resolveRepoSlug(null), null)
+  assert.equal(resolveRepoSlug({ url: 'https://gitlab.com/a/b' }), null)
+})
+
+test('issue_syncing advances with no github-flagged mirrored tasks', async () => {
+  let called = false
+  const csaasClient = { issueSync: async () => { called = true; return { issues: [] } } }
+  const db = { repository: { findMany: async () => [] } }
+  const job = { id: 'j', csaasMeetingId: 'm', guildConfigId: 'g', dataJson: { mirrored: [{ csaasTaskId: 'a', github: false }], tasks: [] } }
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient })
+  assert.equal(called, false)
+  assert.notEqual(out.advance, false)
+  assert.deepEqual(out.patch, {})
+})
+
+test('issue_syncing happy path syncs issues and updates tasks by externalId', async () => {
+  const updates = []
+  const syncArgs = []
+  const csaasClient = {
+    issueSync: async (mid, opts) => {
+      syncArgs.push([mid, opts])
+      return { issues: [{ task_id: 'a', url: 'https://github.com/granjur/bot/issues/7', number: 7 }] }
+    },
+  }
+  const db = {
+    repository: { findMany: async () => [{ name: 'granjur', url: 'https://github.com/granjur/bot' }] },
+    task: { update: async (opts) => { updates.push(opts); return {} } },
+  }
+  const job = {
+    id: 'j', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 'a', project: 'granjur' }],
+      mirrored: [{ csaasTaskId: 'a', dbTaskId: 'db1', github: true }],
+    },
+  }
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient })
+  assert.equal(syncArgs[0][0], 'm')
+  assert.deepEqual(syncArgs[0][1], { owner: 'granjur', repo: 'bot', taskIds: ['a'] })
+  assert.equal(updates[0].where.externalId, 'csaas:a')
+  assert.equal(updates[0].data.externalIssueUrl, 'https://github.com/granjur/bot/issues/7')
+  assert.equal(updates[0].data.externalIssueNumber, 7)
+  assert.notEqual(out.advance, false)
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [])
+  assert.equal(out.patch.dataJson.mirrored[0].externalIssueUrl, 'https://github.com/granjur/bot/issues/7')
+  assert.equal(out.patch.dataJson.mirrored[0].externalIssueNumber, 7)
+})
+
+test('issue_syncing records an error for a project with no resolvable repo', async () => {
+  let called = false
+  const csaasClient = { issueSync: async () => { called = true; return { issues: [] } } }
+  const db = { repository: { findMany: async () => [] }, task: { update: async () => ({}) } }
+  const job = {
+    id: 'j', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 'a', project: 'ghost' }],
+      mirrored: [{ csaasTaskId: 'a', github: true }],
+    },
+  }
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient })
+  assert.equal(called, false)
+  assert.equal(out.patch.dataJson.issueSyncErrors.length, 1)
+  assert.match(out.patch.dataJson.issueSyncErrors[0].reason, /no repo for project ghost/)
+  assert.notEqual(out.advance, false)
+})
+
+test('done edits the review message and terminates', async () => {
+  let edited = null
+  const msg = { edit: async (p) => { edited = p } }
+  const channel = { id: 'tc1', send: async () => ({}), messages: { fetch: async () => msg } }
+  const client = { channels: { fetch: async () => channel }, user: { id: 'bot' } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g', reviewMessageId: 'rm1',
+    dataJson: {
+      tasks: [{ task_id: 'a', goal_of_task: 'A' }],
+      review: { tasks: [{ taskId: 'a', rejected: false, github: true }] },
+      mirrored: [{ csaasTaskId: 'a', github: true, title: 'A' }],
+      issueSyncErrors: [],
+    },
+  }
+  const out = await stageRunners.done({ job, db, client, csaasClient: {} })
+  assert.equal(out.advance, false)
+  assert.deepEqual(out.patch, { status: 'done' })
+  assert.ok(edited)
+  assert.ok(Array.isArray(edited.embeds))
+  assert.deepEqual(edited.components, [])
+})
+
+test('done does not throw when no channel resolves', async () => {
+  const client = { channels: { fetch: async () => { throw new Error('no channel') } } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => null },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', guildConfigId: 'g', reviewMessageId: 'rm1',
+    dataJson: { tasks: [], review: { tasks: [] }, mirrored: [] },
+  }
+  const out = await stageRunners.done({ job, db, client, csaasClient: {} })
+  assert.equal(out.advance, false)
+  assert.deepEqual(out.patch, { status: 'done' })
+})
+
+test('transcribing uploads only not-yet-uploaded files, idempotent', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-'))
+  const f1 = path.join(dir, 'ali.ogg'); fs.writeFileSync(f1, 'aaa')
+  const f2 = path.join(dir, 'sara.ogg'); fs.writeFileSync(f2, 'bbb')
+
+  const uploaded = []
+  const csaasClient = {
+    transcribeSegment: async (mid, { filename, segmentIndex }) => {
+      uploaded.push({ filename, segmentIndex }); return { preview: 'ok' }
+    },
+  }
+  const db = {
+    meetingRecording: { findMany: async () => [
+      { id: 'r1', filePath: f1, fileName: 'ali.ogg', startedAt: '2026-01-01T00:00:00Z' },
+      { id: 'r2', filePath: f2, fileName: 'sara.ogg', startedAt: '2026-01-01T00:01:00Z' },
+    ] },
+  }
+  const job = { id: 'j', csaasMeetingId: 'm', dataJson: { uploaded: ['r1'] } }
+  const out = await stageRunners.transcribing({ job, db, csaasClient, client: {} })
+  assert.deepEqual(uploaded.map((u) => u.filename), ['sara.ogg'])
+  assert.equal(uploaded[0].segmentIndex, 1) // uploaded.length was 1
+  assert.deepEqual(out.patch.dataJson.uploaded.sort(), ['r1', 'r2'])
+})
+
+test('transcribing one successful upload per tick, advance false on partial progress', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-'))
+  const f1 = path.join(dir, 'ali.ogg'); fs.writeFileSync(f1, 'aaa')
+  const f2 = path.join(dir, 'sara.ogg'); fs.writeFileSync(f2, 'bbb')
+
+  const calls = []
+  const csaasClient = {
+    transcribeSegment: async (mid, opts) => { calls.push(opts); return {} },
+  }
+  const db = {
+    meetingRecording: { findMany: async () => [
+      { id: 'r2', filePath: f2, fileName: 'sara.ogg', startedAt: '2026-01-01T00:01:00Z' },
+      { id: 'r1', filePath: f1, fileName: 'ali.ogg', startedAt: '2026-01-01T00:00:00Z' },
+    ] },
+  }
+  const job = { id: 'j', csaasMeetingId: 'm', dataJson: {} }
+
+  const t1 = await stageRunners.transcribing({ job, db, csaasClient, client: {} })
+  assert.equal(t1.advance, false)
+  assert.deepEqual(calls.map((c) => c.filename), ['ali.ogg']) // sorted by startedAt asc
+  assert.equal(calls[0].segmentIndex, 0)
+  assert.deepEqual(t1.patch.dataJson.uploaded, ['r1'])
+
+  const job2 = { ...job, dataJson: t1.patch.dataJson }
+  const t2 = await stageRunners.transcribing({ job: job2, db, csaasClient, client: {} })
+  assert.equal(t2.advance, false)
+  assert.deepEqual(calls.map((c) => c.filename), ['ali.ogg', 'sara.ogg'])
+  assert.equal(calls[1].segmentIndex, 1)
+
+  const job3 = { ...job, dataJson: t2.patch.dataJson }
+  const t3 = await stageRunners.transcribing({ job: job3, db, csaasClient, client: {} })
+  assert.notEqual(t3.advance, false) // advance to analyzing
+  assert.deepEqual(t3.patch.dataJson.uploaded.sort(), ['r1', 'r2'])
+})
+
+test('transcribing records unreadable files in missing, keeps segment indexes contiguous', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-'))
+  const f2 = path.join(dir, 'sara.ogg'); fs.writeFileSync(f2, 'bbb')
+  const gone = path.join(dir, 'nope.ogg')
+
+  const calls = []
+  const csaasClient = {
+    transcribeSegment: async (mid, opts) => { calls.push(opts); return {} },
+  }
+  const db = {
+    meetingRecording: { findMany: async () => [
+      { id: 'r1', filePath: gone, fileName: 'nope.ogg', startedAt: '2026-01-01T00:00:00Z' },
+      { id: 'r2', filePath: f2, fileName: 'sara.ogg', startedAt: '2026-01-01T00:01:00Z' },
+    ] },
+  }
+  const job = { id: 'j', csaasMeetingId: 'm', dataJson: {} }
+  const out = await stageRunners.transcribing({ job, db, csaasClient, client: {} })
+  // missing file skipped in same tick, second file uploaded
+  assert.deepEqual(out.patch.dataJson.missing, ['r1'])
+  assert.deepEqual(out.patch.dataJson.uploaded, ['r2'])
+  assert.equal(calls[0].segmentIndex, 0) // missing files do not consume an index — first success is index 0
+  assert.equal(out.advance, false)
+})
+
+test('transcribing throws when every file is missing', async () => {
+  const db = {
+    meetingRecording: { findMany: async () => [
+      { id: 'r1', filePath: '/no/such/a.ogg', fileName: 'a.ogg', startedAt: '2026-01-01T00:00:00Z' },
+      { id: 'r2', filePath: '/no/such/b.ogg', fileName: 'b.ogg', startedAt: '2026-01-01T00:01:00Z' },
+    ] },
+  }
+  const job = { id: 'j', csaasMeetingId: 'm', dataJson: {} }
+  const csaasClient = { transcribeSegment: async () => { throw new Error('should not be called') } }
+  await assert.rejects(
+    () => stageRunners.transcribing({ job, db, csaasClient, client: {} }),
+    /all meeting recording files missing on disk/,
+  )
+})
+
+test('stageRunners still exposes the created stage', () => {
+  assert.equal(typeof stageRunners.created, 'function')
+})
+
+test('analyzing/generating_tasks/assigning store their results on dataJson', async () => {
+  const csaasClient = {
+    analyze: async () => ({ analysis: { summary: 's' } }),
+    generateTasks: async () => ({ tasks: [{ task_id: 't1', goal_of_task: 'g' }] }),
+    assign: async () => ({ assignments: [{ task_id: 't1', assignee_ref: '11', quote: 'q', confidence: 0.9 }] }),
+  }
+  const db = { meetingRecording: { findMany: async () => [] } }
+  let job = { id: 'j', meetingId: 'M', csaasMeetingId: 'm', dataJson: { roster: [{ ref: '11', displayName: 'Ali', aliases: ['Ali'] }] } }
+
+  let out = await stageRunners.analyzing({ job, db, csaasClient, client: {} })
+  Object.assign(job.dataJson, out.patch.dataJson)
+  assert.equal(job.dataJson.analysis.summary, 's')
+
+  out = await stageRunners.generating_tasks({ job, db, csaasClient, client: {} })
+  Object.assign(job.dataJson, out.patch.dataJson)
+  assert.equal(job.dataJson.tasks[0].task_id, 't1')
+
+  out = await stageRunners.assigning({ job, db, csaasClient, client: {} })
+  Object.assign(job.dataJson, out.patch.dataJson)
+  assert.equal(job.dataJson.assignments[0].assignee_ref, '11')
+
+  // prior keys survive, assigning does not block
+  assert.deepEqual(job.dataJson.roster[0].ref, '11')
+  assert.notEqual(out.block, true)
+})
+
+function reviewJob() {
+  return {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      title: 'T',
+      tasks: [{ task_id: 'a', goal_of_task: 'A' }],
+      assignments: [{ task_id: 'a', assignee_ref: '11' }],
+      roster: [{ ref: '11', displayName: 'Ali', aliases: [] }],
+    },
+  }
+}
+
+test('awaiting_review posts a message and blocks', async () => {
+  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
+  const sent = []
+  const channel = { send: async (payload) => { sent.push(payload); return { id: 'msg1' } } }
+  const fetched = []
+  const client = { channels: { fetch: async (id) => { fetched.push(id); return channel } } }
+  const csaasClient = { fetchNotes: async () => ({ notes: 'Notes body', html: '<html></html>' }) }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1', createdAt: '2026-01-01' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    meetingRecording: { findMany: async () => [] },
+  }
+  const out = await stageRunners.awaiting_review({ job: reviewJob(), db, csaasClient, client })
+  assert.equal(out.block, true)
+  assert.equal(out.patch.reviewMessageId, 'msg1')
+  assert.equal(sent.length, 1)
+  assert.equal(fetched[0], 'tc1')
+  assert.equal(typeof out.patch.dataJson.review, 'object')
+  assert.ok(Array.isArray(out.patch.dataJson.review.tasks))
+  assert.equal(out.patch.dataJson.notes, 'Notes body')
+})
+
+test('awaiting_review posts even without html report', async () => {
+  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
+  const sent = []
+  const channel = { send: async (payload) => { sent.push(payload); return { id: 'msg2' } } }
+  const client = { channels: { fetch: async () => channel } }
+  const csaasClient = { fetchNotes: async () => ({ notes: 'Only notes' }) }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    meetingRecording: { findMany: async () => [] },
+  }
+  const out = await stageRunners.awaiting_review({ job: reviewJob(), db, csaasClient, client })
+  assert.equal(out.block, true)
+  assert.equal(out.patch.reviewMessageId, 'msg2')
+  assert.equal(sent.length, 1)
+  const desc = sent[0].embeds[0].data.description
+  assert.ok(!/Full report:/.test(desc))
+})
+
+test('awaiting_review still blocks when channel resolution fails', async () => {
+  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
+  const client = { channels: { fetch: async () => { throw new Error('no channel') } } }
+  const csaasClient = { fetchNotes: async () => ({ notes: 'N', html: '<html></html>' }) }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => null },
+    meetingRecording: { findMany: async () => [] },
+  }
+  const out = await stageRunners.awaiting_review({ job: reviewJob(), db, csaasClient, client })
+  assert.equal(out.block, true)
+  assert.equal(out.patch.reviewMessageId, undefined)
+  assert.equal(typeof out.patch.dataJson.review, 'object')
+})
+
+test('approved reject path calls csaas approve(rejected) and terminates', async () => {
+  const calls = []
+  const csaasClient = { approve: async (mid, opts) => { calls.push([mid, opts]); return { tasks: [] } } }
+  const job = { id: 'j', csaasMeetingId: 'm', dataJson: { review: { meetingRejected: true } } }
+  const out = await stageRunners.approved({ job, db: {}, client: {}, csaasClient })
+  assert.deepEqual(calls, [['m', { decision: 'rejected' }]])
+  assert.equal(out.advance, false)
+  assert.deepEqual(out.patch, { stage: 'done', status: 'done' })
+})
+
+test('approved happy path approves with skipGithub and advances', async () => {
+  const calls = []
+  const csaasClient = { approve: async (mid, opts) => { calls.push([mid, opts]); return { tasks: [] } } }
+  const job = { id: 'j', csaasMeetingId: 'm', dataJson: { review: { tasks: [] } } }
+  const out = await stageRunners.approved({ job, db: {}, client: {}, csaasClient })
+  assert.deepEqual(calls, [['m', { decision: 'approved', skipGithub: true }]])
+  assert.notEqual(out.advance, false)
+  assert.deepEqual(out.patch, {})
+})
+
+test('approved happy path lets an approve error propagate for retry', async () => {
+  const csaasClient = { approve: async () => { throw new Error('csaas down') } }
+  const job = { id: 'j', csaasMeetingId: 'm', dataJson: { review: { tasks: [] } } }
+  await assert.rejects(
+    () => stageRunners.approved({ job, db: {}, client: {}, csaasClient }),
+    /csaas down/,
+  )
+})
+
+test('mirrored creates a task per non-rejected review task and pings assignees', async () => {
+  const created = []
+  const sent = []
+  const channel = { id: 'tc1', send: async (m) => { sent.push(m); return { id: 'x' } } }
+  const client = { user: { id: 'bot' }, channels: { fetch: async () => channel } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findMany: async () => [{ id: 'r1', name: 'granjur' }] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
+    task: { findFirst: async () => null, create: async ({ data }) => { created.push(data); return { id: `db${created.length}` } } },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [
+        { task_id: 'a', goal_of_task: 'Do A', project: 'granjur' },
+        { task_id: 'b', goal_of_task: 'Do B' },
+      ],
+      review: {
+        tasks: [
+          { taskId: 'a', assigneeRef: '11', github: true, rejected: false },
+          { taskId: 'b', assigneeRef: '11', rejected: true },
+        ],
+      },
+    },
+  }
+  const out = await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(created.length, 1)
+  assert.equal(created[0].externalId, 'csaas:a')
+  assert.equal(created[0].repositoryId, 'r1')
+  assert.equal(created[0].discordChannelId, 'tc1')
+  assert.equal(out.patch.dataJson.mirrored.length, 1)
+  assert.equal(out.patch.dataJson.mirrored[0].dbTaskId, 'db1')
+  assert.equal(out.patch.dataJson.mirrored[0].title, 'Do A')
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\*/)
+})
+
+test('mirrored is idempotent on re-run: reuses existing task, no re-ping when pinged', async () => {
+  const created = []
+  const sent = []
+  const channel = { id: 'tc1', send: async (m) => { sent.push(m); return { id: 'x' } } }
+  const client = { user: { id: 'bot' }, channels: { fetch: async () => channel } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
+    task: {
+      findFirst: async ({ where }) =>
+        where.externalId === 'csaas:a' ? { id: 'existing1' } : null,
+      create: async ({ data }) => { created.push(data); return { id: 'new' } },
+    },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      pinged: true,
+      tasks: [{ task_id: 'a', goal_of_task: 'Do A' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: '11', rejected: false }] },
+    },
+  }
+  const out = await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(created.length, 0) // existing row reused
+  assert.equal(out.patch.dataJson.mirrored.length, 1)
+  assert.equal(out.patch.dataJson.mirrored[0].dbTaskId, 'existing1')
+  assert.equal(sent.length, 0) // already pinged -> no re-ping
+})
+
+test('mirrored posts an unassigned summary line', async () => {
+  const sent = []
+  const channel = { id: 'tc1', send: async (m) => { sent.push(m); return { id: 'x' } } }
+  const client = { user: { id: 'bot' }, channels: { fetch: async () => channel } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => null },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
+    task: { findFirst: async () => null, create: async () => ({ id: 'db1' }) },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 'a', goal_of_task: 'Do A' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: null, rejected: false }] },
+    },
+  }
+  await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /1 task\(s\) from this meeting are unassigned/)
+})
+
+test('mirrored gives each assigned task its own channel, DMs the assignee, and repoints the row', async () => {
+  const created = []
+  const updated = []
+  const sent = []
+  const dms = []
+  const guildCreates = []
+  const chanSends = []
+  const reviewChannel = { id: 'tc1', send: async (m) => { sent.push(m); return { id: 'x' } } }
+  const guild = {
+    id: 'g1',
+    channels: {
+      cache: { find: () => null },
+      create: async (opts) => {
+        guildCreates.push(opts)
+        if (opts.type === 4) return { id: 'cat1', name: opts.name }
+        return { id: `task-${guildCreates.length}`, send: async (m) => { chanSends.push(m); return { id: 'm' } } }
+      },
+    },
+  }
+  reviewChannel.guild = guild
+  const client = {
+    user: { id: 'bot' },
+    channels: { fetch: async () => reviewChannel },
+    users: { fetch: async (id) => ({ send: async (m) => dms.push([id, m]) }) },
+  }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
+    task: {
+      findFirst: async () => null,
+      create: async ({ data }) => { created.push(data); return { id: 'dbtask1' } },
+      update: async ({ where, data }) => { updated.push([where, data]); return {} },
+    },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      title: 'Sprint sync',
+      approvedBy: '99',
+      tasks: [{ task_id: 'a', goal_of_task: 'Do A' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: '11', rejected: false }] },
+    },
+  }
+  const out = await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+
+  // A private channel per assigned task, holding the assignee and the approver.
+  const taskChan = guildCreates[1]
+  assert.equal(taskChan.name, 'feature-btask1')
+  assert.deepEqual(taskChan.permissionOverwrites.slice(1).map((o) => o.id), ['11', '99'])
+  assert.match(chanSends[0].content, /<@11> <@99>/)
+
+  // The row now points at its own channel, not the review channel.
+  assert.equal(created[0].discordChannelId, 'tc1')
+  assert.deepEqual(updated[0][1], { discordChannelId: 'task-2' })
+  assert.equal(out.patch.dataJson.mirrored[0].taskChannelId, 'task-2')
+
+  // And the assignee is DMed a pointer at it.
+  assert.equal(dms.length, 1)
+  assert.equal(dms[0][0], '11')
+  assert.match(dms[0][1], /<#task-2>/)
+
+  // The review-channel summary links the new channel.
+  assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\* \(<#task-2>\)/)
+})
+
+test('mirrored does not create a second channel when one already exists', async () => {
+  const guildCreates = []
+  const dms = []
+  const reviewChannel = { id: 'tc1', send: async () => ({ id: 'x' }) }
+  reviewChannel.guild = {
+    id: 'g1',
+    channels: { cache: { find: () => null }, create: async (o) => { guildCreates.push(o); return { id: 'c', send: async () => ({}) } } },
+  }
+  const client = {
+    user: { id: 'bot' },
+    channels: { fetch: async () => reviewChannel },
+    users: { fetch: async (id) => ({ send: async (m) => dms.push([id, m]) }) },
+  }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
+    task: { findFirst: async () => ({ id: 'dbtask1' }), create: async () => ({ id: 'nope' }), update: async () => ({}) },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      pinged: true,
+      tasks: [{ task_id: 'a', goal_of_task: 'Do A' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: '11', rejected: false }] },
+      mirrored: [{ csaasTaskId: 'a', dbTaskId: 'dbtask1', taskChannelId: 'already' }],
+    },
+  }
+  const out = await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(guildCreates.length, 0)
+  assert.equal(dms.length, 0)
+  assert.equal(out.patch.dataJson.mirrored[0].taskChannelId, 'already')
+})
+
+test('mirrored matches numeric csaas task ids against string review ids', async () => {
+  const created = []
+  const guildCreates = []
+  const reviewChannel = { id: 'tc1', send: async () => ({ id: 'x' }) }
+  reviewChannel.guild = {
+    id: 'g1',
+    channels: {
+      cache: { find: () => null },
+      create: async (o) => {
+        guildCreates.push(o)
+        return { id: `c${guildCreates.length}`, send: async () => ({}) }
+      },
+    },
+  }
+  const client = {
+    user: { id: 'bot' },
+    channels: { fetch: async () => reviewChannel },
+    users: { fetch: async () => ({ send: async () => {} }) },
+  }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
+    task: {
+      findFirst: async () => null,
+      create: async ({ data }) => { created.push(data); return { id: 'dbA', assigneeIds: data.assigneeIds } },
+      update: async () => ({}),
+    },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 2, goal_of_task: 'Fix the APIs' }],
+      review: { tasks: [{ taskId: '2', assigneeRef: '11', rejected: false }] },
+    },
+  }
+  const out = await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(created.length, 1)
+  assert.equal(created[0].externalId, 'csaas:2')
+  assert.deepEqual(created[0].assigneeIds, ['11'])
+  assert.equal(out.patch.dataJson.mirrored[0].taskChannelId, 'c2')
+})
+
+test('mirrored backfills assigneeIds onto a row mirrored before it had an assignee', async () => {
+  const updates = []
+  const reviewChannel = { id: 'tc1', send: async () => ({ id: 'x' }) }
+  reviewChannel.guild = {
+    id: 'g1',
+    channels: { cache: { find: () => null }, create: async () => ({ id: 'c', send: async () => ({}) }) },
+  }
+  const client = {
+    user: { id: 'bot' },
+    channels: { fetch: async () => reviewChannel },
+    users: { fetch: async () => ({ send: async () => {} }) },
+  }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
+    task: {
+      findFirst: async () => ({ id: 'existing', assigneeIds: [] }),
+      create: async () => { throw new Error('should not create') },
+      update: async ({ where, data }) => { updates.push([where, data]); return {} },
+    },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 2, goal_of_task: 'Fix the APIs' }],
+      review: { tasks: [{ taskId: '2', assigneeRef: '11', rejected: false }] },
+    },
+  }
+  await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.deepEqual(updates[0], [{ id: 'existing' }, { assigneeIds: ['11'] }])
+})
+
+test('created reuses the CSAAS meeting made when recording started', async () => {
+  let created = false
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', csaasMeetingId: 'csaas-existing' }) },
+    meetingRecording: { findMany: async () => [{ filePath: '/r/abc-standup/a.ogg', startedAt: new Date('2026-09-07T10:00:00Z') }] },
+    guildMember: { findMany: async () => [] },
+    // guildIdFor's real lookup (getGuildConfigById) is a raw, unmocked network
+    // call unrelated to this fake db — createdStage's guildIdFor(id, db) checks
+    // for this first so the test never touches the real database.
+    getGuildConfigById: async () => ({ guildId: 'g' }),
+  }
+  const csaasClient = { createMeeting: async () => { created = true; return { meeting_id: 'csaas-new' } } }
+  const client = { guilds: { fetch: async () => ({ id: 'g', members: { fetch: async () => ({}) } }) } }
+  const out = await stageRunners.created({ job: { meetingId: 'm', guildConfigId: 'g' }, db, client, csaasClient })
+  assert.equal(created, false, 'must not create a second CSAAS meeting')
+  assert.equal(out.patch.csaasMeetingId, 'csaas-existing')
+})
+
+test('created calls createMeeting when no CSAAS meeting was made at recording start', async () => {
+  let created = false
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', csaasMeetingId: null }) },
+    meetingRecording: { findMany: async () => [{ filePath: '/r/abc-standup/a.ogg', startedAt: new Date('2026-09-07T10:00:00Z') }] },
+    guildMember: { findMany: async () => [] },
+    getGuildConfigById: async () => ({ guildId: 'g' }),
+  }
+  const csaasClient = { createMeeting: async () => { created = true; return { meeting_id: 'csaas-new' } } }
+  const client = { guilds: { fetch: async () => ({ id: 'g', members: { fetch: async () => ({}) } }) } }
+  const out = await stageRunners.created({ job: { meetingId: 'm', guildConfigId: 'g' }, db, client, csaasClient })
+  assert.equal(created, true, 'must create a CSAAS meeting when none exists yet')
+  assert.equal(out.patch.csaasMeetingId, 'csaas-new')
+})
+
+test('transcribing takes the live path when there are enough utterances', async () => {
+  let uploaded = 0
+  let liveArgs = null
+  const db = {
+    meetingUtterance: {
+      countWithText: async () => 7,
+      findMany: async () => ([
+        { sequence: 1, speakerName: 'A', text: 'one', durationMs: 1000, startedAt: new Date('2026-09-07T10:00:00Z') },
+        { sequence: 2, speakerName: 'B', text: 'two', durationMs: 1000, startedAt: new Date('2026-09-07T10:00:04Z') },
+      ]),
+    },
+    meetingRecording: { findMany: async () => [{ id: 'r1', filePath: '/nope.ogg', fileName: 'a.ogg' }] },
+  }
+  const csaasClient = {
+    transcribeSegment: async () => { uploaded += 1 },
+    analyzeLive: async (mid, args) => { liveArgs = [mid, args]; return { summary: 'ok' } },
+  }
+  const job = { meetingId: 'm', csaasMeetingId: 'c', dataJson: {} }
+  const out = await stageRunners.transcribing({ job, db, csaasClient })
+
+  assert.equal(uploaded, 0, 'the whole-file path is skipped')
+  assert.equal(liveArgs[0], 'c')
+  assert.equal(liveArgs[1].meetingNotes.segment_0.transcription, 'A: one\nB: two')
+  assert.equal(out.patch.dataJson.liveTranscript, true)
+  assert.equal(out.patch.dataJson.analysis.summary, 'ok')
+  assert.notEqual(out.advance, false, 'the stage completes in one tick')
+})
+
+test('too few utterances falls back to the whole-file upload', async () => {
+  let uploaded = 0
+  let liveCalled = false
+  const db = {
+    meetingUtterance: { countWithText: async () => 4, findMany: async () => [] },
+    meetingRecording: { findMany: async () => [{ id: 'r1', filePath: '/nope.ogg', fileName: 'a.ogg' }] },
+  }
+  const csaasClient = {
+    transcribeSegment: async () => { uploaded += 1 },
+    analyzeLive: async () => { liveCalled = true; return {} },
+  }
+  const job = { meetingId: 'm', csaasMeetingId: 'c', dataJson: {} }
+  await assert.rejects(
+    () => stageRunners.transcribing({ job, db, csaasClient }),
+    /all meeting recording files missing on disk/,
+    'it really did run the old path (the fake file does not exist)'
+  )
+  assert.equal(liveCalled, false)
+  assert.equal(uploaded, 0)
+})
+
+test('an analyze-live failure falls back rather than failing the meeting', async () => {
+  const db = {
+    meetingUtterance: {
+      countWithText: async () => 9,
+      findMany: async () => ([{ sequence: 1, speakerName: 'A', text: 'one', durationMs: 1000, startedAt: new Date() }]),
+    },
+    meetingRecording: { findMany: async () => [] },
+  }
+  const csaasClient = {
+    transcribeSegment: async () => {},
+    analyzeLive: async () => { throw new Error('csaas down') },
+  }
+  const job = { meetingId: 'm', csaasMeetingId: 'c', dataJson: {} }
+  await assert.rejects(
+    () => stageRunners.transcribing({ job, db, csaasClient }),
+    /all meeting recording files missing on disk/,
+    'fell through to the whole-file path, which then found no recordings'
+  )
+})
+
+test('a failed analyze-live is not retried on every fallback tick', async () => {
+  // The fallback uploads one file per tick and returns advance:false, so the
+  // stage is re-entered once per speaker. countWithText never drops back below
+  // the threshold, so without a sticky marker every tick would run analyze-live
+  // again — each one a blocking 30-90 s analysis that rewrites the transcript the
+  // fallback is building at the same time.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-'))
+  const f1 = path.join(dir, 'ali.ogg'); fs.writeFileSync(f1, 'aaa')
+  const f2 = path.join(dir, 'sara.ogg'); fs.writeFileSync(f2, 'bbb')
+
+  let liveCalls = 0
+  const db = {
+    meetingUtterance: {
+      countWithText: async () => 9,
+      findMany: async () => ([{ sequence: 1, speakerName: 'A', text: 'one', durationMs: 1000, startedAt: new Date() }]),
+    },
+    meetingRecording: { findMany: async () => [
+      { id: 'r1', filePath: f1, fileName: 'ali.ogg', startedAt: '2026-01-01T00:00:00Z' },
+      { id: 'r2', filePath: f2, fileName: 'sara.ogg', startedAt: '2026-01-01T00:01:00Z' },
+    ] },
+  }
+  const csaasClient = {
+    transcribeSegment: async () => ({}),
+    analyzeLive: async () => { liveCalls += 1; throw new Error('claude quota exceeded') },
+  }
+
+  const job = { id: 'j', meetingId: 'm', csaasMeetingId: 'c', dataJson: {} }
+  const t1 = await stageRunners.transcribing({ job, db, csaasClient, client: {} })
+  assert.equal(liveCalls, 1)
+  assert.equal(t1.advance, false)
+  assert.equal(t1.patch.dataJson.liveTranscriptFailed, true, 'the failure is recorded on the job')
+  assert.deepEqual(t1.patch.dataJson.uploaded, ['r1'], 'the tick still made its usual progress')
+
+  const t2 = await stageRunners.transcribing({ job: { ...job, dataJson: t1.patch.dataJson }, db, csaasClient, client: {} })
+  assert.equal(liveCalls, 1, 'the live path is not attempted again')
+  assert.deepEqual(t2.patch.dataJson.uploaded, ['r1', 'r2'])
+  assert.equal(t2.patch.dataJson.liveTranscriptFailed, true, 'the marker survives later ticks')
+
+  const t3 = await stageRunners.transcribing({ job: { ...job, dataJson: t2.patch.dataJson }, db, csaasClient, client: {} })
+  assert.equal(liveCalls, 1)
+  assert.notEqual(t3.advance, false, 'the stage still completes')
+})
+
+test('analyzing does not call CSAAS twice when the live path already analysed', async () => {
+  let called = false
+  const csaasClient = { analyze: async () => { called = true; return { analysis: {} } } }
+  const job = { csaasMeetingId: 'c', dataJson: { liveTranscript: true, analysis: { summary: 'ok' } } }
+  const out = await stageRunners.analyzing({ job, csaasClient, db: {} })
+  assert.equal(called, false)
+  assert.equal(out.patch.dataJson.analysis.summary, 'ok')
+})
+
+test('analyzing still calls CSAAS on the fallback path', async () => {
+  let called = false
+  const csaasClient = { analyze: async () => { called = true; return { analysis: { summary: 'from-analyze' } } } }
+  const out = await stageRunners.analyzing({ job: { csaasMeetingId: 'c', dataJson: {} }, csaasClient, db: {} })
+  assert.equal(called, true)
+  assert.equal(out.patch.dataJson.analysis.summary, 'from-analyze')
+})

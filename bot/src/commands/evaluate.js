@@ -7,6 +7,7 @@ import {
 import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
 import { getCommits } from '../services/github.js'
 import { EPHEMERAL } from '../constants.js'
+import { memberPassesRoleGate, roleIdsAreStale, SENIOR_ROLE_NAMES } from '../utils/roleGate.js'
 
 export const data = new SlashCommandBuilder()
   .setName('evaluate')
@@ -19,10 +20,10 @@ export async function execute(interaction) {
   const cfg = await getOrCreateGuildConfig(guild.id)
   const member = await guild.members.fetch(interaction.user.id).catch(() => null)
   const seniorIds = ensureStringArray(cfg.seniorRoleIds)
-  const isSenior =
-    (seniorIds.length && member?.roles.cache.some((r) => seniorIds.includes(r.id))) ||
-    member?.permissions.has('Administrator')
-  if (!isSenior) {
+  if (roleIdsAreStale(guild, seniorIds)) {
+    console.warn(`[evaluate] guildconfig.seniorRoleIds names no live role in ${guild.id} — falling back to role names; re-run /init`)
+  }
+  if (!memberPassesRoleGate(guild, member, seniorIds, SENIOR_ROLE_NAMES)) {
     return interaction.editReply({ content: 'Only Senior Dev, CEO, or Server Manager can use this command.' })
   }
 

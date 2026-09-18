@@ -1,5 +1,6 @@
 import { query, queryOne } from "./connection.js";
 import { id, ensureStringArray, toJson } from "./helpers.js";
+import { buildTaskInsertValues } from "./taskInsert.helpers.js";
 
 export { ensureStringArray } from "./helpers.js";
 
@@ -108,7 +109,11 @@ async function guildMemberFindMany({ where }) {
     sql += " AND status = ?";
     params.push(where.status);
   }
-  sql += " ORDER BY createdAt ASC LIMIT 25";
+  if (where?.verifiedAt && typeof where.verifiedAt === "object" && "not" in where.verifiedAt && where.verifiedAt.not === null) {
+    sql += " AND verifiedAt IS NOT NULL";
+  }
+  sql += " ORDER BY createdAt ASC";
+  if (!where?.all) sql += " LIMIT 25";
   return query(sql, params);
 }
 
@@ -129,32 +134,27 @@ async function guildMemberFindUnique({ where }) {
 async function guildMemberUpsert({ where, create, update }) {
   const existing = await guildMemberFindUnique({ where });
   if (existing) {
-    await query(
-      "UPDATE `guildmember` SET email = ?, verifiedAt = ?, status = ?, updatedAt = CURRENT_TIMESTAMP(3) WHERE id = ?",
-      [
-        update.email ?? existing.email,
-        update.verifiedAt ?? existing.verifiedAt,
-        update.status ?? existing.status,
-        existing.id,
-      ],
-    );
+    const { sets, vals } = guildMemberUpdateSets({
+      email: update.email ?? existing.email,
+      status: update.status ?? existing.status,
+      displayName: update.displayName,
+      username: update.username,
+      roleNames: update.roleNames,
+    });
+    sets.push("verifiedAt = ?", "updatedAt = CURRENT_TIMESTAMP(3)");
+    vals.push(update.verifiedAt ?? existing.verifiedAt);
+    vals.push(existing.id);
+    await query(`UPDATE \`guildmember\` SET ${sets.join(", ")} WHERE id = ?`, vals);
     return guildMemberFindUnique({ where });
   }
   const pk = id();
   const cfg = await getOrCreateGuildConfig(create.guildId);
-  await query(
-    `INSERT INTO \`guildmember\` (id, guildConfigId, discordId, email, verifiedAt, status, roleIds)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [
-      pk,
-      cfg.id,
-      create.discordId,
-      create.email ?? null,
-      create.verifiedAt ?? null,
-      create.status ?? "pending",
-      toJson(create.roleIds || []),
-    ],
-  );
+  const { sql, params } = guildMemberInsertSql({
+    id: pk,
+    guildConfigId: cfg.id,
+    ...create,
+  });
+  await query(sql, params);
   return guildMemberFindUnique({
     where: {
       guildId_discordId: {
@@ -165,28 +165,43 @@ async function guildMemberUpsert({ where, create, update }) {
   });
 }
 
-async function guildMemberUpdate({ where, data }) {
-  const idVal = where.id;
+export function guildMemberInsertSql(data) {
+  const columns = [
+    ["id", data.id],
+    ["guildConfigId", data.guildConfigId],
+    ["discordId", data.discordId],
+    ["email", data.email ?? null],
+    ["verifiedAt", data.verifiedAt ?? null],
+    ["status", data.status ?? "pending"],
+    ["roleIds", toJson(data.roleIds || [])],
+    ["displayName", data.displayName ?? null],
+    ["username", data.username ?? null],
+    ["roleNames", toJson(data.roleNames || [])],
+  ];
+  return {
+    sql: `INSERT INTO \`guildmember\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    params: columns.map(([, v]) => v),
+  };
+}
+
+export function guildMemberUpdateSets(data = {}) {
   const sets = [];
   const vals = [];
-  if (data.status !== undefined) {
-    sets.push("status = ?");
-    vals.push(data.status);
-  }
-  if (data.roleIds !== undefined) {
-    sets.push("roleIds = ?");
-    vals.push(toJson(data.roleIds));
-  }
-  if (data.email !== undefined) {
-    sets.push("email = ?");
-    vals.push(data.email);
-  }
+  if (data.status !== undefined) { sets.push("status = ?"); vals.push(data.status); }
+  if (data.roleIds !== undefined) { sets.push("roleIds = ?"); vals.push(toJson(data.roleIds)); }
+  if (data.email !== undefined) { sets.push("email = ?"); vals.push(data.email); }
+  if (data.displayName !== undefined) { sets.push("displayName = ?"); vals.push(data.displayName); }
+  if (data.username !== undefined) { sets.push("username = ?"); vals.push(data.username); }
+  if (data.roleNames !== undefined) { sets.push("roleNames = ?"); vals.push(toJson(data.roleNames)); }
+  return { sets, vals };
+}
+
+async function guildMemberUpdate({ where, data }) {
+  const idVal = where.id;
+  const { sets, vals } = guildMemberUpdateSets(data);
   if (sets.length === 0) return guildMemberFindUnique({ where: { id: idVal } });
   vals.push(idVal);
-  await query(
-    `UPDATE \`guildmember\` SET ${sets.join(", ")} WHERE id = ?`,
-    vals,
-  );
+  await query(`UPDATE \`guildmember\` SET ${sets.join(", ")} WHERE id = ?`, vals);
   return guildMemberFindUnique({ where: { id: idVal } });
 }
 
@@ -251,6 +266,14 @@ async function taskFindMany({ where, orderBy, take }) {
     sql += " AND createdAt >= ?";
     params.push(where.createdAtSince);
   }
+  // projectId: a string filters to that project; `null` means "tasks with no
+  // project" (the dashboard's "No project" bucket); undefined means no filter.
+  if (where?.projectId === null) {
+    sql += " AND projectId IS NULL";
+  } else if (where?.projectId) {
+    sql += " AND projectId = ?";
+    params.push(where.projectId);
+  }
   const orderByField = orderBy ? Object.keys(orderBy)[0] : 'createdAt';
   const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'DESC';
   sql += ` ORDER BY \`${orderByField}\` ${orderByDir}`;
@@ -271,16 +294,32 @@ async function taskFindFirst({ where }) {
     return queryOne("SELECT * FROM `task` WHERE discordChannelId = ?", [
       where.discordChannelId,
     ]);
+  if (where?.externalId)
+    return queryOne("SELECT * FROM `task` WHERE externalId = ?", [
+      where.externalId,
+    ]);
   return null;
+}
+
+async function taskFindByIds({ where }) {
+  const ids = (where?.ids || []).filter(Boolean).map(String);
+  if (!where?.guildConfigId || ids.length === 0) return [];
+  const placeholders = ids.map(() => "?").join(", ");
+  return query(
+    `SELECT * FROM \`task\` WHERE guildConfigId = ? AND id IN (${placeholders})`,
+    [where.guildConfigId, ...ids],
+  );
 }
 
 async function taskCreate({ data }) {
   const pk = id();
+  const taskExternalValues = buildTaskInsertValues(data);
   await query(
-    `INSERT INTO \`Task\` (id, guildConfigId, type, is_bug, is_feature, title, description, status, createdBy, assigneeIds, taggedMemberIds,
+    `INSERT INTO \`task\` (id, guildConfigId, type, is_bug, is_feature, title, description, status, createdBy, assigneeIds, taggedMemberIds,
      repositoryId, projectId, projectName, discordChannelId, discordThreadId, externalIssueUrl, externalIssueNumber,
-     modules, handlerId, scope, implementationStatus, passedApiTests, passedQaTests, passedAcceptanceCriteria)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     modules, handlerId, scope, implementationStatus, passedApiTests, passedQaTests, passedAcceptanceCriteria,
+     externalId, meetingId)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       pk,
       data.guildConfigId,
@@ -307,12 +346,20 @@ async function taskCreate({ data }) {
       data.passedApiTests ?? null,
       data.passedQaTests ?? null,
       data.passedAcceptanceCriteria ?? null,
+      taskExternalValues.externalId,
+      taskExternalValues.meetingId,
     ],
   );
   return queryOne("SELECT * FROM `task` WHERE id = ?", [pk]);
 }
 
 async function taskUpdate({ where, data }) {
+  let id = where?.id;
+  if (id == null && where?.externalId != null) {
+    const existing = await taskFindFirst({ where: { externalId: where.externalId } });
+    id = existing?.id ?? null;
+  }
+  if (id == null) return null;
   const sets = [];
   const vals = [];
   if (data.modules !== undefined) {
@@ -322,6 +369,20 @@ async function taskUpdate({ where, data }) {
   if (data.handlerId !== undefined) {
     sets.push("handlerId = ?");
     vals.push(data.handlerId);
+  }
+  // Project linkage: written by /create-task, /feature, /update-task and the
+  // meeting mirror once they read the real `project` table.
+  if (data.projectId !== undefined) {
+    sets.push("projectId = ?");
+    vals.push(data.projectId);
+  }
+  if (data.projectName !== undefined) {
+    sets.push("projectName = ?");
+    vals.push(data.projectName);
+  }
+  if (data.repositoryId !== undefined) {
+    sets.push("repositoryId = ?");
+    vals.push(data.repositoryId);
   }
   if (data.scope !== undefined) {
     sets.push("scope = ?");
@@ -371,10 +432,10 @@ async function taskUpdate({ where, data }) {
     sets.push("description = ?");
     vals.push(data.description);
   }
-  if (sets.length === 0) return taskFindFirst({ where: { id: where.id } });
-  vals.push(where.id);
-  await query(`UPDATE \`Task\` SET ${sets.join(", ")} WHERE id = ?`, vals);
-  return taskFindFirst({ where: { id: where.id } });
+  if (sets.length === 0) return taskFindFirst({ where: { id } });
+  vals.push(id);
+  await query(`UPDATE \`task\` SET ${sets.join(", ")} WHERE id = ?`, vals);
+  return taskFindFirst({ where: { id } });
 }
 
 async function taskCount({ where }) {
@@ -467,20 +528,36 @@ async function ticketDocFindMany({ where, take, orderBy }) {
   const orderByField = orderBy ? Object.keys(orderBy)[0] : 'createdAt';
   const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'DESC';
   sql += ` ORDER BY \`${orderByField}\` ${orderByDir}`;
-  if (take) {
-    sql += " LIMIT ?";
-    params.push(take);
-  } else {
-    sql += " LIMIT ?";
-    params.push(100);
-  }
+  // LIMIT cannot be a bound parameter under prepared statements
+  // ("Incorrect arguments to mysqld_stmt_execute") — inline the integer.
+  const limit = Math.min(Math.max(parseInt(take, 10) || 100, 1), 500);
+  sql += ` LIMIT ${limit}`;
   return query(sql, params);
+}
+
+/**
+ * Every stored ticket document with the task it belongs to, for the /docs
+ * "Ticket docs" browser. Only rows that actually hold content — a feature
+ * closed without a document leaves a content-less row that has nothing to show.
+ */
+async function ticketDocListWithTask({ guildConfigId }) {
+  if (!guildConfigId) return [];
+  return query(
+    `SELECT d.id, d.title, d.taskId, d.ticketType, d.createdAt, d.updatedAt,
+            t.projectId, t.projectName, t.status AS taskStatus, t.title AS taskTitle
+       FROM \`ticketdoc\` d
+       JOIN \`task\` t ON t.id = d.taskId
+      WHERE d.guildConfigId = ? AND d.content IS NOT NULL AND d.content <> ''
+      ORDER BY d.updatedAt DESC
+      LIMIT 500`,
+    [guildConfigId],
+  );
 }
 
 async function ticketDocCreate({ data }) {
   const pk = id();
   await query(
-    `INSERT INTO \`TicketDoc\` (id, guildConfigId, ticketType, taskId, title, content)
+    `INSERT INTO \`ticketdoc\` (id, guildConfigId, ticketType, taskId, title, content)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [
       pk,
@@ -509,6 +586,170 @@ async function ticketDocUpdate({ where, data }) {
   vals.push(where.id);
   await query(`UPDATE \`TicketDoc\` SET ${sets.join(", ")} WHERE id = ?`, vals);
   return ticketDocFindFirst({ where: { id: where.id } });
+}
+
+// ---------- DocPage / DocSource ----------
+async function docPageListIndex({ guildConfigId }) {
+  return query(
+    "SELECT id, path, docId, section, projectId, title, source FROM `docpage` WHERE guildConfigId = ? ORDER BY path",
+    [guildConfigId],
+  );
+}
+
+async function docPageListIndexFull({ guildConfigId }) {
+  return query(
+    "SELECT id, path, docId, section, projectId, title, source, blobSha FROM `docpage` WHERE guildConfigId = ?",
+    [guildConfigId],
+  );
+}
+
+async function docPageFindByDocId({ guildConfigId, docId }) {
+  return queryOne("SELECT * FROM `docpage` WHERE guildConfigId = ? AND docId = ?", [
+    guildConfigId,
+    docId,
+  ]);
+}
+
+// Discord component values and custom_ids cap at 100 characters and the longest
+// docId in the corpus is 103, so components address a page by primary key.
+async function docPageFindById({ guildConfigId, id: rowId }) {
+  return queryOne("SELECT * FROM `docpage` WHERE guildConfigId = ? AND id = ?", [
+    guildConfigId,
+    rowId,
+  ]);
+}
+
+async function docPageSearch({ guildConfigId, q, limit = 25 }) {
+  const term = String(q || "").trim();
+  // mysql2 `execute` uses prepared statements, where a bound LIMIT parameter is
+  // sent as a string and MySQL rejects it. Inline a sanitised integer instead.
+  const cap = Math.min(Math.max(parseInt(limit, 10) || 25, 1), 25);
+  if (!term) {
+    return query(
+      `SELECT id, path, docId, section, projectId, title, source FROM \`docpage\` WHERE guildConfigId = ? ORDER BY title LIMIT ${cap}`,
+      [guildConfigId],
+    );
+  }
+  // FULLTEXT ignores tokens shorter than innodb_ft_min_token_size (3 by default),
+  // so short queries fall back to a title LIKE.
+  if (term.length < 3) {
+    return query(
+      `SELECT id, path, docId, section, projectId, title, source FROM \`docpage\` WHERE guildConfigId = ? AND title LIKE ? ORDER BY title LIMIT ${cap}`,
+      [guildConfigId, `%${term}%`],
+    );
+  }
+  const boolean = term.replace(/[+\-><()~*"@]/g, " ").trim().split(/\s+/).filter(Boolean).map((w) => `${w}*`).join(" ");
+  const rows = boolean
+    ? await query(
+        `SELECT id, path, docId, section, projectId, title, source, MATCH(title, content) AGAINST (? IN BOOLEAN MODE) AS score FROM \`docpage\` WHERE guildConfigId = ? AND MATCH(title, content) AGAINST (? IN BOOLEAN MODE) ORDER BY score DESC LIMIT ${cap}`,
+        [boolean, guildConfigId, boolean],
+      )
+    : [];
+  if (rows.length) return rows;
+  return query(
+    `SELECT id, path, docId, section, projectId, title, source FROM \`docpage\` WHERE guildConfigId = ? AND title LIKE ? ORDER BY title LIMIT ${cap}`,
+    [guildConfigId, `%${term}%`],
+  );
+}
+
+async function docPageUpsert({ data }) {
+  await query(
+    "INSERT INTO `docpage` (id, guildConfigId, path, docId, section, projectId, title, content, source, blobSha, size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE docId = VALUES(docId), section = VALUES(section), projectId = VALUES(projectId), title = VALUES(title), content = VALUES(content), source = VALUES(source), blobSha = VALUES(blobSha), size = VALUES(size)",
+    [
+      id(),
+      data.guildConfigId,
+      data.path,
+      data.docId,
+      data.section,
+      data.projectId ?? null,
+      data.title,
+      data.content ?? null,
+      data.source ?? "repo",
+      data.blobSha ?? null,
+      data.size ?? 0,
+    ],
+  );
+}
+
+// A Discord-authored page. The ON DUPLICATE KEY UPDATE clause assigns every
+// column conditionally so an existing `source='repo'` row keeps its own values
+// and this write becomes a no-op: the read-then-write guard in /edit-docs
+// cannot see a sync that lands between its read and its write, but this can.
+// `source` is assigned last on purpose — MySQL evaluates the assignments left
+// to right and later expressions see the already-updated columns, so every
+// IF() above must still read the row's original source.
+async function docPageUpsertLocal({ data }) {
+  await query(
+    "INSERT INTO `docpage` (id, guildConfigId, path, docId, section, projectId, title, content, source, blobSha, size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'local', ?, ?) ON DUPLICATE KEY UPDATE docId = IF(source = 'repo', docId, VALUES(docId)), section = IF(source = 'repo', section, VALUES(section)), projectId = IF(source = 'repo', projectId, VALUES(projectId)), title = IF(source = 'repo', title, VALUES(title)), content = IF(source = 'repo', content, VALUES(content)), blobSha = IF(source = 'repo', blobSha, VALUES(blobSha)), size = IF(source = 'repo', size, VALUES(size)), source = IF(source = 'repo', source, VALUES(source))",
+    [
+      id(),
+      data.guildConfigId,
+      data.path,
+      data.docId,
+      data.section,
+      data.projectId ?? null,
+      data.title,
+      data.content ?? null,
+      data.blobSha ?? null,
+      data.size ?? 0,
+    ],
+  );
+}
+
+async function docPageSetProjectId({ guildConfigId, id: rowId, projectId }) {
+  await query(
+    "UPDATE `docpage` SET projectId = ? WHERE guildConfigId = ? AND id = ?",
+    [projectId ?? null, guildConfigId, rowId],
+  );
+}
+
+async function docPageDeleteRepoPathsNotIn({ guildConfigId, paths }) {
+  if (!paths || paths.length === 0) {
+    const res = await query(
+      "DELETE FROM `docpage` WHERE guildConfigId = ? AND source = 'repo'",
+      [guildConfigId],
+    );
+    return res.affectedRows ?? 0;
+  }
+  const placeholders = paths.map(() => "?").join(", ");
+  const res = await query(
+    `DELETE FROM \`docpage\` WHERE guildConfigId = ? AND source = 'repo' AND path NOT IN (${placeholders})`,
+    [guildConfigId, ...paths],
+  );
+  return res.affectedRows ?? 0;
+}
+
+async function docPageCountsByProject({ guildConfigId }) {
+  return query(
+    "SELECT projectId, COUNT(*) AS n FROM `docpage` WHERE guildConfigId = ? GROUP BY projectId",
+    [guildConfigId],
+  );
+}
+
+async function docSourceGet({ guildConfigId }) {
+  return queryOne("SELECT * FROM `docsource` WHERE guildConfigId = ?", [guildConfigId]);
+}
+
+async function docSourceUpsert({ guildConfigId, data }) {
+  await query(
+    "INSERT INTO `docsource` (id, guildConfigId, owner, repo, branch, siteUrl) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE owner = VALUES(owner), repo = VALUES(repo), branch = VALUES(branch), siteUrl = VALUES(siteUrl)",
+    [id(), guildConfigId, data.owner, data.repo, data.branch, data.siteUrl],
+  );
+  return docSourceGet({ guildConfigId });
+}
+
+async function docSourceRecordSync({ guildConfigId, commitSha }) {
+  await query(
+    "UPDATE `docsource` SET lastCommitSha = ?, lastSyncedAt = CURRENT_TIMESTAMP(3), lastError = NULL WHERE guildConfigId = ?",
+    [commitSha, guildConfigId],
+  );
+}
+
+async function docSourceRecordError({ guildConfigId, message }) {
+  await query("UPDATE `docsource` SET lastError = ? WHERE guildConfigId = ?", [
+    String(message || "").slice(0, 2000),
+    guildConfigId,
+  ]);
 }
 
 // ---------- ScheduledMeeting ----------
@@ -728,7 +969,7 @@ async function projectFindFirst({ where }) {
 async function projectCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `project` (id, guildConfigId, name, readme, owner_emails) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO `project` (id, guildConfigId, name, readme, owner_emails, docsSlug, docsPaths) VALUES (?, ?, ?, ?, ?, ?, ?)",
     [
       pk,
       data.guildConfigId,
@@ -739,9 +980,18 @@ async function projectCreate({ data }) {
           ? JSON.stringify(data.owner_emails)
           : data.owner_emails
         : "[]",
+      data.docsSlug ?? null,
+      JSON.stringify(data.docsPaths ?? []),
     ],
   );
   return queryOne("SELECT * FROM `project` WHERE id = ?", [pk]);
+}
+
+async function projectFindByName({ guildConfigId, name }) {
+  return queryOne("SELECT * FROM `project` WHERE guildConfigId = ? AND name = ?", [
+    guildConfigId,
+    name,
+  ]);
 }
 
 // ---------- project_schemas (FK project, name, latest_dump_id) ----------
@@ -800,6 +1050,71 @@ async function projectReposAdd({ data }) {
     "INSERT IGNORE INTO `project_repos` (project_id, repository_id) VALUES (?, ?)",
     [data.project_id, data.repository_id],
   );
+}
+
+// ---------- taskdependency ("taskId is blocked by blockedByTaskId") ----------
+export function taskDependencyInsertSql(data) {
+  const columns = [
+    ["id", data.id],
+    ["guildConfigId", data.guildConfigId],
+    ["taskId", data.taskId],
+    ["blockedByTaskId", data.blockedByTaskId],
+    ["createdBy", data.createdBy ?? null],
+  ];
+  return {
+    // IGNORE: the unique pair makes a repeat add a no-op rather than an error.
+    sql: `INSERT IGNORE INTO \`taskdependency\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    params: columns.map(([, v]) => v),
+  };
+}
+async function taskDependencyAdd({ data }) {
+  const { sql, params } = taskDependencyInsertSql({ ...data, id: id() });
+  await query(sql, params);
+  return queryOne("SELECT * FROM `taskdependency` WHERE taskId = ? AND blockedByTaskId = ?", [data.taskId, data.blockedByTaskId]);
+}
+async function taskDependencyRemove({ where }) {
+  const res = await query("DELETE FROM `taskdependency` WHERE taskId = ? AND blockedByTaskId = ?", [where.taskId, where.blockedByTaskId]);
+  return { removed: Number(res?.affectedRows ?? 0) };
+}
+async function taskDependencyFindByTask({ where }) {
+  return query("SELECT * FROM `taskdependency` WHERE taskId = ? ORDER BY createdAt ASC LIMIT 200", [where.taskId]);
+}
+async function taskDependencyFindByBlocker({ where }) {
+  return query("SELECT * FROM `taskdependency` WHERE blockedByTaskId = ? ORDER BY createdAt ASC LIMIT 200", [where.blockedByTaskId]);
+}
+async function taskDependencyFindManyForGuild({ where }) {
+  return query("SELECT * FROM `taskdependency` WHERE guildConfigId = ? LIMIT 5000", [where.guildConfigId]);
+}
+
+// ---------- projectmember (explicit project membership) ----------
+export const PROJECT_MEMBER_ROLES = ["lead", "developer", "backend_developer", "frontend_developer", "qa", "design"];
+export function projectMemberUpsertSql(data) {
+  const columns = [
+    ["id", data.id],
+    ["guildConfigId", data.guildConfigId],
+    ["projectId", data.projectId],
+    ["discordId", data.discordId],
+    ["role", data.role ?? "developer"],
+    ["addedBy", data.addedBy ?? null],
+  ];
+  return {
+    sql:
+      `INSERT INTO \`projectmember\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ` +
+      "ON DUPLICATE KEY UPDATE role = VALUES(role), addedBy = VALUES(addedBy)",
+    params: columns.map(([, v]) => v),
+  };
+}
+async function projectMemberAdd({ data }) {
+  const { sql, params } = projectMemberUpsertSql({ ...data, id: id() });
+  await query(sql, params);
+  return queryOne("SELECT * FROM `projectmember` WHERE projectId = ? AND discordId = ?", [data.projectId, data.discordId]);
+}
+async function projectMemberRemove({ where }) {
+  const res = await query("DELETE FROM `projectmember` WHERE projectId = ? AND discordId = ?", [where.projectId, where.discordId]);
+  return { removed: Number(res?.affectedRows ?? 0) };
+}
+async function projectMemberFindByProject({ where }) {
+  return query("SELECT * FROM `projectmember` WHERE projectId = ? ORDER BY role ASC, createdAt ASC LIMIT 200", [where.projectId]);
 }
 
 // ---------- Faq ----------
@@ -1087,7 +1402,7 @@ async function meetingFindUnique({ where }) {
   return null;
 }
 
-async function meetingUpdate({ where, data }) {
+export function meetingUpdateSql(data) {
   const sets = [];
   const vals = [];
   if (data.transcript !== undefined) {
@@ -1098,6 +1413,15 @@ async function meetingUpdate({ where, data }) {
     sets.push("notes = ?");
     vals.push(data.notes);
   }
+  if (data.csaasMeetingId !== undefined) {
+    sets.push("csaasMeetingId = ?");
+    vals.push(data.csaasMeetingId);
+  }
+  return { sets, vals };
+}
+
+async function meetingUpdate({ where, data }) {
+  const { sets, vals } = meetingUpdateSql(data);
   if (sets.length === 0)
     return queryOne("SELECT * FROM `meeting` WHERE id = ?", [where.id]);
   vals.push(where.id);
@@ -1164,6 +1488,94 @@ async function meetingChannelUpdate({ where, data }) {
     vals,
   );
   return meetingChannelFindUnique({ where: { id: where.id } });
+}
+
+// ---------- MeetingUtterance (per-speaker transcript turns) ----------
+// The column list and the params array are derived from one ordered source
+// (`columns` below) so they cannot drift out of sync with each other — see
+// the taskUpdate / ticketDocCreate incidents this pattern exists to avoid.
+export function meetingUtteranceInsertSql(data) {
+  const columns = [
+    ["id", data.id],
+    ["guildConfigId", data.guildConfigId],
+    ["meetingId", data.meetingId],
+    ["sequence", data.sequence],
+    ["speakerRef", data.speakerRef ?? null],
+    ["speakerName", data.speakerName ?? null],
+    ["startedAt", data.startedAt ?? new Date()],
+    ["durationMs", data.durationMs ?? 0],
+    ["text", data.text ?? null],
+  ];
+  const columnList = columns
+    .map(([col]) => (col === "sequence" ? "`sequence`" : col))
+    .join(", ");
+  const placeholders = columns.map(() => "?").join(", ");
+  return {
+    sql:
+      `INSERT INTO \`meetingutterance\` (${columnList}) ` +
+      `VALUES (${placeholders}) ` +
+      // startedAt and durationMs are refreshed too: a row overwritten by a later
+      // meeting in the same voice channel would otherwise carry the new text
+      // against the old meeting's clock, and the transcript would be bucketed
+      // against timings that never belonged to it.
+      "ON DUPLICATE KEY UPDATE text = VALUES(text), speakerName = VALUES(speakerName), " +
+      "startedAt = VALUES(startedAt), durationMs = VALUES(durationMs)",
+    params: columns.map(([, val]) => val),
+  };
+}
+
+export function meetingUtteranceFindManySql({ meetingId }) {
+  return {
+    sql: "SELECT * FROM `meetingutterance` WHERE meetingId = ? ORDER BY `sequence` ASC",
+    params: [meetingId],
+  };
+}
+
+export function meetingUtteranceDeleteManySql({ meetingId }) {
+  return {
+    sql: "DELETE FROM `meetingutterance` WHERE meetingId = ?",
+    params: [meetingId],
+  };
+}
+
+export function meetingUtteranceCountSql({ meetingId }) {
+  return {
+    sql: "SELECT COUNT(*) AS n FROM `meetingutterance` WHERE meetingId = ? AND text IS NOT NULL AND TRIM(text) <> ''",
+    params: [meetingId],
+  };
+}
+
+async function meetingUtteranceCreate({ data }) {
+  const pk = id();
+  const { sql, params } = meetingUtteranceInsertSql({ ...data, id: pk });
+  await query(sql, params);
+  // Re-select by the (meetingId, sequence) unique key, not by `pk`: on an
+  // ON DUPLICATE KEY UPDATE hit MySQL keeps the existing row's id, so `pk`
+  // was never written and a lookup by id would return null even though the
+  // row persisted correctly.
+  return queryOne(
+    "SELECT * FROM `meetingutterance` WHERE meetingId = ? AND `sequence` = ?",
+    [data.meetingId, data.sequence],
+  );
+}
+
+async function meetingUtteranceFindMany({ where }) {
+  const { sql, params } = meetingUtteranceFindManySql({ meetingId: where.meetingId });
+  return query(sql, params);
+}
+
+// A voice channel keeps its meeting row across recordings, so a second /record
+// in the same channel restarts the sequence counter at 1 and would overwrite the
+// previous meeting's turns. Recording start clears them first.
+async function meetingUtteranceDeleteMany({ where }) {
+  const { sql, params } = meetingUtteranceDeleteManySql({ meetingId: where.meetingId });
+  await query(sql, params);
+}
+
+async function meetingUtteranceCountWithText({ meetingId }) {
+  const { sql, params } = meetingUtteranceCountSql({ meetingId });
+  const row = await queryOne(sql, params);
+  return Number(row?.n || 0);
 }
 
 // ---------- MeetingRecording (for individual user audio recordings) ----------
@@ -1301,6 +1713,142 @@ async function meetingRecordingStatusUpdate({ where, data }) {
     vals,
   );
   return meetingRecordingStatusFindUnique({ where: { meetingId: where.meetingId } });
+}
+
+// ---------- meeting_pipeline_job ----------
+function _mpjRow(row) {
+  if (!row) return null;
+  let dataJson = null;
+  try {
+    dataJson = row.dataJson ? (typeof row.dataJson === "string" ? JSON.parse(row.dataJson) : row.dataJson) : null;
+  } catch {
+    dataJson = null;
+  }
+  return { ...row, dataJson };
+}
+
+async function meetingPipelineJobCreate({ data }) {
+  const existing = await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE meetingId = ?", [data.meetingId]);
+  if (existing) return _mpjRow(existing);
+  const pk = id();
+  await query(
+    "INSERT INTO `meeting_pipeline_job` (id, guildConfigId, meetingId) VALUES (?, ?, ?)",
+    [pk, data.guildConfigId, data.meetingId],
+  );
+  return _mpjRow(await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE id = ?", [pk]));
+}
+
+async function meetingPipelineJobFindByMeeting(meetingId) {
+  return _mpjRow(await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE meetingId = ?", [meetingId]));
+}
+
+async function meetingPipelineJobFindById(jobId) {
+  return _mpjRow(await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE id = ?", [jobId]));
+}
+
+function _mpjStaleSeconds() {
+  return Math.max(1, Math.round((Number(process.env.MEETING_STAGE_TIMEOUT_MS) || 360000) / 1000));
+}
+
+async function meetingPipelineJobClaimBatch(limit = 3) {
+  // Pick up pending jobs, plus jobs stuck in 'working' past the stage timeout
+  // (crashed/killed process left them mid-transition — the claim will re-take them).
+  //
+  // query() runs prepared statements (pool.execute). mysql2 binds a JS number as a
+  // DOUBLE, which MySQL rejects inside LIMIT and INTERVAL ... SECOND with
+  // "Incorrect arguments to mysqld_stmt_execute" — the first live tick failed on
+  // exactly this. Both values are clamped integers we control, so inline them.
+  const cap = Math.min(Math.max(parseInt(limit, 10) || 3, 1), 50);
+  const stale = _mpjStaleSeconds();
+  const rows = await query(
+    `SELECT * FROM \`meeting_pipeline_job\`
+     WHERE (
+       (status = 'pending' AND (nextAttemptAt IS NULL OR nextAttemptAt <= NOW(3)))
+       OR (status = 'working' AND updatedAt < NOW(3) - INTERVAL ${stale} SECOND)
+     )
+     ORDER BY updatedAt ASC LIMIT ${cap}`,
+  );
+  return rows.map(_mpjRow);
+}
+
+// Conditional claim: flip pending -> working (or re-take a stale 'working') for
+// exactly one worker. Returns true only when this call won the row.
+async function meetingPipelineJobClaim(jobId) {
+  // Same prepared-statement constraint as claimBatch: INTERVAL takes an inlined
+  // integer, never a bound parameter.
+  const stale = _mpjStaleSeconds();
+  const result = await query(
+    `UPDATE \`meeting_pipeline_job\` SET status = 'working', updatedAt = NOW(3)
+     WHERE id = ? AND (
+       status = 'pending'
+       OR (status = 'working' AND updatedAt < NOW(3) - INTERVAL ${stale} SECOND)
+     )`,
+    [jobId],
+  );
+  return result?.affectedRows === 1;
+}
+
+async function meetingPipelineJobUpdate(jobId, patch) {
+  const cols = ["stage", "status", "csaasMeetingId", "attempts", "nextAttemptAt", "lastError", "reviewMessageId", "dataJson"];
+  const sets = [];
+  const vals = [];
+  for (const c of cols) {
+    if (patch[c] === undefined) continue;
+    // nextAttemptAt is compared against MySQL's NOW(3) by the claim query, so it
+    // must be written on the server's clock. Binding a JS Date makes mysql2
+    // serialise it in the Node process's local timezone, which put every retry
+    // hours into the future on a UTC server (observed live: a 60s backoff landed
+    // 5h60s away, and the job was never re-claimed). Send an offset in seconds
+    // and let MySQL do the arithmetic.
+    if (c === "nextAttemptAt" && patch[c] instanceof Date) {
+      const secs = Math.max(0, Math.round((patch[c].getTime() - Date.now()) / 1000));
+      sets.push(`\`${c}\` = NOW(3) + INTERVAL ${secs} SECOND`);
+      continue;
+    }
+    sets.push(`\`${c}\` = ?`);
+    vals.push(c === "dataJson" && patch[c] !== null && typeof patch[c] === "object" ? JSON.stringify(patch[c]) : patch[c]);
+  }
+  if (!sets.length) return meetingPipelineJobFindById(jobId);
+  vals.push(jobId);
+  await query(`UPDATE \`meeting_pipeline_job\` SET ${sets.join(", ")} WHERE id = ?`, vals);
+  return meetingPipelineJobFindById(jobId);
+}
+
+// Guarded update: apply `patch` only when the row still matches `cond` (column
+// equality). Returns true iff exactly one row was updated. Used to make the
+// review approve/reject buttons safe against double-clicks and races.
+async function meetingPipelineJobUpdateIf(jobId, patch, cond = {}) {
+  const cols = ["stage", "status", "csaasMeetingId", "attempts", "nextAttemptAt", "lastError", "reviewMessageId", "dataJson"];
+  const sets = [];
+  const vals = [];
+  for (const c of cols) {
+    if (patch[c] === undefined) continue;
+    // nextAttemptAt is compared against MySQL's NOW(3) by the claim query, so it
+    // must be written on the server's clock. Binding a JS Date makes mysql2
+    // serialise it in the Node process's local timezone, which put every retry
+    // hours into the future on a UTC server (observed live: a 60s backoff landed
+    // 5h60s away, and the job was never re-claimed). Send an offset in seconds
+    // and let MySQL do the arithmetic.
+    if (c === "nextAttemptAt" && patch[c] instanceof Date) {
+      const secs = Math.max(0, Math.round((patch[c].getTime() - Date.now()) / 1000));
+      sets.push(`\`${c}\` = NOW(3) + INTERVAL ${secs} SECOND`);
+      continue;
+    }
+    sets.push(`\`${c}\` = ?`);
+    vals.push(c === "dataJson" && patch[c] !== null && typeof patch[c] === "object" ? JSON.stringify(patch[c]) : patch[c]);
+  }
+  if (!sets.length) return false;
+  const whereParts = ["id = ?"];
+  const whereVals = [jobId];
+  for (const [k, v] of Object.entries(cond)) {
+    whereParts.push(`\`${k}\` = ?`);
+    whereVals.push(v);
+  }
+  const result = await query(
+    `UPDATE \`meeting_pipeline_job\` SET ${sets.join(", ")} WHERE ${whereParts.join(" AND ")}`,
+    [...vals, ...whereVals],
+  );
+  return result?.affectedRows === 1;
 }
 
 // ---------- UserChannel (for /create-channel, protected from /cleanup) ----------
@@ -1524,6 +2072,7 @@ const db = {
   guildConfig: {
     findUnique: ({ where }) =>
       where?.guildId ? getGuildConfig(where.guildId) : null,
+    findById: getGuildConfigById,
     create: () => {
       throw new Error("Use getOrCreateGuildConfig");
     },
@@ -1575,6 +2124,7 @@ const db = {
   task: {
     findMany: taskFindMany,
     findFirst: taskFindFirst,
+    findByIds: taskFindByIds,
     create: taskCreate,
     update: taskUpdate,
     count: taskCount,
@@ -1584,6 +2134,25 @@ const db = {
     findFirst: ticketDocFindFirst,
     create: ticketDocCreate,
     update: ticketDocUpdate,
+    listWithTask: ticketDocListWithTask,
+  },
+  docPage: {
+    listIndex: docPageListIndex,
+    listIndexFull: docPageListIndexFull,
+    findByDocId: docPageFindByDocId,
+    findById: docPageFindById,
+    search: docPageSearch,
+    upsert: docPageUpsert,
+    upsertLocal: docPageUpsertLocal,
+    setProjectId: docPageSetProjectId,
+    deleteRepoPathsNotIn: docPageDeleteRepoPathsNotIn,
+    countsByProject: docPageCountsByProject,
+  },
+  docSource: {
+    get: docSourceGet,
+    upsert: docSourceUpsert,
+    recordSync: docSourceRecordSync,
+    recordError: docSourceRecordError,
   },
   scheduledMeeting: {
     findMany: scheduledMeetingFindMany,
@@ -1605,6 +2174,7 @@ const db = {
     findMany: projectFindMany,
     findFirst: projectFindFirst,
     create: projectCreate,
+    findByName: projectFindByName,
   },
   projectSchemas: {
     findMany: projectSchemasFindMany,
@@ -1617,6 +2187,18 @@ const db = {
   projectRepos: {
     findMany: projectReposFindMany,
     add: projectReposAdd,
+  },
+  taskDependency: {
+    add: taskDependencyAdd,
+    remove: taskDependencyRemove,
+    findByTask: taskDependencyFindByTask,
+    findByBlocker: taskDependencyFindByBlocker,
+    findManyForGuild: taskDependencyFindManyForGuild,
+  },
+  projectMember: {
+    add: projectMemberAdd,
+    remove: projectMemberRemove,
+    findByProject: projectMemberFindByProject,
   },
   faq: {
     findMany: faqFindMany,
@@ -1660,11 +2242,26 @@ const db = {
     create: meetingRecordingCreate,
     findMany: meetingRecordingFindMany,
   },
+  meetingUtterance: {
+    create: meetingUtteranceCreate,
+    findMany: meetingUtteranceFindMany,
+    deleteMany: meetingUtteranceDeleteMany,
+    countWithText: meetingUtteranceCountWithText,
+  },
   meetingRecordingStatus: {
     findUnique: meetingRecordingStatusFindUnique,
     create: meetingRecordingStatusCreate,
     upsert: meetingRecordingStatusUpsert,
     update: meetingRecordingStatusUpdate,
+  },
+  meetingPipelineJob: {
+    create: meetingPipelineJobCreate,
+    findByMeeting: meetingPipelineJobFindByMeeting,
+    findById: meetingPipelineJobFindById,
+    claimBatch: meetingPipelineJobClaimBatch,
+    claim: meetingPipelineJobClaim,
+    update: meetingPipelineJobUpdate,
+    updateIf: meetingPipelineJobUpdateIf,
   },
   clockEntry: {
     create: clockEntryCreate,

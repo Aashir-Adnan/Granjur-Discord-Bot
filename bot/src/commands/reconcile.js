@@ -1,6 +1,5 @@
 import {
   SlashCommandBuilder,
-  PermissionFlagsBits,
   EmbedBuilder,
 } from 'discord.js'
 import db, { getOrCreateGuildConfig, updateGuildConfig } from '../db/index.js'
@@ -10,7 +9,6 @@ import { EPHEMERAL, ROLE_HOLDING, ROLE_VERIFIED } from '../constants.js'
 export const data = new SlashCommandBuilder()
   .setName('reconcile')
   .setDescription('Sync members who joined while the bot was offline — creates DB records & assigns holding role')
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 
 export async function execute(interaction) {
   const guild = interaction.guild

@@ -1,42 +1,150 @@
 {
   "commandRoles": {
-    "init": ["CEO", "Server Manager"],
-    "scrap": ["CEO", "Server Manager"],
+    "init": [
+      "CEO",
+      "Server Manager"
+    ],
+    "scrap": [
+      "CEO",
+      "Server Manager"
+    ],
     "verify": [],
-    "invite": ["CEO", "Server Manager"],
-    "backlog": ["CEO", "Server Manager"],
-    "approve": ["CEO", "Server Manager"],
-    "bug": ["Verified"],
-    "ticket": ["Senior Dev", "CEO", "Server Manager"],
-    "feature": ["Verified"],
-    "fetch-my": ["Verified"],
-    "schedule": ["Verified"],
-    "project-db": ["Verified"],
-    "evaluate": ["Senior Dev", "CEO", "Server Manager"],
-    "docs": ["Verified"],
-    "faq": ["Verified"],
-    "faq-answer": ["CEO", "Server Manager"],
-    "repos": ["CEO", "Server Manager"],
-    "dashboard": ["CEO", "Server Manager"],
-    "edit-docs": ["CEO", "Server Manager", "Senior Dev"],
-    "clock-in": ["Verified"],
-    "clock-out": ["Verified"],
-    "sql-dump": ["Senior Dev", "CEO", "Server Manager"],
-    "create-task": ["Verified"],
-    "update-task": ["Verified"],
-    "create-project-role": ["CEO", "Server Manager"],
-    "create-project-categories": ["CEO", "Server Manager"],
-    "migrate": ["CEO", "Server Manager"],
+    "invite": [
+      "CEO",
+      "Server Manager"
+    ],
+    "backlog": [
+      "CEO",
+      "Server Manager"
+    ],
+    "approve": [
+      "CEO",
+      "Server Manager"
+    ],
+    "bug": [
+      "Verified"
+    ],
+    "ticket": [
+      "Senior Dev",
+      "CEO",
+      "Server Manager"
+    ],
+    "feature": [
+      "Verified"
+    ],
+    "fetch-my": [
+      "Verified"
+    ],
+    "schedule": [
+      "Verified"
+    ],
+    "project-db": [
+      "Verified"
+    ],
+    "evaluate": [
+      "Senior Dev",
+      "CEO",
+      "Server Manager"
+    ],
+    "docs": [
+      "Verified"
+    ],
+    "explain": [
+      "Verified"
+    ],
+    "faq": [
+      "Verified"
+    ],
+    "faq-answer": [
+      "CEO",
+      "Server Manager"
+    ],
+    "repos": [
+      "CEO",
+      "Server Manager"
+    ],
+    "dashboard": [
+      "CEO",
+      "Server Manager"
+    ],
+    "edit-docs": [
+      "CEO",
+      "Server Manager",
+      "Senior Dev"
+    ],
+    "clock-in": [
+      "Verified"
+    ],
+    "clock-out": [
+      "Verified"
+    ],
+    "sql-dump": [
+      "Senior Dev",
+      "CEO",
+      "Server Manager"
+    ],
+    "create-task": [
+      "Verified"
+    ],
+    "update-task": [
+      "Verified"
+    ],
+    "create-project-role": [
+      "CEO",
+      "Server Manager"
+    ],
+    "create-project-categories": [
+      "CEO",
+      "Server Manager"
+    ],
+    "migrate": [
+      "CEO",
+      "Server Manager"
+    ],
     "close-feature": [],
     "resolve-bug": [],
-    "reconcile": ["CEO", "Server Manager"],
-    "meeting-channel": ["Verified"],
-    "admin-panel": ["CEO", "Server Manager"],
-    "cleanup": ["CEO", "Server Manager"],
-    "create-channel": ["Verified"],
-    "playback": ["CEO", "Server Manager"],
-    "setup": ["CEO", "Server Manager"],
-    "meetings": ["Verified"]
+    "reconcile": [
+      "CEO",
+      "Server Manager"
+    ],
+    "meeting-channel": [
+      "Verified"
+    ],
+    "admin-panel": [
+      "CEO",
+      "Server Manager"
+    ],
+    "cleanup": [
+      "CEO",
+      "Server Manager"
+    ],
+    "create-channel": [
+      "Verified"
+    ],
+    "playback": [
+      "CEO",
+      "Server Manager"
+    ],
+    "setup": [
+      "CEO",
+      "Server Manager"
+    ],
+    "meetings": [
+      "Verified"
+    ],
+    "projects": [
+      "CEO",
+      "Server Manager"
+    ],
+    "set-roles": [
+      "CEO",
+      "Server Manager"
+    ],
+    "project-members": [
+      "CEO",
+      "Server Manager",
+      "Project Manager"
+    ]
   },
   "dedicatedChannels": {
     "init": true,
@@ -51,6 +159,7 @@
     "schedule": true,
     "project-db": true,
     "docs": true,
+    "explain": true,
     "faq": true,
     "repos": true,
     "dashboard": true,
@@ -131,9 +240,14 @@
       "detail": "Select a project to view its schema/README, or **New project** to paste and store. Use **/sql-dump** for versioned SQL dump history."
     },
     "docs": {
-      "summary": "Browse documentation in bot/docs/ — open folders and view .md files.",
-      "syntax": "`/docs`",
-      "detail": "Shows a file browser for bot/docs/. Select a folder to open it or a file to view its content (formatted in an embed)."
+      "summary": "Browse, search and read the project documentation.",
+      "syntax": "`/docs` or `/docs query:<words>`",
+      "detail": "Browse by project or section and open a page, or pass `query` to search titles and page text. **Ticket docs** at the bottom of the first menu holds the write-ups attached to closed feature tickets, grouped by project. A page is rendered into an embed, long pages page with ◀ ▶, and pages that come from the documentation repository carry a link to the published site. Everything is read from the bot database, which a manager refreshes with **/setup** → **Sync docs now**."
+    },
+    "explain": {
+      "summary": "Ask a question about a project; answered from its documentation with references.",
+      "syntax": "`/explain project:<pick one> question:<your question>`",
+      "detail": "Pick a project (or **No project** for all documentation) and ask in plain words. Claude reads that project's documentation on the server and answers with links to the pages it used. One question, one answer — ask again to follow up. Takes 30–90 seconds."
     },
     "faq": {
       "summary": "Ask or search FAQs.",
@@ -148,12 +262,12 @@
     "dashboard": {
       "summary": "CEO/Server Manager dashboard.",
       "syntax": "`/dashboard`",
-      "detail": "Access admin modules. CEO or Server Manager only."
+      "detail": "Access admin modules. CEO or Server Manager only. The Tasks, Bugs and Features views carry a **project filter** — pick a project (or *No project*) to see only its work."
     },
     "edit-docs": {
-      "summary": "Edit project or repo documentation (README).",
+      "summary": "Write a documentation page for a project, stored in the bot.",
       "syntax": "`/edit-docs`",
-      "detail": "Select a project or repo, then submit new README/content. Stored in database for projects; use GitHub for repos."
+      "detail": "Pick a project, then submit a page title and markdown body. The page is saved in the bot database and shows up in **/docs** under that project. It is not published to the documentation site, and a page synced from the documentation repository cannot be edited here — pick a different title if one already holds that address."
     },
     "clock-in": {
       "summary": "Clock in (start tracking time).",
@@ -186,9 +300,9 @@
       "detail": "Unified command for creating bugs and features. Select type, repo/project, fill in details, assign members."
     },
     "update-task": {
-      "summary": "Update an existing task (status, assignees, etc.).",
-      "syntax": "`/update-task`",
-      "detail": "Modify task fields like status, assignees, modules, and test results."
+      "summary": "Update an existing task (status, assignees, project, etc.).",
+      "syntax": "`/update-task task:<pick from the list> [status] [assignees] [project] …`",
+      "detail": "Start typing in the **task** field and pick from the suggestions — each shows the title, its status and who holds it, so you never type an id. Then set any of status, assignees, **project**, title, description, implementation status, or the API/QA/AC counts. Attaching a project makes the task show up under that project in **/dashboard**."
     },
     "create-project-role": {
       "summary": "Create a Discord role for a project.",
@@ -244,6 +358,16 @@
       "summary": "List, reschedule, or cancel your scheduled meetings.",
       "syntax": "`/meetings`",
       "detail": "Shows your upcoming meetings. Select one to reschedule (new time) or cancel it. CEO/Server Manager can manage everyone's."
+    },
+    "projects": {
+      "summary": "List projects, add a project, link a repository",
+      "syntax": "/projects",
+      "detail": "CEO/Server Manager only. A project's docs folder determines which UBS-Doc pages are attributed to it."
+    },
+    "project-members": {
+      "summary": "Add, remove, or list who works on a project.",
+      "syntax": "`/project-members add|remove|list project:<pick one> [member] [role]`",
+      "detail": "Start typing in the **project** field and pick from the suggestions. **add** sets a member's role (Lead, Developer, QA, Design; default Developer) — using it again on someone already on the project changes their role. **remove** takes them off. **list** shows members grouped by role, plus anyone else currently holding a task on the project. This is the list the UBS-Doc site shows."
     }
   }
 }

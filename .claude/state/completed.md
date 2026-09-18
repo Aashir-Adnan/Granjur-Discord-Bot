@@ -4,6 +4,308 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-18 — Team section: people, task detail, dependency graph, kanban board (merged and deployed 2026-09-18)
+
+Turns the read-only `/tools/tasks` page into a four-view Team section, and adds the
+site's first *write* back into Discord data: dragging a board card changes the task's
+status through the bot, via CSAAS, using the same helper and warnings/notices
+`/update-task` already produces. Built with subagent-driven development across 11 tasks
+(spec `docs/superpowers/specs/2026-09-18-team-board-previews-design.md`, plan
+`docs/superpowers/plans/2026-09-18-team-board-previews.md`, ledger
+`.superpowers/sdd/2026-09-18-team-board-previews/progress.md`).
+
+- **Bot** (`Granjur-Discord-Bot`, `feat/team-board`, suite 320 → 340): `0e116e4` —
+  migration 018 `guildmember.roleNames`, name sync stores role names,
+  `db.guildConfig.findById`. `21e4f9a` — `bot/src/services/taskStatusChange.js`
+  (`applyTaskUpdate`, shared by `/update-task` and the new route), `TASK_STATUSES`
+  exported from `taskDeps.js`, notifier gains `actorLabel`. `f6528f1` — `POST
+  /internal/tasks/status` on the bot's port-4070 HTTP server, guarded by
+  `x-internal-secret` / `BOT_INTERNAL_SECRET`, disabled with 503 until the env is set.
+  `7045f99` — fix so a bad/`null` JSON body never hangs the route instead of erroring.
+- **CSAAS** (`CSAAS_Backend`, `feat/discord-tasks-status`): `c7762b0`, `30931eb` — read
+  endpoint gains task detail fields and a top-level `members` list, scoped per guild.
+  `534b793`, `481d6c1` — `POST /api/discord/tasks/status` → `DiscordTasksStatus_object`,
+  token + actor binding + `requirePortalPermission('update_discord_tasks')`, loopback
+  call to the bot, audit label only from a verified identity; migration
+  `data/migrations/20260918_1_update_discord_tasks_permission.sql` seeds the permission
+  into the Dev and Admin groups and backfills existing users; `sample_env` gained
+  `DISCORD_BOT_URL`/`DISCORD_BOT_SECRET`.
+- **UBS-Doc** (`UBS-Doc`, `feat/team-section`, vitest 123 → 194): `5149d8a` — pure logic
+  (`boardLogic`, `graphLayout`, `teamLogic`, `redirect`, `setTaskStatus` with
+  `ApiError`). `a7a1a18` — Team layout, tabs, `/tools/tasks` redirect, nav. `72fa833` —
+  People, TaskDetail. `b74888d`, `d886ab9` — Board with drag-to-status, toasts, override
+  lifecycle. `e6edc8f`, `0fadfd4` — dependency graph.
+
+Every task passed its own review round (several needed one fix round: bot Task 3's
+null-body hang, CSAAS Task 4's guild-scoping and Task 5's actor-binding fixes, site
+Task 9's override-clearing race, Task 10's graph accessibility). No Critical findings
+survived to the end of any lane.
+
+Knowledge: `.claude/knowledge/project-tasks-site.md` ("Team section and the write path").
+
+**Not merged, not deployed.** Remaining before it can go live: a final whole-branch
+review across all three repos, then deploy in order bot → CSAAS → site, hand-setting
+`BOT_INTERNAL_SECRET` after the bot deploy and `DISCORD_BOT_URL`/`DISCORD_BOT_SECRET`
+after the CSAAS deploy, then live verification (board drag, Discord channel post,
+blocked-card toast, unblock notice). See `session.md`.
+
+## 2026-09-17 — Project tasks on the UBS-Doc site (merged and deployed 2026-09-17)
+
+Every task from the bot's database, grouped by project, with multiple assignees,
+blocking dependencies, and explicit + inferred project members, shown live at
+`/tools/tasks` on the UBS-Doc site. Built with subagent-driven development across 10
+tasks (spec + plan in `docs/superpowers/specs/2026-09-17-project-tasks-site-section-design.md`
+/ `docs/superpowers/plans/2026-09-17-project-tasks-site-section.md`); bot suite
+264 -> 318, 43 slash commands.
+
+Merged to `main` and deployed in order bot -> CSAAS -> site:
+- **Bot** (`Granjur-Discord-Bot`, `feat/project-tasks-site`): `15206fd`, `f94c756`
+  (migration 017 — `taskdependency`, `projectmember`, `guildmember` name columns; DB
+  surface), `e2c98de` (`bot/src/utils/taskDeps.js` — cycle/blocker rules), `c56580c`,
+  `d79c023` (member name sync), `3373316` (`/create-task` assignee picker), `b248442`,
+  `a89967d` (`/update-task` dependency + assignee options), `7947aec` (notifier
+  warnings/unblock notices), `a3cc416` (`/project-members`), `04dfd07` (final-review
+  fixes: `set -e` in the deploy workflow, dependencies field cap). Main at `9161c7b`.
+- **CSAAS** (`CSAAS_Backend`, `feat/discord-tasks-endpoint`): `ab985c2`, `a6fbb12` —
+  `GET /api/discord/tasks`, public, reads `granjur.*` cross-database.
+- **UBS-Doc** (`UBS-Doc`, `feat/tasks-screen`): `5cd1b3b`, `6529af1`, `93f8df0` —
+  `/tools/tasks` screen, deep link from `/tools/projects`.
+
+One incident during the fix round for the bot's `/update-task` task: a test run against
+a pre-fix seam-incomplete version inserted a live `guildconfig` row into production
+(`b23782a7c09e433bab78d866b`, `guildId 'guild1'`). Confirmed harmless and read-only;
+left in place pending the owner's decision — see `backlog.md`. Closed out with a new
+binding rule, `.claude/rules/tests-never-touch-production.md`.
+
+Knowledge: `.claude/knowledge/project-tasks-site.md`.
+
+Verified live: migration 017 applied, 43 commands registered, all 13 members named by
+the sync, `curl https://api.gobizzi.com/api/discord/tasks` returns HTTP 200 with
+projects. **Remaining:** the Discord-side checks (a `blocked_by` warning and an
+unblock notice, `/project-members add` then a page refresh). See `session.md`.
+
+## 2026-09-07 — Live meeting transcription (deployed 2026-09-09, awaiting a live meeting)
+
+Per-speaker live transcript posted into the meeting channel while a meeting records, and
+that transcript replaces the per-speaker whole-file upload as what CSAAS analyses.
+Meeting channels also gained a pinned guidelines message.
+
+Built with subagent-driven development across 9 tasks; suite 190 -> 246.
+Branch `feat/live-transcription` in BOTH repos, not yet merged to `main`.
+
+- Bot `56e1cdd..4f4a534` (14 commits). New: `bot/src/services/transcriptFeed.js`,
+  `liveTranscriptPayload.js`, `bot/src/config/meetingGuidelines.js`,
+  `bot/src/Database/migrations/016_meeting_utterance.sql`. Modified: `voiceCapture.js`,
+  `meetingPipelineStages.js`, `csaasClient.js`, `Database/index.js`, `record.js`,
+  `meeting-channel.js`, `meetingAutoChannel.js`.
+- CSAAS `4176fa4..9bad076` (2 commits): `POST /api/meeting/workflow/utterance` +
+  `data/migrations/20260907_1_meeting_utterances.sql`.
+
+Bugs found and fixed during review that would have shipped silently: a `/playback`
+regression producing two `MeetingRecording` rows on a truncated file after any
+mid-meeting write error; every meeting creating two CSAAS meetings so the analysis ran
+against an empty one; overlapping speech rendering out of spoken order; a five-minute
+window where `/record stop` answered "no active recording" while recording; and a test
+the plan specified that would have queried the production database on every `npm test`.
+
+Knowledge: `.claude/knowledge/live-meeting-transcription.md`.
+
+**Deployed 2026-09-09.** Bot `main` 9ca532d (auto-deploys via `.github/workflows/deploy.yml`,
+which pulls, runs `npm run db:migrate`, then restarts pm2). CSAAS `main` ef24b0a.
+Verified on the VM: `meeting_utterances` exists with `meeting_id int` + FK and its ledger
+row says applied; bot `meetingutterance` and `meeting.csaasMeetingId` exist; a probe of
+`POST /api/meeting/workflow/utterance` reaches the handler (returns our own
+"Audio file is required", past the permission check); bot online, 0 unstable restarts.
+
+**Remaining: a live meeting.** Two people, overlapping speech, then confirm the pipeline
+took the live path. Steps in the plan's Task 10.
+
+---
+
+## 2026-09-05 — Ship `/explain`: Claude answers from a project's documentation
+
+Live feature: `/explain project:<picker> question:<text>` answers questions about a project's 
+documentation using Claude, running on the VM in a scope bounded by the project's first 
+`docsPaths` entry. One-shot, no session. One live smoke test: Badar HMS question answered 
+in 23 s with three references under `hms-documentation/`.
+
+**Bot side** (`52c434e`): `/explain` command, modal picker per project, text truncation at 
+4000 chars, reference limit 8, 120 s timeout. Dedicated `csaasClient.explain()` call via 
+`POST /api/meeting/workflow/explain`. Embeds built by `explainRender.js`. Tests cover 
+the command, rendering, and CSAAS integration.
+
+**CSAAS side** (`1c44b62`): `POST /api/meeting/workflow/explain` endpoint wiring. 
+`explainAgent.js` runs Claude (`claudeClient.chat`) with `--disallowedTools` (Write, Edit, 
+Bash, WebFetch, etc.) in the docs directory scoped by project. `extraArgs` option on 
+`claudeClient` (`1aa51e0`) gates tool access. Non-JSON from Claude is retried once, then 
+returned raw. References drop entries with no path; answer trimmed at 4000. Tests: 
+`explainAgent.test.js` (`896fd75`), `dc52778`.
+
+**Scope fallback:** Footer reports `All documentation` when scoping did not happen — 
+verify `Repos/UBS-Doc/docs/<project.docsPaths[0]>` exists on the VM if answers look 
+too broad.
+
+**Debugging:** `pm2 logs csaas | grep '\[explain\]'` shows scope, reference count, 
+milliseconds per question.
+
+**Deferred features** in `backlog.md`: code as a second source, thread/follow-up mode, 
+multiple `docsPaths` per project.
+
+**Final review and fix wave (same day).** The whole-branch review found one Critical: the
+working directory is a default, not a jail — under `--dangerously-skip-permissions` the
+CLI's `Read` accepts absolute paths, so a Verified member could have had `.env` posted into a
+public embed. Fixed in CSAAS `3050103` / bot `8d55c35`: the explain call runs without that
+flag (per-call `skipPermissions:false`) so a read outside the working directory is denied by
+the CLI's own permission system; `--setting-sources user`; reference paths validated against
+the docs root; `CLAUDE_BACKEND=cli` asserted; flags carried through both retry paths; 110 s
+per-call CLI timeout and a one-in-flight guard; public error text made generic. Verified
+live: the endpoint refused an injection probe with no leak, and a direct CLI run with the
+endpoint's identity was denied `../init.md` — "requested permissions to read … but you
+haven't granted it yet". Spec §3 corrected (`b2c0d27`). Bot `main` = `c50823c`, 174 tests;
+CSAAS `main` = `3050103`, 39 tests. `/explain` registered as the 41st command.
+
+## 2026-09-04 — Ship to production: task ticket channels, both repos on main
+The meeting pipeline now notifies people the way `/create-task` always has, and both
+sides of it are on `main` and deployed.
+
+**Task notification (`05bfc78`).** A mirrored meeting task used to get one ping in the
+review channel — which for a `/record` meeting with no dedicated meeting text channel
+lands in the voice channel's own chat, where nobody looks. Now each assigned task gets
+its own private channel under the Features category, visible to the assignee and the
+approver, opened with an embed that mentions them, plus a best-effort DM pointing at
+it. The task row is repointed at its own channel so `/close-feature` and `/update-task`
+resolve there; the review-channel summary links each one. New
+`bot/src/services/taskTicketChannel.js` (`createTaskTicketChannel`, `dmTaskAssignees`);
+`mirroredStage` carries a prior `taskChannelId` forward so a retry after a partial
+mirror never makes a second channel or re-DMs; `/meeting-review` approve now records
+`dataJson.approvedBy` — the assigner's role. Five new tests, suite at 122.
+
+**Bot repo:** `design/meeting-to-tasks-integration` fast-forwarded onto `main` and
+pushed (`45aaf64..05bfc78`, 39 commits). VM pulled, migrations 013–015 already applied,
+40 commands re-registered, `granjur-bot` restarted and logging
+`[meetingPipeline] worker started (60s tick)`.
+
+**CSAAS repo:** the five local VM commits are now on CSAAS `main` as one clean commit
+(`263f861`). The originals had swept up server-runtime churn — 17 migration files the
+boot process had moved to `data/migrations_completed/`, and a regenerated `schema.sql`
+— so the push was rebuilt from a source-only diff in a temp clone, restoring
+`data/migrations/20260901_meeting_task_assignees.sql` that the churn commit had
+deleted. Safe because `runMigrationsOnStart.js` keys off a `schema_migrations` ledger
+table, not file presence. Deploy ran; VM CSAAS is at `263f861`, 0 ahead, and
+`/meeting/workflow/{assign,approve,issuesync}` all reach their handlers.
+
+**Production env:** `MEETING_PIPELINE_ENABLED=true`, `CSAAS_API_URL=http://127.0.0.1:3000/api`
+(CSAAS is on the same VM — no tunnel in production), `CSAAS_ACTOR_URDD=6` added to
+`~/Granjur-Discord-Bot/.env`. Local bot instance and the SSH tunnel both shut down.
+
+
+## 2026-09-04 — Meeting → tasks pipeline: first successful end-to-end run
+A two-person voice meeting became a task row in the bot database, through all ten
+stages: `created → transcribing → analyzing → generating_tasks → assigning →
+awaiting_review → approved → mirrored → issue_syncing → done`. CSAAS meeting 5,
+Soniox transcription of two per-speaker files, one task correctly identifying a
+tenant-reactivation URDD bug with four source files named; bot task `8cac25ab…`
+(`type=feature`, `externalId=csaas:1`).
+
+Setup: CSAAS on the VM reached over an SSH tunnel, `CSAAS_ACTOR_URDD=6`, bot run
+locally with production `granjur-bot` stopped. Four CSAAS commits cherry-picked onto
+the VM's `main` (`/assign`, `skip_github`, `task_ids`, plus an `/issuesync`
+`requestMethod` fix) — **local commits only, erased by the next push to CSAAS main**.
+
+Eight bugs found and fixed, none reachable by unit tests:
+1. `LIMIT ?` / `INTERVAL ? SECOND` cannot be bound under prepared statements — broke
+   the first tick (`fe4db8d`).
+2. `nextAttemptAt` written on the Node clock but compared against MySQL's `NOW(3)`,
+   putting every retry five hours out (`87642e9`).
+3. `/record` was never registered in the command index, and used a start path that
+   never enqueued the pipeline (`77626a2`).
+4. Connection pool had no keepalive against the remote database (`baed8c3`).
+5. `/meeting-retry` refused `pending` jobs — exactly the state it is needed for
+   (`30ab9f8`).
+6. `awaiting_review` advanced the stage while blocking, so the job sat at stage
+   `approved` with nobody having approved — which killed the assignee dropdown, the
+   GitHub toggle, the per-task reject and `/meeting-review` (`da35317`).
+7. **`task` INSERT/UPDATE referenced `` `Task` ``**, which does not exist on a
+   case-sensitive server — task writes had never worked here, affecting
+   `/create-task`, `/bug` and `/feature` too (`099179d`).
+8. The final summary was edited into the meeting's channel rather than the one the
+   review was re-posted to, so it silently never appeared (`c3f42e4`).
+
+Not yet exercised: assignment (the task mirrored unassigned), the assignee ping, and
+the GitHub `[Agent Call]` push. See `backlog.md`.
+
+## 2026-09-03 — Project documentation: sync UBS-Doc into MySQL and browse it from Discord
+Phase 1 (read-only) of `docs/superpowers/specs/2026-09-03-project-docs-preview-design.md`,
+executed from `docs/superpowers/plans/2026-09-03-project-docs-preview.md` on branch
+`feat/project-docs` (21 commits, not merged).
+
+- **Sync service** `bot/src/services/docsSync.js` — every 15 min, one API call for the head
+  SHA; on change, one tree call, then only changed blobs from raw.githubusercontent. Records
+  the head SHA only when the mirror is provably complete (a truncated tree, an empty document
+  list, or any per-file failure each suppress both the delete pass and the SHA write).
+  Re-attribution runs every cycle, including the short-circuit one.
+- **Storage** migration `012_doc_pages.sql`: `docpage` + `docsource`, plus `project.docsSlug`
+  and `project.docsPaths`. Applied to production; 173 pages synced, 138 attributed to Badar HMS.
+- **`/docs` rebuilt** — browse projects and sections, walk the tree, read a page in paged
+  embeds with a link to the live site, and an autocompleted `query` option backed by FULLTEXT.
+  Replaces the old browser over six unrelated files in `bot/docs/`.
+- **`/projects` added** — create a project (name, docs slug, extra doc paths), link a repo.
+  Closes the gap that no command created projects and `/repos` silently discarded the project
+  name its own modal collected.
+- **`/edit-docs` repointed** at `docpage` (it read a table with 0 rows), writing `source='local'`
+  pages that the sync can never overwrite or delete. Also fixed a pre-existing bug where
+  `edit_docs_select` was deferred before `showModal`, which had broken the command outright.
+- **`#documentation` channel** rebuilt on the same data.
+- **First test suite in this repo**: `node:test`, `npm test`, 54 tests in `bot/test/`.
+
+Verified against the live corpus: all 173 documents render (674 embed pages, longest 3800 of
+4096, zero unbalanced code fences), and walking all 102 levels of the browse tree reaches every
+document exactly once with no level over Discord's 25-option cap.
+
+Files: `bot/src/services/docsSync.js`, `bot/src/utils/{docPath,docRender,docTree}.js`,
+`bot/src/commands/{docs,projects,edit-docs,repos,setup,doc-channel}.js`,
+`bot/src/services/docTraversal.js`, `bot/src/Database/{index.js,schema.sql}`,
+`bot/src/Database/migrations/012_doc_pages.sql`, `bot/src/{index.js,handlers/interactions.js}`,
+`bot/src/config/command-config.json`, `bot/test/*`, `package.json`.
+
+## 2026-09-02 — Environment setup verified; migrations 010/011 confirmed live
+Fresh `npm install` (73 pkgs, exit 0) on Node v24.15.0. `ffmpeg-static` binary
+downloaded without needing `npm approve-scripts` (82 MB, ffmpeg 6.1.1); `prism-media`
+resolves it and `libsodium-wrappers` initialises. Connected to the remote MySQL
+(20.120.228.55/granjur, 8.0.46): `schema_migrations` lists all 11 migrations and both
+`guildconfig.timezone` and `scheduledmeeting.cancelled` exist — backlog items
+"verify migrations 010+011" and "ffmpeg-static approve-scripts" are closed.
+All 36 slash commands build; 72/87 modules import cleanly (the 15 failures are dead
+vendored `Database/*` files, now a backlog item). No code changes.
+
+## 2026-09-02 — Meeting → tasks integration with CSAAS (feature complete)
+Full pipeline: a recorded Discord voice meeting is transcribed/analyzed by CSAAS,
+turned into proposed tasks + assignees, reviewed by a human in Discord, then mirrored
+into the bot's `task` table with optional per-task GitHub `[Agent Call]` issue push.
+- **CSAAS side** (branch `feat/meeting-workflow-assign`): plaintext transport +
+  `actionPerformerURDD` on MeetingWorkflow endpoints; `skip_github` on `/approve`;
+  new `/assign` endpoint + `extractAssignments` agent + `meeting_task_assignees`
+  table; `/issuesync` `task_ids` filter; `STT_PROVIDER=soniox`.
+- **Bot side**: `csaasClient.js` (AES envelope + `isConfigured`); `meeting_pipeline_job`
+  table (migration 012) + `meetingPipelineWorker.js` (`runTick` 60s loop, backoff,
+  `MAX_ATTEMPTS`, stage timeout, `notifyFailure` channel alert); 10 stage runners in
+  `meetingPipelineStages.js` (`created`→`transcribing`→`analyzing`→`generating_tasks`
+  →`assigning`→`awaiting_review`→`approved`→`mirrored`→`issue_syncing`→`done`) +
+  `resolveMeetingChannel`; roster build; review UI (`meetingReviewUI.js` builders +
+  `applyReviewAction`, `commands/meetingReview.js` handlers + `/meeting-review`
+  `/meeting-retry`); task mirroring + `externalId`/`meetingId` on `task` (migration
+  013); ubs_doc clone mounted as a second `/docs` root via `UBS_DOC_PATH`.
+- **Task 17 wrap-up**: real `notifyFailure` (best-effort channel alert on final
+  failure, exported + injectable resolver, tested); `route()` fall-through now acks
+  with an ephemeral "no longer active" reply; timeout race losing-path `.catch`ed to
+  kill unhandledRejection; `bot/.env.example` consolidated; manual E2E runbook at
+  `docs/meeting-pipeline-e2e-checklist.md`.
+Files: `bot/src/services/{csaasClient,meetingPipelineWorker,meetingPipelineStages,
+meetingReviewUI}.js`, `bot/src/commands/meetingReview.js`,
+`bot/src/Database/meetingPipelineJob*.js`, `bot/src/Database/migrations/012,013`,
+`bot/.env.example`, `docs/meeting-pipeline-e2e-checklist.md`,
+`.claude/knowledge/csaas-meeting-workflow-integration.md`.
+
 ## 2026-08-31 — Fix: `/schedule` autocomplete ISO round-trip lost the `Z`
 `parseWhen`'s ISO regex didn't allow fractional seconds, so `.000Z` fell through the
 offset group and the timestamp was re-read as wall-clock in the guild zone — a

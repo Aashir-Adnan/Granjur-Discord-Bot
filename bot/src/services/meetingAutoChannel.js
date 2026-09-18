@@ -2,6 +2,7 @@ import db, { ensureStringArray, getGuildConfig } from "../db/index.js";
 import { PermissionFlagsBits, ChannelType, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder } from "discord.js";
 import { startMeetingRecording } from "./voiceCapture.js";
 import { ensureMeetingChannel } from "./meetingListener.js";
+import { ensureGuidelinesPinned } from "../config/meetingGuidelines.js";
 
 const INTERVAL_MS = 60 * 1000; // check every minute, same as meetingReminder.js
 
@@ -206,6 +207,8 @@ async function createMeetingChannelAndJoin(guild, meeting) {
     console.error("[meetingAutoChannel] failed to create text channel:", e.message);
     return;
   }
+
+  await ensureGuidelinesPinned(textChannel, guild.client.user.id);
 
   await db.scheduledMeeting.setChannel(meeting.id, voiceChannel.id);
 

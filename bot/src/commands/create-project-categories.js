@@ -8,7 +8,6 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 export const data = new SlashCommandBuilder()
   .setName('create-project-categories')
   .setDescription('Create a category for each project in the DB — only users with that project role can access')
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild | PermissionFlagsBits.ManageChannels)
   .addBooleanOption((o) =>
     o.setName('create_roles').setDescription('Create missing project roles if they do not exist').setRequired(false)
   )

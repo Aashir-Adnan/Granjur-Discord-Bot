@@ -1,6 +1,5 @@
 import {
   SlashCommandBuilder,
-  PermissionFlagsBits,
   ChannelType,
   EmbedBuilder,
 } from 'discord.js'
@@ -10,7 +9,6 @@ import { ROLE_CLOCKED_IN, ROLE_SEPARATOR_NAME, CATEGORY_BOLD_NAMES } from '../co
 export const data = new SlashCommandBuilder()
   .setName('migrate')
   .setDescription('(Admin) Apply server migration: Clocked In role, separator roles, bold category names')
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 
 export async function execute(interaction) {
   const guild = interaction.guild

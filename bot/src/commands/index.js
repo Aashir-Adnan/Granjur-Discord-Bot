@@ -19,6 +19,8 @@ import * as faqAnswerCmd from './faq-answer.js'
 import * as scrapCmd from './scrap.js'
 import * as dashboardCmd from './dashboard.js'
 import * as approveCmd from './approve.js'
+import * as setRolesCmd from './set-roles.js'
+import * as projectMembersCmd from './project-members.js'
 import * as reposCmd from './repos.js'
 import * as verifyCmd from './verify.js'
 import * as ticketCmd from './ticket.js'
@@ -43,6 +45,10 @@ import * as createChannelCmd from './create-channel.js'
 import * as playbackCmd from './playback.js'
 import * as setupCmd from './setup.js'
 import * as meetingsCmd from './meetings.js'
+import * as meetingReviewCmd from './meetingReview.js'
+import * as projectsCmd from './projects.js'
+import * as recordCmd from './record.js'
+import * as explainCmd from './explain.js'
 
 const commandModules = [
   initCmd,
@@ -59,11 +65,14 @@ const commandModules = [
   projectDbCmd,
   evaluateCmd,
   docsCmd,
+  explainCmd,
   faqCmd,
   faqAnswerCmd,
   scrapCmd,
   dashboardCmd,
   approveCmd,
+  setRolesCmd,
+  projectMembersCmd,
   reposCmd,
   editDocsCmd,
   clockInCmd,
@@ -81,16 +90,26 @@ const commandModules = [
   playbackCmd,
   setupCmd,
   meetingsCmd,
+  meetingReviewCmd,
+  projectsCmd,
+  recordCmd,
 ]
 
+// A module's `data` may be a single SlashCommandBuilder or an array of them
+// (one module can back several slash commands, e.g. meetingReview).
+function moduleBuilders(m) {
+  if (!m.data) return []
+  return Array.isArray(m.data) ? m.data : [m.data]
+}
+
 export function getCommands() {
-  return commandModules.map((m) => m.data).filter(Boolean)
+  return commandModules.flatMap(moduleBuilders)
 }
 
 export async function loadCommands(client) {
   const map = new Map()
   for (const m of commandModules) {
-    if (m.data) map.set(m.data.name, m)
+    for (const b of moduleBuilders(m)) map.set(b.name, m)
   }
   const commands = getCommands()
   const rest = new REST({ version: '10' }).setToken(config.discord.token)
@@ -107,8 +126,19 @@ export async function loadCommands(client) {
 
     const existingNames = (existing || []).map((c) => c.name).sort().join(',')
     const newNames = payload.map((c) => c.name).sort().join(',')
-    const existingHash = JSON.stringify((existing || []).map((c) => ({ name: c.name, description: c.description, options: c.options })).sort((a, b) => a.name.localeCompare(b.name)))
-    const newHash = JSON.stringify(payload.map((c) => ({ name: c.name, description: c.description, options: c.options })).sort((a, b) => a.name.localeCompare(b.name)))
+    // default_member_permissions belongs in the hash: it is what Discord uses to
+    // decide whether to show a command at all. Leaving it out meant a change to a
+    // command's permissions produced an identical hash, so registration was skipped
+    // and the change never reached Discord — the command kept its old visibility
+    // with nothing in the logs to say so.
+    const shape = (c) => ({
+      name: c.name,
+      description: c.description,
+      options: c.options,
+      default_member_permissions: c.default_member_permissions ?? null,
+    })
+    const existingHash = JSON.stringify((existing || []).map(shape).sort((a, b) => a.name.localeCompare(b.name)))
+    const newHash = JSON.stringify(payload.map(shape).sort((a, b) => a.name.localeCompare(b.name)))
 
     if (existingHash === newHash) {
       console.log(`Slash commands unchanged (${payload.length} commands), skipping registration`)
@@ -139,6 +169,14 @@ const MODAL_FIRST_COMMANDS = new Set([])
 
 export function isModalFirstCommand(name) {
   return MODAL_FIRST_COMMANDS.has(name)
+}
+
+// Commands whose reply should be visible to the channel, not only to the
+// invoker. Every other slash command is deferred ephemerally in index.js.
+const PUBLIC_REPLY_COMMANDS = new Set(['explain'])
+
+export function isPublicReplyCommand(name) {
+  return PUBLIC_REPLY_COMMANDS.has(name)
 }
 
 export async function handleAutocomplete(interaction, commands) {
@@ -172,7 +210,12 @@ export async function handleCommand(interaction, commands) {
     await cmd.execute(interaction)
   } catch (err) {
     console.error(`Command ${interaction.commandName}:`, err)
-    const msg = err.message || 'Something went wrong.'
+    // Public-reply commands (e.g. /explain) show their reply to the whole
+    // channel, so a raw error message (which may leak internals) is replaced
+    // with a fixed generic string. Ephemeral commands keep err.message.
+    const msg = isPublicReplyCommand(interaction.commandName)
+      ? 'Something went wrong. Try again in a minute.'
+      : (err.message || 'Something went wrong.')
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply({ content: msg }).catch(() => {})
     } else {

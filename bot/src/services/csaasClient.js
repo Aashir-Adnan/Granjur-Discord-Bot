@@ -1,0 +1,207 @@
+// The ONLY module that knows the CSAAS meeting-workflow wire format.
+// Transport is plaintext localhost (endpoints are encryption:false -> plain JSON).
+// Every request carries actionPerformerURDD (POST: body/multipart field, GET: query param).
+// Responses are wrapped { status, message, payload: { return: {...} } } -> unwrapped to payload.return.
+
+const BASE = () => (process.env.CSAAS_API_URL || '').replace(/\/+$/, '')
+const URDD = () => process.env.CSAAS_ACTOR_URDD || ''
+
+export function isConfigured() {
+  return Boolean(BASE() && URDD())
+}
+
+export class CsaasError extends Error {
+  constructor(message, status, body) {
+    super(message)
+    this.name = 'CsaasError'
+    this.status = status
+    this.body = body
+  }
+}
+
+function requestTimeoutMs() {
+  return Number(process.env.CSAAS_REQUEST_TIMEOUT_MS) || 300000
+}
+
+// AbortSignal.timeout aborts the fetch itself so a hung request stops consuming
+// resources (and a timed-out /transcribe does not later append a duplicate segment).
+function timeoutSignal(ms = requestTimeoutMs()) {
+  return AbortSignal.timeout(ms)
+}
+
+function isAbort(err) {
+  return err?.name === 'AbortError' || err?.name === 'TimeoutError' ||
+    /aborted|timed out/i.test(String(err?.message || ''))
+}
+
+async function runFetch(url, init, { timeoutMs } = {}) {
+  const ms = timeoutMs || requestTimeoutMs()
+  try {
+    return await fetch(url, { ...init, signal: timeoutSignal(ms) })
+  } catch (err) {
+    if (isAbort(err)) {
+      throw new CsaasError(`CSAAS request timed out after ${ms}ms: ${url}`, 0, null)
+    }
+    throw err
+  }
+}
+
+function parseBody(text) {
+  try {
+    return text ? JSON.parse(text) : {}
+  } catch {
+    return { raw: text }
+  }
+}
+
+function unwrap(json, status) {
+  if (!json || (json.status && json.status !== 200)) {
+    throw new CsaasError(json?.message || json?.error_message || `CSAAS ${status}`, status, json)
+  }
+  return json.payload?.return ?? json
+}
+
+async function postJson(pathname, body, { timeoutMs } = {}) {
+  const res = await runFetch(`${BASE()}${pathname}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, actionPerformerURDD: URDD() }),
+  }, { timeoutMs })
+  const text = await res.text()
+  const json = parseBody(text)
+  if (!res.ok) throw new CsaasError(json?.message || text || res.statusText, res.status, json)
+  return unwrap(json, res.status)
+}
+
+async function getJson(pathname, query = {}) {
+  const qs = new URLSearchParams({ ...query, actionPerformerURDD: URDD() }).toString()
+  const res = await runFetch(`${BASE()}${pathname}?${qs}`, {})
+  const text = await res.text()
+  const json = parseBody(text)
+  if (!res.ok) throw new CsaasError(json?.message || text || res.statusText, res.status, json)
+  return unwrap(json, res.status)
+}
+
+// Called from `/record action:start`, which is awaited before the command replies.
+// The five-minute default would sit on the interaction until it expires, so a
+// wedged backend must give up quickly: no live transcript, recording unaffected.
+export const CREATE_MEETING_TIMEOUT_MS = 20_000
+
+// CSAAS create returns { meeting: <meetings row>, scope_repo_ids }. The id lives
+// at meeting.meeting_id (verified in meetingWorkflow.js createMeeting -> getMeeting).
+export const createMeeting = async ({ title, participants }) => {
+  const out = await postJson('/meeting/workflow/create', { title, participants }, { timeoutMs: CREATE_MEETING_TIMEOUT_MS })
+  return { meeting_id: out?.meeting?.meeting_id ?? out?.meeting_id }
+}
+
+export const analyze = (meetingId) =>
+  postJson('/meeting/workflow/analyze', { meeting_id: meetingId })
+
+export const generateTasks = (meetingId) =>
+  postJson('/meeting/workflow/tasks', { meeting_id: meetingId })
+
+export const assign = (meetingId, roster) =>
+  postJson('/meeting/workflow/assign', { meeting_id: meetingId, roster })
+
+// CSAAS /notes returns { notes: <meeting_notes row|null>, latestHtml: <string|null> }.
+// The row carries edited_notes / raw_notes; prefer the edited text. Be defensive:
+// tolerate `notes` already being a plain string, or the alt key `html`.
+export const fetchNotes = async (meetingId) => {
+  const out = await getJson('/meeting/workflow/notes', { meeting_id: meetingId })
+  const row = out?.notes
+  const notes = typeof row === 'string'
+    ? row
+    : (row?.edited_notes ?? row?.raw_notes ?? '')
+  const html = out?.latestHtml ?? out?.html ?? null
+  return { notes, html }
+}
+
+export const fetchMeeting = (meetingId) =>
+  getJson('/meeting/workflow/meeting', { meeting_id: meetingId })
+
+export const approve = (meetingId, { decision, skipGithub }) =>
+  postJson('/meeting/workflow/approve', {
+    meeting_id: meetingId, decision, skip_github: !!skipGithub,
+  })
+
+// CSAAS /issuesync returns { results: [ { task_id, issue_url, issue_number,
+// skipped?, error?, ... } ], dry_run }. Normalize each result to a flat shape.
+export const issueSync = async (meetingId, { owner, repo, taskIds, dryRun }) => {
+  const out = await postJson('/meeting/workflow/issuesync', {
+    meeting_id: meetingId, owner, repo,
+    ...(taskIds ? { task_ids: taskIds } : {}),
+    ...(dryRun ? { dry_run: true } : {}),
+  })
+  const results = Array.isArray(out?.results) ? out.results : []
+  return {
+    issues: results.map((r) => ({
+      task_id: r.task_id,
+      url: r.issue_url ?? r.url ?? null,
+      number: r.issue_number ?? r.number ?? null,
+      skipped: !!r.skipped,
+      error: r.error ?? null,
+    })),
+  }
+}
+
+// /explain runs the Claude CLI in the docs clone: 30–90 s is normal. The
+// interaction token lasts 15 minutes, so a 2-minute ceiling is comfortable.
+export const EXPLAIN_TIMEOUT_MS = 120_000
+
+export const explain = async ({ question, project }) => {
+  const out = await postJson('/meeting/workflow/explain', { question, project: project ?? null }, { timeoutMs: EXPLAIN_TIMEOUT_MS })
+  return {
+    answer: String(out?.answer ?? ''),
+    references: Array.isArray(out?.references) ? out.references : [],
+    scope: String(out?.scope ?? 'All documentation'),
+    model: out?.model ?? null,
+    durationMs: Number(out?.durationMs) || 0,
+  }
+}
+
+export async function transcribeSegment(meetingId, { buffer, filename, segmentIndex }) {
+  const form = new FormData()
+  form.append('meeting_id', String(meetingId))
+  form.append('segment_index', String(segmentIndex))
+  form.append('actionPerformerURDD', URDD())
+  form.append('file', new Blob([buffer]), filename || `segment-${segmentIndex}.ogg`)
+  const res = await runFetch(`${BASE()}/meeting/workflow/transcribe`, { method: 'POST', body: form })
+  const text = await res.text()
+  const json = parseBody(text)
+  if (!res.ok) throw new CsaasError(json?.message || text || res.statusText, res.status, json)
+  return unwrap(json, res.status)
+}
+
+// One speaker turn: a short clip, so a much tighter ceiling than the 5-minute
+// default. A turn that has not come back in 30 s is not worth waiting for —
+// the feed skips its sequence at 25 s anyway.
+export const UTTERANCE_TIMEOUT_MS = 30_000
+
+export async function transcribeUtterance(meetingId, { buffer, filename, speakerRef, speakerName, startedAt, sequence, durationMs }) {
+  const form = new FormData()
+  form.append('meeting_id', String(meetingId))
+  form.append('sequence', String(sequence))
+  form.append('speaker_ref', String(speakerRef ?? ''))
+  form.append('speaker_name', String(speakerName ?? ''))
+  form.append('started_at', new Date(startedAt).toISOString())
+  form.append('duration_ms', String(durationMs ?? 0))
+  form.append('actionPerformerURDD', URDD())
+  form.append('file', new Blob([buffer]), filename || `utterance-${sequence}.ogg`)
+  const res = await runFetch(`${BASE()}/meeting/workflow/utterance`, { method: 'POST', body: form }, { timeoutMs: UTTERANCE_TIMEOUT_MS })
+  const text = await res.text()
+  const json = parseBody(text)
+  if (!res.ok) throw new CsaasError(json?.message || text || res.statusText, res.status, json)
+  const out = unwrap(json, res.status)
+  return { text: String(out?.text ?? ''), sequence: Number(out?.sequence ?? sequence) }
+}
+
+// analyze-live stores the assembled transcript AND runs the Claude analysis in
+// the same request, so it inherits /analyze's 30-90 s cost.
+export const ANALYZE_LIVE_TIMEOUT_MS = 180_000
+
+export const analyzeLive = (meetingId, { meetingNotes, totalDurationSec }) =>
+  postJson('/meeting/workflow/analyze-live', {
+    meeting_id: meetingId,
+    meeting_notes: meetingNotes,
+    total_duration_sec: totalDurationSec,
+  }, { timeoutMs: ANALYZE_LIVE_TIMEOUT_MS })
