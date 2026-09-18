@@ -63,5 +63,19 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
   } catch (e) {
     console.error('[taskStatusChange] notify:', e?.message ?? e)
   }
+
+  // `notifyTaskUpdate` opens the task's channel when an assignment finds it
+  // without one. Leaving the row pointing at the old channel — or at nothing —
+  // is what turns one stray channel into a new one on every later update: the
+  // next run looks the row up, does not find the channel it just made, and
+  // makes another. Best-effort, like everything after the write.
+  if (notified?.created && notified.channelId && notified.channelId !== task.discordChannelId) {
+    try {
+      await dbArg.task.update({ where: { id: task.id }, data: { discordChannelId: notified.channelId } })
+    } catch (e) {
+      console.error('[taskStatusChange] channel id write-back:', e?.message ?? e)
+    }
+  }
+
   return { warning, notified }
 }

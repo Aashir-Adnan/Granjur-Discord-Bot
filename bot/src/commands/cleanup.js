@@ -48,6 +48,7 @@ import {
   CATEGORY_BOLD_NAMES,
 } from "../constants.js";
 import { getDedicatedChannelCommands } from "../config/commands.js";
+import { claimedSectionIds } from "../services/projectSection.js";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
 
 // All channel names that /init creates (lowercased for matching)
@@ -121,19 +122,59 @@ export const data = new SlashCommandBuilder()
 // Store pending cleanup per guild
 const pendingCleanups = new Map();
 
-export async function execute(interaction) {
+/**
+ * A project's section, by ID — the only protection that actually holds.
+ *
+ * The name rule below it cannot: `categoryNameFor` renders `📂 <NAME>` and
+ * this command lowercases, strips leading non-word characters and compares to
+ * the project name, which fails for `(Legacy) App` (→ `legacy) app`),
+ * `[Client] Portal`, `.NET Rewrite`, `#1 Client`, `Éclair` (JS `\w` has no
+ * `u` flag, so the accent is stripped too → `clair`), `Ünité`, `日本 Portal`,
+ * `Straße` (upper-casing then lower-casing is not a round trip), any name past
+ * ~97 characters (the category name is cut at 100 and the modal sets no
+ * maximum) and any category an operator renamed by hand — which the planner
+ * still treats as ours, because IT looks the category up by id. For every one
+ * of those the whole section, its ten channels and every task channel moved
+ * into it, was listed for deletion behind the confirm button.
+ *
+ * So: the recorded category ids, and the recorded section channel ids
+ * (`claimedSectionIds` — the same set the planner refuses to adopt), and then
+ * anything whose parent is one of those categories. This is spec §6's by-id
+ * principle, the one the rest of the branch runs on. The name rule stays for
+ * categories that predate the recorded ids.
+ */
+function projectSectionGuards(projects) {
+  const rows = projects ?? [];
+  return {
+    // The category itself and its ten channels, wherever they currently sit.
+    sectionIds: claimedSectionIds(rows, null),
+    // Everything living in a project category: its task channels, and the
+    // meeting pairs `/meeting-channel` creates inside a section.
+    categoryIds: new Set(rows.map((p) => p?.discordCategoryId).filter(Boolean)),
+    names: new Set(rows.map((p) => (p?.name || "").toLowerCase())),
+  };
+}
+
+/**
+ * @param {import('discord.js').ChatInputCommandInteraction} interaction already deferred
+ * @param {{db?: object, getConfig?: (guildId: string) => Promise<{id: string}>}} [deps]
+ */
+export async function execute(
+  interaction,
+  { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {},
+) {
   const guild = interaction.guild;
   if (!guild)
     return interaction.editReply({ content: "Use this in a server." });
 
-  const cfg = await getOrCreateGuildConfig(guild.id);
+  const cfg = await getConfig(guild.id);
   const protectedChannels = getProtectedChannelNames();
   const protectedCategories = getProtectedCategoryNames();
 
   // Get user-created channels from DB (protected from cleanup)
   let userCreatedIds = new Set();
   try {
-    const userChannels = await db.userChannel.findMany({
+    const userChannels = await dbArg.userChannel.findMany({
       where: { guildConfigId: cfg.id },
     });
     for (const uc of userChannels || []) {
@@ -144,11 +185,20 @@ export async function execute(interaction) {
     // Table might not exist yet
   }
 
-  // Also protect project categories (created by /create-project-categories)
-  const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } }).catch(() => []);
-  const projectCategoryNames = new Set(
-    (projects || []).map((p) => (p.name || "").toLowerCase()),
-  );
+  // The project rows ARE the protection. A read that fails used to come back
+  // as `[]`, which does not mean "no projects" — it means every project
+  // section in the guild was about to be offered up for deletion.
+  let projects;
+  try {
+    projects = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })) ?? [];
+  } catch (e) {
+    console.error("[cleanup] project read failed:", e);
+    return interaction.editReply({
+      content:
+        "I could not read this server's projects, and their sections are exactly what a cleanup has to leave alone. Nothing was listed. Try again in a moment.",
+    });
+  }
+  const section = projectSectionGuards(projects);
 
   const channels = await guild.channels.fetch();
   const toDelete = [];
@@ -156,16 +206,21 @@ export async function execute(interaction) {
   for (const [, ch] of channels) {
     if (!ch) continue;
     if (userCreatedIds.has(ch.id)) continue;
+    // By id, before any name is looked at.
+    if (section.sectionIds.has(ch.id)) continue;
+    const parentId = ch.parentId ?? ch.parent?.id ?? null;
+    const inProjectSection = Boolean(parentId) && section.categoryIds.has(parentId);
+    if (inProjectSection) continue;
 
     const name = ch.name.toLowerCase();
 
     if (ch.type === ChannelType.GuildCategory) {
       if (protectedCategories.has(name)) continue;
       // Protect project categories
-      if (projectCategoryNames.has(name)) continue;
+      if (section.names.has(name)) continue;
       // Check if it's a project category with emoji prefix
       const stripped = name.replace(/^[^\w]+/, "").trim();
-      if (projectCategoryNames.has(stripped)) continue;
+      if (section.names.has(stripped)) continue;
       continue; // Don't delete categories directly — only their orphan channels
     }
 
@@ -173,8 +228,8 @@ export async function execute(interaction) {
     const parentName = ch.parent?.name?.toLowerCase() || "";
     const isUnderProtectedCategory =
       protectedCategories.has(parentName) ||
-      projectCategoryNames.has(parentName) ||
-      projectCategoryNames.has(parentName.replace(/^[^\w]+/, "").trim());
+      section.names.has(parentName) ||
+      section.names.has(parentName.replace(/^[^\w]+/, "").trim());
 
     if (protectedChannels.has(name) && isUnderProtectedCategory) continue;
 

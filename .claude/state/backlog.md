@@ -4,6 +4,97 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Per-project sections — follow-ups
+From the 2026-09-18 build on branch `feat/project-sections` (built and reviewed,
+**not yet merged** — see `session.md`). See `.claude/knowledge/project-sections.md`.
+
+- **`projectMemberFindByProject` has a hard `LIMIT 200`.** A project with more than
+  200 members gets a partial pinned members panel (and `/project-setup` already
+  guards the revoke pass — see "grantOnly" in the knowledge file — so it cannot
+  strip anyone; only the panel display is affected). Raising the DB limit was
+  deliberately deferred rather than done under this feature's pressure.
+- **`projectFindFirst` is not guild-scoped.** Pre-existing, surfaced again during
+  Task 7's review; nothing in this feature relies on it being unscoped, but it is
+  a latent cross-guild leak if two guilds ever share a project id space.
+- **The meeting pipeline writes a channel's id to the database AFTER the opening
+  send** (`meetingPipelineStages.js`). A failed send orphans the channel — it
+  exists in Discord but nothing in the database points at it. Pre-existing,
+  outside this branch's scope; the branch made it reachable for ordinary project
+  meetings too.
+- **Dead, unregistered files `bot/src/commands/feature.js` and `bug.js`.** Neither
+  is imported anywhere under `bot/src`, and neither is in the registration list in
+  `commands/index.js`. Confirmed unreachable during Task 7's review. Delete them.
+- **The `@everyone` overwrite in `/meeting-channel`'s global (non-project) voice
+  path has no explicit `OverwriteType`.** Kept byte-for-byte from the pre-existing
+  code on purpose (discord.js infers the type correctly today); add the explicit
+  type opportunistically.
+- **Name-fallback adoption may still move an unrelated channel.** The observer's
+  by-id guards (`claimedSectionIds`, the `!c.topic` check, the ticket-topic/
+  reference-count check for tasks) close every case found during the build, but a
+  channel whose topic was hand-wiped AND whose name exactly matches a section or
+  ticket channel name could still be misadopted. Only reachable by a deliberate
+  hand edit.
+- **The created/renamed/moved/granted/opened result buckets don't cross-report.**
+  A channel that is both renamed AND moved in the same run only appears in
+  `moved` (`applyProjectSection`'s `(entry.action === 'move' ? result.moved :
+  result.renamed).push(...)` picks one bucket); a channel that gets the role
+  allow as part of a rename/move is counted in `opened`, separately from
+  `granted`, which is correct but means the same channel can appear in two of the
+  five lists and nothing dedupes them for a human reading the reply.
+- **`missingOverwrites` and `mergedOverwrites` guard on different cache methods**
+  (`cache?.has` vs `cache?.values`). Both exist on a real discord.js `Collection`
+  today, so they agree; a future cache-like object exposing only one of the two
+  would make them disagree about whether the cache is "readable." Low risk, easy
+  fix if it ever bites: standardize on one guard.
+- **`/cleanup`'s `handleConfirm` deletes the ids `execute` stored, with no
+  re-check at confirm time.** The window between listing and clicking confirm is
+  unchanged from before the final wave's by-id fix — a section built during that
+  window would still be offered for deletion. `execute` itself now protects by id
+  (final-wave B1); the confirm handler was out of scope for that fix.
+- **A task moved between projects keeps its old channel and its old project's
+  role allow.** `/update-task` (final-wave B12) now says in its reply that the
+  channel did not move with it, but nothing re-parents the channel or strips the
+  old project role's overwrite — that only happens the next time `/project-setup`
+  runs for either project. Nothing forces anyone to read the reply or re-run it.
+- **Archiving a finished project.** Explicitly out of scope for this feature
+  (spec §3); no flow exists to retire a project's category/role/channels.
+- **The 12 orphan channels in the global `📋 Meetings` category.** Nothing records
+  which project (if any) they were originally for, so this feature cannot move
+  them; also explicitly out of scope in the spec.
+- **Presence-only overwrite repair is deliberate, not a gap** (recorded here so it
+  is not "rediscovered" as a bug): the category `@everyone`-deny repair and the
+  section/task-channel role-allow repair both check whether an overwrite id is
+  *present*, never whether its allow/deny bits still match what the bot would
+  send. An admin who hand-edits an overwrite (e.g. removes the `@everyone` deny to
+  make a section public on purpose) has that edit respected forever, not fought
+  on the next run.
+- **A preview can promise role grants while role *creation* keeps failing** —
+  cosmetic only; the real run's reply already separately says "Role — not
+  created."
+- **Test fakes are duplicated across `projectSection.test.js`,
+  `project-setup.test.js`, `project-members.test.js`, `meeting-channel.test.js`,
+  etc.** rather than shared from one fixture module.
+- **`describeRoleCandidate` walks every guild channel per project** (cache reads
+  only, no API calls) to find where a same-named role holds an overwrite —
+  O(projects × channels), roughly 95 × 9 on the real server today. Fine at this
+  volume; would need a rethink at a much larger guild.
+- `bot/src/commands/cleanup.js:180-186`: the `userChannel` read still catches to an
+  empty set, so a failed read silently shrinks the protected set. Same defect
+  shape as the project read that was fixed in the final wave, one table over.
+- `/cleanup`'s `handleConfirm` deletes the stored pending ids with no re-check, so
+  a channel that became protected between the preview and the confirm is still
+  deleted.
+- `meetingPipelineStages.js:333` re-reads the meeting that `resolveMeetingChannel`
+  already read 43 lines earlier; thread `projectId` out of it instead.
+- `create-project-role.js:27`: `loose()` folds case and combining marks but not the
+  rest of `utf8mb4_general_ci` (`ß`→`s`, `Æ`→`ae`), so two projects differing only
+  that way are still resolved arbitrarily by the `findByName` fallback.
+- When `/project-setup` adds the `@everyone` deny to a category the bot ADOPTED
+  rather than created, the only operator-facing statement is a planner warning
+  inside that project's block, which `capReply` can drop from a large `all:true`
+  run. The console mirror still logs it. This is the one place the bot changes
+  permissions on something it did not create.
+
 ## Team section — follow-ups
 From the 2026-09-18 build (built and reviewed on branches, not yet merged/deployed — see
 `session.md`). See `.claude/knowledge/project-tasks-site.md` ("Team section and the write

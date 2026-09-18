@@ -256,3 +256,36 @@ test('autocomplete: unblock lists only the picked task blockers, empty when it h
   await autocomplete(it3, { db: none, getConfig })
   assert.equal(it3.replies[0].length, 3)
 })
+
+// ---------------------------------------------------------------------------
+// B12: a task that changes project keeps its channel, and says so
+// ---------------------------------------------------------------------------
+
+test('execute: moving a task to another project says the channel has not moved', async () => {
+  const db = fakeDb({ tasks: [A] })
+  db.project.findFirst = async ({ where }) =>
+    where.id === 'pNew' ? { id: 'pNew', name: 'Aurora', guildConfigId: 'g1' } : null
+  const it = fakeInteraction({ task: 'A', project: 'pNew' })
+
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+
+  const text = embedText(it.replies[0])
+  assert.match(text, /now belongs to \*\*Aurora\*\*/)
+  assert.match(text, /channel has not moved/)
+  assert.match(text, /previous project's role/)
+  assert.match(text, /project-setup/)
+})
+
+test('execute: detaching a task from its project says the same thing', async () => {
+  const db = fakeDb({ tasks: [{ ...A, projectId: 'pOld' }] })
+  const it = fakeInteraction({ task: 'A', project: 'none' })
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.match(embedText(it.replies[0]), /now belongs to no project.*channel has not moved/s)
+})
+
+test('execute: an update that leaves the project alone says nothing about it', async () => {
+  const db = fakeDb({ tasks: [{ ...A, projectId: 'pOld' }] })
+  const it = fakeInteraction({ task: 'A', status: 'in_progress' })
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.doesNotMatch(embedText(it.replies[0]), /channel has not moved/)
+})

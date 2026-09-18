@@ -16,8 +16,9 @@ import {
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { getOrCreateCategory } from '../utils/categories.js'
+import { createTaskTicketChannel } from '../services/taskTicketChannel.js'
 import { createIssue } from '../services/github.js'
-import { CATEGORY_BOLD_NAMES } from '../constants.js'
+import { CATEGORY_BOLD_NAMES, CATEGORY_SOFT_CAP } from '../constants.js'
 import { EPHEMERAL } from '../constants.js'
 
 const FLOW_KEY = 'create_task'
@@ -672,13 +673,45 @@ export async function handleEditButton(interaction) {
   }
 }
 
-export async function handleCreate(interaction) {
+/**
+ * What the reply says about where the new channel went, and why it is not in
+ * the project's section when it is not. Spec §4 and §11 both require the reply
+ * to say so: a channel diverted to the global Features category otherwise looks
+ * exactly like one that landed where the project asked for it. Pure.
+ *
+ * @param {string} mention  the channel, as `<#id>`
+ * @param {{name?: string}|null} project  the project the task was filed under
+ * @param {'cap'|'missing'|null} fellBack  why it is not in that project's section
+ */
+export function channelPlacementNote(mention, project, fellBack) {
+  const close = 'Use **/close-feature** there when done.'
+  const name = project?.name ?? null
+  if (!name) return `Channel: ${mention}\n${close}`
+  if (fellBack === 'cap') {
+    return `Channel: ${mention}\n**${name}**'s section is at Discord's ${CATEGORY_SOFT_CAP}-channel cap, so this went to the global **Features** category instead.\n${close}`
+  }
+  if (fellBack === 'missing') {
+    return `Channel: ${mention}\n**${name}** has no Discord section yet, so this went to the global **Features** category. Run **/project-setup** for it to give it one.\n${close}`
+  }
+  return `Channel: ${mention} — in **${name}**'s section.\n${close}`
+}
+
+/**
+ * `db`, `getConfig` and `createChannel` are seams. The root `.env` points at
+ * the PRODUCTION database (`.claude/rules/tests-never-touch-production.md`), so
+ * the largest user-visible branch in this command could not be tested at all
+ * while it reached for the module-level `db` and `getOrCreateGuildConfig`.
+ */
+export async function handleCreate(
+  interaction,
+  { db: dbArg = db, getConfig = getOrCreateGuildConfig, createChannel = createTaskTicketChannel } = {}
+) {
   const guild = interaction.guild
   if (!guild) return
   const state = flowStore.get(interaction.user.id, guild.id, FLOW_KEY)
   if (!state || state.step !== STEP_CONFIRM) return respond(interaction, { content: 'Session expired. Run **/create-task** again.', components: [] })
 
-  const cfg = await getOrCreateGuildConfig(guild.id)
+  const cfg = await getConfig(guild.id)
   const isFeature = state.taskType === 'feature'
 
   const passedApiTests = (state.hasApiTest === true) ? 0 : null
@@ -692,11 +725,11 @@ export async function handleCreate(interaction) {
       const firstRepoId = state.repositoryIds?.[0] ?? null
       // Tasks belong to the real `project` table (Framework, Badar HMS, CSAAS),
       // not `projectschema`, which is a dump-versioning table with no rows.
-      const firstProject = state.projectIds?.[0] ? await db.project.findFirst({ where: { id: state.projectIds[0] } }) : null
+      const firstProject = state.projectIds?.[0] ? await dbArg.project.findFirst({ where: { id: state.projectIds[0] } }) : null
       const projectId = firstProject?.id ?? null
       const projectName = firstProject?.name ?? null
 
-      const task = await db.feature.create({
+      const task = await dbArg.feature.create({
         data: {
           guildConfigId: cfg.id,
           repositoryId: firstRepoId,
@@ -716,42 +749,40 @@ export async function handleCreate(interaction) {
         },
       })
 
-      if (state.repositoryIds?.length) await db.featureRepositories.add(task.id, state.repositoryIds)
-      await db.ticketDoc.create({ data: { guildConfigId: cfg.id, ticketType: 'feature', taskId: task.id, title: state.title?.slice(0, 512) || 'Feature', content: null } })
+      if (state.repositoryIds?.length) await dbArg.featureRepositories.add(task.id, state.repositoryIds)
+      await dbArg.ticketDoc.create({ data: { guildConfigId: cfg.id, ticketType: 'feature', taskId: task.id, title: state.title?.slice(0, 512) || 'Feature', content: null } })
 
-      const category = await getOrCreateCategory(guild, 'Features', { orNames: [CATEGORY_BOLD_NAMES['Features']].filter(Boolean) })
-      const overwrites = [
-        { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
-        ...uniqueSet.map((id) => ({ id, type: OverwriteType.Member, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
-      ]
-      const channel = await guild.channels.create({
-        name: `feature-${task.id.slice(-6)}`,
-        type: ChannelType.GuildText,
-        parent: category.id,
-        topic: `Feature: ${state.title?.slice(0, 100) || 'Feature'} | Assigner + assignees`,
-        permissionOverwrites: overwrites,
-      })
-      await db.feature.update({ where: { id: task.id }, data: { discordChannelId: channel.id } })
-
-      const allMentions = uniqueSet.map((id) => `<@${id}>`).join(' ')
+      // Lands in the project's own section when one was picked and its
+      // category still has room; otherwise the global Features category,
+      // exactly as before createTaskTicketChannel knew about projects — and
+      // `fellBack` is why, for the reply.
       const scopeMod = [state.scope, (state.modules?.length ? state.modules.join(', ') : null)].filter(Boolean).join(' · ')
-      const embed = new EmbedBuilder()
-        .setTitle(`Feature: ${state.title?.slice(0, 200)}`)
-        .setDescription((state.description || 'No description.').slice(0, 1000))
-        .addFields(
+      const { channel, fellBack } = await createChannel(guild, {
+        taskId: task.id,
+        title: state.title,
+        description: state.description,
+        memberIds: uniqueSet,
+        project: firstProject,
+        type: 'feature',
+        fields: [
           { name: 'Status', value: 'open', inline: true },
           { name: 'Assignees', value: (assigneeIds.map((id) => `<@${id}>`).join(' ') || 'None'), inline: true },
           { name: 'Scope / Modules', value: scopeMod || '—', inline: false },
-          { name: 'Task ID', value: task.id, inline: false },
-          { name: 'Close', value: 'Use **/close-feature** in this channel when done.', inline: false }
-        )
-        .setFooter({ text: `Feature ID: ${task.id}` })
-        .setColor(0x5865f2)
-      await channel.send({ content: allMentions || null, embeds: [embed] })
+        ],
+        closeHint: 'Use **/close-feature** in this channel when done.',
+        // Straight after the create, before the opening embed is sent: a `send`
+        // that throws must not leave a channel with no row pointing at it.
+        onCreated: (made) => dbArg.feature.update({ where: { id: task.id }, data: { discordChannelId: made.id } }),
+      })
 
       flowStore.clear(interaction.user.id, guild.id, FLOW_KEY)
       await respond(interaction, {
-        embeds: [new EmbedBuilder().setTitle('Feature task created').setDescription(`Channel: ${channel}\nUse **/close-feature** there when done.`).setColor(0x57f287)],
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Feature task created')
+            .setDescription(channelPlacementNote(`<#${channel.id}>`, firstProject, fellBack))
+            .setColor(0x57f287),
+        ],
         components: [],
       })
     } else {
@@ -759,7 +790,7 @@ export async function handleCreate(interaction) {
       const uniqueParticipants = [...new Set([interaction.user.id, ...taggedIds])]
       const taggedMentions = taggedIds.map((id) => `<@${id}>`).join(' ')
 
-      const task = await db.bugTicket.create({
+      const task = await dbArg.bugTicket.create({
         data: {
           guildConfigId: cfg.id,
           repositoryId: state.repositoryId,
@@ -781,12 +812,12 @@ export async function handleCreate(interaction) {
           const res = await createIssue(state.repo.url, state.title, body)
           if (res?.url) {
             issueUrl = res.url
-            await db.bugTicket.update({ where: { id: task.id }, data: { externalIssueUrl: res.url, externalIssueNumber: res.number } })
+            await dbArg.bugTicket.update({ where: { id: task.id }, data: { externalIssueUrl: res.url, externalIssueNumber: res.number } })
           }
         } catch (_) {}
       }
 
-      await db.ticketDoc.create({ data: { guildConfigId: cfg.id, ticketType: 'bug', taskId: task.id, title: (state.title || 'Bug').slice(0, 512), content: null } })
+      await dbArg.ticketDoc.create({ data: { guildConfigId: cfg.id, ticketType: 'bug', taskId: task.id, title: (state.title || 'Bug').slice(0, 512), content: null } })
 
       const category = await getOrCreateCategory(guild, 'Bugs', { orNames: [CATEGORY_BOLD_NAMES['Bugs']].filter(Boolean) })
       const overwrites = [
@@ -800,7 +831,7 @@ export async function handleCreate(interaction) {
         topic: `Bug: ${state.title} | Repo: ${state.repo?.name || '—'}`,
         permissionOverwrites: overwrites,
       })
-      await db.bugTicket.update({ where: { id: task.id }, data: { discordChannelId: channel.id } })
+      await dbArg.bugTicket.update({ where: { id: task.id }, data: { discordChannelId: channel.id } })
 
       const allMentions = uniqueParticipants.map((id) => `<@${id}>`).join(' ')
       const embed = new EmbedBuilder()

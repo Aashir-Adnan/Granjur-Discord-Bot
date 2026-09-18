@@ -325,6 +325,16 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     console.warn('[meetingPipeline] project/repo lookup failed:', e?.message || e)
   }
 
+  // The project the MEETING belongs to — `/meeting-channel` records it when the
+  // meeting was started for a project or inside its section. CSaaS never sees
+  // it, so `matchProject` cannot produce it from a spoken project name.
+  let meetingProjectId = null
+  try {
+    meetingProjectId = (await db.meeting.findUnique({ where: { id: job.meetingId } }))?.projectId || null
+  } catch (e) {
+    console.warn('[meetingPipeline] meeting project lookup failed:', e?.message || e)
+  }
+
   const mirrored = []
   for (const reviewTask of reviewTasks) {
     if (reviewTask.rejected) continue
@@ -369,12 +379,25 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     // the channel to — it is covered by the summary line below instead.
     let taskChannelId = prior.get(taskKey(csaasTask.task_id))?.taskChannelId || null
     if (!taskChannelId && guild && reviewTask.assigneeRef) {
+      // Same projects already loaded for the match above — look this task's up
+      // by the id matchProject settled on, so the channel lands in its section.
+      // When CSaaS named no project the meeting's own one stands in: a meeting
+      // held inside a project's section belongs to it whatever was said out
+      // loud, and without this its tasks land in the global Features category.
+      // Placement only — the task ROW keeps what matchProject decided, because
+      // attribution and channel placement are different claims.
+      const placementProjectId = row.projectId || meetingProjectId
+      const project = placementProjectId
+        ? matchCtx.projects.find((p) => p.id === placementProjectId) ?? null
+        : null
       try {
-        const ticket = await createTaskTicketChannel(guild, {
+        const { channel: ticket } = await createTaskTicketChannel(guild, {
           taskId: taskRow.id,
           title: row.title,
           description: row.description,
           memberIds: [reviewTask.assigneeRef, approverId],
+          project,
+          type: row.type,
           fields: [
             { name: 'Status', value: 'open', inline: true },
             { name: 'Assignees', value: `<@${reviewTask.assigneeRef}>`, inline: true },

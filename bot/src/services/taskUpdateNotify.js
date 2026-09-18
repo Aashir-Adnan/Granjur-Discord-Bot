@@ -12,6 +12,7 @@
 
 import { holdersOf, idList } from '../utils/taskLabel.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
+import { isTicketChannel } from '../utils/taskChannelName.js'
 import { openBlockers, TERMINAL_STATUSES, unblockNotice } from '../utils/taskDeps.js'
 import db from '../db/index.js'
 
@@ -63,13 +64,43 @@ const MEMBER_ALLOW = { ViewChannel: true, SendMessages: true, ReadMessageHistory
 
 /**
  * Whether a channel is THIS task's ticket channel rather than somewhere the
- * task merely got announced. createTaskTicketChannel names it
- * `<prefix>-<last six characters of the task id>`. Pure.
+ * task merely got announced.
+ *
+ * First the gate: `isTicketChannel` — a text channel whose topic is the bot's
+ * `Feature:`/`Bug:` signature (or, with no topic at all, whose name is
+ * `feature-`/`bug-`). A row can carry a channel it does not own: an unassigned
+ * meeting task carries the meeting's SHARED review channel, and a meeting
+ * channel can be called `bug-triage-…`. Granting a new assignee access to
+ * that, or posting task edits into it, is a permission change nobody asked for.
+ *
+ * Then **the row decides** which task owns a ticket channel: given
+ * `storedChannelId` — the row's `discordChannelId` — a ticket channel carrying
+ * that id is this task's, whatever it is called. Without that, a channel
+ * renamed from `feature-123456` to `feature-add-booking-rules` matches neither
+ * the old name nor a `Task <id>` topic it never had, and every /update-task
+ * builds a duplicate beside it.
+ *
+ * The exact legacy name `<prefix>-<last six of the id>` and a `Task <id>` topic
+ * stay as the fallback for rows whose channel id was never written back.
+ *
+ * `channel` is normally a channel-like object with `id`, `type`, `name` and
+ * `topic`. A bare name string (the shape this function once took; no caller
+ * in the bot passes one now) carries no type, topic or id, so it can never
+ * pass the gate or the id check — it matches only the EXACT legacy name, which
+ * is this task's own id and nothing a person would type. Pure.
  */
-export function ownsChannel(taskId, channelName) {
-  const suffix = String(taskId ?? '').slice(-6)
-  if (!suffix) return false
-  return /^(feature|bug)-/.test(String(channelName ?? '')) && String(channelName).endsWith(`-${suffix}`)
+export function ownsChannel(taskId, channel, storedChannelId = null) {
+  const id = String(taskId ?? '')
+  if (!id) return false
+  const suffix = id.slice(-6)
+  const legacyNames = [`feature-${suffix}`, `bug-${suffix}`]
+
+  if (typeof channel === 'string') return legacyNames.includes(channel)
+  if (!isTicketChannel(channel)) return false
+
+  if (channel.id && storedChannelId && channel.id === String(storedChannelId)) return true
+  if (legacyNames.includes(String(channel.name ?? ''))) return true
+  return String(channel.topic ?? '').endsWith(`Task ${id}`)
 }
 
 /**
@@ -110,33 +141,51 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
 
   const holders = holdersOf({ ...task, ...updates })
 
-  // Resolve the task's OWN channel. An unassigned meeting task carries the
-  // review channel's id in discordChannelId — that channel belongs to the
-  // meeting and holds everyone's review, so granting a new assignee access to
-  // it, or posting task edits into it, would be wrong. A task's own channel is
-  // the one named for the task (`feature-<last six of the id>`); anything else
-  // is somewhere the task merely got mentioned.
+  // Resolve the task's OWN channel. The row's id is handed to `ownsChannel`, so
+  // a ticket channel renamed to its title is still recognised as this task's —
+  // without it every update opens a duplicate beside it. An unassigned meeting
+  // task carries the shared review channel's id instead, and that is not a
+  // ticket channel, so it is still only somewhere the task got mentioned.
   let channel = null
   if (task.discordChannelId) {
     const found = await client?.channels?.fetch(task.discordChannelId).catch(() => null)
-    if (found?.guild && ownsChannel(task.id, found.name)) channel = found
+    if (found?.guild && ownsChannel(task.id, found, task.discordChannelId)) channel = found
   }
 
   // An assigned task with no channel of its own gets one, exactly as
-  // /create-task and the meeting mirror do.
+  // /create-task and the meeting mirror do. Look up its project (if any) so
+  // the new channel lands in that project's section instead of the global
+  // Features/Bugs category.
   if (!channel && holders.length) {
+    let project = null
+    if (task.projectId) {
+      try {
+        project = await dbArg.project.findFirst({ where: { id: task.projectId } })
+      } catch (e) {
+        console.warn('[taskUpdate] project lookup failed:', e?.message || e)
+      }
+    }
     try {
-      channel = await createTaskTicketChannel(guild, {
+      const made = await createTaskTicketChannel(guild, {
         taskId: task.id,
         title: updates?.title || task.title,
         description: updates?.description ?? task.description,
         memberIds: [...holders, actorId],
+        project,
+        type: task.type,
         fields: [
           { name: 'Status', value: String(updates?.status || task.status || 'open'), inline: true },
           { name: 'Assignees', value: holders.map((id) => `<@${id}>`).join(' ') || 'None', inline: true },
         ],
-        closeHint: 'Use **/close-feature** in this channel when done.',
+        // A bug row is closed with /resolve-bug; pointing at /close-feature in
+        // a bug's own channel sends the assignee to a command that will not
+        // take it.
+        closeHint:
+          task.type === 'bug'
+            ? 'Use **/resolve-bug** in this channel when done.'
+            : 'Use **/close-feature** in this channel when done.',
       })
+      channel = made.channel
       out.created = true
       out.channelId = channel.id
     } catch (e) {

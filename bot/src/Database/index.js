@@ -826,6 +826,10 @@ async function scheduledMeetingUpdate(id, data) {
     sets.push("cancelled = ?");
     vals.push(data.cancelled ? 1 : 0);
   }
+  if (data.projectId !== undefined) {
+    sets.push("projectId = ?");
+    vals.push(data.projectId);
+  }
   if (sets.length === 0)
     return queryOne("SELECT * FROM `scheduledmeeting` WHERE id = ?", [id]);
   vals.push(id);
@@ -992,6 +996,37 @@ async function projectFindByName({ guildConfigId, name }) {
     guildConfigId,
     name,
   ]);
+}
+
+/** Columns `db.project.update` may write, in one ordered list. */
+const PROJECT_UPDATABLE = [
+  ["name", (v) => v],
+  ["readme", (v) => v],
+  ["docsSlug", (v) => v],
+  ["docsPaths", (v) => toJson(v)],
+  ["discordCategoryId", (v) => v],
+  ["discordRoleId", (v) => v],
+  ["discordChannels", (v) => JSON.stringify(v)],
+];
+
+export function projectUpdateSql(id, data = {}) {
+  const sets = [];
+  const params = [];
+  for (const [col, encode] of PROJECT_UPDATABLE) {
+    if (data[col] === undefined) continue;
+    sets.push(`${col} = ?`);
+    params.push(encode(data[col]));
+  }
+  if (sets.length === 0) return null;
+  params.push(id);
+  return { sql: `UPDATE \`project\` SET ${sets.join(", ")} WHERE id = ?`, params };
+}
+
+async function projectUpdate({ where, data }) {
+  const built = projectUpdateSql(where?.id, data);
+  if (!built) return projectFindFirst({ where: { id: where?.id } });
+  await query(built.sql, built.params);
+  return projectFindFirst({ where: { id: where.id } });
 }
 
 // ---------- project_schemas (FK project, name, latest_dump_id) ----------
@@ -1378,21 +1413,30 @@ async function guildMemberFindByEmail(guildId, email) {
 }
 
 // ---------- Meeting & MeetingChannel (for meetingListener) ----------
+/** The columns a `meeting` INSERT writes, in one ordered list. */
+const MEETING_INSERT_COLUMNS = [
+  ["guildConfigId", (d) => d.guildConfigId],
+  ["channelId", (d) => d.channelId],
+  ["externalId", (d) => d.externalId ?? null],
+  ["transcript", (d) => d.transcript ?? null],
+  ["notes", (d) => d.notes ?? null],
+  ["projectId", (d) => d.projectId ?? null],
+  ["repositoryUrl", (d) => d.repositoryUrl ?? null],
+];
+
+export function meetingInsertSql(pk, data = {}) {
+  const cols = ["id", ...MEETING_INSERT_COLUMNS.map(([col]) => col)];
+  const params = [pk, ...MEETING_INSERT_COLUMNS.map(([, read]) => read(data))];
+  return {
+    sql: `INSERT INTO \`meeting\` (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
+    params,
+  };
+}
+
 async function meetingCreate({ data }) {
   const pk = id();
-  await query(
-    "INSERT INTO `meeting` (id, guildConfigId, channelId, externalId, transcript, notes, projectId, repositoryUrl) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [
-      pk,
-      data.guildConfigId,
-      data.channelId,
-      data.externalId ?? null,
-      data.transcript ?? null,
-      data.notes ?? null,
-      data.projectId ?? null,
-      data.repositoryUrl ?? null,
-    ],
-  );
+  const { sql, params } = meetingInsertSql(pk, data);
+  await query(sql, params);
   return queryOne("SELECT * FROM `meeting` WHERE id = ?", [pk]);
 }
 
@@ -2175,6 +2219,7 @@ const db = {
     findFirst: projectFindFirst,
     create: projectCreate,
     findByName: projectFindByName,
+    update: projectUpdate,
   },
   projectSchemas: {
     findMany: projectSchemasFindMany,
