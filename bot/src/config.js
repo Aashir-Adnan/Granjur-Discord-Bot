@@ -30,6 +30,19 @@ export const config = {
     pass: process.env.EMAIL_PASS || '',
     from: process.env.EMAIL_FROM || '',
   },
+  verifyServer: {
+    port: parseInt(process.env.BOT_VERIFY_PORT || '4070', 10),
+    // Origin allowed to call the verify endpoint from a browser (the hosted verify page).
+    // Falls back to '*' only if unset, so existing deployments keep working until configured.
+    allowedOrigin: process.env.VERIFY_BASE_URL || process.env.BOT_VERIFY_ALLOWED_ORIGIN || '*',
+    // Set BOT_TRUST_PROXY=1 only if this server sits behind a reverse proxy that sets X-Forwarded-For.
+    trustProxy: process.env.BOT_TRUST_PROXY === '1',
+    maxBodyBytes: parseInt(process.env.BOT_VERIFY_MAX_BODY_BYTES || '10240', 10), // 10kb
+    rateLimit: {
+      windowMs: parseInt(process.env.BOT_VERIFY_RATE_WINDOW_MS || '60000', 10),
+      max: parseInt(process.env.BOT_VERIFY_RATE_MAX || '20', 10),
+    },
+  },
 }
 
 export function isAllowedEmail(email) {
