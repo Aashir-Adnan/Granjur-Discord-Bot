@@ -45,6 +45,17 @@ test('ownsChannel tells a task channel from the meeting channel it was announced
   assert.equal(ownsChannel('', 'feature-f56be0'), false)
 })
 
+test('ownsChannel also recognises a project-parented channel by its "Task <id>" topic', () => {
+  const id = 'b62ffdcece31488c893f56be0'
+  // Named after the title, not the id — the old suffix check alone would miss it.
+  const owned = { name: 'feature-git-sync', topic: `Feature: Git Sync — Task ${id}` }
+  assert.equal(ownsChannel(id, owned), true)
+  // A different task's topic, or no topic at all, is not a match.
+  assert.equal(ownsChannel(id, { name: 'feature-router', topic: `Feature: Router — Task other` }), false)
+  assert.equal(ownsChannel(id, { name: 'feature-git-sync' }), false)
+  assert.equal(ownsChannel('', owned), false)
+})
+
 // --- notifyTaskUpdate -------------------------------------------------------
 
 function harness({ channel = null, taskId = 'aaaaaabbbbbbcccccc123456' } = {}) {
@@ -105,6 +116,58 @@ test('a newly assigned member is DMed and given a channel that did not exist', a
   assert.deepEqual(out.dmed, ['11'])
   assert.equal(h.dms.length, 1)
   assert.match(h.dms[0][1], /Audit encryption/)
+})
+
+test('a task carrying a projectId gets a channel inside that project, looked up through the db seam', async () => {
+  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null }
+  const catMap = new Map([[projectCategory.id, projectCategory]])
+  const created = []
+  const dms = []
+  const client = {
+    channels: { fetch: async () => null },
+    users: { fetch: async (id) => ({ send: async (m) => dms.push([id, m]) }) },
+  }
+  const guild = {
+    id: 'g1',
+    channels: {
+      cache: {
+        get: (id) => catMap.get(id) ?? null,
+        find: () => null,
+        values: () => catMap.values(),
+      },
+      create: async (o) => {
+        created.push(o)
+        return { id: 'newchan', name: o.name, parentId: o.parent, guild: { id: 'g1' }, send: async () => ({ id: 'm' }) }
+      },
+    },
+  }
+  let lookedUpId = null
+  const dbFake = {
+    project: {
+      findFirst: async ({ where }) => {
+        lookedUpId = where.id
+        return { id: 'p1', name: 'Framework', discordCategoryId: 'projcat' }
+      },
+    },
+  }
+  const task = {
+    id: 'aaaaaabbbbbbcccccc123456',
+    title: 'Add booking rules',
+    type: 'feature',
+    status: 'open',
+    assigneeIds: [],
+    discordChannelId: null,
+    projectId: 'p1',
+  }
+  const out = await notifyTaskUpdate({
+    client, guild, task, before: task,
+    updates: { assigneeIds: ['11'] }, actorId: '99', db: dbFake,
+  })
+  assert.equal(lookedUpId, 'p1')
+  assert.equal(out.created, true)
+  // Named after the title, not the id, and parented inside the project.
+  assert.equal(created[0].name, 'feature-add-booking-rules')
+  assert.equal(created[0].parent, 'projcat')
 })
 
 test('a field edit posts in the task channel and DMs nobody', async () => {

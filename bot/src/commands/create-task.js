@@ -16,6 +16,7 @@ import {
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { getOrCreateCategory } from '../utils/categories.js'
+import { createTaskTicketChannel } from '../services/taskTicketChannel.js'
 import { createIssue } from '../services/github.js'
 import { CATEGORY_BOLD_NAMES } from '../constants.js'
 import { EPHEMERAL } from '../constants.js'
@@ -719,35 +720,25 @@ export async function handleCreate(interaction) {
       if (state.repositoryIds?.length) await db.featureRepositories.add(task.id, state.repositoryIds)
       await db.ticketDoc.create({ data: { guildConfigId: cfg.id, ticketType: 'feature', taskId: task.id, title: state.title?.slice(0, 512) || 'Feature', content: null } })
 
-      const category = await getOrCreateCategory(guild, 'Features', { orNames: [CATEGORY_BOLD_NAMES['Features']].filter(Boolean) })
-      const overwrites = [
-        { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
-        ...uniqueSet.map((id) => ({ id, type: OverwriteType.Member, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
-      ]
-      const channel = await guild.channels.create({
-        name: `feature-${task.id.slice(-6)}`,
-        type: ChannelType.GuildText,
-        parent: category.id,
-        topic: `Feature: ${state.title?.slice(0, 100) || 'Feature'} | Assigner + assignees`,
-        permissionOverwrites: overwrites,
-      })
-      await db.feature.update({ where: { id: task.id }, data: { discordChannelId: channel.id } })
-
-      const allMentions = uniqueSet.map((id) => `<@${id}>`).join(' ')
+      // Lands in the project's own section when one was picked and its
+      // category still has room; otherwise the global Features category,
+      // exactly as before createTaskTicketChannel knew about projects.
       const scopeMod = [state.scope, (state.modules?.length ? state.modules.join(', ') : null)].filter(Boolean).join(' · ')
-      const embed = new EmbedBuilder()
-        .setTitle(`Feature: ${state.title?.slice(0, 200)}`)
-        .setDescription((state.description || 'No description.').slice(0, 1000))
-        .addFields(
+      const channel = await createTaskTicketChannel(guild, {
+        taskId: task.id,
+        title: state.title,
+        description: state.description,
+        memberIds: uniqueSet,
+        project: firstProject,
+        type: 'feature',
+        fields: [
           { name: 'Status', value: 'open', inline: true },
           { name: 'Assignees', value: (assigneeIds.map((id) => `<@${id}>`).join(' ') || 'None'), inline: true },
           { name: 'Scope / Modules', value: scopeMod || '—', inline: false },
-          { name: 'Task ID', value: task.id, inline: false },
-          { name: 'Close', value: 'Use **/close-feature** in this channel when done.', inline: false }
-        )
-        .setFooter({ text: `Feature ID: ${task.id}` })
-        .setColor(0x5865f2)
-      await channel.send({ content: allMentions || null, embeds: [embed] })
+        ],
+        closeHint: 'Use **/close-feature** in this channel when done.',
+      })
+      await db.feature.update({ where: { id: task.id }, data: { discordChannelId: channel.id } })
 
       flowStore.clear(interaction.user.id, guild.id, FLOW_KEY)
       await respond(interaction, {

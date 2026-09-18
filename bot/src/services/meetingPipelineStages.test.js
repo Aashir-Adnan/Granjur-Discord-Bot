@@ -508,6 +508,62 @@ test('mirrored gives each assigned task its own channel, DMs the assignee, and r
   assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\* \(<#task-2>\)/)
 })
 
+test('mirrored gives a matched task its channel inside the project, named after its title', async () => {
+  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null }
+  const catMap = new Map([[projectCategory.id, projectCategory]])
+  const guildCreates = []
+  const chanSends = []
+  const reviewChannel = { id: 'tc1', send: async () => ({ id: 'x' }) }
+  const guild = {
+    id: 'g1',
+    channels: {
+      cache: {
+        get: (id) => catMap.get(id) ?? null,
+        find: () => null,
+        values: () => catMap.values(),
+      },
+      create: async (opts) => {
+        guildCreates.push(opts)
+        return { id: `chan-${guildCreates.length}`, parentId: opts.parent, send: async (m) => { chanSends.push(m); return { id: 'm' } } }
+      },
+    },
+  }
+  reviewChannel.guild = guild
+  const client = {
+    user: { id: 'bot' },
+    channels: { fetch: async () => reviewChannel },
+    users: { fetch: async () => ({ send: async () => {} }) },
+  }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [{ id: 'p1', name: 'Framework', discordCategoryId: 'projcat' }] },
+    projectRepos: { findMany: async () => [] },
+    task: {
+      findFirst: async () => null,
+      create: async ({ data }) => { assert.equal(data.projectId, 'p1'); return { id: 'dbtask1', type: data.type } },
+      update: async () => ({}),
+    },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      title: 'Sprint sync',
+      approvedBy: '99',
+      tasks: [{ task_id: 'a', goal_of_task: 'Add booking rules', project: 'Framework' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: '11', rejected: false }] },
+    },
+  }
+  await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+
+  // Only the task channel was created — the project's category already existed.
+  assert.equal(guildCreates.length, 1)
+  assert.equal(guildCreates[0].name, 'feature-add-booking-rules')
+  assert.equal(guildCreates[0].parent, 'projcat')
+})
+
 test('mirrored does not create a second channel when one already exists', async () => {
   const guildCreates = []
   const dms = []

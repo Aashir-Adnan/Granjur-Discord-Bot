@@ -369,12 +369,19 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     // the channel to — it is covered by the summary line below instead.
     let taskChannelId = prior.get(taskKey(csaasTask.task_id))?.taskChannelId || null
     if (!taskChannelId && guild && reviewTask.assigneeRef) {
+      // Same projects already loaded for the match above — look this task's up
+      // by the id matchProject settled on, so the channel lands in its section.
+      const project = row.projectId
+        ? matchCtx.projects.find((p) => p.id === row.projectId) ?? null
+        : null
       try {
         const ticket = await createTaskTicketChannel(guild, {
           taskId: taskRow.id,
           title: row.title,
           description: row.description,
           memberIds: [reviewTask.assigneeRef, approverId],
+          project,
+          type: row.type,
           fields: [
             { name: 'Status', value: 'open', inline: true },
             { name: 'Assignees', value: `<@${reviewTask.assigneeRef}>`, inline: true },

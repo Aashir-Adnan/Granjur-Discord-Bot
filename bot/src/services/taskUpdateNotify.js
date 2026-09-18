@@ -63,13 +63,22 @@ const MEMBER_ALLOW = { ViewChannel: true, SendMessages: true, ReadMessageHistory
 
 /**
  * Whether a channel is THIS task's ticket channel rather than somewhere the
- * task merely got announced. createTaskTicketChannel names it
- * `<prefix>-<last six characters of the task id>`. Pure.
+ * task merely got announced. `channel` may be a plain channel name (the old
+ * shape this function always took) or a channel-like object with `name` and
+ * `topic`. A channel with no project keeps createTaskTicketChannel's old name,
+ * `<prefix>-<last six characters of the task id>`; a channel in a project's
+ * category is named after the task's title instead, so its topic carries
+ * `Task <id>` — checked here too, or a project task's own channel would look
+ * unowned and get a duplicate created next to it. Pure.
  */
-export function ownsChannel(taskId, channelName) {
-  const suffix = String(taskId ?? '').slice(-6)
-  if (!suffix) return false
-  return /^(feature|bug)-/.test(String(channelName ?? '')) && String(channelName).endsWith(`-${suffix}`)
+export function ownsChannel(taskId, channel) {
+  const id = String(taskId ?? '')
+  if (!id) return false
+  const name = typeof channel === 'string' ? channel : channel?.name
+  const topic = typeof channel === 'string' ? null : channel?.topic
+  const suffix = id.slice(-6)
+  if (/^(feature|bug)-/.test(String(name ?? '')) && String(name).endsWith(`-${suffix}`)) return true
+  return Boolean(topic) && String(topic).endsWith(`Task ${id}`)
 }
 
 /**
@@ -114,23 +123,35 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
   // review channel's id in discordChannelId — that channel belongs to the
   // meeting and holds everyone's review, so granting a new assignee access to
   // it, or posting task edits into it, would be wrong. A task's own channel is
-  // the one named for the task (`feature-<last six of the id>`); anything else
-  // is somewhere the task merely got mentioned.
+  // the one ownsChannel recognises by name or by its `Task <id>` topic;
+  // anything else is somewhere the task merely got mentioned.
   let channel = null
   if (task.discordChannelId) {
     const found = await client?.channels?.fetch(task.discordChannelId).catch(() => null)
-    if (found?.guild && ownsChannel(task.id, found.name)) channel = found
+    if (found?.guild && ownsChannel(task.id, found)) channel = found
   }
 
   // An assigned task with no channel of its own gets one, exactly as
-  // /create-task and the meeting mirror do.
+  // /create-task and the meeting mirror do. Look up its project (if any) so
+  // the new channel lands in that project's section instead of the global
+  // Features/Bugs category.
   if (!channel && holders.length) {
+    let project = null
+    if (task.projectId) {
+      try {
+        project = await dbArg.project.findFirst({ where: { id: task.projectId } })
+      } catch (e) {
+        console.warn('[taskUpdate] project lookup failed:', e?.message || e)
+      }
+    }
     try {
       channel = await createTaskTicketChannel(guild, {
         taskId: task.id,
         title: updates?.title || task.title,
         description: updates?.description ?? task.description,
         memberIds: [...holders, actorId],
+        project,
+        type: task.type,
         fields: [
           { name: 'Status', value: String(updates?.status || task.status || 'open'), inline: true },
           { name: 'Assignees', value: holders.map((id) => `<@${id}>`).join(' ') || 'None', inline: true },

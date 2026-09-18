@@ -1,14 +1,23 @@
 // One private channel per task, plus a best-effort DM to the people on it.
 //
-// `/create-task` has always done this for a feature ticket: a channel under the
-// Features category that only the assigner and the assignees can see, opened
-// with an embed that @-mentions them. A meeting-generated task is the same kind
-// of row, so it gets the same treatment — a single ping in a shared channel is
-// easy to miss (and, for a `/record` meeting, lands in the voice channel's own
-// chat), whereas a new channel plus a DM reaches the person.
+// `/create-task` has always done this for a feature ticket: a channel that only
+// the assigner and the assignees can see, opened with an embed that @-mentions
+// them. A meeting-generated task is the same kind of row, so it gets the same
+// treatment — a single ping in a shared channel is easy to miss (and, for a
+// `/record` meeting, lands in the voice channel's own chat), whereas a new
+// channel plus a DM reaches the person.
+//
+// A task that belongs to a project lives in that project's own category with a
+// name built from its title (`taskChannelName`) instead of six hex characters —
+// the id moves to the channel topic instead. A task with no project, or whose
+// project's category is gone or full, keeps today's behaviour exactly: the
+// global Features/Bugs category and a name built from the last six characters
+// of the task id.
 import { ChannelType, PermissionFlagsBits, EmbedBuilder, OverwriteType } from 'discord.js'
 import { getOrCreateCategory } from '../utils/categories.js'
 import { CATEGORY_BOLD_NAMES } from '../constants.js'
+import { taskChannelName } from '../utils/taskChannelName.js'
+import { CATEGORY_SOFT_CAP } from './projectSection.js'
 
 const MEMBER_PERMS = [
   PermissionFlagsBits.ViewChannel,
@@ -16,18 +25,63 @@ const MEMBER_PERMS = [
   PermissionFlagsBits.ReadMessageHistory,
 ]
 
+/** A discord.js Collection or a plain Map, read the same way. */
+function valuesOf(cache) {
+  return cache?.values ? [...cache.values()] : []
+}
+
+function countChannelsInCategory(guild, categoryId) {
+  return valuesOf(guild?.channels?.cache).filter((c) => c?.parentId === categoryId).length
+}
+
+/**
+ * Where a new task channel's category goes: the project's own category when
+ * the project has one, it still resolves, and it is not at Discord's soft
+ * cap — the global Features/Bugs category (created or reused by name, as
+ * today) otherwise. A project that cannot be used is a `console.warn`, never
+ * a thrown error — the channel still gets created, just not where the caller
+ * hoped.
+ */
+async function resolveParentCategory(guild, project, categoryLabel) {
+  if (project) {
+    const projectCategory = project.discordCategoryId
+      ? guild.channels?.cache?.get?.(project.discordCategoryId) ?? null
+      : null
+    if (!projectCategory) {
+      console.warn(
+        `[taskTicket] project "${project?.name}" has no usable category; the task channel was created in the global ${categoryLabel} category instead.`
+      )
+    } else if (countChannelsInCategory(guild, projectCategory.id) >= CATEGORY_SOFT_CAP) {
+      console.warn(
+        `[taskTicket] project "${project?.name}"'s category is at Discord's cap (${CATEGORY_SOFT_CAP} channels); the task channel was created in the global ${categoryLabel} category instead.`
+      )
+    } else {
+      return projectCategory
+    }
+  }
+  return getOrCreateCategory(guild, categoryLabel, {
+    orNames: [CATEGORY_BOLD_NAMES[categoryLabel]].filter(Boolean),
+  })
+}
+
 /**
  * Create the private channel for one task and post its opening embed.
  *
  * @param {import('discord.js').Guild} guild
  * @param {object} opts
- * @param {string} opts.taskId          - bot task row id; last 6 chars name the channel
+ * @param {string} opts.taskId          - bot task row id
  * @param {string} opts.title
  * @param {string} [opts.description]
  * @param {string[]} opts.memberIds     - everyone who may see the channel; deduped
  * @param {{name: string, value: string, inline?: boolean}[]} [opts.fields]
- * @param {string} [opts.categoryName]  - 'Features' (default) or 'Bugs'
- * @param {string} [opts.namePrefix]    - 'feature' (default) or 'bug'
+ * @param {{id: string, name?: string, discordCategoryId?: string|null}|null} [opts.project]
+ *   the task's project, when it has one. With a project whose category still
+ *   resolves and has room, the channel is named after the title
+ *   (`taskChannelName`) and parented there. Without one — or when the
+ *   category is gone or at Discord's soft cap — the channel keeps today's
+ *   behaviour: the global Features/Bugs category and `<prefix>-<last six of
+ *   the task id>`.
+ * @param {string} [opts.type]          - 'bug' or anything else (feature); default feature
  * @param {string} [opts.closeHint]     - appended as a "Close" field when given
  * @returns {Promise<import('discord.js').TextChannel>} the created channel
  */
@@ -38,36 +92,50 @@ export async function createTaskTicketChannel(guild, opts) {
     description,
     memberIds = [],
     fields = [],
-    categoryName = 'Features',
-    namePrefix = 'feature',
+    project = null,
+    type,
     closeHint = null,
   } = opts
 
+  const isBug = type === 'bug'
+  const categoryLabel = isBug ? 'Bugs' : 'Features'
+  const namePrefix = isBug ? 'bug' : 'feature'
   const members = [...new Set(memberIds.filter(Boolean))]
-  const category = await getOrCreateCategory(guild, categoryName, {
-    orNames: [CATEGORY_BOLD_NAMES[categoryName]].filter(Boolean),
-  })
+
+  const category = await resolveParentCategory(guild, project, categoryLabel)
+
+  const name = project
+    ? taskChannelName({
+        type,
+        title,
+        taskId,
+        taken: new Set(valuesOf(guild?.channels?.cache).map((c) => c?.name).filter(Boolean)),
+      })
+    : `${namePrefix}-${String(taskId).slice(-6)}`
 
   const channel = await guild.channels.create({
-    name: `${namePrefix}-${String(taskId).slice(-6)}`,
+    name,
     type: ChannelType.GuildText,
     parent: category.id,
-    topic: `${categoryName === 'Bugs' ? 'Bug' : 'Feature'}: ${String(title || '').slice(0, 100)}`,
+    // The id lived in the name; now that the name is the title, the id moves
+    // here so it stays one click away for support and for /update-task.
+    topic: `${isBug ? 'Bug' : 'Feature'}: ${String(title || '').slice(0, 100)} — Task ${taskId}`,
     permissionOverwrites: [
       // The guild id is a ROLE (@everyone); every other id here is a USER. Passing
       // type 0 for a user makes Discord discard the overwrite without an error, and
       // the ticket channel ends up visible to nobody — which is what happened to
-      // feature-f56be0 on 2026-09-04.
+      // feature-f56be0 on 2026-09-04. These are set on top of whatever the category
+      // grants, so an assignee who is not on the project still sees their task.
       { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
       ...members.map((id) => ({ id, type: OverwriteType.Member, allow: MEMBER_PERMS })),
     ],
   })
 
   const embed = new EmbedBuilder()
-    .setTitle(`Feature: ${String(title || 'Task').slice(0, 200)}`)
+    .setTitle(`${isBug ? 'Bug' : 'Feature'}: ${String(title || 'Task').slice(0, 200)}`)
     .setDescription((description || 'No description.').slice(0, 1000))
     .addFields(...fields.slice(0, 20), { name: 'Task ID', value: String(taskId), inline: false })
-    .setColor(0x5865f2)
+    .setColor(isBug ? 0xed4245 : 0x5865f2)
   if (closeHint) embed.addFields({ name: 'Close', value: closeHint, inline: false })
 
   const mentions = members.map((id) => `<@${id}>`).join(' ')
