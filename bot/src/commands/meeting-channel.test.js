@@ -18,24 +18,36 @@ class FakeCache extends Map {
   }
 }
 
-function fakeGuild({ channels = [], fetchable = [], fetchError = null, allChannels = null } = {}) {
+function fakeGuild({
+  channels = [],
+  fetchable = [],
+  fetchError = null,
+  allChannels = null,
+  fullFetchError = null,
+} = {}) {
   const cache = new FakeCache(channels.map((c) => [c.id, c]))
   // What Discord actually has, for the no-id `fetch()` that populates the
   // cache in full. Defaults to today's cache plus whatever a single `fetch(id)`
   // can reach, so tests that never rely on a full resync are unaffected.
   const fullList = allChannels ?? [...channels, ...fetchable]
   const created = []
+  // How many times the no-id `fetch()` ran. A category already in the cache
+  // must not cost one: the gateway delivered every channel at GUILD_CREATE.
+  const counts = { fullFetches: 0 }
   let n = 0
   return {
     id: GUILD_ID,
     client: { user: { id: 'bot' } },
     roles: { everyone: { id: GUILD_ID } },
     created,
+    counts,
     channels: {
       cache,
       fetch: async (id) => {
         if (fetchError) throw fetchError
         if (id === undefined) {
+          counts.fullFetches += 1
+          if (fullFetchError) throw fullFetchError
           for (const c of fullList) cache.set(c.id, c)
           return cache
         }
@@ -363,6 +375,41 @@ test('a category found only by fetch(id) has its children counted only after the
   await execute(i, deps)
   assertTodayShapes(guild, GLOBAL_CAT)
   assert.match(i.replies[0].content, /49-channel cap/)
+  assert.equal(guild.counts.fullFetches, 1)
+})
+
+test('a category already in the cache is counted from the cache, with no full fetch', async () => {
+  // The gateway delivers every channel at GUILD_CREATE, so a cached category's
+  // siblings are cached too. Re-fetching them would cost a REST round-trip on
+  // every project meeting.
+  const cat = category(PROJ_CAT)
+  const kids = Array.from({ length: 48 }, (_, k) => textIn(`c${k}`, PROJ_CAT))
+  const guild = fakeGuild({ channels: [globalCategory(), cat, ...kids] })
+  const { deps } = seams()
+  const i = fakeInteraction(guild, { project: 'p1' })
+  await execute(i, deps)
+  assert.equal(guild.counts.fullFetches, 0)
+  assertTodayShapes(guild, GLOBAL_CAT)
+  assert.match(i.replies[0].content, /49-channel cap/)
+})
+
+test('a failed full fetch creates nothing and says to try again', async () => {
+  // Without the resync we do not know the count, and guessing low would create
+  // the pair in a category that may be at Discord's hard limit of 50 — which
+  // fails halfway and orphans the text channel.
+  const cat = category(PROJ_CAT)
+  const guild = fakeGuild({
+    channels: [globalCategory()],
+    fetchable: [cat],
+    fullFetchError: discordError(0, 'Service Unavailable'),
+  })
+  const { deps, meetingCalls } = seams()
+  const i = fakeInteraction(guild, { project: 'p1' })
+  await execute(i, deps)
+  assert.equal(guild.created.length, 0)
+  assert.equal(meetingCalls.length, 0)
+  assert.match(i.replies[0].content, /could not be reached/)
+  assert.match(i.replies[0].content, /nothing was created/)
 })
 
 // ---------------------------------------------------------------------------

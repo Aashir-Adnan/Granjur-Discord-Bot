@@ -95,6 +95,7 @@ async function projectCategoryFor(guild, project) {
   const noSection = `**${project?.name}** has no section yet — run \`/project-setup\` — so this meeting went to the global **${CATEGORY_MEETINGS}** category instead.`
   if (!id) return { category: null, note: noSection }
   let category = guild.channels?.cache?.get?.(id) ?? null
+  const fromCache = Boolean(category)
   if (!category) {
     try {
       category = (await Promise.resolve(guild.channels?.fetch?.(id))) ?? null
@@ -117,8 +118,22 @@ async function projectCategoryFor(guild, project) {
   // `CategoryChannelChildManager#cache` is itself just a filter over
   // `guild.channels.cache`, so a category found only through `fetch(id)` — which
   // caches that one channel and never its siblings — leaves the count at 0
-  // either way. Populate the cache with a full fetch before counting once.
-  await guild.channels.fetch()
+  // either way. Only that case needs the full fetch: the gateway delivers every
+  // channel at GUILD_CREATE, so a category already in the cache has its siblings
+  // there too, and fetching them again would cost a REST round-trip on every
+  // project meeting.
+  if (!fromCache) {
+    try {
+      await guild.channels.fetch()
+    } catch (e) {
+      // Same rule as the stale-id check above: we do not know the count, and
+      // guessing low creates the pair in a category that may be at Discord's
+      // hard limit of 50 — which fails halfway and orphans the text channel.
+      return {
+        error: `Discord could not be reached to check **${project?.name}**'s section (${e?.message ?? String(e)}), so nothing was created. Try again in a moment.`,
+      }
+    }
+  }
   const children = valuesOf(guild.channels?.cache).filter((c) => c?.parentId === category.id).length
   if (children + CHANNELS_PER_MEETING > CATEGORY_SOFT_CAP) {
     return {
