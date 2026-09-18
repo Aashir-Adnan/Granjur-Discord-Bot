@@ -187,7 +187,7 @@ test('projectFromChannel is null for anything else', () => {
 
 /** A stand-in Discord channel that records every `edit` and every `send`. */
 function fakeChannel(id, name, opts = {}) {
-  const { type = ChannelType.GuildText, parentId = null, fail = null, overwriteIds = null } = opts
+  const { type = ChannelType.GuildText, parentId = null, fail = null, overwriteIds = null, overwrites = null } = opts
   const c = { id, name, type, parentId, edits: [], sent: [], messages: { fetchPinned: async () => new Map() } }
   c.edit = async (o) => {
     c.edits.push(o)
@@ -200,7 +200,9 @@ function fakeChannel(id, name, opts = {}) {
     c.sent.push(payload)
     return { id: `msg-${c.sent.length}`, pin: async () => true }
   }
-  if (overwriteIds) c.permissionOverwrites = { cache: new Map(overwriteIds.map((i) => [i, { id: i }])) }
+  // `overwrites` carries whole entries (type/allow/deny), `overwriteIds` only ids.
+  if (overwrites) c.permissionOverwrites = { cache: new Map(overwrites.map((o) => [o.id, o])) }
+  else if (overwriteIds) c.permissionOverwrites = { cache: new Map(overwriteIds.map((i) => [i, { id: i }])) }
   return c
 }
 
@@ -510,10 +512,112 @@ test('a members panel failure is a warning at worst, never a throw', async () =>
   }
   const plan = planProjectSection(project, empty)
 
-  const out = await quiet(() => applyProjectSection(guild, project, plan, { db: fakeDb() }))
+  // `members: []` because the panel step only runs for a caller that brought a
+  // roster — without it this test would pass by never reaching the panel.
+  const out = await quiet(() => applyProjectSection(guild, project, plan, { db: fakeDb(), members: [] }))
 
   assert.equal(out.created.length, 11)
   assert.equal(out.tasks, 0)
+})
+
+test('repairing an adopted category MERGES its overwrites, in one edit, keeping a hand-added one', async () => {
+  // Discord replaces the whole overwrite array, so a member grant someone added
+  // by hand must be carried through or the repair silently revokes it.
+  const byHand = { id: 'u9', type: OverwriteType.Member, allow: 'ALLOW-BITS', deny: 'DENY-BITS' }
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwrites: [byHand] })
+  const guild = fakeGuild({ channels: [cat], roles: [{ id: 'r1', name: 'Framework', members: new Map() }] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, []))
+  assert.equal(plan.category.action, 'reuse')
+
+  await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+
+  assert.equal(cat.edits.length, 1, 'two channel edits per ten minutes — never split this')
+  const sent = cat.edits[0].permissionOverwrites
+  assert.deepEqual(
+    sent.find((o) => o.id === 'u9'),
+    byHand,
+    'the hand-added overwrite is passed through untouched'
+  )
+  assert.deepEqual(sent.find((o) => o.id === 'G1'), {
+    id: 'G1',
+    type: OverwriteType.Role,
+    deny: [PermissionFlagsBits.ViewChannel],
+  })
+  assert.deepEqual(sent.find((o) => o.id === 'r1'), {
+    id: 'r1',
+    type: OverwriteType.Role,
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.Connect,
+      PermissionFlagsBits.Speak,
+    ],
+  })
+  assert.equal(sent.length, 3)
+})
+
+test('a category that lost its @everyone deny gets it back, role overwrite or not', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['r1'] })
+  const guild = fakeGuild({ channels: [cat], roles: [{ id: 'r1', name: 'Framework', members: new Map() }] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, []))
+
+  await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+
+  assert.equal(cat.edits.length, 1)
+  assert.deepEqual(cat.edits[0].permissionOverwrites.find((o) => o.id === 'G1'), {
+    id: 'G1',
+    type: OverwriteType.Role,
+    deny: [PermissionFlagsBits.ViewChannel],
+  })
+})
+
+test('a category already holding both required overwrites is not edited at all', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const guild = fakeGuild({ channels: [cat], roles: [{ id: 'r1', name: 'Framework', members: new Map() }] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, []))
+
+  await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+
+  assert.equal(cat.edits.length, 0)
+})
+
+test('omitting `members` leaves the pinned panel alone; `[]` still says "no members yet"', async () => {
+  const bare = fakeGuild()
+  const plan = planProjectSection(project, empty)
+
+  await applyProjectSection(bare, project, plan, { db: fakeDb() })
+
+  const untouched = bare.channels.cache.get('new-2')
+  assert.equal(untouched.name, 'framework-members')
+  assert.equal(untouched.sent.length, 0, 'no roster was passed, so the panel is not rewritten')
+  assert.equal(untouched.edits.length, 0)
+
+  const withRoster = fakeGuild()
+  await applyProjectSection(withRoster, project, planProjectSection(project, empty), {
+    db: fakeDb(),
+    members: [],
+  })
+
+  const posted = withRoster.channels.cache.get('new-2')
+  assert.equal(posted.sent.length, 1, 'an empty roster is a real answer, and says so')
+  assert.match(posted.sent[0].embeds[0].data.description, /No members yet/)
+})
+
+test('a run with no db seam warns that the ids went unsaved, and does not throw', async () => {
+  const guild = fakeGuild()
+  const plan = planProjectSection(project, empty)
+
+  const out = await applyProjectSection(guild, project, plan, {})
+
+  assert.equal(out.created.length, 11, 'the section is still built')
+  assert.ok(
+    out.warnings.some((w) => /Framework/.test(w) && /not saved/i.test(w)),
+    out.warnings.join(' | ')
+  )
 })
 
 // --- syncProjectRoleMembers -------------------------------------------------

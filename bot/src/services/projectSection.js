@@ -299,11 +299,42 @@ function categoryOverwrites(guild, roleId, refused = false) {
   return overwrites
 }
 
-/** True only when we can see the overwrites AND the role is missing from them. */
-function missingRoleOverwrite(category, roleId) {
+/**
+ * True only when we can see the category's overwrites AND one the section
+ * requires is missing from them.
+ *
+ * Nothing required means nothing to assert — the refused-role case holds no
+ * overwrites at all, so there is no edit to make. An unreadable cache is left
+ * alone too: churning an edit on a category we cannot inspect would spend the
+ * budget every run.
+ */
+function missingOverwrites(category, required) {
+  if (!required.length) return false
   const cache = category?.permissionOverwrites?.cache
   if (!cache?.has) return false
-  return !cache.has(roleId)
+  return required.some((o) => !cache.has(o.id))
+}
+
+/**
+ * What to send when repairing an adopted category's overwrites.
+ *
+ * discord.js sends `permission_overwrites` as a whole array and Discord
+ * REPLACES the set rather than merging it, so sending `required` alone would
+ * silently drop anything a human added to the category by hand — a
+ * single-member grant, a moderator role. Carry those through untouched;
+ * discord.js accepts a `PermissionsBitField` as a `PermissionResolvable`, so
+ * there is nothing to convert. The required entries win for the ids they cover.
+ */
+function mergedOverwrites(category, required) {
+  const cache = category?.permissionOverwrites?.cache
+  if (!cache?.values) return required
+  const ours = new Set(required.map((o) => o.id))
+  const kept = []
+  for (const existing of cache.values()) {
+    if (!existing || ours.has(existing.id)) continue
+    kept.push({ id: existing.id, type: existing.type, allow: existing.allow, deny: existing.deny })
+  }
+  return [...required, ...kept]
 }
 
 /**
@@ -387,6 +418,11 @@ export function observeProjectSection(guild, project, tasks = []) {
  * @param {import('discord.js').Guild} guild
  * @param {object} project the project row, for its id and its stored ids
  * @param {ReturnType<typeof planProjectSection>} plan
+ * `members` has NO default on purpose: omitting it means "this caller has no
+ * roster, leave the pinned panel alone", while `[]` means "genuinely empty, say
+ * so". A default of `[]` would let a repair run that only wanted the channels
+ * fixed rewrite every panel it touched to "No members yet."
+ *
  * @param {{db: object, members?: Array<{discordId: string, role: string}>, nameFor?: (id: string) => string, botUserId?: string|null}} deps
  * @returns {Promise<{role: object|null, category: object|null, created: string[], renamed: string[], moved: string[], tasks: number, warnings: string[]}>}
  */
@@ -394,7 +430,7 @@ export async function applyProjectSection(
   guild,
   project,
   plan,
-  { db, members = [], nameFor = (id) => id, botUserId = null } = {}
+  { db, members, nameFor = (id) => id, botUserId = null } = {}
 ) {
   const result = { role: null, category: null, created: [], renamed: [], moved: [], tasks: 0, warnings: [] }
   const channelIds = storedChannels(project)
@@ -444,11 +480,13 @@ export async function applyProjectSection(
       if (!existing) throw new Error(`category ${categoryPlan.id} no longer exists`)
       result.category = existing
       const needsName = categoryPlan.action === 'rename'
-      // A role created on a later run has to reach a category that predates it.
-      const needsRole = Boolean(roleId) && missingRoleOverwrite(existing, roleId)
-      if (needsName || needsRole) {
+      // A role created on a later run has to reach a category that predates
+      // it, and a category that lost its @everyone deny has to get it back.
+      const required = categoryOverwrites(guild, roleId, refused)
+      const needsPerms = missingOverwrites(existing, required)
+      if (needsName || needsPerms) {
         const payload = { name: categoryPlan.name }
-        if (needsRole) payload.permissionOverwrites = categoryOverwrites(guild, roleId, refused)
+        if (needsPerms) payload.permissionOverwrites = mergedOverwrites(existing, required)
         await existing.edit(payload)
         if (needsName) result.renamed.push(categoryPlan.name)
       }
@@ -533,13 +571,20 @@ export async function applyProjectSection(
     } catch (e) {
       note(result.warnings, 'saving the section ids', e)
     }
+  } else {
+    // Silently skipping this would hand the caller a section rebuilt from
+    // scratch on every run with no hint why.
+    result.warnings.push(
+      `The section ids for "${project?.name}" were not saved — no database was passed to the applier, so the next run will rebuild the section instead of repairing it.`
+    )
   }
 
-  // 6. The members panel. `ensureMembersPanel` swallows its own failures; the
-  //    catch is for a members channel that is somehow not a text channel.
+  // 6. The members panel, only when the caller actually brought a roster.
+  //    `ensureMembersPanel` swallows its own failures; the catch is for a
+  //    members channel that is somehow not a text channel.
   const membersChannel =
     resolved.get('members') ?? (channelIds.members ? guild.channels.cache.get(channelIds.members) ?? null : null)
-  if (membersChannel) {
+  if (membersChannel && members !== undefined) {
     try {
       await ensureMembersPanel(membersChannel, project, members, { botUserId, nameFor })
     } catch (e) {
