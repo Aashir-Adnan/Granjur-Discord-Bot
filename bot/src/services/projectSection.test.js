@@ -423,7 +423,7 @@ test('applyProjectSection persists the three columns in ONE update, keeping what
   assert.equal(Object.keys(data.discordChannels).length, 10)
 })
 
-test('a refused role with no role to fall back on leaves the category open, and warns', async () => {
+test('a refused role with no role to fall back on leaves the category open, and is warned about once', async () => {
   const dbProject = { id: 'p2', name: 'Database', docsSlug: 'database' }
   const guild = fakeGuild()
   const plan = planProjectSection(dbProject, empty)
@@ -436,7 +436,16 @@ test('a refused role with no role to fall back on leaves the category open, and 
   const catCall = guild.channels.calls[0]
   assert.equal(catCall.type, ChannelType.GuildCategory)
   assert.deepEqual(catCall.permissionOverwrites, [], 'no @everyone deny, or nobody could see it')
-  assert.ok(out.warnings.some((w) => /managed role/i.test(w)), out.warnings.join(' | '))
+  // The planner already said it, in words that tell the operator what to do
+  // about it. The applier restating it would burn a second of the five warning
+  // slots a caller shows for nothing.
+  const planned = plan.warnings.filter((w) => /managed role/i.test(w))
+  assert.equal(planned.length, 1, plan.warnings.join(' | '))
+  assert.deepEqual(
+    out.warnings.filter((w) => /managed role/i.test(w)),
+    [],
+    out.warnings.join(' | ')
+  )
 })
 
 test('a refused role whose project still has a real role keeps that role on the category', async () => {

@@ -328,9 +328,13 @@ test('a run with project: applies the plan, syncs the role, and replies with the
   assert.ok(on.roles.cache.size === 1, 'the member on the project got the role')
 
   const content = it.replies[0].content
-  assert.match(content, /\*\*Framework\*\*/)
-  assert.match(content, /11 created/)
-  assert.match(content, /1 task channel/)
+  // The task channel is counted in `moved` AND in `tasks`, so it is named once
+  // as a count and once as a breakdown of that count — twelve objects, not
+  // thirteen.
+  assert.equal(
+    content.split('\n')[0],
+    '**Framework** — 11 created, 1 moved (incl. 1 task channel).'
+  )
   assert.match(content, /1 granted/)
 })
 
@@ -400,7 +404,8 @@ test('all:true reports a project that throws and still finishes the others', asy
 
   await quiet(() => execute(it, { db, getConfig }))
 
-  const content = it.replies[0].content
+  // `all` posts as it goes, so the whole walk is in the LAST reply.
+  const content = it.replies.at(-1).content
   assert.match(content, /\*\*Alpha\*\*/)
   assert.match(content, /\*\*Bravo\*\* — failed: database went away/)
   assert.match(content, /\*\*Charlie\*\*/)
@@ -430,9 +435,222 @@ test('a reply for many projects stays inside Discord\'s 2000 characters', async 
 
   await quiet(() => execute(it, { db, getConfig }))
 
-  const content = it.replies[0].content
+  for (const reply of it.replies) {
+    assert.ok(reply.content.length <= 2000, `a reply was ${reply.content.length} characters`)
+  }
+  assert.match(it.replies.at(-1).content, /more not shown/)
+})
+
+// --- incompleteness the reply must never print as success -------------------
+
+/** A role already in the guild, with `holders` on it, for the revoke tests. */
+function roleWithHolders(id, name, holders) {
+  for (const member of holders) member.roles.cache.add(id)
+  return { id, name, members: new Map(holders.map((m) => [m.id, m])) }
+}
+
+test('a members.fetch() that rejects warns and runs no revoke pass', async () => {
+  const stale = fakeMember('u9', 'Stale')
+  const joining = fakeMember('u1', 'Aashir')
+  const role = roleWithHolders('r1', 'Framework', [stale])
+  const db = fakeDb({
+    projects: [{ ...PROJECT, discordRoleId: 'r1' }],
+    members: [{ projectId: 'p1', discordId: 'u1', role: 'lead' }],
+  })
+  const guild = fakeGuild({ roles: [role], members: [stale, joining] })
+  const bulk = guild.members.fetch
+  guild.members.fetch = async (id) => {
+    if (id === undefined) throw new Error('Missing Access')
+    return bulk(id)
+  }
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  // Without the guard the empty member cache reads as "nobody to remove" and
+  // the stale holder quietly keeps the project role.
+  assert.ok(stale.roles.cache.has('r1'), 'the stale holder kept the role')
+  assert.ok(joining.roles.cache.has('r1'), 'granting is still safe, so it still ran')
+  const content = it.replies.at(-1).content
+  assert.match(content, /member list could not be read \(Missing Access\)/)
+  assert.match(content, /nobody was removed from the project role/)
+  assert.match(content, /1 granted, nobody removed — see the warning below/)
+})
+
+test('a roster read at its 200-row limit warns and runs no revoke pass', async () => {
+  const roster = Array.from({ length: 200 }, (_, i) => ({
+    projectId: 'p1',
+    discordId: `u${i}`,
+    role: 'member',
+  }))
+  const onProject = roster.map((m) => fakeMember(m.discordId, `Member ${m.discordId}`))
+  // Row 201 is a real member the read could not reach: absent from `wanted`,
+  // so an unguarded sync would strip the role from someone who belongs here.
+  const unseen = fakeMember('u200', 'Row 201')
+  const role = roleWithHolders('r1', 'Framework', [...onProject, unseen])
+  const db = fakeDb({ projects: [{ ...PROJECT, discordRoleId: 'r1' }], members: roster })
+  const guild = fakeGuild({ roles: [role], members: [...onProject, unseen] })
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.ok(unseen.roles.cache.has('r1'), 'the member past the limit kept the role')
+  const content = it.replies.at(-1).content
+  assert.match(content, /Only the first 200 members of "Framework" could be read/)
+  assert.match(content, /nobody removed — see the warning below/)
+  assert.doesNotMatch(content, /\d+ revoked/)
+})
+
+test('a task read at its 500-row limit says only the newest were considered', async () => {
+  const tasks = Array.from({ length: 500 }, (_, i) => ({
+    id: `t${i}`,
+    projectId: 'p1',
+    title: `Task ${i}`,
+    type: 'feature',
+  }))
+  const db = fakeDb({ projects: [PROJECT], tasks })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.match(it.replies.at(-1).content, /Only the newest 500 task channels for "Framework" were read/)
+})
+
+test('a preview says the same thing about a task read at its limit', async () => {
+  const tasks = Array.from({ length: 500 }, (_, i) => ({
+    id: `t${i}`,
+    projectId: 'p1',
+    title: `Task ${i}`,
+    type: 'feature',
+  }))
+  const db = fakeDb({ projects: [PROJECT], tasks })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { project: 'p1', preview: true } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.match(it.replies.at(-1).content, /Only the newest 500 task channels/)
+})
+
+test('renderResult says nothing was synced when the role was never created', () => {
+  const out = renderResult(
+    { name: 'Framework' },
+    {
+      role: null,
+      created: ['a'],
+      warnings: ['role "Framework": Missing Permissions'],
+      roleSync: { granted: [], revoked: [], failed: [] },
+    }
+  )
+  assert.match(out, /Role — not created, nothing was synced\./)
+  assert.doesNotMatch(out, /nobody to add or remove/)
+})
+
+test('renderResult caps the per-member role-sync failures the way it caps warnings', () => {
+  const failed = Array.from({ length: 9 }, (_, i) => `u${i} (Missing Permissions)`)
+  const out = renderResult(
+    { name: 'Framework' },
+    { role: { id: 'r1', name: 'Framework' }, created: ['a'], roleSync: { granted: [], revoked: [], failed } }
+  )
+  assert.equal(out.split('\n').filter((l) => l.startsWith('⚠ role sync: u')).length, 5)
+  assert.match(out, /⚠ role sync: …and 4 more member\(s\) could not be changed\./)
+})
+
+// --- the reply never hides that it is truncated -----------------------------
+
+test('one oversized project still reports that the others ran', async () => {
+  const projects = [
+    { id: 'p1', name: 'H'.repeat(2100), docsSlug: 'huge', guildConfigId: 'g1' },
+    { id: 'p2', name: 'Bravo', docsSlug: 'bravo', guildConfigId: 'g1' },
+    { id: 'p3', name: 'Charlie', docsSlug: 'charlie', guildConfigId: 'g1' },
+  ]
+  const db = fakeDb({ projects })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { all: true } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const content = it.replies.at(-1).content
   assert.ok(content.length <= 2000, `reply was ${content.length} characters`)
-  assert.match(content, /more not shown/)
+  assert.match(content, /… and 2 more not shown/)
+  const updated = db.calls.filter((c) => c[0] === 'project.update').map((c) => c[1].where.id)
+  assert.deepEqual(updated, ['p1', 'p2', 'p3'], 'the later projects still ran')
+})
+
+test('truncating an oversized block never splits a surrogate pair', async () => {
+  // '📂' sits astride the cut: `**` + 1996 characters puts its high surrogate
+  // at the last index the slice would keep.
+  const name = `${'A'.repeat(1996)}📂`
+  const db = fakeDb({ projects: [{ id: 'p1', name, docsSlug: 'huge', guildConfigId: 'g1' }] })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const content = it.replies.at(-1).content
+  assert.ok(content.length <= 2000, `reply was ${content.length} characters`)
+  const lone = [...content].filter((ch) => {
+    const code = ch.codePointAt(0)
+    return code >= 0xd800 && code <= 0xdfff
+  })
+  assert.deepEqual(lone, [], 'no half of a surrogate pair survived the cut')
+})
+
+test('all:true posts the reply as it goes, once per project, always within the cap', async () => {
+  const projects = [
+    { id: 'p1', name: 'Alpha', docsSlug: 'alpha', guildConfigId: 'g1' },
+    { id: 'p2', name: 'Bravo', docsSlug: 'bravo', guildConfigId: 'g1' },
+    { id: 'p3', name: 'Charlie', docsSlug: 'charlie', guildConfigId: 'g1' },
+  ]
+  const db = fakeDb({ projects })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { all: true } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.equal(it.replies.length, 3, 'one edit per project, and no redundant terminal edit')
+  for (const reply of it.replies) {
+    assert.ok(reply.content.length <= 2000, `a reply was ${reply.content.length} characters`)
+  }
+  assert.match(it.replies[0].content, /\*\*Alpha\*\*/)
+  assert.doesNotMatch(it.replies[0].content, /\*\*Bravo\*\*/)
+  assert.match(it.replies.at(-1).content, /\*\*Charlie\*\*/)
+})
+
+test('all:true keeps walking when an editReply fails mid-run', async () => {
+  const projects = [
+    { id: 'p1', name: 'Alpha', docsSlug: 'alpha', guildConfigId: 'g1' },
+    { id: 'p2', name: 'Bravo', docsSlug: 'bravo', guildConfigId: 'g1' },
+  ]
+  const db = fakeDb({ projects })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { all: true } })
+  it.editReply = async () => {
+    throw new Error('Unknown Webhook')
+  }
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const updated = db.calls.filter((c) => c[0] === 'project.update').map((c) => c[1].where.id)
+  assert.deepEqual(updated, ['p1', 'p2'], 'a dead token loses the reply, not the walk')
+})
+
+test('project: together with all:true says the project was ignored', async () => {
+  const projects = [
+    { id: 'p1', name: 'Alpha', docsSlug: 'alpha', guildConfigId: 'g1' },
+    { id: 'p2', name: 'Bravo', docsSlug: 'bravo', guildConfigId: 'g1' },
+  ]
+  const db = fakeDb({ projects })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { all: true, project: 'p2' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const content = it.replies.at(-1).content
+  assert.match(content, /\*\*all:true\*\* was set, so the \*\*project:\*\* you picked was ignored/)
+  assert.match(content, /\*\*Alpha\*\*/)
+  assert.match(content, /\*\*Bravo\*\*/)
 })
 
 // --- autocomplete -----------------------------------------------------------

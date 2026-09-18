@@ -52,8 +52,12 @@ export const SECTIONS = [
 const fold = (s) => String(s ?? '').trim().toLowerCase()
 const MANAGED_FOLDED = new Set(MANAGED_ROLES.map(fold))
 
-/** Cut to `max` UTF-16 units without leaving half of a surrogate pair behind. */
-function cut(text, max) {
+/**
+ * Cut to `max` UTF-16 units without leaving half of a surrogate pair behind.
+ * Exported because `/project-setup` truncates replies that carry the same
+ * project names, and a second copy would be a second thing to get wrong.
+ */
+export function cut(text, max) {
   if (text.length <= max) return text
   const sliced = text.slice(0, max)
   const last = sliced.charCodeAt(sliced.length - 1)
@@ -446,11 +450,15 @@ export async function applyProjectSection(
       // taking it off the category would hide the whole section.
       const kept = project?.discordRoleId ? guild.roles.cache.get(project.discordRoleId) ?? null : null
       result.role = kept
-      result.warnings.push(
-        kept
-          ? `${rolePlan.reason || `"${rolePlan.name}" is a managed role.`} The project kept the role it already had.`
-          : rolePlan.reason || `No project role was created for "${rolePlan.name}".`
-      )
+      // Only the "kept" case says something the planner's refusal warning does
+      // not. Restating the refusal in different words burns one of the five
+      // warning slots a caller shows, which can push a real
+      // `channel "x": Missing Permissions` into the "and N more" tail.
+      if (kept) {
+        result.warnings.push(
+          `${rolePlan.reason || `"${rolePlan.name}" is a managed role.`} The project kept the role it already had.`
+        )
+      }
     } else if (rolePlan.action === 'reuse') {
       // The id came from what we just observed, so it resolves; the stub is for
       // the case where it went away between the read and the write.

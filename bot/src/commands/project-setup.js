@@ -7,6 +7,14 @@
  * The command owns none of the decisions. Everything it prints comes from the
  * planner's plan and the applier's result, so the two pure renderers below are
  * the whole of its opinion.
+ *
+ * The one thing it does decide is when NOT to revoke. This command is an
+ * operator's only window into what the bot did to their server, so a reply that
+ * reads as success when a pass was skipped is worse than one that reads as
+ * failure: whenever the inputs to the revoke half are known to be incomplete —
+ * the member list would not load, or the roster came back at its hard limit —
+ * the revoke pass is skipped outright and said so, because "revoked 0" and
+ * "read nothing" are indistinguishable in the reply.
  */
 import { SlashCommandBuilder } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
@@ -16,6 +24,7 @@ import {
   planProjectSection,
   applyProjectSection,
   syncProjectRoleMembers,
+  cut,
 } from '../services/projectSection.js'
 
 /** Discord's hard limit on a message. */
@@ -29,6 +38,14 @@ const MAX_WARNINGS = 5
 
 /** How many task rows are considered per project. */
 const TASK_LIMIT = 500
+
+/**
+ * How many roster rows `projectMember.findByProject` can ever return — its SQL
+ * carries a hard `LIMIT 200`. Other commands only ever GRANT from that list, so
+ * the limit is theirs to live with; this command is the first that REVOKES on
+ * it, and revoking on a truncated roster would strip the role from real members.
+ */
+const ROSTER_LIMIT = 200
 
 export const data = new SlashCommandBuilder()
   .setName('project-setup')
@@ -73,12 +90,32 @@ function summarise(entries, words) {
     .join(', ')
 }
 
-function warningLines(warnings) {
-  const list = (warnings ?? []).map((w) => String(w))
-  const shown = list.slice(0, MAX_WARNINGS).map((w) => `⚠ ${w}`)
-  if (list.length > MAX_WARNINGS) shown.push(`⚠ …and ${list.length - MAX_WARNINGS} more warning(s).`)
+/**
+ * At most `MAX_WARNINGS` lines, then one line saying how many are not shown.
+ * Every unbounded list inside a block goes through this: one project with a
+ * hundred lines would otherwise eat the whole message budget and take the other
+ * projects' blocks down with it.
+ */
+function cappedLines(items, render, more) {
+  const list = (items ?? []).map((item) => String(item))
+  const shown = list.slice(0, MAX_WARNINGS).map(render)
+  if (list.length > MAX_WARNINGS) shown.push(more(list.length - MAX_WARNINGS))
   return shown
 }
+
+const warningLines = (warnings) =>
+  cappedLines(
+    warnings,
+    (w) => `⚠ ${w}`,
+    (n) => `⚠ …and ${n} more warning(s).`
+  )
+
+const failureLines = (failures) =>
+  cappedLines(
+    failures,
+    (f) => `⚠ role sync: ${f}`,
+    (n) => `⚠ role sync: …and ${n} more member(s) could not be changed.`
+  )
 
 /**
  * What `preview:true` prints for one project. Pure.
@@ -114,13 +151,14 @@ export function renderPlan(project, plan = {}) {
 /**
  * What a real run prints for one project. Pure.
  *
- * `result` is the applier's result plus two things the command adds: a
+ * `result` is the applier's result plus three things the command adds: a
  * `warnings` list merged from the planner's and the applier's (they keep
- * separate ones, and the category-cap warning is the planner's), and the
- * `roleSync` counts.
+ * separate ones, and the category-cap warning is the planner's), the `roleSync`
+ * counts, and `roleSync.revokeSkipped` when the revoke half was deliberately
+ * not run.
  *
  * @param {{name?: string}} project
- * @param {{role?: object|null, created?: string[], renamed?: string[], moved?: string[], tasks?: number, warnings?: string[], roleSync?: {granted: string[], revoked: string[], failed: string[]}}} result
+ * @param {{role?: object|null, created?: string[], renamed?: string[], moved?: string[], tasks?: number, warnings?: string[], roleSync?: {granted: string[], revoked: string[], failed: string[], revokeSkipped?: boolean}}} result
  */
 export function renderResult(project, result = {}) {
   const name = project?.name ?? 'Project'
@@ -133,20 +171,34 @@ export function renderResult(project, result = {}) {
   if (created.length) done.push(`${created.length} created`)
   if (renamed.length) done.push(`${renamed.length} renamed`)
   if (moved.length) done.push(`${moved.length} moved`)
-  if (taskCount) done.push(`${taskCount} task channel${taskCount === 1 ? '' : 's'}`)
+  // A touched task channel is already counted in `renamed` or `moved` — the
+  // applier pushes it into both lists — so naming it again as a fourth count
+  // would describe twelve objects as thirteen. It is a breakdown of the counts
+  // above, not an addition to them, and it says so.
+  const summary = done.length ? done.join(', ') : 'nothing to change'
+  const breakdown =
+    done.length && taskCount ? ` (incl. ${taskCount} task channel${taskCount === 1 ? '' : 's'})` : ''
 
-  const lines = [`**${name}** — ${done.length ? done.join(', ') : 'nothing to change'}.`]
+  const lines = [`**${name}** — ${summary}${breakdown}.`]
 
   const sync = result?.roleSync
-  const roleName = result?.role?.name
-  if (roleName || sync) {
-    const counts = []
-    if (sync?.granted?.length) counts.push(`${sync.granted.length} granted`)
-    if (sync?.revoked?.length) counts.push(`${sync.revoked.length} revoked`)
-    if (sync?.failed?.length) counts.push(`${sync.failed.length} could not be changed`)
-    const head = roleName ? `Role **${roleName}**` : 'Role'
-    lines.push(counts.length ? `${head} — ${counts.join(', ')}.` : `${head} — nobody to add or remove.`)
-    for (const failure of sync?.failed ?? []) lines.push(`⚠ role sync: ${failure}`)
+  const role = result?.role ?? null
+  if (role || sync) {
+    if (!role) {
+      // The applier warns and leaves `role` null when the create throws. There
+      // was then no id to sync against, and the empty lists below would
+      // otherwise print beside that warning as a clean sync.
+      lines.push('Role — not created, nothing was synced.')
+    } else {
+      const counts = []
+      if (sync?.granted?.length) counts.push(`${sync.granted.length} granted`)
+      if (sync?.revoked?.length) counts.push(`${sync.revoked.length} revoked`)
+      if (sync?.failed?.length) counts.push(`${sync.failed.length} could not be changed`)
+      if (sync?.revokeSkipped) counts.push('nobody removed — see the warning below')
+      const head = role.name ? `Role **${role.name}**` : 'Role'
+      lines.push(counts.length ? `${head} — ${counts.join(', ')}.` : `${head} — nobody to add or remove.`)
+    }
+    lines.push(...failureLines(sync?.failed))
   }
 
   lines.push(...warningLines(result?.warnings))
@@ -173,6 +225,11 @@ function mergeWarnings(...lists) {
   return out
 }
 
+/** The "… and N more not shown" line, so a truncated reply always admits it. */
+function droppedTail(dropped) {
+  return `… and ${dropped} more not shown. Run \`/project-setup project:<name>\` one at a time for the rest.`
+}
+
 /** Join the per-project blocks, dropping whole blocks off the end to fit one message. */
 function capReply(blocks) {
   if (!blocks.length) return 'Nothing to do.'
@@ -188,11 +245,17 @@ function capReply(blocks) {
     length += cost
   }
   // A single block longer than the whole message: print as much of it as fits
-  // rather than replying with nothing but the tail.
-  if (!kept.length) return `${blocks[0].slice(0, REPLY_LIMIT - 1)}…`
-  const dropped = blocks.length - kept.length
-  const tail = `… and ${dropped} more not shown. Run \`/project-setup project:<name>\` one at a time for the rest.`
-  return `${kept.join('\n\n')}\n\n${tail}`.slice(0, REPLY_LIMIT)
+  // rather than replying with nothing but the tail — but the other projects
+  // still RAN, and created categories and channels in the guild, so the count
+  // of what is not shown goes out either way.
+  if (!kept.length) {
+    const rest = blocks.length - 1
+    const tail = rest ? `\n${droppedTail(rest)}` : ''
+    // `cut` rather than `slice`: project names carry '📂' and arbitrary user
+    // text, and half a surrogate pair renders as a replacement character.
+    return `${cut(blocks[0], REPLY_LIMIT - 1 - tail.length)}…${tail}`
+  }
+  return `${kept.join('\n\n')}\n\n${droppedTail(blocks.length - kept.length)}`.slice(0, REPLY_LIMIT)
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +282,25 @@ async function pickProjects(interaction, cfg, dbArg) {
   return [row]
 }
 
+/**
+ * The roster to hand `syncProjectRoleMembers` when the revoke half must not
+ * run: everyone it would revoke from, added to everyone it should grant to.
+ *
+ * The service revokes from every holder who is not in the roster it is given,
+ * and it carries no "grant only" flag — other commands depend on it exactly as
+ * it stands — so a roster that already contains every holder is how a caller
+ * says it. Granting stays safe and useful; it is only the revoke side that
+ * reads a short list as "these people no longer belong here".
+ */
+function grantOnlyRoster(guild, roleId, members) {
+  const out = [...members]
+  const role = roleId ? guild?.roles?.cache?.get?.(roleId) ?? null : null
+  const holders = new Map(role?.members?.entries?.() ?? [])
+  const wanted = new Set(members.map((m) => m?.discordId).filter(Boolean))
+  for (const id of holders.keys()) if (!wanted.has(id)) out.push({ discordId: id })
+  return out
+}
+
 export async function execute(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
@@ -240,11 +322,53 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
   // `syncProjectRoleMembers` works out who to revoke from by reading the role's
   // member cache, so without a full fetch it sees no holders and revokes from
   // nobody. A preview syncs nothing, so it does not pay for the fetch.
-  if (!preview) await guild.members.fetch().catch(() => null)
+  //
+  // Swallowing a failure here is exactly what the "fetch before sync" contract
+  // exists to prevent: the sync would read an empty cache, revoke from nobody,
+  // and report a clean run while a stale holder keeps the project role. So the
+  // failure is kept, said out loud, and the revoke pass does not run.
+  let fetchFailure = null
+  if (!preview) {
+    try {
+      await guild.members.fetch()
+    } catch (e) {
+      fetchFailure = e?.message || String(e)
+      console.error('[project-setup] members.fetch:', e)
+    }
+  }
   const nameFor = (id) => guild.members.cache.get(id)?.displayName ?? id
   const botUserId = interaction.client?.user?.id ?? null
 
   const blocks = []
+  // `pickProjects` checks `all` first, so `project:` was read and thrown away.
+  if (all && picked) {
+    blocks.push(
+      '**all:true** was set, so the **project:** you picked was ignored — every project in this server is included below.'
+    )
+  }
+
+  // With `all`, the reply grows as the walk proceeds. Roughly nine categories
+  // and ninety channels through Discord's channel-create bucket can outlast the
+  // 15-minute interaction token, and one terminal `editReply` would then throw
+  // 50027 and leave the operator with a spinner and no record of what was
+  // built. A webhook edit is not on the two-channel-edits-per-ten-minutes
+  // bucket that rations the rest of this feature, so posting per project costs
+  // nothing the feature is short of and bounds the loss to the project in
+  // flight.
+  let posted = null
+  const post = async () => {
+    const content = capReply(blocks)
+    if (content === posted) return
+    posted = content
+    try {
+      await interaction.editReply({ content })
+    } catch (e) {
+      // A dead token loses the reply, not the walk: the projects still ahead
+      // are the whole reason this posts as it goes.
+      console.error('[project-setup] editReply:', e?.message ?? e)
+    }
+  }
+
   for (const project of projects) {
     try {
       const tasks =
@@ -252,26 +376,54 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
           where: { guildConfigId: cfg.id, projectId: project.id },
           take: TASK_LIMIT,
         })) ?? []
+      // `taskFindMany` orders by `createdAt DESC`, so a project past the limit
+      // silently loses its OLDEST task channels: every run reads the same
+      // newest 500, every run reports success, and it never self-heals.
+      const extra = []
+      if (tasks.length >= TASK_LIMIT) {
+        extra.push(
+          `Only the newest ${TASK_LIMIT} task channels for "${project?.name}" were read, so any older ones were left where they are.`
+        )
+      }
+
       const observed = observeProjectSection(guild, project, tasks)
       const plan = planProjectSection(project, observed)
 
       if (preview) {
-        blocks.push(renderPlan(project, plan))
+        blocks.push(renderPlan(project, { ...plan, warnings: mergeWarnings(extra, plan.warnings) }))
         continue
       }
 
       // The roster is passed on purpose: `members` is a tri-state, and omitting
       // it would leave every pinned members panel showing yesterday's list.
       const members = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+      const truncatedRoster = members.length >= ROSTER_LIMIT
+      if (fetchFailure) {
+        extra.push(
+          `This server's member list could not be read (${fetchFailure}), so nobody was removed from the project role. Run /project-setup again once the bot can read this server's members.`
+        )
+      }
+      if (truncatedRoster) {
+        extra.push(
+          `Only the first ${ROSTER_LIMIT} members of "${project?.name}" could be read, so nobody was removed from the project role — members past that limit would have looked as though they had left the project.`
+        )
+      }
+
       const result = await applyProjectSection(guild, project, plan, { db: dbArg, members, nameFor, botUserId })
-      const roleSync = await syncProjectRoleMembers(guild, project, members, {
-        roleId: result.role?.id ?? null,
-      })
+      const roleId = result.role?.id ?? null
+      const grantOnly = Boolean(fetchFailure) || truncatedRoster
+      const roleSync = await syncProjectRoleMembers(
+        guild,
+        project,
+        grantOnly ? grantOnlyRoster(guild, roleId, members) : members,
+        { roleId }
+      )
+      if (grantOnly) roleSync.revokeSkipped = true
 
       blocks.push(
         renderResult(project, {
           ...result,
-          warnings: mergeWarnings(plan.warnings, result.warnings),
+          warnings: mergeWarnings(extra, plan.warnings, result.warnings),
           roleSync,
         })
       )
@@ -280,9 +432,12 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
       console.error(`[project-setup] ${project?.name ?? project?.id}:`, e)
       blocks.push(`**${project?.name ?? project?.id}** — failed: ${e?.message ?? String(e)}`)
     }
+    if (all) await post()
   }
 
-  return interaction.editReply({ content: capReply(blocks) })
+  const content = capReply(blocks)
+  if (content === posted) return
+  return interaction.editReply({ content })
 }
 
 export async function autocomplete(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
