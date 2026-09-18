@@ -23,3 +23,10 @@
   into Discord — three-hop status-change with exact headers/env, the
   `update_discord_tasks` permission and its backfill, the board's drop/override rules,
   and the CSAAS error-body shape.
+- [project-sections.md](project-sections.md) — per-project Discord sections
+  (`feat/project-sections`, not yet merged): the ten-channel category layout,
+  id-based repair and its guarded name fallback, the Discord limits that shape
+  the design (2 edits/10min, 50/category, no overwrite cascade), the fail-closed
+  role-adoption model with `adopt_role`, merge-never-replace overwrites, project
+  inference from a channel, `/project-setup`'s preview/backfill procedure, and
+  the Administrator requirement.

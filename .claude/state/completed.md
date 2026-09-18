@@ -4,6 +4,44 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-18 — Per-project Discord sections, project-aware meetings, readable task channels (built and reviewed on branch `feat/project-sections`, NOT YET MERGED)
+
+Every project gets its own Discord category (ten channels: members, docs, meetings
++ voice, frontend/backend/database chat + voice) with task channels living inside
+it, named after the task instead of six hex characters. Membership is gated by one
+role per project, adopted from an existing same-named role only when doing so is
+demonstrably safe (no holders, or explicit `adopt_role:true`), fail-closed
+otherwise. `/meeting-channel` and `/project-members` infer the project from the
+channel they're run in. Built with subagent-driven development across 10 tasks
+plus a two-part final fix wave (spec
+`docs/superpowers/specs/2026-09-18-project-sections-design.md` — now out of date in
+§5/§13, see `.claude/knowledge/project-sections.md`; ledger
+`.superpowers/sdd/2026-09-18-project-sections/progress.md`).
+
+- Branch `feat/project-sections`, commit range `7e78f9f..1ae5dcf` (18 commits),
+  suite 340 → 610, every run with `DATABASE_URL=poisoned://no-production-access`.
+- Migration `019_project_discord_sections.sql` adds `project.discordCategoryId`,
+  `discordRoleId`, `discordChannels` (JSON), `scheduledmeeting.projectId`.
+  Migration `020_meeting_project.sql` was written then **dropped** — `020` at
+  commit `fa0db35`, deleted at `1ae5dcf` — as a no-op: `meeting.projectId` was
+  already in `schema.sql` since the initial commit.
+- New: `bot/src/services/projectSection.js` (planner + applier + role sync),
+  `bot/src/services/projectMembersPanel.js`, `bot/src/utils/taskChannelName.js`,
+  `bot/src/commands/project-setup.js`.
+- Changed: `/projects` (section on add), `/project-members` (project inference,
+  per-member grant/revoke), `/meeting-channel` (project option + inference, safe
+  overwrites inside a project), `/create-task`/`taskTicketChannel.js` (project
+  channels), `/create-project-categories` (wraps the new path, lost
+  `create_roles`), `/create-project-role` (runs the whole per-project routine),
+  `/cleanup` (protects a project's section by id, not just by name).
+- A whole-branch review found a MUST-FIX role-adoption Critical (F1) after Task 10;
+  a two-part final fix wave (parts A and B) closed it plus 11 other findings —
+  see `.claude/knowledge/project-sections.md` for the role model as it actually
+  shipped, which is stricter than the spec.
+- Not merged. Not deployed. Remaining work, deploy notes, and live-verification
+  checklist: `.claude/state/session.md` and `.claude/state/backlog.md` ("Per-project
+  sections — follow-ups").
+
 ## 2026-09-18 — Team section: people, task detail, dependency graph, kanban board (merged and deployed 2026-09-18)
 
 Turns the read-only `/tools/tasks` page into a four-view Team section, and adds the
