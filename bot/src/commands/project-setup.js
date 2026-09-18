@@ -265,8 +265,8 @@ function capReply(blocks) {
 // The command.
 // ---------------------------------------------------------------------------
 
-async function pickProjects(interaction, cfg, dbArg) {
-  if (interaction.options.getBoolean('all')) {
+async function pickProjects(interaction, cfg, dbArg, { all, picked }) {
+  if (all) {
     const rows = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })) ?? []
     if (!rows.length) {
       await interaction.editReply({ content: 'No projects yet. Add one with **/projects** → Add project.' })
@@ -274,43 +274,40 @@ async function pickProjects(interaction, cfg, dbArg) {
     }
     return rows
   }
-  const raw = String(interaction.options.getString('project') || '').trim()
-  const row = await dbArg.project.findFirst({ where: { id: raw } }).catch(() => null)
+  const row = await dbArg.project.findFirst({ where: { id: picked } }).catch(() => null)
   if (!row || row.guildConfigId !== cfg.id) {
     await interaction.editReply({
-      content: `No project matches **${raw.slice(0, 80)}**. Start typing a project name and pick one from the list.`,
+      content: `No project matches **${picked.slice(0, 80)}**. Start typing a project name and pick one from the list.`,
     })
     return null
   }
   return [row]
 }
 
-export async function execute(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
-  const guild = interaction.guild
-  if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
+// ---------------------------------------------------------------------------
+// The shared routine. `/project-setup`, `/create-project-categories`,
+// `/create-project-role` and `/projects` → Add project all build a section
+// through these functions and nothing else, so every guard below reaches every
+// caller. A second copy of any of it would lose them silently.
+// ---------------------------------------------------------------------------
 
-  const all = interaction.options.getBoolean('all') ?? false
-  const preview = interaction.options.getBoolean('preview') ?? false
-  const picked = String(interaction.options.getString('project') || '').trim()
-  if (!picked && !all) {
-    return interaction.editReply({
-      content:
-        'Pick a **project**, or pass **all:true** to set up every project in this server. Add **preview:true** to see the plan without changing anything.',
-    })
-  }
-
-  const cfg = await getConfig(guild.id)
-  const projects = await pickProjects(interaction, cfg, dbArg)
-  if (!projects) return
-
-  // `syncProjectRoleMembers` works out who to revoke from by reading the role's
-  // member cache, so without a full fetch it sees no holders and revokes from
-  // nobody. A preview syncs nothing, so it does not pay for the fetch.
-  //
-  // Swallowing a failure here is exactly what the "fetch before sync" contract
-  // exists to prevent: the sync would read an empty cache, revoke from nobody,
-  // and report a clean run while a stale holder keeps the project role. So the
-  // failure is kept, said out loud, and the revoke pass does not run.
+/**
+ * What every project in one run shares: the member-list fetch, the display-name
+ * lookup and the bot's own id.
+ *
+ * `syncProjectRoleMembers` works out who to revoke from by reading the role's
+ * member cache, so without a full fetch it sees no holders and revokes from
+ * nobody. A preview syncs nothing, so it does not pay for the fetch.
+ *
+ * Swallowing a failure here is exactly what the "fetch before sync" contract
+ * exists to prevent: the sync would read an empty cache, revoke from nobody,
+ * and report a clean run while a stale holder keeps the project role. So the
+ * failure is kept, said out loud, and the revoke pass does not run.
+ *
+ * @param {import('discord.js').Guild} guild
+ * @param {{preview?: boolean, botUserId?: string|null}} [opts]
+ */
+export async function prepareSectionRun(guild, { preview = false, botUserId = null } = {}) {
   let fetchFailure = null
   if (!preview) {
     try {
@@ -321,7 +318,119 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     }
   }
   const nameFor = (id) => guild.members.cache.get(id)?.displayName ?? id
-  const botUserId = interaction.client?.user?.id ?? null
+  return { preview, fetchFailure, nameFor, botUserId }
+}
+
+/**
+ * One project's setup: read its tasks, observe, plan, and (unless the run is a
+ * preview) apply the plan, sync the role against the roster, and render the
+ * block. Throws when a read fails or a step outside the applier's own
+ * try/catches throws; the walk catches per project, a single-project caller
+ * catches for itself.
+ *
+ * @param {import('discord.js').Guild} guild
+ * @param {object} project the project row
+ * @param {{db: object, cfg: {id: string}, run: Awaited<ReturnType<typeof prepareSectionRun>>}} deps
+ * @returns {Promise<{block: string, plan: object, result?: object, roleSync?: object}>}
+ */
+export async function setupProjectSection(guild, project, { db: dbArg, cfg, run }) {
+  const { preview, fetchFailure, nameFor, botUserId } = run
+  const tasks =
+    (await dbArg.task.findMany({
+      where: { guildConfigId: cfg.id, projectId: project.id },
+      take: TASK_LIMIT,
+    })) ?? []
+  // `taskFindMany` orders by `createdAt DESC`, so a project past the limit
+  // silently loses its OLDEST task channels: every run reads the same
+  // newest 500, every run reports success, and it never self-heals.
+  const extra = []
+  if (tasks.length >= TASK_LIMIT) {
+    extra.push(
+      `Only the newest ${TASK_LIMIT} task channels for "${project?.name}" were read, so any older ones were left where they are.`
+    )
+  }
+
+  const observed = observeProjectSection(guild, project, tasks)
+  const plan = planProjectSection(project, observed)
+
+  if (preview) {
+    return { plan, block: renderPlan(project, { ...plan, warnings: mergeWarnings(extra, plan.warnings) }) }
+  }
+
+  // The roster is passed on purpose: `members` is a tri-state, and omitting
+  // it would leave every pinned members panel showing yesterday's list.
+  const members = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+  const truncatedRoster = members.length >= ROSTER_LIMIT
+  if (fetchFailure) {
+    extra.push(
+      `This server's member list could not be read (${fetchFailure}), so nobody was removed from the project role. Run /project-setup again once the bot can read this server's members.`
+    )
+  }
+  if (truncatedRoster) {
+    extra.push(
+      `Only the first ${ROSTER_LIMIT} members of "${project?.name}" could be read, so nobody was removed from the project role — members past that limit would have looked as though they had left the project.`
+    )
+  }
+
+  const result = await applyProjectSection(guild, project, plan, { db: dbArg, members, nameFor, botUserId })
+  const roleId = result.role?.id ?? null
+  // Say it as a flag, not by padding the roster with every current holder:
+  // "do not revoke" is what this means, and a roster the service happens to
+  // find nothing to revoke from would stop meaning that the moment the
+  // service changed how it reads its holders.
+  const grantOnly = Boolean(fetchFailure) || truncatedRoster
+  const roleSync = await syncProjectRoleMembers(guild, project, members, {
+    roleId,
+    revoke: !grantOnly,
+  })
+  if (grantOnly) roleSync.revokeSkipped = true
+
+  const block = renderResult(project, {
+    ...result,
+    warnings: mergeWarnings(extra, plan.warnings, result.warnings),
+    roleSync,
+  })
+  return { block, plan, result, roleSync }
+}
+
+/**
+ * One project, start to finish, for a caller that has a single project row in
+ * hand (a new project from `/projects`, a named one from
+ * `/create-project-role`): the member fetch, then the same per-project routine
+ * the walk runs. Throws as `setupProjectSection` does.
+ *
+ * @param {import('discord.js').Guild} guild
+ * @param {object} project
+ * @param {{db: object, cfg: {id: string}, botUserId?: string|null}} deps
+ */
+export async function setupOneProject(guild, project, { db: dbArg, cfg, botUserId = null }) {
+  const run = await prepareSectionRun(guild, { preview: false, botUserId })
+  return setupProjectSection(guild, project, { db: dbArg, cfg, run })
+}
+
+/**
+ * The whole of `/project-setup` once its options are read: pick the projects,
+ * fetch the member list, walk them one at a time, and reply.
+ * `/project-setup` and `/create-project-categories` (as `{ all: true }`) both
+ * run exactly this.
+ *
+ * @param {import('discord.js').ChatInputCommandInteraction} interaction already deferred
+ * @param {{all?: boolean, picked?: string, preview?: boolean}} opts
+ * @param {{db?: object, getConfig?: (guildId: string) => Promise<{id: string}>}} deps
+ */
+export async function runProjectSetup(
+  interaction,
+  { all = false, picked = '', preview = false } = {},
+  { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}
+) {
+  const guild = interaction.guild
+  if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
+
+  const cfg = await getConfig(guild.id)
+  const projects = await pickProjects(interaction, cfg, dbArg, { all, picked })
+  if (!projects) return
+
+  const run = await prepareSectionRun(guild, { preview, botUserId: interaction.client?.user?.id ?? null })
 
   const blocks = []
   // `pickProjects` checks `all` first, so `project:` was read and thrown away.
@@ -355,64 +464,8 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
 
   for (const project of projects) {
     try {
-      const tasks =
-        (await dbArg.task.findMany({
-          where: { guildConfigId: cfg.id, projectId: project.id },
-          take: TASK_LIMIT,
-        })) ?? []
-      // `taskFindMany` orders by `createdAt DESC`, so a project past the limit
-      // silently loses its OLDEST task channels: every run reads the same
-      // newest 500, every run reports success, and it never self-heals.
-      const extra = []
-      if (tasks.length >= TASK_LIMIT) {
-        extra.push(
-          `Only the newest ${TASK_LIMIT} task channels for "${project?.name}" were read, so any older ones were left where they are.`
-        )
-      }
-
-      const observed = observeProjectSection(guild, project, tasks)
-      const plan = planProjectSection(project, observed)
-
-      if (preview) {
-        blocks.push(renderPlan(project, { ...plan, warnings: mergeWarnings(extra, plan.warnings) }))
-        continue
-      }
-
-      // The roster is passed on purpose: `members` is a tri-state, and omitting
-      // it would leave every pinned members panel showing yesterday's list.
-      const members = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
-      const truncatedRoster = members.length >= ROSTER_LIMIT
-      if (fetchFailure) {
-        extra.push(
-          `This server's member list could not be read (${fetchFailure}), so nobody was removed from the project role. Run /project-setup again once the bot can read this server's members.`
-        )
-      }
-      if (truncatedRoster) {
-        extra.push(
-          `Only the first ${ROSTER_LIMIT} members of "${project?.name}" could be read, so nobody was removed from the project role — members past that limit would have looked as though they had left the project.`
-        )
-      }
-
-      const result = await applyProjectSection(guild, project, plan, { db: dbArg, members, nameFor, botUserId })
-      const roleId = result.role?.id ?? null
-      // Say it as a flag, not by padding the roster with every current holder:
-      // "do not revoke" is what this means, and a roster the service happens to
-      // find nothing to revoke from would stop meaning that the moment the
-      // service changed how it reads its holders.
-      const grantOnly = Boolean(fetchFailure) || truncatedRoster
-      const roleSync = await syncProjectRoleMembers(guild, project, members, {
-        roleId,
-        revoke: !grantOnly,
-      })
-      if (grantOnly) roleSync.revokeSkipped = true
-
-      blocks.push(
-        renderResult(project, {
-          ...result,
-          warnings: mergeWarnings(extra, plan.warnings, result.warnings),
-          roleSync,
-        })
-      )
+      const { block } = await setupProjectSection(guild, project, { db: dbArg, cfg, run })
+      blocks.push(block)
     } catch (e) {
       // With `all`, one project the bot cannot touch must never abort the rest.
       console.error(`[project-setup] ${project?.name ?? project?.id}:`, e)
@@ -424,6 +477,23 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
   const content = capReply(blocks)
   if (content === posted) return
   return interaction.editReply({ content })
+}
+
+export async function execute(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
+  const guild = interaction.guild
+  if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
+
+  const all = interaction.options.getBoolean('all') ?? false
+  const preview = interaction.options.getBoolean('preview') ?? false
+  const picked = String(interaction.options.getString('project') || '').trim()
+  if (!picked && !all) {
+    return interaction.editReply({
+      content:
+        'Pick a **project**, or pass **all:true** to set up every project in this server. Add **preview:true** to see the plan without changing anything.',
+    })
+  }
+
+  return runProjectSetup(interaction, { all, picked, preview }, { db: dbArg, getConfig })
 }
 
 export async function autocomplete(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {

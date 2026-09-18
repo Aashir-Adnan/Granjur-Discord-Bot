@@ -310,14 +310,14 @@
       "detail": "Start typing in the **task** field and pick from the suggestions — each shows the title, its status and who holds it, so you never type an id. Then set any of status, assignees, **project**, title, description, implementation status, or the API/QA/AC counts. Attaching a project makes the task show up under that project in **/dashboard**."
     },
     "create-project-role": {
-      "summary": "Create a Discord role for a project.",
+      "summary": "Create or repair a project's role, and with it the project's whole private section.",
       "syntax": "`/create-project-role <project>`",
-      "detail": "Creates a role named after the project. CEO/Server Manager only."
+      "detail": "Type the name of an existing project (add new ones with **/projects** → Add project, which builds the section straight away). A project role only means something as the gate to its section, so this runs the same path as **/project-setup project:<project>**: the role, the `📂 PROJECT` category only that role can see, the ten section channels, the project's task channels moved in, and the role granted to everyone on **/project-members** and taken from everyone who is not. A managed job-role name such as `Database` is refused and nothing is created. Never deletes anything. CEO/Server Manager only."
     },
     "create-project-categories": {
-      "summary": "Create channel categories for projects.",
-      "syntax": "`/create-project-categories [create_roles]`",
-      "detail": "Sets up category channels for each project. Optionally creates matching roles. CEO/Server Manager only."
+      "summary": "Create or repair every project's private section — the same as /project-setup all:true.",
+      "syntax": "`/create-project-categories`",
+      "detail": "Runs **/project-setup all:true**: for every project in this server, the project role, the `📂 PROJECT` category only that role can see, the ten section channels, the project's task channels moved in, and the role synced with **/project-members**. The reply grows project by project; a project the bot cannot touch is reported and the rest still run. Safe to re-run and never deletes anything. CEO/Server Manager only."
     },
     "migrate": {
       "summary": "Run pending database migrations.",

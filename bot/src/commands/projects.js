@@ -13,6 +13,12 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { slugify } from '../utils/docPath.js'
 import { reattributeGuildDocs } from '../services/docsSync.js'
+import { cut } from '../services/projectSection.js'
+import { EPHEMERAL } from '../constants.js'
+import { setupOneProject } from './project-setup.js'
+
+/** Discord's hard limit on a message. */
+const REPLY_LIMIT = 2000
 
 export const data = new SlashCommandBuilder()
   .setName('projects')
@@ -78,10 +84,39 @@ export async function handleAddButton(interaction) {
   return interaction.showModal(modal).catch(() => {})
 }
 
-export async function handleAddModal(interaction) {
+/**
+ * The Add project modal. The project row is written first and is the source of
+ * truth; its private section (role, category, channels, members panel) is then
+ * built through the same one-project routine `/project-setup` runs. A section
+ * that cannot be built never rolls the row back and never throws out of here:
+ * the reply says so and points at `/project-setup`.
+ *
+ * @param {import('discord.js').ModalSubmitInteraction} interaction deferred by the router
+ * @param {{db?: object, getConfig?: Function, reattribute?: typeof reattributeGuildDocs, setup?: typeof setupOneProject}} [deps]
+ */
+export async function handleAddModal(
+  interaction,
+  {
+    db: dbArg = db,
+    getConfig = getOrCreateGuildConfig,
+    reattribute = reattributeGuildDocs,
+    setup = setupOneProject,
+  } = {}
+) {
   const guild = interaction.guild
   if (!guild) return
-  const cfg = await getOrCreateGuildConfig(guild.id)
+  // The router defers every modal but a named few. A section build is a dozen
+  // Discord calls and a modal must be acknowledged within three seconds, so
+  // make sure of it here rather than trusting the router's list forever.
+  if (!interaction.deferred && !interaction.replied) {
+    try {
+      await interaction.deferReply({ flags: EPHEMERAL })
+    } catch (e) {
+      console.error('[projects] deferReply:', e?.message ?? e)
+      return
+    }
+  }
+  const cfg = await getConfig(guild.id)
   const name = interaction.fields.getTextInputValue('name').trim()
   const slug = (interaction.fields.getTextInputValue('slug') || '').trim() || slugify(name)
   const paths = (interaction.fields.getTextInputValue('paths') || '')
@@ -89,12 +124,12 @@ export async function handleAddModal(interaction) {
     .map((s) => s.trim().replace(/^\/+|\/+$/g, ''))
     .filter(Boolean)
 
-  const existing = await db.project.findByName({ guildConfigId: cfg.id, name })
+  const existing = await dbArg.project.findByName({ guildConfigId: cfg.id, name })
   if (existing) {
     return interaction.editReply({ content: `**${name}** already exists.` }).catch(() => {})
   }
 
-  const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
+  const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })
   const slugConflict = projects.find((p) => p.docsSlug === slug)
   if (slugConflict) {
     return interaction
@@ -102,7 +137,7 @@ export async function handleAddModal(interaction) {
       .catch(() => {})
   }
 
-  await db.project.create({
+  const project = await dbArg.project.create({
     data: { guildConfigId: cfg.id, name, docsSlug: slug, docsPaths: paths },
   })
 
@@ -110,16 +145,37 @@ export async function handleAddModal(interaction) {
   // the repository changed, so a sync would short-circuit and never notice.
   // Re-run attribution here instead — it is a read of the index plus one write
   // per page that actually moved.
-  const attributed = await reattributeGuildDocs(cfg.id).catch(() => 0)
+  const attributed = await reattribute(cfg.id).catch(() => 0)
   const note = attributed
     ? ` **${attributed}** already-synced page(s) now appear under it in **/docs**.`
     : ' No synced pages match those paths yet — they will be attributed as the documentation repository grows, or run **/setup** → **Sync docs now**.'
+  const added = `Added **${name}** (docs folder \`docs/projects/${slug}/\`${paths.length ? `, plus ${paths.map((p) => `\`${p}\``).join(', ')}` : ''}).${note}`
 
-  return interaction
-    .editReply({
-      content: `Added **${name}** (docs folder \`docs/projects/${slug}/\`${paths.length ? `, plus ${paths.map((p) => `\`${p}\``).join(', ')}` : ''}).${note}`,
-    })
-    .catch(() => {})
+  // Say the project exists before the build starts: the row is already the
+  // truth, and the build is the slow part.
+  await interaction.editReply({ content: `${added}\n\nBuilding its private section…` }).catch(() => {})
+
+  const later = `You can create it later with **/project-setup project:${cut(name, 80)}** once the bot has **Manage Channels** and **Manage Roles**.`
+  let section
+  if (!project?.id) {
+    section = `Its private section was not built: the new project could not be read back. ${later}`
+  } else {
+    try {
+      const { block, result } = await setup(guild, project, {
+        db: dbArg,
+        cfg,
+        botUserId: interaction.client?.user?.id ?? null,
+      })
+      section = result?.category?.name
+        ? `Its private section is ready in **${result.category.name}**.\n${block}`
+        : `Its private section could not be built. ${later}\n${block}`
+    } catch (e) {
+      console.error(`[projects] section for ${name}:`, e)
+      section = `Its private section could not be built: ${e?.message ?? String(e)}. ${later}`
+    }
+  }
+
+  return interaction.editReply({ content: cut(`${added}\n\n${section}`, REPLY_LIMIT) }).catch(() => {})
 }
 
 export async function handleLinkRepo(interaction) {
