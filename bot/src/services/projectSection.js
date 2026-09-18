@@ -151,27 +151,39 @@ function planChannels(project, observed) {
 function planTasks(project, observed, channels, warnings) {
   const parentId = observed?.categoryId ?? null
   const tasks = Array.isArray(observed?.tasks) ? observed.tasks : []
-  const creating = channels.filter((c) => c.action === 'create').length
+  // Every section channel this plan puts INTO the category takes a slot: the
+  // ones created there, and the ones moved in from somewhere else. A renamed or
+  // reused one is already inside, so `categoryChannelCount` has it already.
+  const arriving = channels.filter((c) => c.action === 'create' || c.action === 'move').length
   // What is left of the category once this plan's own channels are in it.
   let room = Math.max(
     0,
-    CATEGORY_SOFT_CAP - Number(observed?.categoryChannelCount ?? 0) - creating
+    CATEGORY_SOFT_CAP - Number(observed?.categoryChannelCount ?? 0) - arriving
   )
 
   const taken = new Set(observed?.takenNames ?? [])
+  // The ten section names are spoken for, so a project slugged `feature` with a
+  // task titled "Members" cannot land on `feature-members` in the same run.
+  for (const channel of channels) taken.add(channel.name)
+  // Names this run has handed out. Separate from `taken` because a task may
+  // free the name it already carries, but never one promised to another task.
+  const assigned = new Set()
   const planned = []
   let leftBehind = 0
 
   for (const task of tasks) {
     if (!task?.channelId) continue
-    // A channel does not collide with the name it already carries.
-    if (task.channelName) taken.delete(task.channelName)
+    // A channel does not collide with the name it already carries — unless an
+    // earlier task in this same run has already been given that name.
+    const pool = new Set(taken)
+    if (task.channelName && !assigned.has(task.channelName)) pool.delete(task.channelName)
     const name = taskChannelName({
       type: task.type,
       title: task.title,
       taskId: task.id,
-      taken,
+      taken: pool,
     })
+    assigned.add(name)
     taken.add(name)
 
     const nameOk = task.channelName === name

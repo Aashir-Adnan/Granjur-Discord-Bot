@@ -110,6 +110,52 @@ test('a task already right plans none', () => {
   assert.equal(plan.tasks[0].action, 'none')
 })
 
+test('two tasks with the same title never share a channel name', () => {
+  // Both already exist and one of them already carries the name the other wants.
+  // Freeing a task's own name must not free a name an earlier task was given.
+  const tasks = [
+    { id: 'aaaa1111bbbb2222', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-0145e3', parentId: 'c1' },
+    { id: 'cccc3333dddd4444', title: 'Git Sync', type: 'feature', channelId: 'ch2', channelName: 'feature-git-sync', parentId: 'c1' },
+  ]
+  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', tasks })
+  const names = plan.tasks.map((t) => t.name)
+  assert.equal(names[0], 'feature-git-sync')
+  assert.equal(new Set(names).size, 2, `two channels would share a name: ${names.join(', ')}`)
+})
+
+test('a task keeps the name it already carries, even when the snapshot lists it as taken', () => {
+  const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-git-sync', parentId: 'c1' }]
+  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', tasks, takenNames: new Set(['feature-git-sync']) })
+  assert.deepEqual([plan.tasks[0].action, plan.tasks[0].name], ['none', 'feature-git-sync'])
+})
+
+test('a task cannot take the name of a section channel this plan creates', () => {
+  const slugged = { id: 'p5', name: 'Feature', docsSlug: 'feature' }
+  const tasks = [{ id: 'abcd1234ef567890', title: 'Members', type: 'feature', channelId: 'ch1', channelName: 'feature-0145e3', parentId: 'FEATURES' }]
+  const plan = planProjectSection(slugged, { ...empty, categoryId: 'c1', categoryName: '📂 FEATURE', tasks })
+  assert.ok(plan.channels.some((c) => c.name === 'feature-members' && c.action === 'create'))
+  assert.notEqual(plan.tasks[0].name, 'feature-members')
+})
+
+test('section channels moved into the category count against the cap, like created ones', () => {
+  const channels = {}
+  for (const s of SECTIONS) channels[s.key] = { id: `id-${s.key}`, name: channelNameFor(project, s.suffix), parentId: 'ELSEWHERE' }
+  const tasks = Array.from({ length: 40 }, (_, i) => ({
+    id: `t${String(i).padStart(4, '0')}abcdefgh`,
+    title: `Task ${i}`,
+    type: 'feature',
+    channelId: `ch${i}`,
+    channelName: `feature-old-${i}`,
+    parentId: 'FEATURES',
+  }))
+  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', channels, tasks })
+  assert.ok(plan.channels.every((c) => c.action === 'move'))
+  // 49 - 0 already in the category - 10 sections arriving = 39, not 49.
+  assert.equal(plan.tasks.filter((t) => t.action === 'both').length, 39)
+  assert.equal(plan.tasks.filter((t) => t.action === 'rename').length, 1)
+  assert.ok(plan.warnings.some((w) => /full|cap/i.test(w)))
+})
+
 test('past the category cap, task moves are dropped with a warning; sections still plan', () => {
   const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-0145e3', parentId: 'FEATURES' }]
   const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', categoryChannelCount: 49, tasks })
