@@ -826,6 +826,10 @@ async function scheduledMeetingUpdate(id, data) {
     sets.push("cancelled = ?");
     vals.push(data.cancelled ? 1 : 0);
   }
+  if (data.projectId !== undefined) {
+    sets.push("projectId = ?");
+    vals.push(data.projectId);
+  }
   if (sets.length === 0)
     return queryOne("SELECT * FROM `scheduledmeeting` WHERE id = ?", [id]);
   vals.push(id);
@@ -992,6 +996,37 @@ async function projectFindByName({ guildConfigId, name }) {
     guildConfigId,
     name,
   ]);
+}
+
+/** Columns `db.project.update` may write, in one ordered list. */
+const PROJECT_UPDATABLE = [
+  ["name", (v) => v],
+  ["readme", (v) => v],
+  ["docsSlug", (v) => v],
+  ["docsPaths", (v) => toJson(v)],
+  ["discordCategoryId", (v) => v],
+  ["discordRoleId", (v) => v],
+  ["discordChannels", (v) => JSON.stringify(v)],
+];
+
+export function projectUpdateSql(id, data = {}) {
+  const sets = [];
+  const params = [];
+  for (const [col, encode] of PROJECT_UPDATABLE) {
+    if (data[col] === undefined) continue;
+    sets.push(`${col} = ?`);
+    params.push(encode(data[col]));
+  }
+  if (sets.length === 0) return null;
+  params.push(id);
+  return { sql: `UPDATE \`project\` SET ${sets.join(", ")} WHERE id = ?`, params };
+}
+
+async function projectUpdate({ where, data }) {
+  const built = projectUpdateSql(where?.id, data);
+  if (!built) return projectFindFirst({ where: { id: where?.id } });
+  await query(built.sql, built.params);
+  return projectFindFirst({ where: { id: where.id } });
 }
 
 // ---------- project_schemas (FK project, name, latest_dump_id) ----------
@@ -2175,6 +2210,7 @@ const db = {
     findFirst: projectFindFirst,
     create: projectCreate,
     findByName: projectFindByName,
+    update: projectUpdate,
   },
   projectSchemas: {
     findMany: projectSchemasFindMany,
