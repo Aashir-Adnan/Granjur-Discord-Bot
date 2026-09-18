@@ -171,13 +171,15 @@ function sectionDb({ projects = [SECTION, OTHER], rows = [] } = {}) {
         else table.push({ projectId: data.projectId, discordId: data.discordId, role: data.role })
         return data
       },
-      // Removes ONE row, so a person holding two rows keeps the other.
+      // Like the real DELETE: every row for (projectId, discordId), of which
+      // uq_projectmember_pair allows at most one.
       remove: async ({ where }) => {
         calls.push(['remove', where])
-        const i = table.findIndex((r) => r.projectId === where.projectId && r.discordId === where.discordId)
-        if (i < 0) return { removed: 0 }
-        table.splice(i, 1)
-        return { removed: 1 }
+        let removed = 0
+        for (let i = table.length - 1; i >= 0; i--) {
+          if (table[i].projectId === where.projectId && table[i].discordId === where.discordId) { table.splice(i, 1); removed++ }
+        }
+        return { removed }
       },
       findByProject: async ({ where }) => table.filter((r) => r.projectId === where.projectId).map((r) => ({ ...r })),
     },
@@ -315,9 +317,55 @@ test('add whose role change fails still saves the row and says which half failed
   await execute(it, { db, getConfig })
   assert.equal(db.table.length, 1)
   const reply = it.replies[0].content
-  assert.match(reply, /Added <@u2>/)
-  assert.match(reply, /membership is saved/)
-  assert.match(reply, /could not give them the \*\*Framework\*\* role \(Missing Permissions\)/)
+  assert.equal(reply, [
+    'Added <@u2> to **Framework** as **Developer**.',
+    'The membership is saved, but I could not give them the **Framework** role (Missing Permissions), so they cannot see its channels yet.',
+  ].join('\n'))
+})
+
+test('add whose first roster read fails posts no "joined" line, but still refreshes the panel', async () => {
+  const db = sectionDb({ rows: [{ projectId: 'proj1', discordId: 'u2', role: 'developer' }] })
+  const read = db.projectMember.findByProject
+  let calls = 0
+  db.projectMember.findByProject = async (args) => {
+    if (calls++ === 0) throw new Error('db blip')
+    return read(args)
+  }
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'add', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.equal(guild.log.sent.length, 1)
+  assert.ok(guild.log.sent[0][1].embeds, 'only the panel, no change line')
+})
+
+test('a failed project read says so instead of asking for a project, and writes nothing', async () => {
+  const db = sectionDb()
+  db.project.findMany = async () => { throw new Error('db down') }
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'add', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.deepEqual(db.calls, [])
+  assert.deepEqual(guild.log.roles, [])
+  assert.equal(it.replies[0].content, 'I could not load the projects just now, so nothing changed. Try again in a moment.')
+})
+
+test('add inside a thread of a project channel resolves that project', async () => {
+  const db = sectionDb()
+  const parent = { id: 'c1', parentId: 'cat1', isThread: () => false }
+  const it = sectionInteraction({ sub: 'add', users: U2, channel: { id: 't1', parentId: 'c1', isThread: () => true, parent } })
+  await execute(it, { db, getConfig })
+  assert.equal(db.calls[0][1].projectId, 'proj1')
+})
+
+test('add in a category two projects claim writes nothing and grants no role', async () => {
+  const twin = { ...SECTION, id: 'projTwin', name: 'Twin', discordRoleId: 'roleTwin' }
+  const db = sectionDb({ projects: [SECTION, twin] })
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'add', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.deepEqual(db.calls, [])
+  assert.deepEqual(guild.log.roles, [])
+  assert.match(it.replies[0].content, /Pick a project/)
 })
 
 test('add for someone who left the server still saves the row and reports it', async () => {
@@ -371,18 +419,25 @@ test('remove of the last row revokes the role, posts the change, and refreshes t
   assert.match(it.replies[0].content, /role was taken away/)
 })
 
-test('remove of one of two rows keeps the role: no permission change the user did not ask for', async () => {
-  const db = sectionDb({ rows: [
-    { projectId: 'proj1', discordId: 'u2', role: 'backend_developer' },
-    { projectId: 'proj1', discordId: 'u2', role: 'frontend_developer' },
-  ] })
+test('race: a concurrent re-add between the delete and the re-read keeps the role', async () => {
+  const db = sectionDb({ rows: [{ projectId: 'proj1', discordId: 'u2', role: 'developer' }] })
+  // Another manager's `add` lands right after this remove's DELETE.
+  const del = db.projectMember.remove
+  db.projectMember.remove = async (args) => {
+    const out = await del(args)
+    db.table.push({ projectId: 'proj1', discordId: 'u2', role: 'qa' })
+    return out
+  }
   const guild = sectionGuild()
   const it = sectionInteraction({ sub: 'remove', users: U2, guild })
   await execute(it, { db, getConfig })
   assert.deepEqual(guild.log.roles, [])
   assert.equal(guild.log.sent.length, 1, 'the panel refreshes, but no "left" line is posted')
   assert.ok(guild.log.sent[0][1].embeds)
-  assert.match(it.replies[0].content, /channel access stays/)
+  assert.equal(it.replies[0].content, [
+    'Removed <@u2> from **Framework**.',
+    'They were added back while this ran, so their channel access stays.',
+  ].join('\n'))
 })
 
 test('remove when the roster cannot be re-read keeps the role', async () => {
@@ -402,8 +457,10 @@ test('remove whose revoke fails still reports the row as removed', async () => {
   const it = sectionInteraction({ sub: 'remove', users: U2, guild })
   await execute(it, { db, getConfig })
   assert.equal(db.table.length, 0)
-  assert.match(it.replies[0].content, /Removed <@u2>/)
-  assert.match(it.replies[0].content, /could not take away the \*\*Framework\*\* role \(Missing Permissions\)/)
+  assert.equal(it.replies[0].content, [
+    'Removed <@u2> from **Framework**.',
+    'They are off the project, but I could not take away the **Framework** role (Missing Permissions), so they can still see its channels.',
+  ].join('\n'))
 })
 
 test('remove of someone not on the project changes no role and posts nothing', async () => {

@@ -94,25 +94,35 @@ export function channelNameFor(project, suffix) {
 
 /**
  * The project a channel belongs to: the one whose category is the channel's
- * parent, or the category itself. Null-safe, and null when nothing matches.
+ * parent, or the category itself. A thread is resolved to the channel it lives
+ * in first, since a thread's `parentId` is that channel, not the category.
+ * Null-safe, and null when nothing matches.
+ *
+ * Null too when MORE than one project claims the category: nothing makes
+ * `project.discordCategoryId` unique (migration 019 adds no index), and a
+ * guess could hand a member the wrong project's role. The caller then falls
+ * back to asking which project is meant.
+ *
  * Shared here because several commands need the same answer.
  *
- * @param {Array<{discordCategoryId?: string|null}>} projects
- * @param {{id?: string|null, parentId?: string|null}|null} channel
+ * @param {Array<{id?: string, discordCategoryId?: string|null}>} projects
+ * @param {{id?: string|null, parentId?: string|null, isThread?: () => boolean, parent?: object|null}|null} channel
  */
 export function projectFromChannel(projects, channel) {
   if (!channel) return null
+  const base = typeof channel.isThread === 'function' && channel.isThread() ? channel.parent : channel
+  if (!base) return null
   const list = Array.isArray(projects) ? projects : []
-  const parentId = channel.parentId ?? null
-  const ownId = channel.id ?? null
-  return (
-    list.find(
-      (p) =>
-        p &&
-        p.discordCategoryId &&
-        (p.discordCategoryId === parentId || p.discordCategoryId === ownId)
-    ) ?? null
+  const parentId = base.parentId ?? null
+  const ownId = base.id ?? null
+  const matches = list.filter(
+    (p) =>
+      p &&
+      p.discordCategoryId &&
+      (p.discordCategoryId === parentId || p.discordCategoryId === ownId)
   )
+  const distinct = new Set(matches.map((p) => p.id ?? p))
+  return distinct.size === 1 ? matches[0] : null
 }
 
 function planRole(project, observed, warnings) {

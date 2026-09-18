@@ -371,8 +371,8 @@
     },
     "project-members": {
       "summary": "Add, remove, or list who works on a project.",
-      "syntax": "`/project-members add|remove|list project:<pick one> [member] [role]`",
-      "detail": "Start typing in the **project** field and pick from the suggestions. **add** sets a member's role (Lead, Developer, QA, Design; default Developer) — using it again on someone already on the project changes their role. **remove** takes them off. **list** shows members grouped by role, plus anyone else currently holding a task on the project. This is the list the UBS-Doc site shows."
+      "syntax": "`/project-members add|remove member:<person> [project:<pick one>] [role]` · `/project-members list [project:<pick one>]`",
+      "detail": "Run it inside a project's channels and **project** can be left out: it is the project whose section you are in. Anywhere else, start typing in the **project** field and pick from the suggestions. **add** sets a member's role (Lead, Developer, Backend Developer, Frontend Developer, QA, Design; default Developer) and gives them the project's role, so they can see its channels. Using it again on someone already on the project changes their role. **remove** takes them off and takes the project role away. **add** and **remove** also post the change in the project's members channel and refresh its pinned list. **list** shows members grouped by role, plus anyone else currently holding a task on the project. This is the list the UBS-Doc site shows."
     },
     "project-setup": {
       "summary": "Create or repair a project's Discord section — its role, category and channels.",

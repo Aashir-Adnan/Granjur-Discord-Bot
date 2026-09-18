@@ -191,6 +191,24 @@ test('projectFromChannel is null for anything else', () => {
   assert.equal(projectFromChannel([{ id: 'p3', name: 'No section', discordCategoryId: null }], { id: 'ch9', parentId: null }), null)
 })
 
+test('projectFromChannel resolves a thread to the channel it lives in', () => {
+  const projects = [{ id: 'p1', name: 'Framework', discordCategoryId: 'c1' }]
+  const parent = { id: 'ch9', parentId: 'c1', isThread: () => false }
+  // A thread's own parentId is its text channel, never the category.
+  const thread = { id: 't1', parentId: 'ch9', isThread: () => true, parent }
+  assert.equal(projectFromChannel(projects, thread).id, 'p1')
+  assert.equal(projectFromChannel(projects, { id: 't2', parentId: 'ch9', isThread: () => true, parent: null }), null)
+})
+
+test('projectFromChannel refuses to guess when two projects claim one category', () => {
+  const projects = [
+    { id: 'p1', name: 'Framework', discordCategoryId: 'c1' },
+    { id: 'p2', name: 'Framework copy', discordCategoryId: 'c1' },
+  ]
+  assert.equal(projectFromChannel(projects, { id: 'ch9', parentId: 'c1' }), null)
+  assert.equal(projectFromChannel(projects, { id: 'c1', parentId: null }), null)
+})
+
 // ---------------------------------------------------------------------------
 // The applier: observeProjectSection / applyProjectSection / syncProjectRoleMembers
 // ---------------------------------------------------------------------------

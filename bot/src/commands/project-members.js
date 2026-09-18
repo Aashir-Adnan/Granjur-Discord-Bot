@@ -62,7 +62,14 @@ export function renderMembers({ project, explicit = [], inferredIds = [], nameFo
 async function resolveProject(interaction, cfg, dbArg) {
   const raw = String(interaction.options.getString('project') || '').trim()
   if (!raw) {
-    const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } }).catch(() => [])
+    let projects
+    try {
+      projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })
+    } catch (e) {
+      console.warn(`[project-members] project read failed: ${e?.message || e}`)
+      await interaction.editReply({ content: 'I could not load the projects just now, so nothing changed. Try again in a moment.' })
+      return null
+    }
     const inferred = projectFromChannel(projects, interaction.channel)
     if (inferred && inferred.guildConfigId === cfg.id) return inferred
     await interaction.editReply({ content: "Pick a project with the `project` option, or run this inside one of the project's channels." })
@@ -118,7 +125,9 @@ async function changeRole(guild, project, userId, action) {
   } catch (e) {
     const message = e?.message || String(e)
     console.warn(`[project-members] could not ${verb} the role of "${project.name}" (${userId}): ${message}`)
-    return `The membership is saved, but I could not ${verb} the **${roleName}** role (${message}), so their channel access did not change.`
+    return action === 'grant'
+      ? `The membership is saved, but I could not give them the **${roleName}** role (${message}), so they cannot see its channels yet.`
+      : `They are off the project, but I could not take away the **${roleName}** role (${message}), so they can still see its channels.`
   }
 }
 
@@ -163,10 +172,12 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     lines.push(await changeRole(guild, project, user.id, 'grant'))
     const roster = await readRoster(dbArg, project)
     if (roster) {
-      // Post only a real change: re-adding someone with the role they already
-      // hold says nothing in the channel.
+      // Post only a known, real change: re-adding someone with the role they
+      // already hold says nothing, and neither does an add whose prior state
+      // could not be read (`before` is null) — the panel still refreshes.
       const prior = before?.find((m) => m.discordId === user.id)
-      const change = prior && prior.role === role ? null : { name: displayNameOf(guild, user), role, action: 'added' }
+      const changed = before !== null && !(prior && prior.role === role)
+      const change = changed ? { name: displayNameOf(guild, user), role, action: 'added' } : null
       await updatePanel(interaction, project, roster, change)
     }
     return interaction.editReply({ content: lines.join('\n') })
@@ -180,10 +191,15 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     // Revoke only when no row for them on this project remains. If the roster
     // cannot be read, keep the role: an unrequested permission change is the
     // one outcome this must never produce.
+    //
+    // `stillOn` is a RACE GUARD, not a multi-role case: `projectmember` has
+    // UNIQUE KEY uq_projectmember_pair (projectId, discordId), so the delete
+    // above removed their only row. A row can be back only if a concurrent
+    // `add` landed between that delete and this re-read.
     const roster = await readRoster(dbArg, project)
     const stillOn = !!roster?.some((m) => m.discordId === user.id)
     if (!roster) lines.push('I could not re-read the project roster, so I left their channel access alone.')
-    else if (stillOn) lines.push('They still hold another role on this project, so their channel access stays.')
+    else if (stillOn) lines.push('They were added back while this ran, so their channel access stays.')
     else lines.push(await changeRole(guild, project, user.id, 'revoke'))
     if (roster) {
       await updatePanel(interaction, project, roster, stillOn ? null : { name: displayNameOf(guild, user), action: 'removed' })
