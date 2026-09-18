@@ -140,3 +140,289 @@ test('execute list replies with renderMembers output for the fake rows', async (
   const expected = renderMembers({ project: PROJECT, explicit: members, inferredIds: inferredMemberIds(tasks, ['1']), nameFor: () => null })
   assert.equal(it.replies[0].content, expected)
 })
+
+// --- in-project inference, role change, panel ---
+// Every fake below stands in for the database, the guild config and Discord:
+// nothing here reaches the real `db` export or `getOrCreateGuildConfig`.
+
+const SECTION = {
+  id: 'proj1', name: 'Framework', guildConfigId: 'g1',
+  discordCategoryId: 'cat1', discordRoleId: 'role1',
+  discordChannels: JSON.stringify({ members: 'mchan1' }),
+}
+const OTHER = { id: 'proj2', name: 'Other', guildConfigId: 'g1', discordCategoryId: 'cat2', discordRoleId: 'role2' }
+
+/** A stateful fake: `table` is the projectmember table. */
+function sectionDb({ projects = [SECTION, OTHER], rows = [] } = {}) {
+  const table = rows.map((r) => ({ ...r }))
+  const calls = []
+  return {
+    calls,
+    table,
+    project: {
+      findFirst: async ({ where }) => projects.find((p) => p.id === where.id) ?? null,
+      findMany: async ({ where }) => projects.filter((p) => p.guildConfigId === where.guildConfigId),
+    },
+    projectMember: {
+      add: async ({ data }) => {
+        calls.push(['add', data])
+        const hit = table.find((r) => r.projectId === data.projectId && r.discordId === data.discordId)
+        if (hit) hit.role = data.role
+        else table.push({ projectId: data.projectId, discordId: data.discordId, role: data.role })
+        return data
+      },
+      // Removes ONE row, so a person holding two rows keeps the other.
+      remove: async ({ where }) => {
+        calls.push(['remove', where])
+        const i = table.findIndex((r) => r.projectId === where.projectId && r.discordId === where.discordId)
+        if (i < 0) return { removed: 0 }
+        table.splice(i, 1)
+        return { removed: 1 }
+      },
+      findByProject: async ({ where }) => table.filter((r) => r.projectId === where.projectId).map((r) => ({ ...r })),
+    },
+    task: { findMany: async () => [] },
+  }
+}
+
+/** A fake guild that records role changes and members-channel traffic. */
+function sectionGuild({ roleFails = null, memberGone = false, channels = ['mchan1'] } = {}) {
+  const log = { roles: [], sent: [], pinned: [] }
+  const channelFor = (id) => ({
+    id,
+    messages: { fetchPinned: async () => new Map() },
+    send: async (payload) => {
+      log.sent.push([id, payload])
+      return { pin: async () => { log.pinned.push(id) }, edit: async () => {} }
+    },
+  })
+  return {
+    id: 'guild1',
+    log,
+    roles: { cache: new Map([['role1', { id: 'role1', name: 'Framework' }]]) },
+    channels: { cache: new Map(channels.map((id) => [id, channelFor(id)])), fetch: async () => null },
+    members: {
+      cache: new Map([['u2', { displayName: 'Afaq' }]]),
+      fetch: async (id) => {
+        if (memberGone) throw new Error('Unknown Member')
+        return {
+          id,
+          roles: {
+            add: async (r) => { if (roleFails) throw new Error(roleFails); log.roles.push(['add', id, r]) },
+            remove: async (r) => { if (roleFails) throw new Error(roleFails); log.roles.push(['remove', id, r]) },
+          },
+        }
+      },
+    },
+  }
+}
+
+function sectionInteraction({ sub, opts = {}, users = {}, guild = sectionGuild(), channel = { id: 'c1', parentId: 'cat1' } } = {}) {
+  const replies = []
+  return {
+    replies,
+    guild,
+    channel,
+    client: { user: { id: 'bot' } },
+    user: { id: 'inviter1' },
+    options: {
+      getSubcommand: () => sub,
+      getString: (name) => (Object.prototype.hasOwnProperty.call(opts, name) ? opts[name] : null),
+      getUser: (name) => (Object.prototype.hasOwnProperty.call(users, name) ? users[name] : null),
+    },
+    editReply: async (payload) => { replies.push(payload); return payload },
+  }
+}
+
+const U2 = { member: { id: 'u2', bot: false, username: 'afaq' } }
+
+test('the project option is optional on every subcommand, and required options come first', () => {
+  for (const sub of data.toJSON().options) {
+    const project = sub.options.find((o) => o.name === 'project')
+    assert.equal(project.required, false, sub.name)
+    const firstOptional = sub.options.findIndex((o) => !o.required)
+    assert.ok(sub.options.slice(firstOptional).every((o) => !o.required), sub.name)
+  }
+})
+
+test('add without the project option inside a project channel resolves that project', async () => {
+  const db = sectionDb()
+  const it = sectionInteraction({ sub: 'add', users: U2 })
+  await execute(it, { db, getConfig })
+  assert.equal(db.calls[0][1].projectId, 'proj1')
+  assert.doesNotMatch(it.replies[0].content, /No project matches/)
+  assert.match(it.replies[0].content, /Framework/)
+})
+
+test('add run on the category itself resolves that project', async () => {
+  const db = sectionDb()
+  const it = sectionInteraction({ sub: 'add', users: U2, channel: { id: 'cat2', parentId: null } })
+  await execute(it, { db, getConfig })
+  assert.equal(db.calls[0][1].projectId, 'proj2')
+})
+
+test('a named project wins over the channel it is run in', async () => {
+  const db = sectionDb()
+  const it = sectionInteraction({ sub: 'add', opts: { project: 'proj2' }, users: U2 })
+  await execute(it, { db, getConfig })
+  assert.equal(db.calls[0][1].projectId, 'proj2')
+})
+
+test('add outside any project with no project option writes nothing and asks for one', async () => {
+  const db = sectionDb()
+  const it = sectionInteraction({ sub: 'add', users: U2, channel: { id: 'general', parentId: 'elsewhere' } })
+  await execute(it, { db, getConfig })
+  assert.deepEqual(db.calls, [])
+  assert.match(it.replies[0].content, /Pick a project/)
+})
+
+test('inference never picks a project from another guild config', async () => {
+  const db = sectionDb({ projects: [{ ...SECTION, guildConfigId: 'other' }] })
+  const it = sectionInteraction({ sub: 'add', users: U2 })
+  await execute(it, { db, getConfig })
+  assert.deepEqual(db.calls, [])
+})
+
+test('add grants the project role to that one member, posts the change, and refreshes the panel with the full roster', async () => {
+  const db = sectionDb({ rows: [{ projectId: 'proj1', discordId: 'u1', role: 'lead' }] })
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'add', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.deepEqual(guild.log.roles, [['add', 'u2', 'role1']])
+  const [line, panel] = guild.log.sent
+  assert.equal(line[0], 'mchan1')
+  assert.match(line[1].content, /\*\*Afaq\*\* joined the project as Developer/)
+  const fields = panel[1].embeds[0].toJSON().fields
+  assert.deepEqual(fields.map((f) => [f.name, f.value]), [['Lead', '<@u1>'], ['Developer', 'Afaq']])
+  assert.deepEqual(guild.log.pinned, ['mchan1'])
+  assert.match(it.replies[0].content, /Added <@u2> to \*\*Framework\*\*/)
+  assert.match(it.replies[0].content, /now have the \*\*Framework\*\* role/)
+})
+
+test('add re-adding someone with the same role posts no change line but still refreshes the panel', async () => {
+  const db = sectionDb({ rows: [{ projectId: 'proj1', discordId: 'u2', role: 'developer' }] })
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'add', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.equal(guild.log.sent.length, 1)
+  assert.ok(guild.log.sent[0][1].embeds)
+})
+
+test('add whose role change fails still saves the row and says which half failed', async () => {
+  const db = sectionDb()
+  const guild = sectionGuild({ roleFails: 'Missing Permissions' })
+  const it = sectionInteraction({ sub: 'add', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.equal(db.table.length, 1)
+  const reply = it.replies[0].content
+  assert.match(reply, /Added <@u2>/)
+  assert.match(reply, /membership is saved/)
+  assert.match(reply, /could not give them the \*\*Framework\*\* role \(Missing Permissions\)/)
+})
+
+test('add for someone who left the server still saves the row and reports it', async () => {
+  const db = sectionDb()
+  const guild = sectionGuild({ memberGone: true })
+  const it = sectionInteraction({ sub: 'add', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.equal(db.table.length, 1)
+  assert.match(it.replies[0].content, /Unknown Member/)
+})
+
+test('add on a project with no section yet writes the row, skips the panel, and says there is no role', async () => {
+  const bare = { id: 'proj3', name: 'Bare', guildConfigId: 'g1' }
+  const db = sectionDb({ projects: [bare] })
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'add', opts: { project: 'proj3' }, users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.equal(db.table.length, 1)
+  assert.deepEqual(guild.log.roles, [])
+  assert.deepEqual(guild.log.sent, [])
+  assert.match(it.replies[0].content, /no Discord role yet/)
+})
+
+test('add with a stale members channel id still grants the role and skips the panel', async () => {
+  const db = sectionDb()
+  const guild = sectionGuild({ channels: [] })
+  const it = sectionInteraction({ sub: 'add', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.deepEqual(guild.log.roles, [['add', 'u2', 'role1']])
+  assert.deepEqual(guild.log.sent, [])
+})
+
+test('add reads discordChannels given as an object too', async () => {
+  const db = sectionDb({ projects: [{ ...SECTION, discordChannels: { members: 'mchan1' } }] })
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'add', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.equal(guild.log.sent.length, 2)
+})
+
+test('remove of the last row revokes the role, posts the change, and refreshes the panel', async () => {
+  const db = sectionDb({ rows: [{ projectId: 'proj1', discordId: 'u2', role: 'developer' }, { projectId: 'proj1', discordId: 'u1', role: 'lead' }] })
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'remove', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.deepEqual(guild.log.roles, [['remove', 'u2', 'role1']])
+  const [line, panel] = guild.log.sent
+  assert.match(line[1].content, /\*\*Afaq\*\* left the project/)
+  assert.deepEqual(panel[1].embeds[0].toJSON().fields.map((f) => f.name), ['Lead'])
+  assert.match(it.replies[0].content, /Removed <@u2>/)
+  assert.match(it.replies[0].content, /role was taken away/)
+})
+
+test('remove of one of two rows keeps the role: no permission change the user did not ask for', async () => {
+  const db = sectionDb({ rows: [
+    { projectId: 'proj1', discordId: 'u2', role: 'backend_developer' },
+    { projectId: 'proj1', discordId: 'u2', role: 'frontend_developer' },
+  ] })
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'remove', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.deepEqual(guild.log.roles, [])
+  assert.equal(guild.log.sent.length, 1, 'the panel refreshes, but no "left" line is posted')
+  assert.ok(guild.log.sent[0][1].embeds)
+  assert.match(it.replies[0].content, /channel access stays/)
+})
+
+test('remove when the roster cannot be re-read keeps the role', async () => {
+  const db = sectionDb({ rows: [{ projectId: 'proj1', discordId: 'u2', role: 'developer' }] })
+  db.projectMember.findByProject = async () => { throw new Error('db down') }
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'remove', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.deepEqual(guild.log.roles, [])
+  assert.deepEqual(guild.log.sent, [])
+  assert.match(it.replies[0].content, /left their channel access alone/)
+})
+
+test('remove whose revoke fails still reports the row as removed', async () => {
+  const db = sectionDb({ rows: [{ projectId: 'proj1', discordId: 'u2', role: 'developer' }] })
+  const guild = sectionGuild({ roleFails: 'Missing Permissions' })
+  const it = sectionInteraction({ sub: 'remove', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.equal(db.table.length, 0)
+  assert.match(it.replies[0].content, /Removed <@u2>/)
+  assert.match(it.replies[0].content, /could not take away the \*\*Framework\*\* role \(Missing Permissions\)/)
+})
+
+test('remove of someone not on the project changes no role and posts nothing', async () => {
+  const db = sectionDb()
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'remove', users: U2, guild })
+  await execute(it, { db, getConfig })
+  assert.deepEqual(guild.log.roles, [])
+  assert.deepEqual(guild.log.sent, [])
+  assert.match(it.replies[0].content, /not on/)
+})
+
+test('list without the project option lists the project it is run in, and touches no role or channel', async () => {
+  const rows = [{ projectId: 'proj1', discordId: '1', role: 'lead' }]
+  const db = sectionDb({ rows })
+  const guild = sectionGuild()
+  const it = sectionInteraction({ sub: 'list', guild })
+  await execute(it, { db, getConfig })
+  assert.equal(it.replies[0].content, renderMembers({ project: SECTION, explicit: rows, inferredIds: [], nameFor: () => null }))
+  assert.deepEqual(guild.log.roles, [])
+  assert.deepEqual(guild.log.sent, [])
+})
