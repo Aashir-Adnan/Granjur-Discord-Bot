@@ -144,6 +144,11 @@
       "CEO",
       "Server Manager",
       "Project Manager"
+    ],
+    "project-setup": [
+      "CEO",
+      "Server Manager",
+      "Project Manager"
     ]
   },
   "dedicatedChannels": {
@@ -368,6 +373,11 @@
       "summary": "Add, remove, or list who works on a project.",
       "syntax": "`/project-members add|remove|list project:<pick one> [member] [role]`",
       "detail": "Start typing in the **project** field and pick from the suggestions. **add** sets a member's role (Lead, Developer, QA, Design; default Developer) — using it again on someone already on the project changes their role. **remove** takes them off. **list** shows members grouped by role, plus anyone else currently holding a task on the project. This is the list the UBS-Doc site shows."
+    },
+    "project-setup": {
+      "summary": "Create or repair a project's Discord section — its role, category and channels.",
+      "syntax": "`/project-setup [project:<pick one>] [all:true] [preview:true]`",
+      "detail": "Gives the project a role, a `📂 PROJECT` category only that role can see, the ten section channels (members, documentation, meetings, meeting voice, and chat + voice for frontend, backend and database), and moves the project's task channels in. Safe to re-run: it repairs what is missing and never deletes anything. Pass **project** for one project or **all:true** for every project in the server — a project the bot cannot touch is reported and the rest still run. **preview:true** prints the plan and changes nothing. It also grants the project role to everyone on **/project-members** and takes it from everyone who is not."
     }
   }
 }

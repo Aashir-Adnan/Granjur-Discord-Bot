@@ -21,6 +21,7 @@ import * as dashboardCmd from './dashboard.js'
 import * as approveCmd from './approve.js'
 import * as setRolesCmd from './set-roles.js'
 import * as projectMembersCmd from './project-members.js'
+import * as projectSetupCmd from './project-setup.js'
 import * as reposCmd from './repos.js'
 import * as verifyCmd from './verify.js'
 import * as ticketCmd from './ticket.js'
@@ -73,6 +74,7 @@ const commandModules = [
   approveCmd,
   setRolesCmd,
   projectMembersCmd,
+  projectSetupCmd,
   reposCmd,
   editDocsCmd,
   clockInCmd,
