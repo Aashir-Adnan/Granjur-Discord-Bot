@@ -1,6 +1,7 @@
 // Channel names for task tickets. `feature-0145e3` told nobody anything; the
 // title does. The id lives in the channel topic, and nothing resolves a task by
 // channel name (/close-feature and /resolve-bug look the row up by channel id).
+import { ChannelType } from 'discord.js'
 import { slugify } from './docPath.js'
 
 export const MAX_CHANNEL_NAME = 100
@@ -20,31 +21,38 @@ export function taskChannelTopic({ type, title, taskId }) {
   return `${label}: ${String(title || '').slice(0, 100)} — Task ${taskId}`
 }
 
-/** Every task channel the bot has ever opened carries one of these. */
-const TICKET_NAME = /^(feature|bug)-/
+/** The bot's own signature: every ticket channel it has ever opened has this topic. */
 const TICKET_TOPIC = /^(Feature|Bug):/
+/** Only for a channel with NO topic at all — a name is anyone's to choose. */
+const TICKET_NAME = /^(feature|bug)-/
 
 /**
- * Whether a channel is shaped like a task ticket: a `feature-`/`bug-` name or
- * a `Feature:`/`Bug:` topic. Every channel the bot has opened for a task has
- * one — `/create-task`, `/feature`, `/bug`, the meeting mirror, and the
- * renames `/project-setup` makes. A meeting's review channel has neither, and
- * an unassigned meeting task's row points at it, so a row naming a channel is
- * not by itself proof the channel is that task's. One definition, shared by
- * `ownsChannel` and the section observer. Pure.
+ * Whether a channel is a task ticket channel the bot opened.
  *
- * @param {{name?: string|null, topic?: string|null}|string|null} channel
- *   a channel-like object, or a bare channel name
+ * The TOPIC decides. Every ticket channel the bot has ever created carries a
+ * `Feature:`/`Bug:` topic — `/create-task`, `/feature`, `/bug`, the meeting
+ * mirror, and the renames `/project-setup` makes — so the topic is the bot's
+ * own signature. A name is not: `/meeting-channel name:"Bug triage"` creates
+ * `bug-triage-<ts>-text`, a meeting review channel whose topic is
+ * `Meeting chat is stored…`. The name counts only when there is no topic at
+ * all, and only a text channel qualifies — `/create-channel` accepts any voice
+ * name, and a voice channel has no topic.
+ *
+ * A row naming a channel is never by itself proof the channel is that task's:
+ * an unassigned meeting task's row names the meeting's review channel. One
+ * definition, shared by `ownsChannel` and the section observer. Pure.
+ *
+ * @param {{type?: number, name?: string|null, topic?: string|null}|null} channel
+ *   a channel-like object. A bare name is never enough: without a type and a
+ *   topic there is nothing to tell a ticket from a channel that merely shares
+ *   its prefix.
  */
 export function isTicketChannel(channel) {
-  const name = String((typeof channel === 'string' ? channel : channel?.name) ?? '')
-  const topic = typeof channel === 'string' ? '' : String(channel?.topic ?? '')
-  return TICKET_NAME.test(name) || TICKET_TOPIC.test(topic)
-}
-
-/** Only the name half, for the old `<prefix>-<last six of the id>` check. */
-export function hasTicketName(name) {
-  return TICKET_NAME.test(String(name ?? ''))
+  if (!channel || typeof channel !== 'object') return false
+  if (channel.type !== ChannelType.GuildText) return false
+  const topic = String(channel.topic ?? '')
+  if (topic) return TICKET_TOPIC.test(topic)
+  return TICKET_NAME.test(String(channel.name ?? ''))
 }
 
 export function taskChannelName({ type, title, taskId, taken = new Set() }) {

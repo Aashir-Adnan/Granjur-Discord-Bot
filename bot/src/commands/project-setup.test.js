@@ -168,6 +168,14 @@ async function quiet(fn) {
 
 // --- renderPlan (pure) ------------------------------------------------------
 
+test('a task channel opened to the project role is shown in the preview and the result', () => {
+  const plan = renderPlan({ name: 'Framework' }, { tasks: [{ action: 'grant' }, { action: 'none' }] })
+  assert.match(plan, /Task channels: 1 to open to the project role, 1 already right/)
+  const result = renderResult({ name: 'Framework' }, { granted: ['feature-git-sync'], tasks: 1 })
+  // Counted once, not also as a rename or a move.
+  assert.match(result, /^\*\*Framework\*\* — 1 opened to the project role \(incl\. 1 task channel\)\./)
+})
+
 test('renderPlan on an empty plan says there is nothing to do', () => {
   assert.equal(renderPlan({ name: 'Framework' }, {}), '**Framework** — nothing to do.')
   assert.equal(renderPlan({ name: 'Framework' }), '**Framework** — nothing to do.')

@@ -150,6 +150,7 @@ test('handleCreate through the real helper posts the same embed and mention list
   const sends = []
   const guild = {
     id: 'guild-ct-2',
+    roles: { cache: new Map([['role1', { id: 'role1', name: 'Framework' }]]) },
     channels: {
       cache: {
         get: (id) => map.get(id) ?? null,

@@ -12,7 +12,7 @@
 
 import { holdersOf, idList } from '../utils/taskLabel.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
-import { isTicketChannel, hasTicketName } from '../utils/taskChannelName.js'
+import { isTicketChannel } from '../utils/taskChannelName.js'
 import { openBlockers, TERMINAL_STATUSES, unblockNotice } from '../utils/taskDeps.js'
 import db from '../db/index.js'
 
@@ -66,41 +66,41 @@ const MEMBER_ALLOW = { ViewChannel: true, SendMessages: true, ReadMessageHistory
  * Whether a channel is THIS task's ticket channel rather than somewhere the
  * task merely got announced.
  *
- * **The row decides.** Given `storedChannelId` — the row's `discordChannelId` —
- * a ticket channel carrying that id belongs to this task, whatever it is
- * called. Without that, a channel renamed from `feature-123456` to
- * `feature-add-booking-rules` (by /project-setup, or by hand) matches neither
- * the old name nor a `Task <id>` topic it never had, so every /update-task
- * builds a duplicate beside it — and the next one builds another.
+ * First the gate: `isTicketChannel` — a text channel whose topic is the bot's
+ * `Feature:`/`Bug:` signature (or, with no topic at all, whose name is
+ * `feature-`/`bug-`). A row can carry a channel it does not own: an unassigned
+ * meeting task carries the meeting's SHARED review channel, and a meeting
+ * channel can be called `bug-triage-…`. Granting a new assignee access to
+ * that, or posting task edits into it, is a permission change nobody asked for.
  *
- * The id says WHICH task owns a ticket channel; it cannot say whether a
- * channel is a ticket channel at all, because a row can carry a channel it
- * does not own: an unassigned meeting task carries the meeting's SHARED review
- * channel, which holds everyone's review. Granting a new assignee access to
- * that, or posting task edits into it, is exactly the permission change nobody
- * asked for. So the shape is the gate — a `feature-`/`bug-` name or a
- * `Feature:`/`Bug:` topic, which every channel the bot has ever opened for a
- * task has and the meeting's channel does not.
+ * Then **the row decides** which task owns a ticket channel: given
+ * `storedChannelId` — the row's `discordChannelId` — a ticket channel carrying
+ * that id is this task's, whatever it is called. Without that, a channel
+ * renamed from `feature-123456` to `feature-add-booking-rules` matches neither
+ * the old name nor a `Task <id>` topic it never had, and every /update-task
+ * builds a duplicate beside it.
  *
- * The name and topic heuristics stay as the fallback for rows whose channel id
- * was never written back.
+ * The exact legacy name `<prefix>-<last six of the id>` and a `Task <id>` topic
+ * stay as the fallback for rows whose channel id was never written back.
  *
- * `channel` may be a plain channel name (the old shape this function always
- * took) or a channel-like object with `id`, `name` and `topic`. Pure.
+ * `channel` is normally a channel-like object with `id`, `type`, `name` and
+ * `topic`. A bare name string (the shape this function once took; no caller
+ * in the bot passes one now) carries no type, topic or id, so it can never
+ * pass the gate or the id check — it matches only the EXACT legacy name, which
+ * is this task's own id and nothing a person would type. Pure.
  */
 export function ownsChannel(taskId, channel, storedChannelId = null) {
   const id = String(taskId ?? '')
   if (!id) return false
-  const name = String((typeof channel === 'string' ? channel : channel?.name) ?? '')
-  const topic = typeof channel === 'string' ? null : channel?.topic
-  const channelId = typeof channel === 'string' ? null : channel?.id
-
-  if (isTicketChannel(channel) && channelId && storedChannelId && channelId === String(storedChannelId)) {
-    return true
-  }
   const suffix = id.slice(-6)
-  if (hasTicketName(name) && name.endsWith(`-${suffix}`)) return true
-  return Boolean(topic) && String(topic).endsWith(`Task ${id}`)
+  const legacyNames = [`feature-${suffix}`, `bug-${suffix}`]
+
+  if (typeof channel === 'string') return legacyNames.includes(channel)
+  if (!isTicketChannel(channel)) return false
+
+  if (channel.id && storedChannelId && channel.id === String(storedChannelId)) return true
+  if (legacyNames.includes(String(channel.name ?? ''))) return true
+  return String(channel.topic ?? '').endsWith(`Task ${id}`)
 }
 
 /**

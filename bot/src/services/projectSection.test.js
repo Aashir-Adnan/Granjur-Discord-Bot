@@ -282,7 +282,7 @@ test('observeProjectSection resolves the stored ids and takes names from the who
   assert.deepEqual(observed.channels.members, { id: 'm1', name: 'framework-members', parentId: 'c1' })
   assert.equal(observed.channels.documentation, undefined)
   assert.deepEqual(observed.tasks, [
-    { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-0145e3', parentId: 'FEATURES' },
+    { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-0145e3', parentId: 'FEATURES', overwriteIds: null },
   ])
   assert.ok(observed.takenNames.has('general'))
   assert.ok(observed.takenNames.has('framework-members'))
@@ -454,6 +454,183 @@ test('a task channel needing a rename and a move gets exactly one edit carrying 
     topic: 'Feature: Git Sync — Task t1',
   })
   assert.equal(out.tasks, 1)
+})
+
+test('a meeting channel named bug-… is not a task channel, and /project-setup leaves it alone', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  // `/meeting-channel name:"Bug triage"` makes this: a `bug-` name, but the
+  // topic — the bot's own signature on every ticket it opens — says meeting.
+  const triage = fakeChannel('triage', 'bug-triage-1726650000-text', { parentId: 'MEETINGS' })
+  triage.topic = 'Meeting chat is stored in the database with the sender and timestamp.'
+  const guild = fakeGuild({ channels: [cat, triage] })
+  const stored = { ...project, discordCategoryId: 'c1' }
+
+  const observed = observeProjectSection(guild, stored, [
+    { id: 't1', title: 'Fix login', type: 'feature', discordChannelId: 'triage' },
+  ])
+  assert.deepEqual(observed.tasks, [])
+  assert.equal(observed.sharedTaskChannels, 1)
+
+  const plan = planProjectSection(stored, observed)
+  assert.ok(plan.warnings.some((w) => /^1 channel .* is not a task channel/.test(w)), plan.warnings.join(' | '))
+
+  await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+  assert.equal(triage.edits.length, 0)
+  assert.equal(triage.name, 'bug-triage-1726650000-text')
+  assert.equal(triage.parentId, 'MEETINGS')
+})
+
+test('a voice channel named feature-… is not a task channel', () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  // A voice channel has no topic, and `/create-channel` takes any voice name.
+  const voice = fakeChannel('v1', 'feature-x', { type: ChannelType.GuildVoice, parentId: 'MEETINGS' })
+  const guild = fakeGuild({ channels: [cat, voice] })
+  const observed = observeProjectSection(guild, { ...project, discordCategoryId: 'c1' }, [
+    { id: 't1', title: 'X', type: 'feature', discordChannelId: 'v1' },
+  ])
+  assert.deepEqual(observed.tasks, [])
+  assert.equal(observed.sharedTaskChannels, 1)
+})
+
+// --- the project role on task channels (fix round 2, Fix 3) ----------------
+
+const ALLOW = [
+  PermissionFlagsBits.ViewChannel,
+  PermissionFlagsBits.SendMessages,
+  PermissionFlagsBits.ReadMessageHistory,
+  PermissionFlagsBits.Connect,
+  PermissionFlagsBits.Speak,
+]
+
+/** A task channel as /create-task makes it: @everyone denied, its assignee allowed. */
+function ticketChannel(id, name, parentId, extra = []) {
+  const ch = fakeChannel(id, name, {
+    parentId,
+    overwrites: [
+      { id: 'G1', type: OverwriteType.Role, allow: 0n, deny: PermissionFlagsBits.ViewChannel },
+      { id: 'assignee', type: OverwriteType.Member, allow: PermissionFlagsBits.ViewChannel, deny: 0n },
+      ...extra,
+    ],
+  })
+  ch.topic = 'Feature: Git Sync | Assigner + assignees'
+  return ch
+}
+
+test('a task channel moved into the section gains the project role, keeps its assignee, in ONE edit', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const taskCh = ticketChannel('tc1', 'feature-0145e3', 'FEATURES')
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const guild = fakeGuild({ channels: [cat, taskCh], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const observed = observeProjectSection(guild, stored, [
+    { id: 't1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' },
+  ])
+  const plan = planProjectSection(stored, observed)
+  assert.equal(plan.tasks[0].action, 'both')
+
+  await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+
+  // One edit: Discord allows two per channel per ten minutes.
+  assert.equal(taskCh.edits.length, 1)
+  const edit = taskCh.edits[0]
+  assert.equal(edit.name, 'feature-git-sync')
+  assert.equal(edit.parent, 'c1')
+  assert.equal(edit.topic, 'Feature: Git Sync — Task t1')
+  const byId = new Map(edit.permissionOverwrites.map((o) => [o.id, o]))
+  // The project's members can now see their project's task channel...
+  assert.deepEqual(byId.get('r1'), { id: 'r1', type: OverwriteType.Role, allow: ALLOW })
+  // ...and nothing the channel already carried was dropped: @everyone stays
+  // denied, and the assignee who may not be on the project keeps the task.
+  assert.equal(byId.get('G1').deny, PermissionFlagsBits.ViewChannel)
+  assert.equal(byId.get('G1').type, OverwriteType.Role)
+  assert.equal(byId.get('assignee').type, OverwriteType.Member)
+  assert.equal(byId.get('assignee').allow, PermissionFlagsBits.ViewChannel)
+  assert.equal(edit.permissionOverwrites.length, 3)
+})
+
+test('a stale role id adds no allow, and the move still happens in one edit', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const taskCh = ticketChannel('tc1', 'feature-0145e3', 'FEATURES')
+  const guild = fakeGuild({ channels: [cat, taskCh] })
+  const plan = {
+    // The role was deleted between the read and the write.
+    role: { action: 'reuse', id: 'gone', name: 'Framework' },
+    category: { action: 'reuse', id: 'c1', name: '📂 FRAMEWORK' },
+    channels: [],
+    tasks: [{ taskId: 't1', channelId: 'tc1', action: 'both', name: 'feature-git-sync', topic: 'Feature: Git Sync — Task t1' }],
+    warnings: [],
+  }
+  await applyProjectSection(guild, { ...project, discordCategoryId: 'c1' }, plan, { db: fakeDb() })
+  assert.equal(taskCh.edits.length, 1)
+  assert.deepEqual(taskCh.edits[0], { name: 'feature-git-sync', parent: 'c1', topic: 'Feature: Git Sync — Task t1' })
+})
+
+test('a channel whose overwrites cannot be read still moves, without an allow that would replace them', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const taskCh = fakeChannel('tc1', 'feature-0145e3', { parentId: 'FEATURES' })
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const guild = fakeGuild({ channels: [cat, taskCh], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const observed = observeProjectSection(guild, stored, [
+    { id: 't1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' },
+  ])
+  await applyProjectSection(guild, stored, planProjectSection(stored, observed), { db: fakeDb() })
+  assert.equal(taskCh.edits.length, 1)
+  assert.equal(taskCh.edits[0].permissionOverwrites, undefined)
+})
+
+test('a task channel already named, placed and open to the role gets no edit', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1', [
+    { id: 'r1', type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: 0n },
+  ])
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const guild = fakeGuild({ channels: [cat, taskCh], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const observed = observeProjectSection(guild, stored, [
+    { id: 't1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' },
+  ])
+  const plan = planProjectSection(stored, observed)
+  assert.equal(plan.tasks[0].action, 'none')
+
+  const out = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+  assert.equal(taskCh.edits.length, 0)
+  assert.equal(out.tasks, 0)
+})
+
+test('a task channel already named and placed but closed to the role is granted it, and only that', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  // Opened while the project's role id was stale: in the section, no allow.
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1')
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const guild = fakeGuild({ channels: [cat, taskCh], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const observed = observeProjectSection(guild, stored, [
+    { id: 't1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' },
+  ])
+  const plan = planProjectSection(stored, observed)
+  assert.equal(plan.tasks[0].action, 'grant')
+
+  const out = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+  assert.equal(taskCh.edits.length, 1)
+  const edit = taskCh.edits[0]
+  // Nothing but the overwrites: the name and the parent are already right.
+  assert.deepEqual(Object.keys(edit), ['permissionOverwrites'])
+  assert.deepEqual(edit.permissionOverwrites.map((o) => o.id).sort(), ['G1', 'assignee', 'r1'])
+  assert.deepEqual(out.granted, ['feature-git-sync'])
+  assert.equal(out.tasks, 1)
+})
+
+test('the planner never plans a grant for a refused role or an unreadable channel', () => {
+  const base = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1' }
+  const observed = (task) => ({ ...empty, roleId: 'r1', categoryId: 'c1', categoryName: '📂 FRAMEWORK', tasks: [task] })
+  assert.equal(planProjectSection(project, observed({ ...base, overwriteIds: null })).tasks[0].action, 'none')
+  assert.equal(planProjectSection(project, observed({ ...base, overwriteIds: ['G1'] })).tasks[0].action, 'grant')
+  assert.equal(planProjectSection(project, observed({ ...base, overwriteIds: ['G1', 'r1'] })).tasks[0].action, 'none')
+  const refused = { id: 'p9', name: 'Frontend', docsSlug: 'frontend' }
+  const plan = planProjectSection(refused, { ...observed({ ...base, overwriteIds: ['G1'] }), roleId: null })
+  assert.equal(plan.role.action, 'refuse')
+  assert.equal(plan.tasks[0].action, 'none')
 })
 
 test('a task left behind by the category cap is renamed where it stands, never moved', async () => {

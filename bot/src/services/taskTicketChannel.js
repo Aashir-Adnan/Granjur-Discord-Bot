@@ -164,7 +164,9 @@ export async function createTaskTicketChannel(guild, opts) {
   // Only when it really is inside that section — in the global Features/Bugs
   // category the audience is the assignees, exactly as before, and adding the
   // role there would be a grant nobody asked for.
-  if (!fellBack && project?.discordRoleId) {
+  // And only when that role still exists: an overwrite naming an unknown role
+  // can make Discord reject the whole create — after the task row is written.
+  if (!fellBack && project?.discordRoleId && guild.roles?.cache?.has?.(project.discordRoleId)) {
     permissionOverwrites.push({
       id: project.discordRoleId,
       type: OverwriteType.Role,

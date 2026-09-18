@@ -159,6 +159,7 @@ test('with a project whose category resolves, the channel is named after the tit
 test('a task channel inside a project section allows the project role explicitly', async () => {
   const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null, type: ChannelType.GuildCategory }
   const guild = fakeGuildWithChannels([projectCategory])
+  guild.roles = { cache: new Map([['role1', { id: 'role1', name: 'Framework' }]]) }
   const project = { id: 'p1', name: 'Framework', discordCategoryId: 'projcat', discordRoleId: 'role1' }
 
   await createTaskTicketChannel(guild, {
@@ -189,8 +190,35 @@ test('a task channel inside a project section allows the project role explicitly
   ])
 })
 
+test('a stale project role id is left off the overwrites rather than failing the create', async () => {
+  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null, type: ChannelType.GuildCategory }
+  const guild = fakeGuildWithChannels([projectCategory])
+  // The role was deleted; the project row still names it.
+  guild.roles = { cache: new Map() }
+  const project = { id: 'p1', name: 'Framework', discordCategoryId: 'projcat', discordRoleId: 'deleted-role' }
+
+  const out = await createTaskTicketChannel(guild, {
+    taskId: 'abcdef1234567890',
+    title: 'Add booking rules',
+    memberIds: ['11'],
+    project,
+    type: 'feature',
+  })
+
+  // An overwrite for an unknown role can make Discord reject the whole create,
+  // and /create-task has already written the row by then.
+  assert.equal(out.fellBack, null)
+  assert.equal(guild._created[0].parent, 'projcat')
+  assert.deepEqual(
+    guild._created[0].permissionOverwrites.map((o) => o.id),
+    ['guild1', '11'],
+  )
+})
+
 test('a channel that fell back to the global category does NOT carry the project role', async () => {
   const guild = fakeGuildWithChannels([])
+  // The role exists, so only the fallback can be what keeps it off.
+  guild.roles = { cache: new Map([['role1', { id: 'role1', name: 'Framework' }]]) }
   const project = { id: 'p1', name: 'Framework', discordCategoryId: 'gone', discordRoleId: 'role1' }
   const out = await quiet(() =>
     createTaskTicketChannel(guild, {

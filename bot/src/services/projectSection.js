@@ -15,7 +15,7 @@
  *   role:     { action: 'create' | 'reuse' | 'refuse', name, id?, reason? }
  *   category: { action: 'create' | 'reuse' | 'rename', id?, name }
  *   channels: [{ key, action: 'create' | 'reuse' | 'rename' | 'move', id?, name, type }]
- *   tasks:    [{ taskId, channelId, action: 'rename' | 'move' | 'both' | 'none', name, topic }]
+ *   tasks:    [{ taskId, channelId, action: 'rename' | 'move' | 'both' | 'grant' | 'none', name, topic }]
  *   warnings: string[]
  *
  * Every non-`reuse` channel entry carries the FINAL desired `name`, so the
@@ -155,7 +155,19 @@ function planChannels(project, observed) {
   })
 }
 
-function planTasks(project, observed, channels, warnings) {
+/**
+ * True when a task channel inside the section is known to lack the project
+ * role's overwrite. A role about to be created is on no channel yet; an
+ * unreadable overwrite list is never guessed at.
+ */
+function lacksRoleAllow(task, role) {
+  if (!Array.isArray(task?.overwriteIds)) return false
+  if (!role || role.action === 'refuse') return false
+  if (role.action === 'create') return true
+  return Boolean(role.id) && !task.overwriteIds.includes(role.id)
+}
+
+function planTasks(project, observed, channels, role, warnings) {
   const parentId = observed?.categoryId ?? null
   const tasks = Array.isArray(observed?.tasks) ? observed.tasks : []
   // Every section channel this plan puts INTO the category takes a slot: the
@@ -196,6 +208,13 @@ function planTasks(project, observed, channels, warnings) {
     const nameOk = task.channelName === name
     const parentOk = Boolean(parentId) && task.parentId === parentId
     let action = nameOk ? (parentOk ? 'none' : 'move') : parentOk ? 'rename' : 'both'
+
+    // Already named and placed, but the project role cannot see it: a channel
+    // opened while the project's role id was stale or missing, or before a
+    // replaced role existed. A move or rename carries the allow in its own
+    // edit; this one needs an edit of its own, or its project's members never
+    // see it. Only on what the snapshot can read, and never for a refused role.
+    if (action === 'none' && lacksRoleAllow(task, role)) action = 'grant'
 
     if (action === 'move' || action === 'both') {
       if (room > 0) room -= 1
@@ -244,7 +263,7 @@ function planTasks(project, observed, channels, warnings) {
  *   categoryName?: string|null,
  *   categoryChannelCount?: number,
  *   channels?: Object<string, {id: string, name: string, parentId: string|null}>,
- *   tasks?: Array<{id: string, title: string, type: string, channelId: string, channelName: string, parentId: string|null}>,
+ *   tasks?: Array<{id: string, title: string, type: string, channelId: string, channelName: string, parentId: string|null, overwriteIds?: string[]|null}>,
  *   sharedTaskChannels?: number,
  *   takenNames?: Set<string>,
  * }} observed a plain snapshot the caller gathers — no Discord objects
@@ -254,7 +273,7 @@ export function planProjectSection(project, observed = {}) {
   const role = planRole(project, observed, warnings)
   const category = planCategory(project, observed)
   const channels = planChannels(project, observed)
-  const tasks = planTasks(project, observed, channels, warnings)
+  const tasks = planTasks(project, observed, channels, role, warnings)
   return { role, category, channels, tasks, warnings }
 }
 
@@ -362,6 +381,31 @@ function mergedOverwrites(category, required) {
   return [...required, ...kept]
 }
 
+/** The ids of a channel's overwrites, or null when the cache is unreadable. */
+function overwriteIdsOf(channel) {
+  const cache = channel?.permissionOverwrites?.cache
+  if (!cache?.keys || !cache?.has) return null
+  return [...cache.keys()]
+}
+
+/**
+ * The overwrite set to send so a task channel inside the section lets the
+ * project role in: the channel's own overwrites, untouched, plus the role's
+ * allow — `mergedOverwrites`, the same merge the category repair uses. Null
+ * when there is nothing to add or nothing safe to send: no role that resolves,
+ * an overwrite list that cannot be read (sending the allow alone would REPLACE
+ * the set and drop every assignee), or a channel that already carries an
+ * overwrite for the role (someone set it; it is not ours to overrule).
+ */
+function roleAllowMerged(channel, roleId) {
+  if (!roleId) return null
+  const cache = channel?.permissionOverwrites?.cache
+  if (!cache?.has || !cache?.values) return null
+  const required = [{ id: roleId, type: OverwriteType.Role, allow: ROLE_ALLOW }]
+  if (!missingOverwrites(channel, required)) return null
+  return mergedOverwrites(channel, required)
+}
+
 /**
  * Read the guild into the plain snapshot `planProjectSection` expects.
  *
@@ -443,6 +487,9 @@ export function observeProjectSection(guild, project, tasks = []) {
       channelId: channel.id,
       channelName: channel.name,
       parentId: channel.parentId ?? null,
+      // The ids of the overwrites the channel carries, or null when they cannot
+      // be read — the planner only plans a permissions edit on what it can see.
+      overwriteIds: overwriteIdsOf(channel),
     })
   }
 
@@ -478,7 +525,7 @@ export function observeProjectSection(guild, project, tasks = []) {
  * fixed rewrite every panel it touched to "No members yet."
  *
  * @param {{db: object, members?: Array<{discordId: string, role: string}>, nameFor?: (id: string) => string, botUserId?: string|null}} deps
- * @returns {Promise<{role: object|null, category: object|null, created: string[], renamed: string[], moved: string[], tasks: number, warnings: string[]}>}
+ * @returns {Promise<{role: object|null, category: object|null, created: string[], renamed: string[], moved: string[], granted: string[], tasks: number, warnings: string[]}>}
  */
 export async function applyProjectSection(
   guild,
@@ -486,7 +533,7 @@ export async function applyProjectSection(
   plan,
   { db, members, nameFor = (id) => id, botUserId = null } = {}
 ) {
-  const result = { role: null, category: null, created: [], renamed: [], moved: [], tasks: 0, warnings: [] }
+  const result = { role: null, category: null, created: [], renamed: [], moved: [], granted: [], tasks: 0, warnings: [] }
   const channelIds = storedChannels(project)
   const resolved = new Map()
 
@@ -595,22 +642,47 @@ export async function applyProjectSection(
       }
     }
 
-    // 4. The task channels. Same single edit, and they keep the per-member
-    //    overwrites they already carry — only name, parent and topic are set.
-    //    The topic rides along in that ONE edit (two channel edits per ten
-    //    minutes, and this branch moves 31 channels): a channel renamed to its
-    //    title while keeping `Feature: <title>` as its topic would name a task
-    //    nothing can match it to, and /update-task would build a duplicate.
+    // 4. The task channels. ONE edit each — Discord allows two channel edits
+    //    per ten minutes, and this branch moves 31 channels — carrying
+    //    everything that channel needs at once:
+    //      * name, parent and topic. A channel renamed to its title while
+    //        keeping `Feature: <title>` as its topic would name a task nothing
+    //        can match it to, and /update-task would build a duplicate;
+    //      * the project role's allow, when the channel ends up inside the
+    //        section. A task channel's overwrites are its own — Discord copies
+    //        nothing from the category — so without it the project's members
+    //        cannot see their project's task channels. MERGED into what the
+    //        channel already carries, never replacing it and never via
+    //        `lockPermissions()`, either of which would drop the per-member
+    //        overwrites and take a task away from an assignee who is not on
+    //        the project.
+    //    No resolvable role, or no readable overwrite list: the allow is
+    //    skipped, never the rest of the edit.
+    const projectRoleId = roleId && guild.roles?.cache?.has?.(roleId) ? roleId : null
     for (const task of plan?.tasks ?? []) {
       if (task.action === 'none') continue
       try {
         const channel = guild.channels.cache.get(task.channelId)
         if (!channel) throw new Error(`channel ${task.channelId} no longer exists`)
-        // A `rename` at the category cap means "readable name, stay put", so
-        // the parent it goes back with is the one it already has.
-        const parent = task.action === 'rename' ? channel.parentId ?? null : categoryId
+        // A `rename` at the category cap means "readable name, stay put", and a
+        // `grant` is already where it belongs: both keep the parent they have.
+        const stays = task.action === 'rename' || task.action === 'grant'
+        const parent = stays ? channel.parentId ?? null : categoryId
+        const overwrites = parent === categoryId ? roleAllowMerged(channel, projectRoleId) : null
+
+        if (task.action === 'grant') {
+          // Nothing to add after all (the role is gone, or the channel gained
+          // the allow since it was read): no edit.
+          if (!overwrites) continue
+          await channel.edit({ permissionOverwrites: overwrites })
+          result.tasks += 1
+          result.granted.push(channel.name ?? task.name)
+          continue
+        }
+
         const payload = { name: task.name, parent }
         if (task.topic) payload.topic = task.topic
+        if (overwrites) payload.permissionOverwrites = overwrites
         await channel.edit(payload)
         result.tasks += 1
         ;(task.action === 'rename' ? result.renamed : result.moved).push(task.name)

@@ -75,6 +75,7 @@ const TASK_WORDS = [
   ['both', 'to rename and move'],
   ['move', 'to move'],
   ['rename', 'to rename'],
+  ['grant', 'to open to the project role'],
   ['none', 'already right'],
 ]
 
@@ -158,21 +159,23 @@ export function renderPlan(project, plan = {}) {
  * not run.
  *
  * @param {{name?: string}} project
- * @param {{role?: object|null, created?: string[], renamed?: string[], moved?: string[], tasks?: number, warnings?: string[], roleSync?: {granted: string[], revoked: string[], failed: string[], revokeSkipped?: boolean}}} result
+ * @param {{role?: object|null, created?: string[], renamed?: string[], moved?: string[], granted?: string[], tasks?: number, warnings?: string[], roleSync?: {granted: string[], revoked: string[], failed: string[], revokeSkipped?: boolean}}} result
  */
 export function renderResult(project, result = {}) {
   const name = project?.name ?? 'Project'
   const created = result?.created ?? []
   const renamed = result?.renamed ?? []
   const moved = result?.moved ?? []
+  const granted = result?.granted ?? []
   const taskCount = Number(result?.tasks ?? 0)
 
   const done = []
   if (created.length) done.push(`${created.length} created`)
   if (renamed.length) done.push(`${renamed.length} renamed`)
   if (moved.length) done.push(`${moved.length} moved`)
-  // A touched task channel is already counted in `renamed` or `moved` — the
-  // applier pushes it into both lists — so naming it again as a fourth count
+  if (granted.length) done.push(`${granted.length} opened to the project role`)
+  // A touched task channel is already counted in `renamed`, `moved` or
+  // `granted` — the applier pushes it into one of them — so naming it again as a further count
   // would describe twelve objects as thirteen. It is a breakdown of the counts
   // above, not an addition to them, and it says so.
   const summary = done.length ? done.join(', ') : 'nothing to change'

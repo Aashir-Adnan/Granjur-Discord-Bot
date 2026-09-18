@@ -49,11 +49,11 @@ test('ownsChannel tells a task channel from the meeting channel it was announced
 test('ownsChannel also recognises a project-parented channel by its "Task <id>" topic', () => {
   const id = 'b62ffdcece31488c893f56be0'
   // Named after the title, not the id — the old suffix check alone would miss it.
-  const owned = { name: 'feature-git-sync', topic: `Feature: Git Sync — Task ${id}` }
+  const owned = { type: ChannelType.GuildText, name: 'feature-git-sync', topic: `Feature: Git Sync — Task ${id}` }
   assert.equal(ownsChannel(id, owned), true)
   // A different task's topic, or no topic at all, is not a match.
-  assert.equal(ownsChannel(id, { name: 'feature-router', topic: `Feature: Router — Task other` }), false)
-  assert.equal(ownsChannel(id, { name: 'feature-git-sync' }), false)
+  assert.equal(ownsChannel(id, { type: ChannelType.GuildText, name: 'feature-router', topic: `Feature: Router — Task other` }), false)
+  assert.equal(ownsChannel(id, { type: ChannelType.GuildText, name: 'feature-git-sync' }), false)
   assert.equal(ownsChannel('', owned), false)
 })
 
@@ -63,15 +63,15 @@ test('ownsChannel takes the row over the name: a renamed channel is still its ta
   // readable name, and the topic the channel was opened with. Neither the old
   // `-f56be0` suffix nor a `Task <id>` marker is there, so without the row's id
   // /update-task builds a duplicate beside it — and another on the next update.
-  const renamed = { id: 'chan-1', name: 'feature-add-booking-rules', topic: 'Feature: Add booking rules' }
+  const renamed = { type: ChannelType.GuildText, id: 'chan-1', name: 'feature-add-booking-rules', topic: 'Feature: Add booking rules' }
   assert.equal(ownsChannel(id, renamed, 'chan-1'), true)
   // Renamed by hand, past all recognition, but still the channel the row names.
-  assert.equal(ownsChannel(id, { id: 'chan-1', name: 'booking', topic: 'Feature: Add booking rules' }, 'chan-1'), true)
+  assert.equal(ownsChannel(id, { type: ChannelType.GuildText, id: 'chan-1', name: 'booking', topic: 'Feature: Add booking rules' }, 'chan-1'), true)
   // Another task's channel, whatever the row says.
   assert.equal(ownsChannel(id, renamed, 'chan-2'), false)
   // No row id to go on: the old heuristics, unchanged.
   assert.equal(ownsChannel(id, renamed), false)
-  assert.equal(ownsChannel(id, { id: 'chan-1', name: 'feature-f56be0' }), true)
+  assert.equal(ownsChannel(id, { type: ChannelType.GuildText, id: 'chan-1', name: 'feature-f56be0' }), true)
 })
 
 test('ownsChannel never adopts a channel the row points at that is not a ticket channel', () => {
@@ -80,9 +80,57 @@ test('ownsChannel never adopts a channel the row points at that is not a ticket 
   // `discordChannelId`. The row naming it does not make it this task's: giving
   // a new assignee access to everyone's review is a permission change nobody
   // asked for, and the task's edits do not belong in it either.
-  const review = { id: 'review', name: 'pipeline-test', topic: 'Meeting chat is stored in the database.' }
+  const review = { type: ChannelType.GuildText, id: 'review', name: 'pipeline-test', topic: 'Meeting chat is stored in the database.' }
   assert.equal(ownsChannel(id, review, 'review'), false)
-  assert.equal(ownsChannel(id, { id: 'review', name: 'pipeline-test' }, 'review'), false)
+  assert.equal(ownsChannel(id, { type: ChannelType.GuildText, id: 'review', name: 'pipeline-test' }, 'review'), false)
+})
+
+test('ownsChannel does not claim a meeting channel that merely starts with bug-', () => {
+  const id = 'b62ffdcece31488c893f56be0'
+  // `/meeting-channel name:"Bug triage"` makes this. The name is anyone's; the
+  // topic is the bot's signature, and it says "meeting".
+  const triage = {
+    type: ChannelType.GuildText,
+    id: 'triage',
+    name: 'bug-triage-1726650000-text',
+    topic: 'Meeting chat is stored in the database with the sender and timestamp.',
+  }
+  assert.equal(ownsChannel(id, triage, 'triage'), false)
+  // A voice channel has no topic and `/create-channel` takes any voice name.
+  assert.equal(ownsChannel(id, { type: ChannelType.GuildVoice, id: 'v1', name: 'feature-x' }, 'v1'), false)
+  assert.equal(ownsChannel(id, { type: ChannelType.GuildVoice, id: 'v1', name: 'feature-f56be0' }), false)
+})
+
+test('a bare name string matches only this task\'s exact legacy name', () => {
+  const id = 'b62ffdcece31488c893f56be0'
+  // No type, topic or id to consult, so the id-first path can never fire.
+  assert.equal(ownsChannel(id, 'bug-triage-f56be0'), false)
+  assert.equal(ownsChannel(id, 'feature-f56be0-old'), false)
+  assert.equal(ownsChannel(id, 'feature-f56be0', 'anything'), true)
+})
+
+test('/update-task never grants an assignee a meeting channel named bug-…', async () => {
+  const posts = []
+  const grants = []
+  const triage = {
+    id: 'triage',
+    type: ChannelType.GuildText,
+    name: 'bug-triage-1726650000-text',
+    topic: 'Meeting chat is stored in the database with the sender and timestamp.',
+    guild: { id: 'g1' },
+    send: async (m) => posts.push(m),
+    permissionOverwrites: { edit: async (uid) => grants.push(uid), delete: async () => {} },
+  }
+  const h = harness({ channel: triage })
+  const task = { id: h.taskId, title: 'Fix login', status: 'open', assigneeIds: [], discordChannelId: 'triage' }
+  const out = await notifyTaskUpdate({
+    client: h.client, guild: h.guild, task, before: task,
+    updates: { assigneeIds: ['11'] }, actorId: '99', db: noQueryDb,
+  })
+  assert.deepEqual(grants, [], 'no overwrite on the meeting channel')
+  assert.equal(posts.length, 0, 'no task edit posted into it')
+  assert.equal(out.created, true)
+  assert.equal(out.channelId, 'newchan')
 })
 
 // --- notifyTaskUpdate -------------------------------------------------------
@@ -104,6 +152,7 @@ function harness({ channel = null, taskId = 'aaaaaabbbbbbcccccc123456' } = {}) {
         return {
           id: 'newchan',
           name: o.name,
+          type: ChannelType.GuildText,
           guild: { id: 'g1' },
           send: async (payload) => {
             sends.push(payload)
@@ -170,7 +219,7 @@ test('a task carrying a projectId gets a channel inside that project, looked up 
       },
       create: async (o) => {
         created.push(o)
-        return { id: 'newchan', name: o.name, parentId: o.parent, guild: { id: 'g1' }, send: async () => ({ id: 'm' }) }
+        return { id: 'newchan', type: ChannelType.GuildText, name: o.name, parentId: o.parent, guild: { id: 'g1' }, send: async () => ({ id: 'm' }) }
       },
     },
   }
@@ -209,6 +258,7 @@ test('a field edit posts in the task channel and DMs nobody', async () => {
   const channel = {
     id: 'own',
     name: 'feature-123456',
+    type: ChannelType.GuildText,
     guild: { id: 'g1' },
     send: async (m) => posts.push(m),
     permissionOverwrites: { edit: async (id) => grants.push(id), delete: async () => {} },
@@ -237,6 +287,7 @@ test('closing a task DMs its holders once, and reassignment revokes access', asy
   const channel = {
     id: 'own',
     name: 'feature-123456',
+    type: ChannelType.GuildText,
     guild: { id: 'g1' },
     send: async () => {},
     permissionOverwrites: { edit: async () => {}, delete: async (id) => revoked.push(id) },
@@ -265,6 +316,7 @@ test('an already-closed task closing again does not re-DM', async () => {
   const channel = {
     id: 'own',
     name: 'feature-123456',
+    type: ChannelType.GuildText,
     guild: { id: 'g1' },
     send: async () => {},
     permissionOverwrites: { edit: async () => {}, delete: async () => {} },
@@ -284,6 +336,7 @@ test('the meeting review channel is never treated as the task channel', async ()
   const reviewChannel = {
     id: 'review',
     name: 'pipeline-test',
+    type: ChannelType.GuildText,
     guild: { id: 'g1' },
     send: async (m) => posts.push(m),
     permissionOverwrites: { edit: async (id) => grants.push(id), delete: async () => {} },
@@ -310,6 +363,7 @@ test('a task whose channel was renamed out of recognition is reused, never dupli
     id: 'own',
     name: 'feature-add-booking-rules',
     topic: 'Feature: Add booking rules',
+    type: ChannelType.GuildText,
     guild: { id: 'g1' },
     send: async (m) => posts.push(m),
     permissionOverwrites: { edit: async (id) => grants.push(id), delete: async () => {} },
@@ -394,6 +448,7 @@ test('a status-change warning is appended as the last line of the channel post',
   const channel = {
     id: 'own',
     name: 'feature-123456',
+    type: ChannelType.GuildText,
     guild: { id: 'g1' },
     send: async (m) => posts.push(m),
     permissionOverwrites: { edit: async () => {}, delete: async () => {} },
@@ -496,6 +551,7 @@ async function postWith({ actorId = null, actorLabel = null } = {}) {
   const channel = {
     id: 'own',
     name: 'feature-123456',
+    type: ChannelType.GuildText,
     guild: { id: 'g1' },
     send: async (m) => posts.push(m),
     permissionOverwrites: { edit: async () => {}, delete: async () => {} },
