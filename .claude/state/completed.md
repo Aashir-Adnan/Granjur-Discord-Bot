@@ -18,8 +18,8 @@ plus a two-part final fix wave (spec
 §5/§13, see `.claude/knowledge/project-sections.md`; ledger
 `.superpowers/sdd/2026-09-18-project-sections/progress.md`).
 
-- Branch `feat/project-sections`, commit range `7e78f9f..1ae5dcf` (18 commits),
-  suite 340 → 610, every run with `DATABASE_URL=poisoned://no-production-access`.
+- Branch `feat/project-sections`, commit range `7e78f9f..7f40a42` (21 commits),
+  suite 340 → 615, every run with `DATABASE_URL=poisoned://no-production-access`.
 - Migration `019_project_discord_sections.sql` adds `project.discordCategoryId`,
   `discordRoleId`, `discordChannels` (JSON), `scheduledmeeting.projectId`.
   Migration `020_meeting_project.sql` was written then **dropped** — `020` at

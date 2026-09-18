@@ -29,13 +29,13 @@ complete record otherwise. No code, tests, or config were touched.
   `mergedOverwrites` cache-guard mismatch, `/cleanup`'s unrechecked confirm
   handler, a task moved between projects keeping its old channel/role, archiving
   a finished project, and the 12 orphan global-Meetings channels.
-- `.claude/state/completed.md` — new entry, commit range `7e78f9f..1ae5dcf`,
+- `.claude/state/completed.md` — new entry, commit range `7e78f9f..7f40a42`,
   explicitly "NOT YET MERGED."
 - This file, rewritten.
 - Report: `.superpowers/sdd/2026-09-18-project-sections/task-11-report.md`.
 
 ## What remains
-1. **Merge** `feat/project-sections` into `main` (18 commits, 610 tests passing,
+1. **Merge** `feat/project-sections` into `main` (21 commits, 615 tests passing,
    whole-branch review clean after the two-part final fix wave — see the ledger's
    last ~60 lines for the full sign-off chain).
 2. **Deploy.** Migration 019 runs automatically. Migration 020 does not exist —

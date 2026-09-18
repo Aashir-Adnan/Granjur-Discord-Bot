@@ -1,7 +1,7 @@
 # Per-project Discord sections
 
-Built on branch `feat/project-sections` (base `7e78f9f`, head `1ae5dcf`, 18
-commits, 610 tests). **Not yet merged** at the time of writing — see
+Built on branch `feat/project-sections` (base `7e78f9f`, head `7f40a42`, 21
+commits, 615 tests). **Not yet merged** at the time of writing — see
 `.claude/state/session.md`. Read this before touching `bot/src/services/projectSection.js`,
 `/project-setup`, `/projects`, `/project-members`, `/meeting-channel`,
 `/create-task`, `/create-project-categories`, `/create-project-role`, or `/cleanup`.
