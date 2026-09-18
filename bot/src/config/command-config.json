@@ -331,8 +331,8 @@
     },
     "meeting-channel": {
       "summary": "Create a dedicated meeting voice + text channel pair.",
-      "syntax": "`/meeting-channel [name]`",
-      "detail": "Creates a linked voice and text channel for a meeting, and stores text messages in the meeting notes table with a user tag and timestamp."
+      "syntax": "`/meeting-channel [name] [project]`",
+      "detail": "Creates a linked voice and text channel for a meeting, and stores text messages in the meeting notes table with a user tag and timestamp. Pick a `project`, or run it inside one of a project's channels, and the meeting belongs to that project: its channels go in the project's section, visible only to its members. With no project the channels go in the public 📋 Meetings category. If the project has no section yet, or its section is full, the channels go to 📋 Meetings and the reply says why."
     },
     "admin-panel": {
       "summary": "Admin panel for viewing recordings, meetings, and members.",

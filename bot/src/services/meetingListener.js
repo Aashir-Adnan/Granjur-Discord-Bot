@@ -8,7 +8,7 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 import { config } from '../config.js'
 
 export async function ensureMeetingChannel(guild, voiceChannelId, options = {}) {
-  const { forceNewMeeting = false, textChannelId } = options;
+  const { forceNewMeeting = false, textChannelId, projectId } = options;
   const cfg = await getOrCreateGuildConfig(guild.id)
   const existing = await db.meetingChannel.findFirst({
     where: { guildConfigId: cfg.id, voiceChannelId },
@@ -28,6 +28,7 @@ export async function ensureMeetingChannel(guild, voiceChannelId, options = {}) 
     data: {
       guildConfigId: cfg.id,
       channelId: voiceChannelId,
+      ...(projectId ? { projectId } : {}),
     },
   })
 

@@ -1413,21 +1413,30 @@ async function guildMemberFindByEmail(guildId, email) {
 }
 
 // ---------- Meeting & MeetingChannel (for meetingListener) ----------
+/** The columns a `meeting` INSERT writes, in one ordered list. */
+const MEETING_INSERT_COLUMNS = [
+  ["guildConfigId", (d) => d.guildConfigId],
+  ["channelId", (d) => d.channelId],
+  ["externalId", (d) => d.externalId ?? null],
+  ["transcript", (d) => d.transcript ?? null],
+  ["notes", (d) => d.notes ?? null],
+  ["projectId", (d) => d.projectId ?? null],
+  ["repositoryUrl", (d) => d.repositoryUrl ?? null],
+];
+
+export function meetingInsertSql(pk, data = {}) {
+  const cols = ["id", ...MEETING_INSERT_COLUMNS.map(([col]) => col)];
+  const params = [pk, ...MEETING_INSERT_COLUMNS.map(([, read]) => read(data))];
+  return {
+    sql: `INSERT INTO \`meeting\` (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
+    params,
+  };
+}
+
 async function meetingCreate({ data }) {
   const pk = id();
-  await query(
-    "INSERT INTO `meeting` (id, guildConfigId, channelId, externalId, transcript, notes, projectId, repositoryUrl) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [
-      pk,
-      data.guildConfigId,
-      data.channelId,
-      data.externalId ?? null,
-      data.transcript ?? null,
-      data.notes ?? null,
-      data.projectId ?? null,
-      data.repositoryUrl ?? null,
-    ],
-  );
+  const { sql, params } = meetingInsertSql(pk, data);
+  await query(sql, params);
   return queryOne("SELECT * FROM `meeting` WHERE id = ?", [pk]);
 }
 
