@@ -282,25 +282,6 @@ async function pickProjects(interaction, cfg, dbArg) {
   return [row]
 }
 
-/**
- * The roster to hand `syncProjectRoleMembers` when the revoke half must not
- * run: everyone it would revoke from, added to everyone it should grant to.
- *
- * The service revokes from every holder who is not in the roster it is given,
- * and it carries no "grant only" flag — other commands depend on it exactly as
- * it stands — so a roster that already contains every holder is how a caller
- * says it. Granting stays safe and useful; it is only the revoke side that
- * reads a short list as "these people no longer belong here".
- */
-function grantOnlyRoster(guild, roleId, members) {
-  const out = [...members]
-  const role = roleId ? guild?.roles?.cache?.get?.(roleId) ?? null : null
-  const holders = new Map(role?.members?.entries?.() ?? [])
-  const wanted = new Set(members.map((m) => m?.discordId).filter(Boolean))
-  for (const id of holders.keys()) if (!wanted.has(id)) out.push({ discordId: id })
-  return out
-}
-
 export async function execute(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
@@ -411,13 +392,15 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
 
       const result = await applyProjectSection(guild, project, plan, { db: dbArg, members, nameFor, botUserId })
       const roleId = result.role?.id ?? null
+      // Say it as a flag, not by padding the roster with every current holder:
+      // "do not revoke" is what this means, and a roster the service happens to
+      // find nothing to revoke from would stop meaning that the moment the
+      // service changed how it reads its holders.
       const grantOnly = Boolean(fetchFailure) || truncatedRoster
-      const roleSync = await syncProjectRoleMembers(
-        guild,
-        project,
-        grantOnly ? grantOnlyRoster(guild, roleId, members) : members,
-        { roleId }
-      )
+      const roleSync = await syncProjectRoleMembers(guild, project, members, {
+        roleId,
+        revoke: !grantOnly,
+      })
       if (grantOnly) roleSync.revokeSkipped = true
 
       blocks.push(

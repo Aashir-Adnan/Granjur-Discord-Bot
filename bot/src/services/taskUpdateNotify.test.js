@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
 import {
   assigneeDiff,
   changeSummary,
@@ -56,11 +57,40 @@ test('ownsChannel also recognises a project-parented channel by its "Task <id>" 
   assert.equal(ownsChannel('', owned), false)
 })
 
+test('ownsChannel takes the row over the name: a renamed channel is still its task\'s', () => {
+  const id = 'b62ffdcece31488c893f56be0'
+  // What /project-setup produced before it learned to carry the topic: the
+  // readable name, and the topic the channel was opened with. Neither the old
+  // `-f56be0` suffix nor a `Task <id>` marker is there, so without the row's id
+  // /update-task builds a duplicate beside it — and another on the next update.
+  const renamed = { id: 'chan-1', name: 'feature-add-booking-rules', topic: 'Feature: Add booking rules' }
+  assert.equal(ownsChannel(id, renamed, 'chan-1'), true)
+  // Renamed by hand, past all recognition, but still the channel the row names.
+  assert.equal(ownsChannel(id, { id: 'chan-1', name: 'booking', topic: 'Feature: Add booking rules' }, 'chan-1'), true)
+  // Another task's channel, whatever the row says.
+  assert.equal(ownsChannel(id, renamed, 'chan-2'), false)
+  // No row id to go on: the old heuristics, unchanged.
+  assert.equal(ownsChannel(id, renamed), false)
+  assert.equal(ownsChannel(id, { id: 'chan-1', name: 'feature-f56be0' }), true)
+})
+
+test('ownsChannel never adopts a channel the row points at that is not a ticket channel', () => {
+  const id = 'b62ffdcece31488c893f56be0'
+  // An unassigned meeting task carries the meeting's SHARED review channel in
+  // `discordChannelId`. The row naming it does not make it this task's: giving
+  // a new assignee access to everyone's review is a permission change nobody
+  // asked for, and the task's edits do not belong in it either.
+  const review = { id: 'review', name: 'pipeline-test', topic: 'Meeting chat is stored in the database.' }
+  assert.equal(ownsChannel(id, review, 'review'), false)
+  assert.equal(ownsChannel(id, { id: 'review', name: 'pipeline-test' }, 'review'), false)
+})
+
 // --- notifyTaskUpdate -------------------------------------------------------
 
 function harness({ channel = null, taskId = 'aaaaaabbbbbbcccccc123456' } = {}) {
   const dms = []
   const created = []
+  const sends = []
   const client = {
     channels: { fetch: async () => channel },
     users: { fetch: async (id) => ({ send: async (m) => dms.push([id, m]) }) },
@@ -75,13 +105,16 @@ function harness({ channel = null, taskId = 'aaaaaabbbbbbcccccc123456' } = {}) {
           id: 'newchan',
           name: o.name,
           guild: { id: 'g1' },
-          send: async () => ({ id: 'm' }),
+          send: async (payload) => {
+            sends.push(payload)
+            return { id: 'm' }
+          },
           permissionOverwrites: { edit: async () => {}, delete: async () => {} },
         }
       },
     },
   }
-  return { client, guild, dms, created, taskId }
+  return { client, guild, dms, created, sends, taskId }
 }
 
 // notifyTaskUpdate defaults `db` to the real default export, which points at
@@ -119,7 +152,7 @@ test('a newly assigned member is DMed and given a channel that did not exist', a
 })
 
 test('a task carrying a projectId gets a channel inside that project, looked up through the db seam', async () => {
-  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null }
+  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null, type: ChannelType.GuildCategory }
   const catMap = new Map([[projectCategory.id, projectCategory]])
   const created = []
   const dms = []
@@ -266,6 +299,52 @@ test('the meeting review channel is never treated as the task channel', async ()
   assert.equal(out.channelId, 'newchan')
   assert.equal(posts.length, 0)
   assert.equal(grants.length, 0)
+})
+
+test('a task whose channel was renamed out of recognition is reused, never duplicated', async () => {
+  const posts = []
+  const grants = []
+  // /project-setup renamed this one into its project's section. Its name no
+  // longer carries the task id; only the row does.
+  const renamed = {
+    id: 'own',
+    name: 'feature-add-booking-rules',
+    topic: 'Feature: Add booking rules',
+    guild: { id: 'g1' },
+    send: async (m) => posts.push(m),
+    permissionOverwrites: { edit: async (id) => grants.push(id), delete: async () => {} },
+  }
+  const h = harness({ channel: renamed })
+  const task = { id: h.taskId, title: 'Add booking rules', status: 'open', assigneeIds: [], discordChannelId: 'own' }
+  const out = await notifyTaskUpdate({
+    client: h.client, guild: h.guild, task, before: task,
+    updates: { assigneeIds: ['11'] }, actorId: '99', db: noQueryDb,
+  })
+  assert.equal(out.created, false, 'a second channel beside the first is the bug')
+  assert.equal(out.channelId, 'own')
+  assert.equal(h.created.length, 0)
+  assert.deepEqual(grants, ['11'])
+  assert.equal(posts.length, 1)
+})
+
+test('a bug task with no channel gets a bug channel that points at /resolve-bug', async () => {
+  const h = harness()
+  const task = { id: h.taskId, title: 'Login crashes', type: 'bug', status: 'open', assigneeIds: [], discordChannelId: null }
+  await notifyTaskUpdate({
+    client: h.client, guild: h.guild, task, before: task,
+    updates: { assigneeIds: ['11'] }, actorId: '99', db: noQueryDb,
+  })
+  // A unified task table really does carry type='bug' rows, so a bug gets the
+  // Bugs category, the `bug-` prefix and the red embed — not a feature's.
+  assert.equal(h.created[0].name, 'Bugs')
+  assert.equal(h.created[1].name, 'bug-123456')
+  const embed = h.sends[0].embeds[0].toJSON()
+  assert.match(embed.title, /^Bug: Login crashes/)
+  assert.equal(embed.color, 0xed4245)
+  // /close-feature will not take a bug row; the channel must not tell its
+  // assignee to use it.
+  const close = embed.fields.find((f) => f.name === 'Close')
+  assert.match(close.value, /\/resolve-bug/)
 })
 
 test('an unassigned task with no channel notifies nobody and creates nothing', async () => {

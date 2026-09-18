@@ -101,7 +101,17 @@ test('a section channel in the wrong category is moved, a misnamed one renamed',
 test('a task outside its project is moved and renamed in one action', () => {
   const tasks = [{ id: 'tA1b2c3d4e5f6', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-0145e3', parentId: 'FEATURES' }]
   const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', tasks })
-  assert.deepEqual(plan.tasks, [{ taskId: 'tA1b2c3d4e5f6', channelId: 'ch1', action: 'both', name: 'feature-git-sync' }])
+  assert.deepEqual(plan.tasks, [
+    {
+      taskId: 'tA1b2c3d4e5f6',
+      channelId: 'ch1',
+      action: 'both',
+      name: 'feature-git-sync',
+      // The rename carries the topic: without it the channel keeps a topic
+      // naming a task nothing can match it back to.
+      topic: 'Feature: Git Sync — Task tA1b2c3d4e5f6',
+    },
+  ])
 })
 
 test('a task already right plans none', () => {
@@ -278,6 +288,75 @@ test('observeProjectSection resolves the stored ids and takes names from the who
   assert.ok(observed.takenNames.has('framework-members'))
 })
 
+test('a channel more than one task points at is not a task channel', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  // The meeting review channel: every unassigned meeting task's row names it.
+  const review = fakeChannel('review', 'pipeline-test', { parentId: 'MEETINGS' })
+  const taskCh = fakeChannel('tc1', 'feature-0145e3', { parentId: 'FEATURES' })
+  const guild = fakeGuild({ channels: [cat, review, taskCh] })
+  const stored = { ...project, discordCategoryId: 'c1' }
+
+  const observed = observeProjectSection(guild, stored, [
+    { id: 't1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' },
+    { id: 't2', title: 'Do A', type: 'feature', discordChannelId: 'review' },
+    { id: 't3', title: 'Do B', type: 'feature', discordChannelId: 'review' },
+  ])
+
+  assert.deepEqual(observed.tasks.map((t) => t.id), ['t1'])
+  assert.equal(observed.sharedTaskChannels, 1)
+
+  const plan = planProjectSection(stored, observed)
+  assert.deepEqual(plan.tasks.map((t) => t.channelId), ['tc1'])
+  // Counted and said out loud, not silently dropped.
+  assert.ok(plan.warnings.some((w) => /not task channels|not a task channel/.test(w)), plan.warnings.join(' | '))
+
+  const out = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+
+  // Renaming it to `feature-do-a` and moving it into one project's category
+  // would take the whole meeting's review away from everything else using it.
+  assert.equal(review.edits.length, 0)
+  assert.equal(review.name, 'pipeline-test')
+  assert.equal(review.parentId, 'MEETINGS')
+  assert.equal(out.tasks, 1)
+})
+
+test('a meeting review channel only ONE task points at is still not a task channel', async () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  // A meeting that produced exactly one unassigned task: its row names the
+  // review channel and nothing else does, so a reference count alone passes it.
+  const review = fakeChannel('review', 'standup-review', { parentId: 'MEETINGS' })
+  review.topic = 'Meeting chat is stored in the database with the sender and timestamp.'
+  const guild = fakeGuild({ channels: [cat, review] })
+  const stored = { ...project, discordCategoryId: 'c1' }
+
+  const observed = observeProjectSection(guild, stored, [
+    { id: 't1', title: 'Do A', type: 'feature', discordChannelId: 'review' },
+  ])
+  assert.deepEqual(observed.tasks, [])
+  assert.equal(observed.sharedTaskChannels, 1)
+
+  const plan = planProjectSection(stored, observed)
+  assert.deepEqual(plan.tasks, [])
+  assert.ok(plan.warnings.some((w) => /^1 channel .* is not a task channel/.test(w)), plan.warnings.join(' | '))
+
+  await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+  assert.equal(review.edits.length, 0)
+  assert.equal(review.name, 'standup-review')
+  assert.equal(review.parentId, 'MEETINGS')
+})
+
+test('a task channel renamed by hand is still repaired while its topic says Feature:', () => {
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const taskCh = fakeChannel('tc1', 'booking', { parentId: 'FEATURES' })
+  taskCh.topic = 'Feature: Git Sync | Assigner + assignees'
+  const guild = fakeGuild({ channels: [cat, taskCh] })
+  const observed = observeProjectSection(guild, { ...project, discordCategoryId: 'c1' }, [
+    { id: 't1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' },
+  ])
+  assert.deepEqual(observed.tasks.map((t) => t.id), ['t1'])
+  assert.equal(observed.sharedTaskChannels, 0)
+})
+
 test('observeProjectSection falls back to a name match only when a stored id no longer resolves', () => {
   const cat = fakeChannel('c2', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
   const mem = fakeChannel('m2', 'framework-members', { parentId: 'c2' })
@@ -364,8 +443,16 @@ test('a task channel needing a rename and a move gets exactly one edit carrying 
 
   const out = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
 
+  // One edit — Discord allows two per channel per ten minutes — and it carries
+  // the topic as well as the name and the parent. A rename that left
+  // `Feature: Git Sync` behind would leave the channel matching neither its old
+  // name nor its task id, and /update-task would build a duplicate beside it.
   assert.equal(taskCh.edits.length, 1)
-  assert.deepEqual(taskCh.edits[0], { name: 'feature-git-sync', parent: 'c1' })
+  assert.deepEqual(taskCh.edits[0], {
+    name: 'feature-git-sync',
+    parent: 'c1',
+    topic: 'Feature: Git Sync — Task t1',
+  })
   assert.equal(out.tasks, 1)
 })
 
@@ -668,6 +755,23 @@ test('syncProjectRoleMembers revokes from a holder who is no longer on the proje
   assert.deepEqual(out.granted, ['u1'])
   assert.deepEqual(out.revoked, ['u2'])
   assert.deepEqual(log, [['add', 'u1', 'r1'], ['remove', 'u2', 'r1']])
+})
+
+test('syncProjectRoleMembers with revoke: false grants but never revokes', async () => {
+  // What /project-setup passes when its roster is known to be incomplete (the
+  // member list would not load, or the read hit its row limit): "not in the
+  // roster" then means "not read", not "left the project".
+  const log = []
+  const stale = roleMember('u2', log)
+  const role = { id: 'r1', name: 'Framework', members: new Map([['u2', stale]]) }
+  const guild = fakeGuild({ roles: [role] })
+  guild.members = { fetch: async (id) => roleMember(id, log) }
+
+  const out = await syncProjectRoleMembers(guild, project, [{ discordId: 'u1' }], { roleId: 'r1', revoke: false })
+
+  assert.deepEqual(out.granted, ['u1'])
+  assert.deepEqual(out.revoked, [])
+  assert.deepEqual(log, [['add', 'u1', 'r1']])
 })
 
 test('syncProjectRoleMembers collects a per-member failure instead of throwing', async () => {

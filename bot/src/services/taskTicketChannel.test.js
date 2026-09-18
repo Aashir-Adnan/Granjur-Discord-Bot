@@ -55,9 +55,20 @@ function fakeGuildWithChannels(channels = []) {
   return guild
 }
 
+/** Run something that warns on purpose, without spraying the test output. */
+async function quiet(fn) {
+  const real = console.warn
+  console.warn = () => {}
+  try {
+    return await fn()
+  } finally {
+    console.warn = real
+  }
+}
+
 test('createTaskTicketChannel makes a private channel and mentions its members', async () => {
   const guild = fakeGuild()
-  const channel = await createTaskTicketChannel(guild, {
+  const { channel } = await createTaskTicketChannel(guild, {
     taskId: 'abcdef1234567890',
     title: 'Add booking rules',
     description: 'Do the thing',
@@ -112,11 +123,11 @@ test('createTaskTicketChannel tolerates a missing description', async () => {
 })
 
 test('with a project whose category resolves, the channel is named after the title and parented there', async () => {
-  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null }
+  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null, type: ChannelType.GuildCategory }
   const guild = fakeGuildWithChannels([projectCategory])
   const project = { id: 'p1', name: 'Framework', discordCategoryId: 'projcat' }
 
-  const channel = await createTaskTicketChannel(guild, {
+  const { channel } = await createTaskTicketChannel(guild, {
     taskId: 'abcdef1234567890',
     title: 'Add booking rules',
     memberIds: ['11', '22'],
@@ -145,9 +156,103 @@ test('with a project whose category resolves, the channel is named after the tit
   )
 })
 
+test('a task channel inside a project section allows the project role explicitly', async () => {
+  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null, type: ChannelType.GuildCategory }
+  const guild = fakeGuildWithChannels([projectCategory])
+  const project = { id: 'p1', name: 'Framework', discordCategoryId: 'projcat', discordRoleId: 'role1' }
+
+  await createTaskTicketChannel(guild, {
+    taskId: 'abcdef1234567890',
+    title: 'Add booking rules',
+    memberIds: ['11'],
+    project,
+    type: 'feature',
+  })
+
+  // Passing an explicit overwrite array makes Discord store EXACTLY that set —
+  // nothing is copied from the category and resolution never walks up to it —
+  // so without the role entry here the project members this channel belongs to
+  // cannot see their own task.
+  const chan = guild._created[0]
+  assert.deepEqual(
+    chan.permissionOverwrites.map((o) => [o.id, o.type]),
+    [
+      ['guild1', OverwriteType.Role],
+      ['role1', OverwriteType.Role],
+      ['11', OverwriteType.Member],
+    ],
+  )
+  assert.deepEqual(chan.permissionOverwrites[1].allow, [
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.ReadMessageHistory,
+  ])
+})
+
+test('a channel that fell back to the global category does NOT carry the project role', async () => {
+  const guild = fakeGuildWithChannels([])
+  const project = { id: 'p1', name: 'Framework', discordCategoryId: 'gone', discordRoleId: 'role1' }
+  const out = await quiet(() =>
+    createTaskTicketChannel(guild, {
+      taskId: 'abcdef1234567890',
+      title: 'Add booking rules',
+      memberIds: ['11'],
+      project,
+      type: 'feature',
+    }),
+  )
+  assert.equal(out.fellBack, 'missing')
+  // In the global Features category the audience is the assignees, as it has
+  // always been. Adding the project role there would grant a whole project
+  // access nobody asked for.
+  const chan = guild._created[1]
+  assert.deepEqual(
+    chan.permissionOverwrites.map((o) => o.id),
+    ['guild1', '11'],
+  )
+})
+
+test('a stored category id that resolves to a text channel is not used as a parent', async () => {
+  // Passing a text channel as `parent` fails at Discord, and it fails after the
+  // task row has already been written.
+  const notACategory = { id: 'projcat', name: 'framework-members', parentId: 'somecat', type: ChannelType.GuildText }
+  const guild = fakeGuildWithChannels([notACategory])
+  const project = { id: 'p1', name: 'Framework', discordCategoryId: 'projcat' }
+  const out = await quiet(() =>
+    createTaskTicketChannel(guild, {
+      taskId: 'abcdef1234567890',
+      title: 'Add booking rules',
+      memberIds: ['11'],
+      project,
+      type: 'feature',
+    }),
+  )
+  assert.equal(out.fellBack, 'missing')
+  assert.equal(guild._created[0].name, 'Features')
+  assert.equal(guild._created[1].parent, 'cat1')
+})
+
+test('onCreated runs between the create and the opening embed', async () => {
+  const guild = fakeGuild()
+  const order = []
+  const realSends = guild._sends
+  await createTaskTicketChannel(guild, {
+    taskId: 'abcdef1234567890',
+    title: 'Add booking rules',
+    memberIds: ['11'],
+    onCreated: async (channel) => {
+      // The row is pointed at the channel here, so a `send` that throws cannot
+      // leave a channel with nothing pointing at it.
+      order.push(['onCreated', channel.id, realSends.length])
+    },
+  })
+  assert.deepEqual(order, [['onCreated', 'chan1', 0]])
+  assert.equal(realSends.length, 1)
+})
+
 test('with no project, the channel keeps the global category and the short-id name', async () => {
   const guild = fakeGuild()
-  const channel = await createTaskTicketChannel(guild, {
+  const { channel } = await createTaskTicketChannel(guild, {
     taskId: 'abcdef1234567890',
     title: 'Add booking rules',
     memberIds: ['11'],
@@ -166,9 +271,9 @@ test('a project category id that no longer resolves falls back to the global cat
   const warnings = []
   const originalWarn = console.warn
   console.warn = (...args) => warnings.push(args.join(' '))
-  let channel
+  let out
   try {
-    channel = await createTaskTicketChannel(guild, {
+    out = await createTaskTicketChannel(guild, {
       taskId: 'abcdef1234567890',
       title: 'Add booking rules',
       memberIds: ['11'],
@@ -185,21 +290,23 @@ test('a project category id that no longer resolves falls back to the global cat
   // A project was given, so the name still reads the title — only the parent falls back.
   assert.equal(chan.name, 'feature-add-booking-rules')
   assert.equal(chan.parent, 'cat1')
-  assert.equal(channel.parentId, 'cat1')
+  assert.equal(out.channel.parentId, 'cat1')
+  // The reason comes back so /create-task can say it; a console.warn reaches nobody.
+  assert.equal(out.fellBack, 'missing')
   assert.ok(warnings.some((w) => w.includes('Framework') && w.includes('Features')))
 })
 
 test('a project category at the soft cap falls back to the global category and warns', async () => {
-  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null }
+  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null, type: ChannelType.GuildCategory }
   const packed = Array.from({ length: 49 }, (_, i) => ({ id: `c${i}`, name: `chan-${i}`, parentId: 'projcat' }))
   const guild = fakeGuildWithChannels([projectCategory, ...packed])
   const project = { id: 'p1', name: 'Framework', discordCategoryId: 'projcat' }
   const warnings = []
   const originalWarn = console.warn
   console.warn = (...args) => warnings.push(args.join(' '))
-  let channel
+  let out
   try {
-    channel = await createTaskTicketChannel(guild, {
+    out = await createTaskTicketChannel(guild, {
       taskId: 'abcdef1234567890',
       title: 'Add booking rules',
       memberIds: ['11'],
@@ -215,7 +322,8 @@ test('a project category at the soft cap falls back to the global category and w
   const chan = guild._created[1]
   assert.equal(chan.name, 'feature-add-booking-rules')
   assert.equal(chan.parent, 'cat1')
-  assert.equal(channel.parentId, 'cat1')
+  assert.equal(out.channel.parentId, 'cat1')
+  assert.equal(out.fellBack, 'cap')
   assert.ok(warnings.some((w) => w.includes('Framework') && w.includes('cap')))
 })
 

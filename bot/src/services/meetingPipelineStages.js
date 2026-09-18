@@ -375,7 +375,7 @@ async function mirroredStage({ job, db, client, csaasClient }) {
         ? matchCtx.projects.find((p) => p.id === row.projectId) ?? null
         : null
       try {
-        const ticket = await createTaskTicketChannel(guild, {
+        const { channel: ticket } = await createTaskTicketChannel(guild, {
           taskId: taskRow.id,
           title: row.title,
           description: row.description,

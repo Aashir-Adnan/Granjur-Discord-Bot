@@ -15,15 +15,28 @@
 // of the task id.
 import { ChannelType, PermissionFlagsBits, EmbedBuilder, OverwriteType } from 'discord.js'
 import { getOrCreateCategory } from '../utils/categories.js'
-import { CATEGORY_BOLD_NAMES } from '../constants.js'
-import { taskChannelName } from '../utils/taskChannelName.js'
-import { CATEGORY_SOFT_CAP } from './projectSection.js'
+// The cap comes from `constants.js`, a leaf, and NOT from `projectSection.js`,
+// which re-exports it: importing the planner here dragged
+// projectMembersPanel → db/index.js into this leaf helper, so its test loaded
+// the whole database layer and the production `.env` to touch no database.
+import { CATEGORY_BOLD_NAMES, CATEGORY_SOFT_CAP } from '../constants.js'
+import { taskChannelName, taskChannelTopic } from '../utils/taskChannelName.js'
 
 const MEMBER_PERMS = [
   PermissionFlagsBits.ViewChannel,
   PermissionFlagsBits.SendMessages,
   PermissionFlagsBits.ReadMessageHistory,
 ]
+
+/**
+ * What the project role may do in a task channel that sits inside its own
+ * section — the text half of the set the project's category grants
+ * (`ROLE_ALLOW` in `projectSection.js`; `Connect`/`Speak` mean nothing on a
+ * text channel). Spelled out here because an explicit `permissionOverwrites`
+ * array makes Discord store EXACTLY that set: nothing is copied from the
+ * parent, and permission resolution never walks up to the category.
+ */
+const PROJECT_ROLE_PERMS = MEMBER_PERMS
 
 /** A discord.js Collection or a plain Map, read the same way. */
 function valuesOf(cache) {
@@ -34,34 +47,50 @@ function countChannelsInCategory(guild, categoryId) {
   return valuesOf(guild?.channels?.cache).filter((c) => c?.parentId === categoryId).length
 }
 
-/**
- * Where a new task channel's category goes: the project's own category when
- * the project has one, it still resolves, and it is not at Discord's soft
- * cap — the global Features/Bugs category (created or reused by name, as
- * today) otherwise. A project that cannot be used is a `console.warn`, never
- * a thrown error — the channel still gets created, just not where the caller
- * hoped.
- */
-async function resolveParentCategory(guild, project, categoryLabel) {
-  if (project) {
-    const projectCategory = project.discordCategoryId
-      ? guild.channels?.cache?.get?.(project.discordCategoryId) ?? null
-      : null
-    if (!projectCategory) {
-      console.warn(
-        `[taskTicket] project "${project?.name}" has no usable category; the task channel was created in the global ${categoryLabel} category instead.`
-      )
-    } else if (countChannelsInCategory(guild, projectCategory.id) >= CATEGORY_SOFT_CAP) {
-      console.warn(
-        `[taskTicket] project "${project?.name}"'s category is at Discord's cap (${CATEGORY_SOFT_CAP} channels); the task channel was created in the global ${categoryLabel} category instead.`
-      )
-    } else {
-      return projectCategory
-    }
-  }
-  return getOrCreateCategory(guild, categoryLabel, {
+const globalCategory = (guild, categoryLabel) =>
+  getOrCreateCategory(guild, categoryLabel, {
     orNames: [CATEGORY_BOLD_NAMES[categoryLabel]].filter(Boolean),
   })
+
+/**
+ * Where a new task channel's category goes: the project's own category when
+ * the project has one, it still resolves to a CATEGORY, and it is not at
+ * Discord's soft cap — the global Features/Bugs category (created or reused by
+ * name, as today) otherwise. A project that cannot be used is a `console.warn`,
+ * never a thrown error — the channel still gets created, just not where the
+ * caller hoped.
+ *
+ * The reason comes back with the category, because spec §4 and §11 require the
+ * command's reply to say when a task channel was diverted, and a caller that
+ * compared `parentId` against `discordCategoryId` afterwards would be four
+ * copies of the same guess.
+ *
+ * @returns {Promise<{category: object, fellBack: 'cap'|'missing'|null}>}
+ */
+async function resolveParentCategory(guild, project, categoryLabel) {
+  if (!project) return { category: await globalCategory(guild, categoryLabel), fellBack: null }
+
+  const stored = project.discordCategoryId
+    ? guild.channels?.cache?.get?.(project.discordCategoryId) ?? null
+    : null
+  // A stored id that now resolves to a text channel is not somewhere a channel
+  // can be parented. Without this guard it is passed to Discord as `parent` and
+  // the error surfaces after the task row is already written.
+  const projectCategory = stored?.type === ChannelType.GuildCategory ? stored : null
+
+  if (!projectCategory) {
+    console.warn(
+      `[taskTicket] project "${project?.name}" has no usable category; the task channel was created in the global ${categoryLabel} category instead.`
+    )
+    return { category: await globalCategory(guild, categoryLabel), fellBack: 'missing' }
+  }
+  if (countChannelsInCategory(guild, projectCategory.id) >= CATEGORY_SOFT_CAP) {
+    console.warn(
+      `[taskTicket] project "${project?.name}"'s category is at Discord's cap (${CATEGORY_SOFT_CAP} channels); the task channel was created in the global ${categoryLabel} category instead.`
+    )
+    return { category: await globalCategory(guild, categoryLabel), fellBack: 'cap' }
+  }
+  return { category: projectCategory, fellBack: null }
 }
 
 /**
@@ -83,7 +112,14 @@ async function resolveParentCategory(guild, project, categoryLabel) {
  *   the task id>`.
  * @param {string} [opts.type]          - 'bug' or anything else (feature); default feature
  * @param {string} [opts.closeHint]     - appended as a "Close" field when given
- * @returns {Promise<import('discord.js').TextChannel>} the created channel
+ * @param {(channel: object) => Promise<void>} [opts.onCreated]
+ *   run with the new channel BETWEEN the create and the opening embed, so a
+ *   caller can point its row at the channel before anything can fail: a `send`
+ *   that throws must not leave a channel with no row pointing at it.
+ * @returns {Promise<{channel: import('discord.js').TextChannel, fellBack: 'cap'|'missing'|null}>}
+ *   `fellBack` says why the channel is not in the project's section: `'cap'`
+ *   the section is full, `'missing'` the project has no category the bot can
+ *   use, `null` it is where it should be (or there was no project).
  */
 export async function createTaskTicketChannel(guild, opts) {
   const {
@@ -95,6 +131,7 @@ export async function createTaskTicketChannel(guild, opts) {
     project = null,
     type,
     closeHint = null,
+    onCreated = null,
   } = opts
 
   const isBug = type === 'bug'
@@ -102,7 +139,7 @@ export async function createTaskTicketChannel(guild, opts) {
   const namePrefix = isBug ? 'bug' : 'feature'
   const members = [...new Set(memberIds.filter(Boolean))]
 
-  const category = await resolveParentCategory(guild, project, categoryLabel)
+  const { category, fellBack } = await resolveParentCategory(guild, project, categoryLabel)
 
   const name = project
     ? taskChannelName({
@@ -113,23 +150,44 @@ export async function createTaskTicketChannel(guild, opts) {
       })
     : `${namePrefix}-${String(taskId).slice(-6)}`
 
+  // The guild id is a ROLE (@everyone); a member id is a USER. Passing type 0
+  // for a user makes Discord discard the overwrite without an error, and the
+  // ticket channel ends up visible to nobody — which is what happened to
+  // feature-f56be0 on 2026-09-04.
+  const permissionOverwrites = [
+    { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+  ]
+  // An explicit overwrite array is stored EXACTLY as passed: Discord copies
+  // nothing from the parent and resolution does not walk up to the category, so
+  // a channel inside a project's section has to carry the project role's allow
+  // itself or the project members it belongs to cannot see their own task.
+  // Only when it really is inside that section — in the global Features/Bugs
+  // category the audience is the assignees, exactly as before, and adding the
+  // role there would be a grant nobody asked for.
+  if (!fellBack && project?.discordRoleId) {
+    permissionOverwrites.push({
+      id: project.discordRoleId,
+      type: OverwriteType.Role,
+      allow: PROJECT_ROLE_PERMS,
+    })
+  }
+  // The per-member entries are in ADDITION to that (spec §5), so an assignee
+  // who is not on the project still sees their task.
+  permissionOverwrites.push(
+    ...members.map((id) => ({ id, type: OverwriteType.Member, allow: MEMBER_PERMS }))
+  )
+
   const channel = await guild.channels.create({
     name,
     type: ChannelType.GuildText,
     parent: category.id,
     // The id lived in the name; now that the name is the title, the id moves
     // here so it stays one click away for support and for /update-task.
-    topic: `${isBug ? 'Bug' : 'Feature'}: ${String(title || '').slice(0, 100)} — Task ${taskId}`,
-    permissionOverwrites: [
-      // The guild id is a ROLE (@everyone); every other id here is a USER. Passing
-      // type 0 for a user makes Discord discard the overwrite without an error, and
-      // the ticket channel ends up visible to nobody — which is what happened to
-      // feature-f56be0 on 2026-09-04. These are set on top of whatever the category
-      // grants, so an assignee who is not on the project still sees their task.
-      { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
-      ...members.map((id) => ({ id, type: OverwriteType.Member, allow: MEMBER_PERMS })),
-    ],
+    topic: taskChannelTopic({ type, title, taskId }),
+    permissionOverwrites,
   })
+
+  if (onCreated) await onCreated(channel)
 
   const embed = new EmbedBuilder()
     .setTitle(`${isBug ? 'Bug' : 'Feature'}: ${String(title || 'Task').slice(0, 200)}`)
@@ -140,7 +198,7 @@ export async function createTaskTicketChannel(guild, opts) {
 
   const mentions = members.map((id) => `<@${id}>`).join(' ')
   await channel.send({ content: mentions || null, embeds: [embed] })
-  return channel
+  return { channel, fellBack }
 }
 
 /**

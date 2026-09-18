@@ -123,6 +123,15 @@ export const ROLE_CLOCKED_IN = 'Clocked In'
 /** Separator roles (non-mentionable, display only) to separate role groups in member list */
 export const ROLE_SEPARATOR_NAME = '-------------'
 
+/**
+ * Discord allows 50 channels per category; stop one short so a repair run never
+ * wedges. It lives here, in a leaf module, because both the section planner
+ * (`services/projectSection.js`, which re-exports it) and the task-ticket helper
+ * (`services/taskTicketChannel.js`) need it, and importing the planner into the
+ * helper drags the whole database layer into a leaf.
+ */
+export const CATEGORY_SOFT_CAP = 49
+
 /** Bold category names applied by /migrate (map original name or partial match → new bold name) */
 export const CATEGORY_BOLD_NAMES = {
   'Meetings': '<==== 📋 MEETINGS 📋 ====>',

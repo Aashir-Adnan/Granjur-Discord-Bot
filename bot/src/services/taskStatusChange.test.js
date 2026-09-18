@@ -38,6 +38,42 @@ test('no warning when the status stays open, and a notify failure does not throw
   assert.deepEqual(out.notified, { channelId: null, created: false, dmed: [] })
 })
 
+test('a channel created by notify is written back onto the row', async () => {
+  // Without this the row still points at whatever it pointed at before, so the
+  // next /update-task looks the task up, does not find the channel it just
+  // made, and makes another — one duplicate becomes one per update, forever.
+  const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open', discordChannelId: null }
+  const db = fakeDb()
+  const notify = async () => ({ channelId: 'newchan', created: true, dmed: [] })
+  await applyTaskUpdate({ db, client, task, updates: { assigneeIds: ['11'] }, notify })
+  assert.deepEqual(db.calls, [
+    ['update', { where: { id: 'A' }, data: { assigneeIds: ['11'] } }],
+    ['update', { where: { id: 'A' }, data: { discordChannelId: 'newchan' } }],
+  ])
+})
+
+test('a task that already had its channel is not written back to', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open', discordChannelId: 'own' }
+  const db = fakeDb()
+  const notify = async () => ({ channelId: 'own', created: false, dmed: [] })
+  await applyTaskUpdate({ db, client, task, updates: { passedQaTests: 2 }, notify })
+  assert.equal(db.calls.length, 1)
+})
+
+test('a write-back that fails is logged, never thrown', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open', discordChannelId: null }
+  const db = fakeDb()
+  let n = 0
+  db.task.update = async () => { n += 1; if (n === 2) throw new Error('db down'); return null }
+  const notify = async () => ({ channelId: 'newchan', created: true, dmed: [] })
+  const errors = []; const orig = console.error; console.error = (...a) => errors.push(a)
+  try {
+    const out = await applyTaskUpdate({ db, client, task, updates: { assigneeIds: ['11'] }, notify })
+    assert.equal(out.notified.channelId, 'newchan')
+  } finally { console.error = orig }
+  assert.equal(errors.length, 1)
+})
+
 test('a failing warning lookup leaves the write in place and warning empty', async () => {
   const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open' }
   const db = fakeDb(); db.taskDependency.findByTask = async () => { throw new Error('db down') }

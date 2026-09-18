@@ -15,7 +15,7 @@
  *   role:     { action: 'create' | 'reuse' | 'refuse', name, id?, reason? }
  *   category: { action: 'create' | 'reuse' | 'rename', id?, name }
  *   channels: [{ key, action: 'create' | 'reuse' | 'rename' | 'move', id?, name, type }]
- *   tasks:    [{ taskId, channelId, action: 'rename' | 'move' | 'both' | 'none', name }]
+ *   tasks:    [{ taskId, channelId, action: 'rename' | 'move' | 'both' | 'none', name, topic }]
  *   warnings: string[]
  *
  * Every non-`reuse` channel entry carries the FINAL desired `name`, so the
@@ -25,12 +25,15 @@
  */
 import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
 import { slugify } from '../utils/docPath.js'
-import { taskChannelName, MAX_CHANNEL_NAME } from '../utils/taskChannelName.js'
+import { taskChannelName, taskChannelTopic, isTicketChannel, MAX_CHANNEL_NAME } from '../utils/taskChannelName.js'
 import { MANAGED_ROLES } from '../utils/roleSync.js'
 import { ensureMembersPanel } from './projectMembersPanel.js'
+import { CATEGORY_SOFT_CAP } from '../constants.js'
 
-/** Discord allows 50 channels per category; stop one short so a repair run never wedges. */
-export const CATEGORY_SOFT_CAP = 49
+// The cap lives in `constants.js`, a leaf: `taskTicketChannel.js` needs it too,
+// and importing this module into that leaf helper pulled the whole database
+// layer (and the production `.env`) into a test that touches no database.
+export { CATEGORY_SOFT_CAP }
 
 /** Discord's cap on a category name, the same 100 as a channel name. */
 const MAX_CATEGORY_NAME = 100
@@ -202,7 +205,24 @@ function planTasks(project, observed, channels, warnings) {
         leftBehind += 1
       }
     }
-    planned.push({ taskId: task.id, channelId: task.channelId, action, name })
+    // The topic rides along with the rename. A channel renamed from
+    // `feature-0145e3` to `feature-add-booking-rules` keeping its old topic
+    // would match neither the old name nor the new `Task <id>` marker, and
+    // /update-task would open a duplicate beside it on every update.
+    planned.push({
+      taskId: task.id,
+      channelId: task.channelId,
+      action,
+      name,
+      topic: taskChannelTopic({ type: task.type, title: task.title, taskId: task.id }),
+    })
+  }
+
+  const shared = Number(observed?.sharedTaskChannels ?? 0)
+  if (shared > 0) {
+    warnings.push(
+      `${shared} channel${shared === 1 ? '' : 's'} that tasks in "${project?.name}" point at ${shared === 1 ? 'is' : 'are'} not ${shared === 1 ? 'a task channel' : 'task channels'} — shared with other tasks, or not named like a ticket (a meeting review channel, most likely) — so ${shared === 1 ? 'it was' : 'they were'} left alone rather than renamed into this section.`
+    )
   }
 
   if (leftBehind > 0) {
@@ -225,6 +245,7 @@ function planTasks(project, observed, channels, warnings) {
  *   categoryChannelCount?: number,
  *   channels?: Object<string, {id: string, name: string, parentId: string|null}>,
  *   tasks?: Array<{id: string, title: string, type: string, channelId: string, channelName: string, parentId: string|null}>,
+ *   sharedTaskChannels?: number,
  *   takenNames?: Set<string>,
  * }} observed a plain snapshot the caller gathers — no Discord objects
  */
@@ -383,12 +404,38 @@ export function observeProjectSection(guild, project, tasks = []) {
     if (channel) channels[key] = { id: channel.id, name: channel.name, parentId: channel.parentId ?? null }
   }
 
+  // A channel more than one task row points at is NOT a task channel, and
+  // neither is one that is not shaped like a ticket. Every
+  // unassigned meeting task carries the meeting's SHARED review channel in
+  // `discordChannelId` — renaming that to `feature-<title>` and moving it into
+  // one project's category would take the whole meeting's review away from
+  // everything else that uses it. `mirroredStage` only ever treats a channel it
+  // created for one task as that task's own; this is the same rule, read off
+  // the rows instead of the pipeline job.
+  const referenceCounts = new Map()
+  for (const task of tasks || []) {
+    const channelId = task?.discordChannelId ?? task?.channelId ?? null
+    if (!channelId) continue
+    referenceCounts.set(channelId, (referenceCounts.get(channelId) ?? 0) + 1)
+  }
+
+  const sharedChannelIds = new Set()
   const observedTasks = []
   for (const task of tasks || []) {
     const channelId = task?.discordChannelId ?? task?.channelId ?? null
     if (!channelId) continue
     const channel = byId.get(channelId)
     if (!channel) continue
+    // Two ways a row can name a channel that is not its own ticket: several
+    // rows name it (the review channel of a meeting with many unassigned
+    // tasks), or it is not shaped like a ticket at all (the review channel of a
+    // meeting that produced exactly ONE unassigned task — a count of one, so
+    // the first test alone would rename and move it). `isTicketChannel` is the
+    // same test `ownsChannel` uses before trusting a row's channel id.
+    if ((referenceCounts.get(channelId) ?? 0) > 1 || !isTicketChannel(channel)) {
+      sharedChannelIds.add(channelId)
+      continue
+    }
     observedTasks.push({
       id: task.id,
       title: task.title,
@@ -407,6 +454,9 @@ export function observeProjectSection(guild, project, tasks = []) {
     categoryChannelCount: categoryId ? all.filter((c) => c.parentId === categoryId).length : 0,
     channels,
     tasks: observedTasks,
+    // Counted, not silently dropped: the operator's reply says how many
+    // channels the rows point at were left alone and why.
+    sharedTaskChannels: sharedChannelIds.size,
     takenNames: new Set(all.map((c) => c.name)),
   }
 }
@@ -546,7 +596,11 @@ export async function applyProjectSection(
     }
 
     // 4. The task channels. Same single edit, and they keep the per-member
-    //    overwrites they already carry — only name and parent are ever set.
+    //    overwrites they already carry — only name, parent and topic are set.
+    //    The topic rides along in that ONE edit (two channel edits per ten
+    //    minutes, and this branch moves 31 channels): a channel renamed to its
+    //    title while keeping `Feature: <title>` as its topic would name a task
+    //    nothing can match it to, and /update-task would build a duplicate.
     for (const task of plan?.tasks ?? []) {
       if (task.action === 'none') continue
       try {
@@ -555,7 +609,9 @@ export async function applyProjectSection(
         // A `rename` at the category cap means "readable name, stay put", so
         // the parent it goes back with is the one it already has.
         const parent = task.action === 'rename' ? channel.parentId ?? null : categoryId
-        await channel.edit({ name: task.name, parent })
+        const payload = { name: task.name, parent }
+        if (task.topic) payload.topic = task.topic
+        await channel.edit(payload)
         result.tasks += 1
         ;(task.action === 'rename' ? result.renamed : result.moved).push(task.name)
       } catch (e) {
@@ -609,13 +665,21 @@ export async function applyProjectSection(
  * project. A member the bot cannot touch is collected, never thrown — one
  * member whose roles sit above the bot's must not stop the rest.
  *
+ * `revoke: false` runs the grant half only. A caller whose roster is known to
+ * be incomplete — the member list would not load, or the read came back at its
+ * hard row limit — must say so explicitly, because the revoke half reads "not
+ * in the roster" as "no longer on the project" and would strip the role from
+ * real members. Stating it as a flag rather than by padding the roster with
+ * every current holder means the suppression cannot quietly stop working if
+ * how `holders` is computed ever changes.
+ *
  * @param {import('discord.js').Guild} guild
  * @param {{name?: string}} project only for the log line
  * @param {Array<{discordId: string}>} members the project's member rows
- * @param {{roleId: string|null}} opts
+ * @param {{roleId: string|null, revoke?: boolean}} opts
  * @returns {Promise<{granted: string[], revoked: string[], failed: string[]}>}
  */
-export async function syncProjectRoleMembers(guild, project, members = [], { roleId } = {}) {
+export async function syncProjectRoleMembers(guild, project, members = [], { roleId, revoke = true } = {}) {
   const out = { granted: [], revoked: [], failed: [] }
   if (!roleId) return out
 
@@ -645,6 +709,8 @@ export async function syncProjectRoleMembers(guild, project, members = [], { rol
       fail(id, e)
     }
   }
+
+  if (!revoke) return out
 
   for (const [id, member] of holders) {
     if (wanted.has(id)) continue

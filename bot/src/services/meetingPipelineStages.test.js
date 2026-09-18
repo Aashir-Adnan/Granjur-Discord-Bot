@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { ChannelType } from 'discord.js'
 import { stageRunners, resolveRepoSlug } from './meetingPipelineStages.js'
 
 test('resolveRepoSlug parses ssh + https', () => {
@@ -509,7 +510,9 @@ test('mirrored gives each assigned task its own channel, DMs the assignee, and r
 })
 
 test('mirrored gives a matched task its channel inside the project, named after its title', async () => {
-  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null }
+  // `type` matters: a stored category id that resolves to a text channel is
+  // no longer accepted as a parent.
+  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null, type: ChannelType.GuildCategory }
   const catMap = new Map([[projectCategory.id, projectCategory]])
   const guildCreates = []
   const chanSends = []
