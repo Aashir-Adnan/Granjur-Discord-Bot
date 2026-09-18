@@ -78,6 +78,22 @@ From the 2026-09-18 build on branch `feat/project-sections` (built and reviewed,
   only, no API calls) to find where a same-named role holds an overwrite —
   O(projects × channels), roughly 95 × 9 on the real server today. Fine at this
   volume; would need a rethink at a much larger guild.
+- `bot/src/commands/cleanup.js:180-186`: the `userChannel` read still catches to an
+  empty set, so a failed read silently shrinks the protected set. Same defect
+  shape as the project read that was fixed in the final wave, one table over.
+- `/cleanup`'s `handleConfirm` deletes the stored pending ids with no re-check, so
+  a channel that became protected between the preview and the confirm is still
+  deleted.
+- `meetingPipelineStages.js:333` re-reads the meeting that `resolveMeetingChannel`
+  already read 43 lines earlier; thread `projectId` out of it instead.
+- `create-project-role.js:27`: `loose()` folds case and combining marks but not the
+  rest of `utf8mb4_general_ci` (`ß`→`s`, `Æ`→`ae`), so two projects differing only
+  that way are still resolved arbitrarily by the `findByName` fallback.
+- When `/project-setup` adds the `@everyone` deny to a category the bot ADOPTED
+  rather than created, the only operator-facing statement is a planner warning
+  inside that project's block, which `capReply` can drop from a large `all:true`
+  run. The console mirror still logs it. This is the one place the bot changes
+  permissions on something it did not create.
 
 ## Team section — follow-ups
 From the 2026-09-18 build (built and reviewed on branches, not yet merged/deployed — see

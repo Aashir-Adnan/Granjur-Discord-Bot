@@ -18,8 +18,12 @@ class FakeCache extends Map {
   }
 }
 
-function fakeGuild({ channels = [], fetchable = [], fetchError = null } = {}) {
+function fakeGuild({ channels = [], fetchable = [], fetchError = null, allChannels = null } = {}) {
   const cache = new FakeCache(channels.map((c) => [c.id, c]))
+  // What Discord actually has, for the no-id `fetch()` that populates the
+  // cache in full. Defaults to today's cache plus whatever a single `fetch(id)`
+  // can reach, so tests that never rely on a full resync are unaffected.
+  const fullList = allChannels ?? [...channels, ...fetchable]
   const created = []
   let n = 0
   return {
@@ -31,7 +35,13 @@ function fakeGuild({ channels = [], fetchable = [], fetchError = null } = {}) {
       cache,
       fetch: async (id) => {
         if (fetchError) throw fetchError
-        return fetchable.find((c) => c.id === id) ?? null
+        if (id === undefined) {
+          for (const c of fullList) cache.set(c.id, c)
+          return cache
+        }
+        const found = fetchable.find((c) => c.id === id) ?? null
+        if (found) cache.set(found.id, found)
+        return found
       },
       create: async (opts) => {
         created.push(opts)
@@ -335,14 +345,19 @@ test('any OTHER category fetch error creates nothing and says to try again', asy
 // B9: the cap is counted from the category that was found
 // ---------------------------------------------------------------------------
 
-test('a category found only by fetch has its children counted from the category itself', async () => {
-  // The guild cache holds none of them, so the old count said 0 and would
-  // have pushed an almost-full section past the cap.
+test('a category found only by fetch(id) has its children counted only after the full fetch runs', async () => {
+  // Real discord.js: `guild.channels.fetch(id)` caches only that one channel,
+  // never its siblings, and `CategoryChannelChildManager#cache` is just a
+  // filter over `guild.channels.cache` — so the 48 children are invisible
+  // until `guild.channels.fetch()` (no id) resyncs the whole cache. A count
+  // taken before that resync would say 0 and push this section past the cap.
   const cat = category(PROJ_CAT)
-  cat.children = {
-    cache: new FakeCache(Array.from({ length: 48 }, (_, k) => [`c${k}`, textIn(`c${k}`, PROJ_CAT)])),
-  }
-  const guild = fakeGuild({ channels: [globalCategory()], fetchable: [cat] })
+  const kids = Array.from({ length: 48 }, (_, k) => textIn(`c${k}`, PROJ_CAT))
+  const guild = fakeGuild({
+    channels: [globalCategory()],
+    fetchable: [cat],
+    allChannels: [globalCategory(), cat, ...kids],
+  })
   const { deps } = seams()
   const i = fakeInteraction(guild, { project: 'p1' })
   await execute(i, deps)
@@ -384,6 +399,43 @@ test('an Administrator can see every section, so no such line', async () => {
   const i = fakeInteraction(guild, { project: 'p1', member: admin })
   await execute(i, deps)
   assert.doesNotMatch(i.replies[0].content, /you do not hold it/)
+})
+
+// ---------------------------------------------------------------------------
+// Final re-review, fix 2: a roleless project's notice names the real remedy
+// ---------------------------------------------------------------------------
+
+test('a caller outside a roleless project\'s section is pointed at /project-setup, not /project-members', async () => {
+  // FRAMEWORK carries no discordRoleId: the role was refused (or never made),
+  // so there is nothing to add the caller to. /project-members add itself
+  // answers that case with "no channel access changed" — a dead end — so the
+  // notice must not send anyone there.
+  const guild = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const { deps } = seams([FRAMEWORK, OTHER])
+  const i = fakeInteraction(guild, { project: 'p1', member: memberWith() })
+  await execute(i, deps)
+  assertProjectShapes(guild)
+  assert.match(i.replies[0].content, /has no Discord role yet/)
+  assert.match(i.replies[0].content, /\/project-setup/)
+  assert.doesNotMatch(i.replies[0].content, /\/project-members add/)
+})
+
+test('a roleless project named after a managed job role is told to rename it first', async () => {
+  const managedNamed = { ...FRAMEWORK, name: 'Database' }
+  const guild = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const { deps } = seams([managedNamed, OTHER])
+  const i = fakeInteraction(guild, { project: 'p1', member: memberWith() })
+  await execute(i, deps)
+  assertProjectShapes(guild)
+  assert.match(i.replies[0].content, /rename the project/)
+})
+
+test('a caller who holds the project role is unaffected by the roleless branch', async () => {
+  const guild = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const { deps } = seams([GATED, OTHER])
+  const i = fakeInteraction(guild, { project: 'p1', member: memberWith('role-fw') })
+  await execute(i, deps)
+  assert.doesNotMatch(i.replies[0].content, /has no Discord role yet/)
 })
 
 test('a meeting that fell back to the public category carries no privacy line', async () => {

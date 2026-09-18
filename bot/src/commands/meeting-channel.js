@@ -5,6 +5,7 @@ import { ensureGuidelinesPinned } from '../config/meetingGuidelines.js'
 import { projectFromChannel } from '../services/projectSection.js'
 import { projectChoices } from './update-task.js'
 import { CATEGORY_SOFT_CAP } from '../constants.js'
+import { MANAGED_ROLES } from '../utils/roleSync.js'
 
 const CATEGORY_MEETINGS = '📋 Meetings'
 
@@ -113,14 +114,12 @@ async function projectCategoryFor(guild, project) {
   if (!category || category.type !== ChannelType.GuildCategory) {
     return { category: null, note: noSection }
   }
-  // Counted from the CATEGORY, not from the guild cache. A category found only
-  // through `fetch` has children the guild cache never loaded, and counting
-  // those would report an almost-full section as empty and push it past
-  // Discord's cap.
-  const own = category.children?.cache
-  const children = own
-    ? valuesOf(own).length
-    : valuesOf(guild.channels?.cache).filter((c) => c?.parentId === category.id).length
+  // `CategoryChannelChildManager#cache` is itself just a filter over
+  // `guild.channels.cache`, so a category found only through `fetch(id)` — which
+  // caches that one channel and never its siblings — leaves the count at 0
+  // either way. Populate the cache with a full fetch before counting once.
+  await guild.channels.fetch()
+  const children = valuesOf(guild.channels?.cache).filter((c) => c?.parentId === category.id).length
   if (children + CHANNELS_PER_MEETING > CATEGORY_SOFT_CAP) {
     return {
       category: null,
@@ -148,6 +147,30 @@ function callerCanSeeSection(interaction, project) {
   const roleId = project?.discordRoleId ? String(project.discordRoleId) : null
   if (!roleId) return false
   return Boolean(interaction.member?.roles?.cache?.has?.(roleId))
+}
+
+const fold = (s) => String(s ?? '').trim().toLowerCase()
+const MANAGED_FOLDED = new Set(MANAGED_ROLES.map(fold))
+const isManagedName = (name) => MANAGED_FOLDED.has(fold(name))
+
+/**
+ * The privacy notice for a caller who cannot see the project's section.
+ *
+ * A project with a role has one to be added to, so the remedy is
+ * `/project-members add`. A project whose role was refused (`discordRoleId`
+ * is null) has none — `/project-members add` itself only says "no channel
+ * access changed" for that case — so the remedy points at `/project-setup`
+ * instead, and, for a project named after a managed job role, at renaming it
+ * first since that name can never take a role.
+ */
+function privacyNotice(project) {
+  if (project.discordRoleId) {
+    return `Both channels sit inside **${project.name}**'s private section, so only people holding its project role can open them — you do not hold it, so those two links will not work for you. Ask to be added with **/project-members add**.`
+  }
+  const rename = isManagedName(project.name)
+    ? ` **${project.name}** is a managed job role name, so it needs a different name before it can have one — rename the project, then run **/project-setup**.`
+    : ' Run **/project-setup** to give it one.'
+  return `Both channels sit inside **${project.name}**'s private section, but it has no Discord role yet, so nobody but an Administrator can open them.${rename}`
 }
 
 async function globalMeetingsCategory(guild) {
@@ -242,9 +265,7 @@ export async function execute(
   ]
   if (placement.note) lines.push(placement.note)
   if (inProject && !callerCanSeeSection(interaction, project)) {
-    lines.push(
-      `Both channels sit inside **${project.name}**'s private section, so only people holding its project role can open them — you do not hold it, so those two links will not work for you. Ask to be added with **/project-members add**.`
-    )
+    lines.push(privacyNotice(project))
   }
   await interaction.editReply({ content: lines.join('\n') })
 }
