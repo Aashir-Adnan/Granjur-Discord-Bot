@@ -20,6 +20,7 @@ import { createTaskTicketChannel } from '../services/taskTicketChannel.js'
 import { createIssue } from '../services/github.js'
 import { CATEGORY_BOLD_NAMES, CATEGORY_SOFT_CAP } from '../constants.js'
 import { EPHEMERAL } from '../constants.js'
+import { SCOPE_CHOICES, scopeLabel, isValidScope } from '../utils/taskScope.js'
 
 const FLOW_KEY = 'create_task'
 
@@ -43,6 +44,7 @@ async function respond(interaction, payload) {
 const STEP_TYPE = 'type'
 const STEP_REPO = 'repo'
 const STEP_MODAL = 'modal'
+const STEP_SCOPE = 'scope'
 const STEP_REPOS_PROJECTS = 'repos_projects'
 const STEP_MEMBERS = 'members'
 const STEP_CONFIRM = 'confirm'
@@ -60,7 +62,7 @@ export const data = new SlashCommandBuilder()
     o.setName('description').setDescription('Task description (optional)').setRequired(false).setMaxLength(2000)
   )
   .addStringOption((o) =>
-    o.setName('scope').setDescription('Scope, e.g. Frontend (feature only)').setRequired(false).setMaxLength(100)
+    o.setName('scope').setDescription('Scope').setRequired(false).addChoices(...SCOPE_CHOICES)
   )
   .addStringOption((o) =>
     o.setName('modules').setDescription('Modules, comma-separated (feature only)').setRequired(false).setMaxLength(500)
@@ -98,7 +100,7 @@ export async function execute(interaction) {
   const typeOpt = interaction.options.getString('type')
   const titleOpt = interaction.options.getString('title')
   const descriptionOpt = (interaction.options.getString('description') || '').trim() || null
-  const scopeOpt = (interaction.options.getString('scope') || '').trim().slice(0, 100) || null
+  const scopeOpt = interaction.options.getString('scope') // constrained to the four choices, or null
   const modulesOpt = (interaction.options.getString('modules') || '').trim()
   const assigneesOpt = interaction.options.getString('assignees')
   const taggedOpt = interaction.options.getString('tagged')
@@ -120,14 +122,16 @@ export async function execute(interaction) {
       taskType,
       title: titleOpt.trim(),
       description: descriptionOpt,
-      scope: taskType === 'feature' ? (scopeOpt || null) : null,
+      scope: scopeOpt || null,
       modules: taskType === 'feature' ? modules : [],
       assigneeIds: taskType === 'feature' ? parseUserIds(assigneesOpt || '') : undefined,
       taggedMemberIds: taskType === 'bug' ? parseUserIds(taggedOpt || '') : undefined,
     }
     flowStore.set(interaction.user.id, guild.id, FLOW_KEY, state)
     if (taskType === 'feature') {
-      await showReposProjectsStep(interaction, state, guild)
+      // Scope may already be known (given in the command); proceedAfterScope
+      // asks for it first only when it is not.
+      await proceedAfterScope(interaction, state, guild)
     } else {
       if (!repos.length) return interaction.editReply({ content: 'No repositories. Add with **/repos** first.', components: [] })
       const embed = new EmbedBuilder()
@@ -240,16 +244,96 @@ function buildTaskModal(isFeature) {
     )
   )
   if (isFeature) {
+    // Scope is a fixed choice now, not typed text — a modal can only hold text
+    // inputs, so it is asked as its own select-menu step (STEP_SCOPE) after
+    // this modal is submitted, not inside it.
     modal.addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('scope').setLabel('Scope (optional)').setStyle(TextInputStyle.Short).setPlaceholder('e.g. Frontend').setRequired(false).setMaxLength(100)
-      ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId('modules').setLabel('Modules (comma-separated, optional)').setStyle(TextInputStyle.Short).setPlaceholder('e.g. Auth, API').setRequired(false).setMaxLength(500)
       )
     )
   }
   return modal
+}
+
+/** The scope step's picker. Exported for its test. */
+export function scopeRow() {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('create_task_scope')
+    .setPlaceholder('Select scope')
+    .addOptions(SCOPE_CHOICES.map((c) => ({ label: c.name, value: c.value })))
+  return new ActionRowBuilder().addComponents(menu)
+}
+
+async function showScopeStep(interaction, state, guild) {
+  try {
+    const isFeature = state.taskType === 'feature'
+    const embed = new EmbedBuilder()
+      .setTitle(isFeature ? 'Create feature task' : 'Create bug task')
+      .setDescription('Pick the **scope** this task belongs to.')
+      .addFields({ name: 'Title', value: state.title?.slice(0, 100) || '—', inline: true })
+      .setColor(isFeature ? 0x5865f2 : 0xed4245)
+      .setFooter({ text: 'Step — Scope' })
+    await respond(interaction, { embeds: [embed], components: [scopeRow()] })
+  } catch (e) {
+    console.error('[create-task] showScopeStep error:', e)
+    await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
+  }
+}
+
+export async function handleScopeSelect(interaction) {
+  try {
+    const guild = interaction.guild
+    if (!guild) {
+      console.error('[create-task] handleScopeSelect: no guild')
+      return
+    }
+    const state = flowStore.get(interaction.user.id, guild.id, FLOW_KEY)
+    if (!state || state.step !== STEP_SCOPE) {
+      console.error('[create-task] handleScopeSelect: wrong step or no state', state?.step)
+      await respond(interaction, { content: SESSION_EXPIRED_MSG, components: [] }).catch(() => {})
+      return
+    }
+    const scope = interaction.values?.[0]
+    if (!isValidScope(scope)) {
+      console.error('[create-task] handleScopeSelect: invalid scope value', scope)
+      await respond(interaction, { content: SESSION_EXPIRED_MSG, components: [] }).catch(() => {})
+      return
+    }
+    await proceedAfterScope(interaction, { ...state, scope }, guild)
+  } catch (e) {
+    console.error('[create-task] handleScopeSelect error:', e)
+    await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
+  }
+}
+
+/**
+ * The single decision point for "what comes right after title/description are
+ * known": ask for scope first when it is not yet set (every path that can
+ * reach here funnels through this — the fast slash-command path, the modal,
+ * and a bug's repo-select when its title arrived via the fast path too), then
+ * continue to the type's real next step. Centralizing this avoids repeating
+ * the same `if (!state.scope)` branch at every one of those call sites.
+ */
+async function proceedAfterScope(interaction, state, guild) {
+  if (!state.scope) {
+    const next = { ...state, step: STEP_SCOPE }
+    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, next)
+    return showScopeStep(interaction, next, guild)
+  }
+  if (state.taskType === 'feature') {
+    const next = { ...state, step: STEP_REPOS_PROJECTS }
+    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, next)
+    return showReposProjectsStep(interaction, next, guild)
+  }
+  if (state.taggedMemberIds?.length !== undefined) {
+    const next = { ...state, step: STEP_CONFIRM }
+    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, next)
+    return showConfirmStep(interaction, next, guild)
+  }
+  const next = { ...state, step: STEP_MEMBERS }
+  flowStore.set(interaction.user.id, guild.id, FLOW_KEY, next)
+  return showMembersStep(interaction, next, guild)
 }
 
 export async function handleShowModalButton(interaction) {
@@ -307,7 +391,6 @@ export async function handleTaskModal(interaction) {
 
   const nextState = { ...state, title, description }
   if (isFeature) {
-    nextState.scope = (interaction.fields.getTextInputValue('scope') || '').trim().slice(0, 100)
     const modulesText = (interaction.fields.getTextInputValue('modules') || '').trim()
     const moduleNames = modulesText ? modulesText.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 20) : []
     const modules = []
@@ -318,14 +401,10 @@ export async function handleTaskModal(interaction) {
       modules.push(name)
     }
     nextState.modules = modules
-    nextState.step = STEP_REPOS_PROJECTS
-    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
-    await showReposProjectsStep(interaction, nextState, guild)
-  } else {
-    nextState.step = STEP_MEMBERS
-    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
-    await showMembersStep(interaction, nextState, guild)
   }
+  // Neither modal ever asks for scope (it is a fixed choice, not text), so it
+  // is always still unset here — proceedAfterScope shows the select step next.
+  await proceedAfterScope(interaction, nextState, guild)
   } catch (e) {
     console.error('[create-task] handleTaskModal error:', e)
     await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
@@ -359,17 +438,10 @@ export async function handleRepoSelect(interaction) {
     }
 
     const nextState = { ...state, repositoryId: repoId, repo }
-    // If title was already set (e.g. from command), skip modal; if tagged was also provided skip members step
+    // If title was already set (e.g. from command), skip the modal — proceedAfterScope
+    // asks for scope first if it is not already known, then decides tagged/members/confirm.
     if (state.title) {
-      if (state.taggedMemberIds?.length !== undefined) {
-        nextState.step = STEP_CONFIRM
-        flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
-        await showConfirmStep(interaction, nextState, guild)
-      } else {
-        nextState.step = STEP_MEMBERS
-        flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
-        await showMembersStep(interaction, nextState, guild)
-      }
+      await proceedAfterScope(interaction, nextState, guild)
     } else {
       nextState.step = STEP_MODAL
       flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
@@ -394,7 +466,7 @@ async function showReposProjectsStep(interaction, state, guild) {
     .setDescription('Select **repos** and **projects** (optional). Then click **Next** to confirm.')
     .addFields(
       { name: 'Title', value: state.title?.slice(0, 100) || '—', inline: true },
-      { name: 'Scope', value: state.scope || '—', inline: true },
+      { name: 'Scope', value: scopeLabel(state.scope) || '—', inline: true },
       { name: 'Description', value: (state.description || '—').slice(0, 150), inline: false }
     )
     .setColor(0x5865f2)
@@ -574,6 +646,7 @@ async function showConfirmStep(interaction, state, guild) {
     .addFields(
       { name: 'Title', value: state.title?.slice(0, 100) || '—', inline: true },
       { name: 'Type', value: isFeature ? 'Feature' : 'Bug', inline: true },
+      { name: 'Scope', value: scopeLabel(state.scope) || '—', inline: true },
       { name: 'Description', value: (state.description || '—').slice(0, 200), inline: false }
     )
     .setColor(isFeature ? 0x5865f2 : 0xed4245)
@@ -756,7 +829,7 @@ export async function handleCreate(
       // category still has room; otherwise the global Features category,
       // exactly as before createTaskTicketChannel knew about projects — and
       // `fellBack` is why, for the reply.
-      const scopeMod = [state.scope, (state.modules?.length ? state.modules.join(', ') : null)].filter(Boolean).join(' · ')
+      const scopeMod = [scopeLabel(state.scope), (state.modules?.length ? state.modules.join(', ') : null)].filter(Boolean).join(' · ')
       const { channel, fellBack } = await createChannel(guild, {
         taskId: task.id,
         title: state.title,
@@ -799,6 +872,7 @@ export async function handleCreate(
           status: 'pending',
           taggedMemberIds: taggedIds,
           createdBy: interaction.user.id,
+          scope: state.scope ?? null,
           passedApiTests,
           passedQaTests,
           passedAcceptanceCriteria,
@@ -839,6 +913,7 @@ export async function handleCreate(
         .setDescription((state.description || 'No description.').slice(0, 1000))
         .addFields(
           { name: 'Status', value: 'pending', inline: true },
+          { name: 'Scope', value: scopeLabel(state.scope) || '—', inline: true },
           { name: 'Tagged', value: taggedMentions || 'None', inline: true },
           { name: 'Repository', value: state.repo?.url || '—', inline: false },
           { name: 'Resolve', value: 'Use **/resolve-bug** in this channel when fixed.', inline: false },
