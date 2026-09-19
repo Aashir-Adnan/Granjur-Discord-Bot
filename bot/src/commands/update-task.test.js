@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { projectChoices, NO_PROJECT, nextAssignees, applyDependencyChange, execute, autocomplete } from './update-task.js'
+import { projectChoices, NO_PROJECT, nextAssignees, applyDependencyChange, canSeeTask, execute, autocomplete } from './update-task.js'
 
 const projects = [
   { id: 'p-fw', name: 'Framework' },
@@ -60,14 +60,20 @@ function fakeDb({ tasks = [], deps = [], removed = 1 } = {}) {
   }
 }
 
-/** Fake slash interaction: option values come from `opts`; replies are recorded. */
-function fakeInteraction(opts = {}, { focused = null } = {}) {
+/**
+ * Fake slash interaction: option values come from `opts`; replies are recorded.
+ * Defaults to an Administrator caller, so every test written before the
+ * ownership gate existed keeps its original meaning unchanged. Tests OF the
+ * gate pass their own `member`.
+ */
+function fakeInteraction(opts = {}, { focused = null, userId = 'u1', member = adminMember() } = {}) {
   const replies = []
   const get = (name) => (Object.prototype.hasOwnProperty.call(opts, name) ? opts[name] : null)
   return {
     replies,
     guild: { id: 'guild1', members: { cache: new Map() } },
-    user: { id: 'u1' },
+    user: { id: userId },
+    member,
     client: {},
     options: {
       getString: get,
@@ -78,6 +84,14 @@ function fakeInteraction(opts = {}, { focused = null } = {}) {
     editReply: async (payload) => { replies.push(payload); return payload },
     respond: async (choices) => { replies.push(choices); return choices },
   }
+}
+
+function adminMember() {
+  return { permissions: { has: (p) => p === 'Administrator' } }
+}
+
+function plainMember() {
+  return { permissions: { has: () => false }, roles: { cache: { some: () => false } } }
 }
 
 function fakeNotify() {
@@ -288,4 +302,109 @@ test('execute: an update that leaves the project alone says nothing about it', a
   const it = fakeInteraction({ task: 'A', status: 'in_progress' })
   await execute(it, { db, notify: fakeNotify(), getConfig })
   assert.doesNotMatch(embedText(it.replies[0]), /channel has not moved/)
+})
+
+// ---------------------------------------------------------------------------
+// Only CEO/Server Manager see and can update every task; everyone else only
+// a task they hold. A bug task's holder is whoever is tagged, not assigned.
+// ---------------------------------------------------------------------------
+
+const HELD = { id: 'H', title: 'My feature', status: 'open', assigneeIds: ['u1'] }
+const BUG_HELD = { id: 'HB', title: 'My bug', status: 'pending', is_bug: 1, taggedMemberIds: ['u1'] }
+const OTHERS = { id: 'O', title: "Someone else's task", status: 'open', assigneeIds: ['u2'] }
+
+test('canSeeTask: leadership sees everything; a normal caller only their own', () => {
+  assert.equal(canSeeTask(OTHERS, { isLeadership: true, callerId: 'u1' }), true)
+  assert.equal(canSeeTask(OTHERS, { isLeadership: false, callerId: 'u1' }), false)
+  assert.equal(canSeeTask(HELD, { isLeadership: false, callerId: 'u1' }), true)
+  assert.equal(canSeeTask(BUG_HELD, { isLeadership: false, callerId: 'u1' }), true) // tagged, not assigned
+})
+
+test('execute: a normal member can update a task they hold', async () => {
+  const db = fakeDb({ tasks: [HELD] })
+  const it = fakeInteraction({ task: 'H', status: 'in_progress' }, { userId: 'u1', member: plainMember() })
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.doesNotMatch(embedText(it.replies[0]), /No task matches/)
+  assert.equal(kinds(db)[0], 'update')
+})
+
+test('execute: a normal member is refused a task that is not theirs, same message as a nonexistent one', async () => {
+  const db = fakeDb({ tasks: [OTHERS] })
+  const it = fakeInteraction({ task: 'O', status: 'in_progress' }, { userId: 'u1', member: plainMember() })
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.equal(it.replies[0].content, 'No task matches **O**. Start typing a title and pick one from the list.')
+  assert.deepEqual(kinds(db), []) // nothing written
+})
+
+test('execute: leadership can update a task that is not theirs', async () => {
+  const db = fakeDb({ tasks: [OTHERS] })
+  const it = fakeInteraction({ task: 'O', status: 'in_progress' }, { userId: 'u1', member: adminMember() })
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.doesNotMatch(embedText(it.replies[0]), /No task matches/)
+  assert.equal(kinds(db)[0], 'update')
+})
+
+test('execute: scope writes the field, from the fixed choices', async () => {
+  const db = fakeDb({ tasks: [A] })
+  const it = fakeInteraction({ task: 'A', scope: 'qa' })
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.equal(kinds(db)[0], 'update')
+  assert.equal(db.calls[0][1].data.scope, 'qa')
+})
+
+// ---------------------------------------------------------------------------
+// autocomplete: the `task` field is scoped by who is asking; blocked_by and
+// unblock are never scoped — a blocker can belong to anyone.
+// ---------------------------------------------------------------------------
+
+test('autocomplete: task suggestions are narrowed to held tasks for a normal caller', async () => {
+  const db = fakeDb({ tasks: [HELD, OTHERS] })
+  const it = fakeInteraction({}, { focused: { name: 'task', value: '' }, userId: 'u1', member: plainMember() })
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(it.replies[0].map((c) => c.value), ['H'])
+})
+
+test('autocomplete: task suggestions show everything for leadership', async () => {
+  const db = fakeDb({ tasks: [HELD, OTHERS] })
+  const it = fakeInteraction({}, { focused: { name: 'task', value: '' }, userId: 'u1', member: adminMember() })
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(it.replies[0].map((c) => c.value).sort(), ['H', 'O'])
+})
+
+test('autocomplete: filter_assignee narrows the task list to that person, for leadership too', async () => {
+  const db = fakeDb({ tasks: [HELD, OTHERS] })
+  const it = fakeInteraction(
+    { filter_assignee: 'u2' },
+    { focused: { name: 'task', value: '' }, userId: 'u1', member: adminMember() }
+  )
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(it.replies[0].map((c) => c.value), ['O'])
+})
+
+test('autocomplete: filter_project narrows the task list to that project', async () => {
+  const db = fakeDb({ tasks: [{ ...HELD, projectId: 'p-fw' }, { ...OTHERS, projectId: 'p-hms' }] })
+  const it = fakeInteraction(
+    { filter_project: 'p-hms' },
+    { focused: { name: 'task', value: '' }, userId: 'u1', member: adminMember() }
+  )
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(it.replies[0].map((c) => c.value), ['O'])
+})
+
+test('autocomplete: filter_project suggests project names, with no detach entry', async () => {
+  const db = fakeDb({ tasks: [] })
+  db.project.findMany = async () => projects
+  const it = fakeInteraction({}, { focused: { name: 'filter_project', value: 'hms' } })
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(it.replies[0].map((c) => c.value), ['p-hms'])
+})
+
+test('autocomplete: blocked_by and unblock are never narrowed by ownership — a blocker can belong to anyone', async () => {
+  const db = fakeDb({ tasks: [HELD, OTHERS] })
+  const it = fakeInteraction(
+    { task: 'H' },
+    { focused: { name: 'blocked_by', value: '' }, userId: 'u1', member: plainMember() }
+  )
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(it.replies[0].map((c) => c.value).sort(), ['H', 'O'])
 })

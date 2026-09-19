@@ -1,9 +1,11 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js'
-import db, { getOrCreateGuildConfig } from '../db/index.js'
+import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
 import { taskChoiceLabel, holdersOf, idList } from '../utils/taskLabel.js'
 import { wouldCycle } from '../utils/taskDeps.js'
 import { notifyTaskUpdate } from '../services/taskUpdateNotify.js'
 import { applyTaskUpdate } from '../services/taskStatusChange.js'
+import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
+import { SCOPE_CHOICES } from '../utils/taskScope.js'
 
 /** Parse space-separated @mentions or Discord user IDs into array of IDs. */
 function parseUserIds(str) {
@@ -36,6 +38,9 @@ export const data = new SlashCommandBuilder()
   )
   .addStringOption((o) =>
     o.setName('status').setDescription('New status').setRequired(false).addChoices(...STATUS_CHOICES)
+  )
+  .addStringOption((o) =>
+    o.setName('scope').setDescription('Scope').setRequired(false).addChoices(...SCOPE_CHOICES)
   )
   .addIntegerOption((o) =>
     o.setName('passed_api_tests').setDescription('Number of API tests passed (null = N/A)').setRequired(false).setMinValue(0)
@@ -73,6 +78,14 @@ export const data = new SlashCommandBuilder()
   .addUserOption((o) => o.setName('remove_assignee').setDescription('Take one assignee off the task').setRequired(false))
   .addStringOption((o) => o.setName('blocked_by').setDescription('This task cannot proceed until that task is done (pick from the list)').setRequired(false).setAutocomplete(true))
   .addStringOption((o) => o.setName('unblock').setDescription('Remove a blocker from this task (pick from the list)').setRequired(false).setAutocomplete(true))
+  .addUserOption((o) => o.setName('filter_assignee').setDescription('Only used to narrow the task list below — pick a person to find their tasks').setRequired(false))
+  .addStringOption((o) =>
+    o
+      .setName('filter_project')
+      .setDescription('Only used to narrow the task list below — start typing a project name')
+      .setRequired(false)
+      .setAutocomplete(true)
+  )
 
 /** Sentinel value for "detach from any project" in the project picker. */
 export const NO_PROJECT = 'none'
@@ -122,6 +135,16 @@ function sameIds(a, b) {
   return x.size === y.size && [...x].every((id) => y.has(id))
 }
 
+/**
+ * Whether `callerId` may see and update `task` in `/update-task`. CEO and
+ * Server Manager (leadership) see and can update anything; anyone else only
+ * a task they hold — same definition of "theirs" the picker's fuzzy search
+ * already uses (assignees for a feature, tagged members for a bug). Pure.
+ */
+export function canSeeTask(task, { isLeadership, callerId }) {
+  return Boolean(isLeadership) || holdersOf(task).includes(String(callerId))
+}
+
 export async function execute(interaction, { db: dbArg = db, notify = notifyTaskUpdate, getConfig = getOrCreateGuildConfig } = {}) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
@@ -129,17 +152,28 @@ export async function execute(interaction, { db: dbArg = db, notify = notifyTask
   const taskId = interaction.options.getString('task').trim()
   const cfg = await getConfig(guild.id)
   const task = await dbArg.task.findFirst({ where: { id: taskId, guildConfigId: cfg.id } })
+  const notFoundReply = () =>
+    interaction.editReply({
+      content: `No task matches **${taskId.slice(0, 80)}**. Start typing a title and pick one from the list.`,
+    })
   if (!task) {
     // Reached by typing free text instead of picking a suggestion: the option
     // carries whatever was typed, not an id.
-    return interaction.editReply({
-      content: `No task matches **${taskId.slice(0, 80)}**. Start typing a title and pick one from the list.`,
-    })
+    return notFoundReply()
+  }
+
+  const isLeadership = memberPassesRoleGate(guild, interaction.member, ensureStringArray(cfg.dashboardRoleIds), LEADERSHIP_ROLE_NAMES)
+  if (!canSeeTask(task, { isLeadership, callerId: interaction.user.id })) {
+    // Same message as "does not exist" — a normal member who pastes a raw id
+    // that isn't theirs must not be able to tell the two apart.
+    return notFoundReply()
   }
 
   const updates = {}
   const status = interaction.options.getString('status')
   if (status !== null && status !== undefined) updates.status = status
+  const scope = interaction.options.getString('scope')
+  if (scope !== null && scope !== undefined) updates.scope = scope
   const passedApi = interaction.options.getInteger('passed_api_tests')
   if (passedApi !== null && passedApi !== undefined) updates.passedApiTests = passedApi
   const passedQa = interaction.options.getInteger('passed_qa_tests')
@@ -274,10 +308,32 @@ export async function autocomplete(interaction, { db: dbArg = db, getConfig = ge
       return interaction.respond([]).catch(() => {})
     }
   }
+  if (focused.name === 'filter_project') {
+    // A pure filter, not a value to write — no "detach" choice makes sense here.
+    try {
+      const cfg = await getConfig(interaction.guild.id)
+      const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })
+      return interaction.respond(projectChoices(projects, focused.value, { withDetach: false })).catch(() => {})
+    } catch (e) {
+      console.error('[update-task] filter_project autocomplete:', e?.message ?? e)
+      return interaction.respond([]).catch(() => {})
+    }
+  }
   if (!['task', 'blocked_by', 'unblock'].includes(focused.name)) return interaction.respond([]).catch(() => {})
   try {
     const cfg = await getConfig(interaction.guild.id)
     let rows = await dbArg.task.findMany({ where: { guildConfigId: cfg.id }, orderBy: { updatedAt: 'desc' }, take: 200 })
+    if (focused.name === 'task') {
+      // A blocker can belong to anyone — declaring "my task depends on that
+      // one" needs no permission over the blocking task, so this narrowing is
+      // for the `task` field only, never blocked_by/unblock.
+      const isLeadership = memberPassesRoleGate(interaction.guild, interaction.member, ensureStringArray(cfg.dashboardRoleIds), LEADERSHIP_ROLE_NAMES)
+      if (!isLeadership) rows = rows.filter((t) => canSeeTask(t, { isLeadership, callerId: interaction.user.id }))
+      const filterAssigneeId = interaction.options.getUser('filter_assignee')?.id
+      if (filterAssigneeId) rows = rows.filter((t) => holdersOf(t).includes(filterAssigneeId))
+      const filterProjectId = interaction.options.getString('filter_project')
+      if (filterProjectId) rows = rows.filter((t) => String(t.projectId ?? '') === filterProjectId)
+    }
     if (focused.name === 'unblock') {
       // With a real task picked, offer only its current blockers — an empty
       // list when it has none. Fall back to all tasks only when `task` is

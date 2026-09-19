@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType, OverwriteType } from 'discord.js'
 import * as flowStore from '../flows/store.js'
-import { assigneeRow, handleCreate, channelPlacementNote } from './create-task.js'
+import { assigneeRow, scopeRow, handleCreate, channelPlacementNote } from './create-task.js'
 import { createTaskTicketChannel } from '../services/taskTicketChannel.js'
 
 test('assignee row is a user select allowing up to 25 people with current assignees preselected', () => {
@@ -18,6 +18,15 @@ test('assignee row is a user select allowing up to 25 people with current assign
 test('assignee row with no assignees has no defaults', () => {
   const menu = assigneeRow({}).toJSON().components[0]
   assert.ok(!menu.default_values || menu.default_values.length === 0)
+})
+
+test('scope row offers exactly the four fixed choices', () => {
+  const menu = scopeRow().toJSON().components[0]
+  assert.equal(menu.custom_id, 'create_task_scope')
+  assert.deepEqual(
+    menu.options.map((o) => [o.label, o.value]),
+    [['Backend', 'backend'], ['Frontend', 'frontend'], ['QA', 'qa'], ['Design', 'design']],
+  )
 })
 
 // --- handleCreate, feature branch, through its seams --------------------------
@@ -54,6 +63,16 @@ function fakeDb(log, project = PROJECT) {
         log.push(['ticketDoc.create', data.taskId])
       },
     },
+    bugTicket: {
+      create: async ({ data }) => {
+        log.push(['bugTicket.create', data])
+        return { id: 'task0000abcdef', ...data }
+      },
+      update: async (args) => {
+        log.push(['bugTicket.update', args])
+        return null
+      },
+    },
   }
 }
 
@@ -79,7 +98,7 @@ function seedState(guild, extra = {}) {
     taskType: 'feature',
     title: 'Add booking rules',
     description: 'Do the thing',
-    scope: 'Frontend',
+    scope: 'frontend',
     modules: ['Calendar', 'Rules'],
     assigneeIds: ['u1', 'u2', 'u-assigner'],
     projectIds: ['p1'],
@@ -211,6 +230,80 @@ test('handleCreate through the real helper posts the same embed and mention list
   )
   const reply = it.replies.at(-1).embeds[0].toJSON().description
   assert.match(reply, /<#chanX> — in \*\*Framework\*\*'s section\./)
+})
+
+// --- handleCreate, bug branch, through its seams ------------------------------
+// Previously untested, and previously never wired: the bug branch's insert had
+// no `scope` key at all, so a bug task could never carry one however it was set.
+
+function fakeBugGuild() {
+  const created = []
+  const sends = []
+  return {
+    id: 'guild-ct-bug',
+    channels: {
+      cache: { find: () => null, get: () => null, values: () => [].values() },
+      create: async (opts) => {
+        created.push(opts)
+        return { id: 'chanBug', send: async (m) => { sends.push(m) } }
+      },
+    },
+    created,
+    sends,
+  }
+}
+
+test('handleCreate writes scope into the bug ticket, and shows it on the opening embed', async () => {
+  const log = []
+  const guild = fakeBugGuild()
+  flowStore.set('u-assigner', guild.id, 'create_task', {
+    step: 'confirm',
+    taskType: 'bug',
+    title: 'Downtime calc is wrong',
+    description: 'Off by a day',
+    scope: 'qa',
+    repositoryId: 'repo1',
+    repo: { name: 'api', url: 'https://example.com/api' },
+    taggedMemberIds: ['u1'],
+  })
+  const it = fakeInteraction(guild)
+
+  await handleCreate(it, { db: fakeDb(log), getConfig })
+
+  const row = log.find((e) => e[0] === 'bugTicket.create')[1]
+  assert.equal(row.scope, 'qa')
+
+  // The detailed embed goes to the channel, not the interaction reply.
+  const embed = guild.sends[0].embeds[0].toJSON()
+  assert.deepEqual(
+    embed.fields.map((f) => [f.name, f.value]),
+    [
+      ['Status', 'pending'],
+      ['Scope', 'QA'],
+      ['Tagged', '<@u1>'],
+      ['Repository', 'https://example.com/api'],
+      ['Resolve', 'Use **/resolve-bug** in this channel when fixed.'],
+    ],
+  )
+})
+
+test('handleCreate writes a null scope for a bug ticket that never had one set', async () => {
+  const log = []
+  const guild = fakeBugGuild()
+  flowStore.set('u-assigner', guild.id, 'create_task', {
+    step: 'confirm',
+    taskType: 'bug',
+    title: 'Legacy bug with no scope',
+    repositoryId: 'repo1',
+    repo: { name: 'api' },
+    taggedMemberIds: [],
+  })
+  const it = fakeInteraction(guild)
+
+  await handleCreate(it, { db: fakeDb(log), getConfig })
+
+  const row = log.find((e) => e[0] === 'bugTicket.create')[1]
+  assert.equal(row.scope, null)
 })
 
 test('channelPlacementNote says where the channel went and why', () => {

@@ -277,6 +277,10 @@ export default async function handleInteractions(interaction) {
       return runCreateTaskHandler(interaction, (i) =>
         createTaskCmd.handleMembersSelect(i),
       );
+    if (customId === "create_task_scope")
+      return runCreateTaskHandler(interaction, (i) =>
+        createTaskCmd.handleScopeSelect(i),
+      );
     if (customId === "create_task_metric_api")
       return runCreateTaskHandler(interaction, (i) =>
         createTaskCmd.handleMetricApi(i),
