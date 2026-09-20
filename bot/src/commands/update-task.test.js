@@ -396,41 +396,6 @@ function autocompleteInteraction(options, { userId = 'u1', member = adminMember(
 }
 const focusedTask = (value = '') => ({ name: 'task', type: T.String, value, focused: true })
 
-test('autocomplete: the real resolver returns null from getUser for a filter, so it must be read by value', () => {
-  const it = autocompleteInteraction([{ name: 'filter_assignee', type: T.User, value: 'u2' }, focusedTask()])
-  assert.equal(it.options.getUser('filter_assignee'), null)
-  assert.equal(it.options.get('filter_assignee').value, 'u2')
-})
-
-test('autocomplete: filter_assignee narrows the task list to that person, for leadership too', async () => {
-  const db = fakeDb({ tasks: [HELD, OTHERS] })
-  const it = autocompleteInteraction([{ name: 'filter_assignee', type: T.User, value: 'u2' }, focusedTask()])
-  await autocomplete(it, { db, getConfig })
-  assert.deepEqual(it.replies[0].map((c) => c.value), ['O'])
-})
-
-test('autocomplete: filter_project narrows the task list to that project', async () => {
-  const db = fakeDb({ tasks: [{ ...HELD, projectId: 'p-fw' }, { ...OTHERS, projectId: 'p-hms' }] })
-  const it = autocompleteInteraction([{ name: 'filter_project', type: T.String, value: 'p-hms' }, focusedTask()])
-  await autocomplete(it, { db, getConfig })
-  assert.deepEqual(it.replies[0].map((c) => c.value), ['O'])
-})
-
-test('autocomplete: both filters together narrow to the person within the project', async () => {
-  const db = fakeDb({ tasks: [
-    { ...OTHERS, id: 'O1', projectId: 'p-fw' },
-    { ...OTHERS, id: 'O2', projectId: 'p-hms' },
-    { ...HELD, projectId: 'p-hms' },
-  ] })
-  const it = autocompleteInteraction([
-    { name: 'filter_assignee', type: T.User, value: 'u2' },
-    { name: 'filter_project', type: T.String, value: 'p-hms' },
-    focusedTask(),
-  ])
-  await autocomplete(it, { db, getConfig })
-  assert.deepEqual(it.replies[0].map((c) => c.value), ['O2'])
-})
-
 test("autocomplete: typing a project name finds that project's tasks and the label names the project", async () => {
   const db = fakeDb({ tasks: [{ ...HELD, projectId: 'p-fw' }, { ...OTHERS, projectId: 'p-hms' }] })
   db.project.findMany = async () => projects
@@ -453,14 +418,6 @@ test('autocomplete: still lists tasks (without project names) when the project l
   const it = autocompleteInteraction([focusedTask()])
   await autocomplete(it, { db, getConfig })
   assert.deepEqual(it.replies[0].map((c) => c.value), ['H'])
-})
-
-test('autocomplete: filter_project suggests project names, with no detach entry', async () => {
-  const db = fakeDb({ tasks: [] })
-  db.project.findMany = async () => projects
-  const it = fakeInteraction({}, { focused: { name: 'filter_project', value: 'hms' } })
-  await autocomplete(it, { db, getConfig })
-  assert.deepEqual(it.replies[0].map((c) => c.value), ['p-hms'])
 })
 
 test('autocomplete: blocked_by and unblock are never narrowed by ownership — a blocker can belong to anyone', async () => {
@@ -489,4 +446,19 @@ test('a refused blocker and an unblock of a task that was not blocking write no 
   await applyDependencyChange({ db, cfg: { id: 'g1' }, task, blockedById: 'A', actorId: 'u1' })
   await applyDependencyChange({ db, cfg: { id: 'g1' }, task, unblockId: 'C', actorId: 'u1' })
   assert.deepEqual(db.activity, [])
+})
+
+test('execute: with no task named, the Find panel opens instead of asking for one', async () => {
+  const db = fakeDb({ tasks: [A] })
+  const it = fakeInteraction({})
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.equal(it.replies[0].embeds[0].toJSON().title, 'Find a task')
+  assert.deepEqual(kinds(db), []) // nothing written
+})
+
+test('execute: a blank task is treated as no task', async () => {
+  const db = fakeDb({ tasks: [A] })
+  const it = fakeInteraction({ task: '   ' })
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.equal(it.replies[0].embeds[0].toJSON().title, 'Find a task')
 })

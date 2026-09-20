@@ -58,6 +58,10 @@ export default async function handleInteractions(interaction) {
   const customId = interaction.customId || "";
 
   if (interaction.isModalSubmit()) {
+    if (customId.startsWith("ut_edit:"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/taskFinder.js")).handleEditSubmit(i),
+      );
     if (customId === "create_task_modal")
       return runCreateTaskHandler(interaction, (i) =>
         createTaskCmd.handleTaskModal(i),
@@ -105,6 +109,10 @@ export default async function handleInteractions(interaction) {
   }
 
   if (interaction.isButton()) {
+    if (customId.startsWith("utf_"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/taskFinder.js")).handleFinderComponent(i),
+      );
     if (customId.startsWith("mtg_"))
       return (await import("../commands/meetingReview.js")).route(interaction);
     if (customId === "init_confirm") {
@@ -244,6 +252,10 @@ export default async function handleInteractions(interaction) {
   }
 
   if (interaction.isUserSelectMenu?.()) {
+    if (customId.startsWith("utf_"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/taskFinder.js")).handleFinderComponent(i),
+      );
     if (customId.startsWith("mtg_"))
       return (await import("../commands/meetingReview.js")).route(interaction);
     if (customId === "set_roles_member")
@@ -256,6 +268,10 @@ export default async function handleInteractions(interaction) {
   }
 
   if (interaction.isStringSelectMenu()) {
+    if (customId.startsWith("utf_"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/taskFinder.js")).handleFinderComponent(i),
+      );
     if (customId.startsWith("mtg_"))
       return (await import("../commands/meetingReview.js")).route(interaction);
     if (customId.startsWith("set_roles_apply:"))
