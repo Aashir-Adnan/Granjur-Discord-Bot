@@ -43,8 +43,11 @@ test('nextAssignees: replace wins, then add and remove apply, no duplicates', ()
 
 function fakeDb({ tasks = [], deps = [], removed = 1 } = {}) {
   const calls = []
+  const activity = []
   return {
     calls,
+    activity,
+    taskActivity: { add: async ({ data }) => { activity.push(data) } },
     task: {
       findByIds: async ({ where }) => tasks.filter((t) => where.ids.includes(t.id)),
       findFirst: async ({ where }) => tasks.find((t) => t.id === where.id) ?? null,
@@ -468,4 +471,22 @@ test('autocomplete: blocked_by and unblock are never narrowed by ownership — a
   )
   await autocomplete(it, { db, getConfig })
   assert.deepEqual(it.replies[0].map((c) => c.value).sort(), ['H', 'O'])
+})
+
+test('adding and removing a blocker is written to the activity log with who did it', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'Git Sync', status: 'open' }
+  const db = fakeDb({ tasks: [task, { id: 'B', title: 'Router fix', status: 'open' }, { id: 'C', title: 'Old', status: 'open' }], deps: [{ taskId: 'A', blockedByTaskId: 'C' }] })
+  await applyDependencyChange({ db, cfg: { id: 'g1' }, task, blockedById: 'B', unblockId: 'C', actorId: 'u1' })
+  assert.deepEqual(db.activity.map((a) => [a.actorDiscordId, a.changes]), [
+    ['u1', [{ field: 'blocked_by', action: 'added', title: 'Router fix' }]],
+    ['u1', [{ field: 'blocked_by', action: 'removed', title: 'Old' }]],
+  ])
+})
+
+test('a refused blocker and an unblock of a task that was not blocking write no activity', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'Git Sync', status: 'open' }
+  const db = fakeDb({ tasks: [task, { id: 'C', title: 'Old', status: 'open' }], removed: 0 })
+  await applyDependencyChange({ db, cfg: { id: 'g1' }, task, blockedById: 'A', actorId: 'u1' })
+  await applyDependencyChange({ db, cfg: { id: 'g1' }, task, unblockId: 'C', actorId: 'u1' })
+  assert.deepEqual(db.activity, [])
 })

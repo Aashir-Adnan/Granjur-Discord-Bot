@@ -27,7 +27,20 @@ export async function handleStatusRequest({ headers = {}, body = {}, db: dbArg =
     if (!task) return { status: 404, body: { ok: false, message: 'Task not found' } }
     if (task.status === status) return { status: 200, body: { ok: true, task: { id: task.id, status }, warning: '', unchanged: true } }
     const name = String(b.actor?.name || b.actor?.email || 'Someone').slice(0, 100)
-    const { warning } = await apply({ db: dbArg, client, task, updates: { status }, actor: { label: `${name} (via the site)` } })
+    // Match the site user to a Discord member by the email they verified with,
+    // so the activity log can show their name and picture. No match is fine:
+    // the entry then carries just the name.
+    let activityId = null
+    const email = String(b.actor?.email ?? '').trim()
+    if (email) {
+      try {
+        const member = await dbArg.guildMember.findByConfigEmail({ where: { guildConfigId: task.guildConfigId, email } })
+        activityId = member?.discordId ?? null
+      } catch (e) {
+        console.error('[internal] actor lookup:', e?.message ?? e)
+      }
+    }
+    const { warning } = await apply({ db: dbArg, client, task, updates: { status }, actor: { label: `${name} (via the site)`, activityId } })
     return { status: 200, body: { ok: true, task: { id: task.id, status }, warning: warning || '', unchanged: false } }
   } catch (e) {
     console.error('[internal] status route:', e?.message ?? e)

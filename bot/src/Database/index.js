@@ -1124,6 +1124,42 @@ async function taskDependencyFindManyForGuild({ where }) {
   return query("SELECT * FROM `taskdependency` WHERE guildConfigId = ? LIMIT 5000", [where.guildConfigId]);
 }
 
+// ---------- taskactivity (who did what to a task) ----------
+export function taskActivityInsertSql(data) {
+  const columns = [
+    ["id", data.id],
+    ["guildConfigId", data.guildConfigId],
+    ["taskId", data.taskId],
+    ["actorDiscordId", data.actorDiscordId ?? null],
+    ["actorLabel", data.actorLabel ?? null],
+    ["changes", toJson(data.changes || [])],
+  ];
+  return {
+    sql: `INSERT INTO \`taskactivity\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    params: columns.map(([, v]) => v),
+  };
+}
+async function taskActivityAdd({ data }) {
+  const pk = id();
+  const { sql, params } = taskActivityInsertSql({ ...data, id: pk });
+  await query(sql, params);
+  return { id: pk };
+}
+async function taskActivityFindByTask({ where }) {
+  return query("SELECT * FROM `taskactivity` WHERE taskId = ? ORDER BY createdAt DESC LIMIT 50", [where.taskId]);
+}
+
+// A verified member by the email they verified with — how a site user (who has
+// an email, not a Discord id) is matched to a Discord member for the activity log.
+async function guildMemberFindByConfigEmail({ where }) {
+  const email = String(where?.email ?? "").trim().toLowerCase();
+  if (!email || !where?.guildConfigId) return null;
+  return queryOne(
+    "SELECT * FROM `guildmember` WHERE guildConfigId = ? AND LOWER(email) = ? LIMIT 1",
+    [where.guildConfigId, email],
+  );
+}
+
 // ---------- projectmember (explicit project membership) ----------
 export const PROJECT_MEMBER_ROLES = ["lead", "developer", "backend_developer", "frontend_developer", "qa", "design"];
 export function projectMemberUpsertSql(data) {
@@ -2131,6 +2167,7 @@ const db = {
     findUnique: guildMemberFindUnique,
     upsert: guildMemberUpsert,
     update: guildMemberUpdate,
+    findByConfigEmail: guildMemberFindByConfigEmail,
   },
   repository: {
     findMany: repositoryFindMany,
@@ -2235,6 +2272,10 @@ const db = {
   projectRepos: {
     findMany: projectReposFindMany,
     add: projectReposAdd,
+  },
+  taskActivity: {
+    add: taskActivityAdd,
+    findByTask: taskActivityFindByTask,
   },
   taskDependency: {
     add: taskDependencyAdd,

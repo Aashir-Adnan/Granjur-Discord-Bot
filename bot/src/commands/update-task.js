@@ -4,6 +4,7 @@ import { taskChoiceLabel, holdersOf, idList } from '../utils/taskLabel.js'
 import { wouldCycle } from '../utils/taskDeps.js'
 import { notifyTaskUpdate } from '../services/taskUpdateNotify.js'
 import { applyTaskUpdate } from '../services/taskStatusChange.js'
+import { recordTaskActivity } from '../services/taskActivity.js'
 import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
 
@@ -104,7 +105,7 @@ export function nextAssignees(current, { replace, add, remove } = {}) {
  * refused change leaves the table untouched.
  * @returns {{ lines: string[], error: string|null }}
  */
-export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById = null, unblockId = null, actorId = null }) {
+export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById = null, unblockId = null, actorId = null, record = recordTaskActivity }) {
   const lines = []
   if (blockedById) {
     if (String(blockedById) === String(task.id)) return { lines, error: 'A task cannot be blocked by itself.' }
@@ -118,12 +119,14 @@ export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById 
     }
     await dbArg.taskDependency.add({ data: { guildConfigId: cfg.id, taskId: task.id, blockedByTaskId: blocker.id, createdBy: actorId } })
     lines.push(`**Blocked by:** ${blocker.title || blocker.id}`)
+    await record({ db: dbArg, task, changes: [{ field: 'blocked_by', action: 'added', title: blocker.title || blocker.id }], actor: { discordId: actorId } })
   }
   if (unblockId) {
     const [blocker] = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: [unblockId] } })
     const { removed } = await dbArg.taskDependency.remove({ where: { taskId: task.id, blockedByTaskId: String(unblockId) } })
     const name = blocker?.title || unblockId
     lines.push(removed > 0 ? `**Unblocked:** ${name}` : `**Unblock:** ${name} was not blocking this task`)
+    if (removed > 0) await record({ db: dbArg, task, changes: [{ field: 'blocked_by', action: 'removed', title: name }], actor: { discordId: actorId } })
   }
   return { lines, error: null }
 }

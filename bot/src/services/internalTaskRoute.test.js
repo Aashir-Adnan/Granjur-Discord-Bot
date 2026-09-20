@@ -3,7 +3,10 @@ import assert from 'node:assert/strict'
 import { handleStatusRequest } from './internalTaskRoute.js'
 
 const task = { id: 'A', guildConfigId: 'g1', title: 'Git Sync', status: 'open' }
-const db = { task: { findFirst: async ({ where }) => (where.id === 'A' ? task : null) } }
+const db = {
+  task: { findFirst: async ({ where }) => (where.id === 'A' ? task : null) },
+  guildMember: { findByConfigEmail: async ({ where }) => (where.email === 'a@granjur.com' ? { discordId: 'u-aashir' } : null) },
+}
 const ok = { headers: { 'x-internal-secret': 's3cret' }, body: { taskId: 'A', status: 'in_progress', actor: { email: 'a@granjur.com', name: 'Aashir' } } }
 
 test('503 when no secret is configured, before anything else', async () => {
@@ -54,5 +57,30 @@ test('a thrown error becomes 500 without leaking a stack', async () => {
   try {
     const r = await handleStatusRequest({ ...ok, db, client: {}, secret: 's3cret', apply: async () => { throw new Error('db down') } })
     assert.equal(r.status, 500); assert.equal(r.body.ok, false); assert.equal(r.body.message, 'db down')
+  } finally { console.error = orig }
+})
+
+test('the site user is matched to their Discord member by email for the activity log', async () => {
+  let seen
+  await handleStatusRequest({ ...ok, db, client: {}, secret: 's3cret', apply: async (a) => { seen = a; return { warning: '' } } })
+  assert.equal(seen.actor.activityId, 'u-aashir')
+  // The mention-triggering id is deliberately not set: a site edit never @mentions.
+  assert.equal(seen.actor.discordId, undefined)
+})
+test('an email with no verified member still applies, with no activity id', async () => {
+  let seen
+  const other = { ...ok, body: { ...ok.body, actor: { email: 'nobody@granjur.com', name: 'Nobody' } } }
+  const r = await handleStatusRequest({ ...other, db, client: {}, secret: 's3cret', apply: async (a) => { seen = a; return { warning: '' } } })
+  assert.equal(r.status, 200)
+  assert.equal(seen.actor.activityId, null)
+})
+test('a failing member lookup never blocks the update', async () => {
+  const orig = console.error; console.error = () => {}
+  try {
+    let seen
+    const broken = { ...db, guildMember: { findByConfigEmail: async () => { throw new Error('boom') } } }
+    const r = await handleStatusRequest({ ...ok, db: broken, client: {}, secret: 's3cret', apply: async (a) => { seen = a; return { warning: '' } } })
+    assert.equal(r.status, 200)
+    assert.equal(seen.actor.activityId, null)
   } finally { console.error = orig }
 })

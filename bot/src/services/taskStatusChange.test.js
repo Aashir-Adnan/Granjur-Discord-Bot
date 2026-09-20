@@ -4,12 +4,15 @@ import { applyTaskUpdate } from './taskStatusChange.js'
 
 function fakeDb({ deps = [], tasks = [], cfg = { id: 'g1', guildId: 'guild1' } } = {}) {
   const calls = []
+  const activity = []
   return {
     calls,
+    activity,
     task: {
       update: async (a) => { calls.push(['update', a]); return null },
       findByIds: async ({ where }) => tasks.filter((t) => where.ids.includes(t.id)),
     },
+    taskActivity: { add: async ({ data }) => { activity.push(data) } },
     taskDependency: { findByTask: async ({ where }) => deps.filter((d) => d.taskId === where.taskId) },
     guildConfig: { findById: async () => cfg },
   }
@@ -82,5 +85,36 @@ test('a failing warning lookup leaves the write in place and warning empty', asy
     const out = await applyTaskUpdate({ db, client, task, updates: { status: 'done' }, notify: async () => ({ channelId: null, created: false, dmed: [] }) })
     assert.equal(out.warning, '')
     assert.equal(db.calls.length, 1)
+  } finally { console.error = orig }
+})
+
+test('records who made the change: a Discord actor by id, a site actor by matched member id and label', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open' }
+  const notify = async () => ({ channelId: null, created: false, dmed: [] })
+  const db = fakeDb()
+  await applyTaskUpdate({ db, client, task, updates: { status: 'done' }, actor: { discordId: 'u1' }, notify })
+  await applyTaskUpdate({ db, client, task, updates: { status: 'done' }, actor: { label: 'Aashir (via the site)', activityId: 'u9' }, notify })
+  assert.equal(db.activity[0].actorDiscordId, 'u1')
+  assert.deepEqual(db.activity[0].changes, [{ field: 'status', from: 'open', to: 'done' }])
+  assert.equal(db.activity[1].actorDiscordId, 'u9')
+  assert.equal(db.activity[1].actorLabel, 'Aashir (via the site)')
+})
+
+test('an update that changes nothing writes no activity row', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open' }
+  const db = fakeDb()
+  await applyTaskUpdate({ db, client, task, updates: { status: 'open' }, actor: { discordId: 'u1' }, notify: async () => ({ channelId: null, created: false, dmed: [] }) })
+  assert.equal(db.activity.length, 0)
+})
+
+test('a failing activity write never fails the update', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open' }
+  const db = fakeDb()
+  db.taskActivity.add = async () => { throw new Error('db down') }
+  const orig = console.error; console.error = () => {}
+  try {
+    const out = await applyTaskUpdate({ db, client, task, updates: { status: 'done' }, actor: { discordId: 'u1' }, notify: async () => ({ channelId: null, created: false, dmed: [] }) })
+    assert.equal(out.warning, '')
+    assert.equal(db.calls[0][0], 'update')
   } finally { console.error = orig }
 })

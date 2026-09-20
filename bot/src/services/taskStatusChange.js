@@ -7,6 +7,7 @@
 import db from '../db/index.js'
 import { notifyTaskUpdate } from './taskUpdateNotify.js'
 import { blockerWarning, openBlockers } from '../utils/taskDeps.js'
+import { activityChanges, recordTaskActivity } from './taskActivity.js'
 
 /** Discord embed fields cap at 1024; the reply description has room for more. */
 export const WARNING_MAX = 1500
@@ -22,8 +23,18 @@ export const WARNING_MAX = 1500
  *
  * @returns {Promise<{ warning: string, notified: { channelId: string|null, created: boolean, dmed: string[] } }>}
  */
-export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, actor = {}, notify = notifyTaskUpdate, guild = null }) {
+export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, actor = {}, notify = notifyTaskUpdate, guild = null, record = recordTaskActivity }) {
   await dbArg.task.update({ where: { id: task.id }, data: updates })
+
+  // Who did what. `actor.activityId` is the Discord member a site user was
+  // matched to; it is separate from `discordId` because that one makes the
+  // channel post @mention the person, which a site edit deliberately does not.
+  await record({
+    db: dbArg,
+    task,
+    changes: activityChanges(task, updates),
+    actor: { discordId: actor.discordId ?? actor.activityId ?? null, label: actor.label ?? null },
+  })
 
   let warning = ''
   if (updates.status && updates.status !== task.status && updates.status !== 'open' && updates.status !== 'pending') {
