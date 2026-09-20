@@ -5,7 +5,7 @@ import { wouldCycle } from '../utils/taskDeps.js'
 import { notifyTaskUpdate } from '../services/taskUpdateNotify.js'
 import { applyTaskUpdate } from '../services/taskStatusChange.js'
 import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
-import { SCOPE_CHOICES } from '../utils/taskScope.js'
+import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
 
 /** Parse space-separated @mentions or Discord user IDs into array of IDs. */
 function parseUserIds(str) {
@@ -329,8 +329,10 @@ export async function autocomplete(interaction, { db: dbArg = db, getConfig = ge
       // for the `task` field only, never blocked_by/unblock.
       const isLeadership = memberPassesRoleGate(interaction.guild, interaction.member, ensureStringArray(cfg.dashboardRoleIds), LEADERSHIP_ROLE_NAMES)
       if (!isLeadership) rows = rows.filter((t) => canSeeTask(t, { isLeadership, callerId: interaction.user.id }))
-      const filterAssigneeId = interaction.options.getUser('filter_assignee')?.id
-      if (filterAssigneeId) rows = rows.filter((t) => holdersOf(t).includes(filterAssigneeId))
+      // `.get().value`, not `getUser()`: an autocomplete interaction carries only
+      // the raw id of a user option (no `resolved` block), so getUser() is null.
+      const filterAssigneeId = interaction.options.get('filter_assignee')?.value
+      if (filterAssigneeId) rows = rows.filter((t) => holdersOf(t).includes(String(filterAssigneeId)))
       const filterProjectId = interaction.options.getString('filter_project')
       if (filterProjectId) rows = rows.filter((t) => String(t.projectId ?? '') === filterProjectId)
     }
@@ -350,17 +352,31 @@ export async function autocomplete(interaction, { db: dbArg = db, getConfig = ge
     // fetch per assignee would blow it. An unresolved id shows as the id.
     const nameFor = (id) => interaction.guild.members.cache.get(id)?.displayName ?? null
 
+    // Project names, so the picker can search and label by project. A failed
+    // lookup only costs that — the picker still works by title.
+    const projectNames = new Map()
+    if (focused.name === 'task') {
+      const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } }).catch(() => [])
+      for (const p of projects || []) projectNames.set(String(p.id), String(p.name || ''))
+    }
+    const projectNameOf = (t) => projectNames.get(String(t.projectId ?? '')) ?? null
+
     const term = String(focused.value || '').trim().toLowerCase()
     const matches = rows.filter((t) => {
       if (!term) return true
       if (String(t.title || '').toLowerCase().includes(term)) return true
       if (String(t.id).toLowerCase().startsWith(term)) return true
       if (String(t.status || '').toLowerCase() === term) return true
+      if (String(projectNameOf(t) || '').toLowerCase().includes(term)) return true
+      if (t.scope && String(scopeLabel(t.scope)).toLowerCase().startsWith(term)) return true
       return holdersOf(t).some((id) => String(nameFor(id) || '').toLowerCase().includes(term))
     })
 
     return interaction
-      .respond(matches.slice(0, 25).map((t) => ({ name: taskChoiceLabel(t, { nameFor }), value: t.id })))
+      .respond(matches.slice(0, 25).map((t) => ({
+        name: taskChoiceLabel(t, { nameFor, projectName: projectNameOf(t) }),
+        value: t.id,
+      })))
       .catch(() => {})
   } catch (e) {
     console.error('[update-task] autocomplete:', e?.message ?? e)

@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { CommandInteractionOptionResolver, ApplicationCommandOptionType as T } from 'discord.js'
 import { projectChoices, NO_PROJECT, nextAssignees, applyDependencyChange, canSeeTask, execute, autocomplete } from './update-task.js'
 
 const projects = [
@@ -78,6 +79,7 @@ function fakeInteraction(opts = {}, { focused = null, userId = 'u1', member = ad
     options: {
       getString: get,
       getInteger: get,
+      get: (name) => (get(name) ? { value: get(name) } : null),
       getUser: (name) => (get(name) ? { id: get(name) } : null),
       getFocused: () => focused,
     },
@@ -371,24 +373,83 @@ test('autocomplete: task suggestions show everything for leadership', async () =
   assert.deepEqual(it.replies[0].map((c) => c.value).sort(), ['H', 'O'])
 })
 
+/**
+ * An autocomplete interaction as Discord really sends it, built on the real
+ * option resolver: a User option carries only its raw id (no `resolved`
+ * block), so getUser() is null and `.get(name).value` is the only way to read
+ * it. A hand-rolled fake once hid exactly that.
+ */
+function autocompleteInteraction(options, { userId = 'u1', member = adminMember(), members = [] } = {}) {
+  const replies = []
+  const cache = new Map(members.map((m) => [m.id, m]))
+  return {
+    replies,
+    guild: { id: 'guild1', members: { cache } },
+    user: { id: userId },
+    member,
+    options: new CommandInteractionOptionResolver({}, options, {}),
+    respond: async (choices) => { replies.push(choices); return choices },
+  }
+}
+const focusedTask = (value = '') => ({ name: 'task', type: T.String, value, focused: true })
+
+test('autocomplete: the real resolver returns null from getUser for a filter, so it must be read by value', () => {
+  const it = autocompleteInteraction([{ name: 'filter_assignee', type: T.User, value: 'u2' }, focusedTask()])
+  assert.equal(it.options.getUser('filter_assignee'), null)
+  assert.equal(it.options.get('filter_assignee').value, 'u2')
+})
+
 test('autocomplete: filter_assignee narrows the task list to that person, for leadership too', async () => {
   const db = fakeDb({ tasks: [HELD, OTHERS] })
-  const it = fakeInteraction(
-    { filter_assignee: 'u2' },
-    { focused: { name: 'task', value: '' }, userId: 'u1', member: adminMember() }
-  )
+  const it = autocompleteInteraction([{ name: 'filter_assignee', type: T.User, value: 'u2' }, focusedTask()])
   await autocomplete(it, { db, getConfig })
   assert.deepEqual(it.replies[0].map((c) => c.value), ['O'])
 })
 
 test('autocomplete: filter_project narrows the task list to that project', async () => {
   const db = fakeDb({ tasks: [{ ...HELD, projectId: 'p-fw' }, { ...OTHERS, projectId: 'p-hms' }] })
-  const it = fakeInteraction(
-    { filter_project: 'p-hms' },
-    { focused: { name: 'task', value: '' }, userId: 'u1', member: adminMember() }
-  )
+  const it = autocompleteInteraction([{ name: 'filter_project', type: T.String, value: 'p-hms' }, focusedTask()])
   await autocomplete(it, { db, getConfig })
   assert.deepEqual(it.replies[0].map((c) => c.value), ['O'])
+})
+
+test('autocomplete: both filters together narrow to the person within the project', async () => {
+  const db = fakeDb({ tasks: [
+    { ...OTHERS, id: 'O1', projectId: 'p-fw' },
+    { ...OTHERS, id: 'O2', projectId: 'p-hms' },
+    { ...HELD, projectId: 'p-hms' },
+  ] })
+  const it = autocompleteInteraction([
+    { name: 'filter_assignee', type: T.User, value: 'u2' },
+    { name: 'filter_project', type: T.String, value: 'p-hms' },
+    focusedTask(),
+  ])
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(it.replies[0].map((c) => c.value), ['O2'])
+})
+
+test("autocomplete: typing a project name finds that project's tasks and the label names the project", async () => {
+  const db = fakeDb({ tasks: [{ ...HELD, projectId: 'p-fw' }, { ...OTHERS, projectId: 'p-hms' }] })
+  db.project.findMany = async () => projects
+  const it = autocompleteInteraction([focusedTask('badar')])
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(it.replies[0].map((c) => c.value), ['O'])
+  assert.match(it.replies[0][0].name, /· Badar HMS ·/)
+})
+
+test('autocomplete: typing a scope finds tasks of that scope', async () => {
+  const db = fakeDb({ tasks: [{ ...HELD, scope: 'qa' }, { ...OTHERS, scope: 'backend' }, { id: 'X', title: 'No scope', status: 'open' }] })
+  const it = autocompleteInteraction([focusedTask('back')])
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(it.replies[0].map((c) => c.value), ['O'])
+})
+
+test('autocomplete: still lists tasks (without project names) when the project lookup fails', async () => {
+  const db = fakeDb({ tasks: [HELD] })
+  db.project.findMany = async () => { throw new Error('boom') }
+  const it = autocompleteInteraction([focusedTask()])
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(it.replies[0].map((c) => c.value), ['H'])
 })
 
 test('autocomplete: filter_project suggests project names, with no detach entry', async () => {
