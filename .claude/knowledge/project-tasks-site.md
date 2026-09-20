@@ -389,6 +389,29 @@ read side.
   unlayered, so they beat Tailwind utilities (`.input-base { width: 100% }` defeats `w-auto`;
   `.chip` padding beats `px-*`). Size a select through a wrapper, not the select.
 
+### /update-task Find panel and the task activity log (2026-09-20)
+
+- **Find panel:** `/update-task` with `task` empty opens an ephemeral panel
+  (`services/taskFinder.js`): project select, person select (CEO/Server Manager only), a
+  paged task select (25/page, finished tasks hidden until "Show finished"), then an Edit
+  modal (status, scope, assignees, title, description — Discord's five-component limit; the
+  assignees field is omitted past 25 holders rather than truncating them). State lives in
+  custom ids (`utf_<action>:<project>:<person>:<page>:<done>`), no server-side memory. The
+  modal saves through `commitUpdate` (extracted from `execute`), so notifications and the
+  activity log match the slash path. `filter_assignee`/`filter_project` were removed.
+  Modals with selects need discord.js >= 14.25 (locked). The bug-holder trap: a bug's people
+  are `taggedMemberIds`, so the modal compares against `holdersOf(task)`, not `assigneeIds`,
+  or an untouched save would copy tagged members into assignees.
+- **Activity log:** `taskactivity` (migration 021), one row per update from
+  `applyTaskUpdate` (+ blocker add/remove in `applyDependencyChange`). Title/description
+  bodies are never stored. A site drag has no Discord id: `internalTaskRoute` matches the
+  portal email to `guildmember.email` (`db.guildMember.findByConfigEmail`) and passes it as
+  `actor.activityId` — deliberately not `discordId`, which would make the channel post
+  @mention the person. CSAAS returns `updatedBy` + newest 15 `activity` per task and falls
+  back to no history if the table is missing. A `createdBy` id with no guildmember row is
+  flagged `unknown` and the site shows "Former member" instead of an id tail (the cause of
+  the reported "shows a number" was not verified against production data).
+
 ## Related
 
 [[project-docs]] (the other bot-to-site data path, UBS-Doc markdown into MySQL — this

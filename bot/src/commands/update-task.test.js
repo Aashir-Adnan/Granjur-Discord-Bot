@@ -43,8 +43,11 @@ test('nextAssignees: replace wins, then add and remove apply, no duplicates', ()
 
 function fakeDb({ tasks = [], deps = [], removed = 1 } = {}) {
   const calls = []
+  const activity = []
   return {
     calls,
+    activity,
+    taskActivity: { add: async ({ data }) => { activity.push(data) } },
     task: {
       findByIds: async ({ where }) => tasks.filter((t) => where.ids.includes(t.id)),
       findFirst: async ({ where }) => tasks.find((t) => t.id === where.id) ?? null,
@@ -393,41 +396,6 @@ function autocompleteInteraction(options, { userId = 'u1', member = adminMember(
 }
 const focusedTask = (value = '') => ({ name: 'task', type: T.String, value, focused: true })
 
-test('autocomplete: the real resolver returns null from getUser for a filter, so it must be read by value', () => {
-  const it = autocompleteInteraction([{ name: 'filter_assignee', type: T.User, value: 'u2' }, focusedTask()])
-  assert.equal(it.options.getUser('filter_assignee'), null)
-  assert.equal(it.options.get('filter_assignee').value, 'u2')
-})
-
-test('autocomplete: filter_assignee narrows the task list to that person, for leadership too', async () => {
-  const db = fakeDb({ tasks: [HELD, OTHERS] })
-  const it = autocompleteInteraction([{ name: 'filter_assignee', type: T.User, value: 'u2' }, focusedTask()])
-  await autocomplete(it, { db, getConfig })
-  assert.deepEqual(it.replies[0].map((c) => c.value), ['O'])
-})
-
-test('autocomplete: filter_project narrows the task list to that project', async () => {
-  const db = fakeDb({ tasks: [{ ...HELD, projectId: 'p-fw' }, { ...OTHERS, projectId: 'p-hms' }] })
-  const it = autocompleteInteraction([{ name: 'filter_project', type: T.String, value: 'p-hms' }, focusedTask()])
-  await autocomplete(it, { db, getConfig })
-  assert.deepEqual(it.replies[0].map((c) => c.value), ['O'])
-})
-
-test('autocomplete: both filters together narrow to the person within the project', async () => {
-  const db = fakeDb({ tasks: [
-    { ...OTHERS, id: 'O1', projectId: 'p-fw' },
-    { ...OTHERS, id: 'O2', projectId: 'p-hms' },
-    { ...HELD, projectId: 'p-hms' },
-  ] })
-  const it = autocompleteInteraction([
-    { name: 'filter_assignee', type: T.User, value: 'u2' },
-    { name: 'filter_project', type: T.String, value: 'p-hms' },
-    focusedTask(),
-  ])
-  await autocomplete(it, { db, getConfig })
-  assert.deepEqual(it.replies[0].map((c) => c.value), ['O2'])
-})
-
 test("autocomplete: typing a project name finds that project's tasks and the label names the project", async () => {
   const db = fakeDb({ tasks: [{ ...HELD, projectId: 'p-fw' }, { ...OTHERS, projectId: 'p-hms' }] })
   db.project.findMany = async () => projects
@@ -452,14 +420,6 @@ test('autocomplete: still lists tasks (without project names) when the project l
   assert.deepEqual(it.replies[0].map((c) => c.value), ['H'])
 })
 
-test('autocomplete: filter_project suggests project names, with no detach entry', async () => {
-  const db = fakeDb({ tasks: [] })
-  db.project.findMany = async () => projects
-  const it = fakeInteraction({}, { focused: { name: 'filter_project', value: 'hms' } })
-  await autocomplete(it, { db, getConfig })
-  assert.deepEqual(it.replies[0].map((c) => c.value), ['p-hms'])
-})
-
 test('autocomplete: blocked_by and unblock are never narrowed by ownership — a blocker can belong to anyone', async () => {
   const db = fakeDb({ tasks: [HELD, OTHERS] })
   const it = fakeInteraction(
@@ -468,4 +428,37 @@ test('autocomplete: blocked_by and unblock are never narrowed by ownership — a
   )
   await autocomplete(it, { db, getConfig })
   assert.deepEqual(it.replies[0].map((c) => c.value).sort(), ['H', 'O'])
+})
+
+test('adding and removing a blocker is written to the activity log with who did it', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'Git Sync', status: 'open' }
+  const db = fakeDb({ tasks: [task, { id: 'B', title: 'Router fix', status: 'open' }, { id: 'C', title: 'Old', status: 'open' }], deps: [{ taskId: 'A', blockedByTaskId: 'C' }] })
+  await applyDependencyChange({ db, cfg: { id: 'g1' }, task, blockedById: 'B', unblockId: 'C', actorId: 'u1' })
+  assert.deepEqual(db.activity.map((a) => [a.actorDiscordId, a.changes]), [
+    ['u1', [{ field: 'blocked_by', action: 'added', title: 'Router fix' }]],
+    ['u1', [{ field: 'blocked_by', action: 'removed', title: 'Old' }]],
+  ])
+})
+
+test('a refused blocker and an unblock of a task that was not blocking write no activity', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'Git Sync', status: 'open' }
+  const db = fakeDb({ tasks: [task, { id: 'C', title: 'Old', status: 'open' }], removed: 0 })
+  await applyDependencyChange({ db, cfg: { id: 'g1' }, task, blockedById: 'A', actorId: 'u1' })
+  await applyDependencyChange({ db, cfg: { id: 'g1' }, task, unblockId: 'C', actorId: 'u1' })
+  assert.deepEqual(db.activity, [])
+})
+
+test('execute: with no task named, the Find panel opens instead of asking for one', async () => {
+  const db = fakeDb({ tasks: [A] })
+  const it = fakeInteraction({})
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.equal(it.replies[0].embeds[0].toJSON().title, 'Find a task')
+  assert.deepEqual(kinds(db), []) // nothing written
+})
+
+test('execute: a blank task is treated as no task', async () => {
+  const db = fakeDb({ tasks: [A] })
+  const it = fakeInteraction({ task: '   ' })
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.equal(it.replies[0].embeds[0].toJSON().title, 'Find a task')
 })

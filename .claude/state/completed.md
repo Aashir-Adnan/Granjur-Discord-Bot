@@ -4,6 +4,16 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-20 — /update-task Find panel + Edit modal, task activity log, creator/updater cards (built on branches, NOT YET MERGED)
+
+`/update-task` with no task opens a Find panel (project, person, paged task list) then an Edit
+modal; the buried filter options are gone. Every task update is recorded (`taskactivity`,
+migration 021) and the site shows Created by / Last updated by as user cards plus a History list.
+Bot `feat/update-task-panel-and-activity` (b82e6c0, c1a6881; 690 tests) · CSAAS `feat/task-activity`
+(e907682) · UBS-Doc `feat/task-activity-ui` (2d0042d; 240 tests). Deploy order bot → CSAAS → site.
+
+---
+
 ## 2026-09-20 — /update-task filters fixed, Discord avatars and scope badges on the Team site (built on branches, NOT YET MERGED)
 
 `/update-task` `filter_assignee` never filtered (autocomplete `getUser()` is null); fixed, and

@@ -4,6 +4,8 @@ import { taskChoiceLabel, holdersOf, idList } from '../utils/taskLabel.js'
 import { wouldCycle } from '../utils/taskDeps.js'
 import { notifyTaskUpdate } from '../services/taskUpdateNotify.js'
 import { applyTaskUpdate } from '../services/taskStatusChange.js'
+import { recordTaskActivity } from '../services/taskActivity.js'
+import { showFinder } from '../services/taskFinder.js'
 import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
 
@@ -32,8 +34,8 @@ export const data = new SlashCommandBuilder()
   .addStringOption((o) =>
     o
       .setName('task')
-      .setDescription('Start typing a title — pick the task from the list')
-      .setRequired(true)
+      .setDescription('Start typing a title — or leave empty to browse and filter tasks')
+      .setRequired(false)
       .setAutocomplete(true)
   )
   .addStringOption((o) =>
@@ -78,14 +80,6 @@ export const data = new SlashCommandBuilder()
   .addUserOption((o) => o.setName('remove_assignee').setDescription('Take one assignee off the task').setRequired(false))
   .addStringOption((o) => o.setName('blocked_by').setDescription('This task cannot proceed until that task is done (pick from the list)').setRequired(false).setAutocomplete(true))
   .addStringOption((o) => o.setName('unblock').setDescription('Remove a blocker from this task (pick from the list)').setRequired(false).setAutocomplete(true))
-  .addUserOption((o) => o.setName('filter_assignee').setDescription('Only used to narrow the task list below — pick a person to find their tasks').setRequired(false))
-  .addStringOption((o) =>
-    o
-      .setName('filter_project')
-      .setDescription('Only used to narrow the task list below — start typing a project name')
-      .setRequired(false)
-      .setAutocomplete(true)
-  )
 
 /** Sentinel value for "detach from any project" in the project picker. */
 export const NO_PROJECT = 'none'
@@ -104,7 +98,7 @@ export function nextAssignees(current, { replace, add, remove } = {}) {
  * refused change leaves the table untouched.
  * @returns {{ lines: string[], error: string|null }}
  */
-export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById = null, unblockId = null, actorId = null }) {
+export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById = null, unblockId = null, actorId = null, record = recordTaskActivity }) {
   const lines = []
   if (blockedById) {
     if (String(blockedById) === String(task.id)) return { lines, error: 'A task cannot be blocked by itself.' }
@@ -118,18 +112,20 @@ export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById 
     }
     await dbArg.taskDependency.add({ data: { guildConfigId: cfg.id, taskId: task.id, blockedByTaskId: blocker.id, createdBy: actorId } })
     lines.push(`**Blocked by:** ${blocker.title || blocker.id}`)
+    await record({ db: dbArg, task, changes: [{ field: 'blocked_by', action: 'added', title: blocker.title || blocker.id }], actor: { discordId: actorId } })
   }
   if (unblockId) {
     const [blocker] = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: [unblockId] } })
     const { removed } = await dbArg.taskDependency.remove({ where: { taskId: task.id, blockedByTaskId: String(unblockId) } })
     const name = blocker?.title || unblockId
     lines.push(removed > 0 ? `**Unblocked:** ${name}` : `**Unblock:** ${name} was not blocking this task`)
+    if (removed > 0) await record({ db: dbArg, task, changes: [{ field: 'blocked_by', action: 'removed', title: name }], actor: { discordId: actorId } })
   }
   return { lines, error: null }
 }
 
 /** Same ids, ignoring order. Pure. */
-function sameIds(a, b) {
+export function sameIds(a, b) {
   const x = new Set(idList(a))
   const y = new Set(idList(b))
   return x.size === y.size && [...x].every((id) => y.has(id))
@@ -149,7 +145,11 @@ export async function execute(interaction, { db: dbArg = db, notify = notifyTask
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
 
-  const taskId = interaction.options.getString('task').trim()
+  const picked = interaction.options.getString('task')
+  // Nothing named on the command line: open the Find panel instead.
+  if (picked === null || picked === undefined || !picked.trim()) return showFinder(interaction, { db: dbArg, getConfig })
+
+  const taskId = picked.trim()
   const cfg = await getConfig(guild.id)
   const task = await dbArg.task.findFirst({ where: { id: taskId, guildConfigId: cfg.id } })
   const notFoundReply = () =>
@@ -217,6 +217,18 @@ export async function execute(interaction, { db: dbArg = db, notify = notifyTask
     return interaction.editReply({ content: 'Provide at least one field to update (e.g. `status`, `add_assignee`, `blocked_by`).' })
   }
 
+  return commitUpdate(interaction, { db: dbArg, notify, cfg, task, updates, blockedById, unblockId })
+}
+
+/**
+ * Apply an already-validated update (and blocker change) to `task` and reply.
+ * Shared by the slash command and the Edit modal, so both write, notify and
+ * report identically. `interaction` must already be deferred.
+ */
+export async function commitUpdate(interaction, { db: dbArg = db, notify = notifyTaskUpdate, cfg, task, updates, blockedById = null, unblockId = null }) {
+  const guild = interaction.guild
+  const taskId = task.id
+  const hasUpdates = Object.keys(updates).length > 0
   try {
     // Every refusal returns here, before the task row is written, so a refused
     // dependency never leaves a half-applied update.
@@ -308,17 +320,6 @@ export async function autocomplete(interaction, { db: dbArg = db, getConfig = ge
       return interaction.respond([]).catch(() => {})
     }
   }
-  if (focused.name === 'filter_project') {
-    // A pure filter, not a value to write — no "detach" choice makes sense here.
-    try {
-      const cfg = await getConfig(interaction.guild.id)
-      const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })
-      return interaction.respond(projectChoices(projects, focused.value, { withDetach: false })).catch(() => {})
-    } catch (e) {
-      console.error('[update-task] filter_project autocomplete:', e?.message ?? e)
-      return interaction.respond([]).catch(() => {})
-    }
-  }
   if (!['task', 'blocked_by', 'unblock'].includes(focused.name)) return interaction.respond([]).catch(() => {})
   try {
     const cfg = await getConfig(interaction.guild.id)
@@ -329,12 +330,6 @@ export async function autocomplete(interaction, { db: dbArg = db, getConfig = ge
       // for the `task` field only, never blocked_by/unblock.
       const isLeadership = memberPassesRoleGate(interaction.guild, interaction.member, ensureStringArray(cfg.dashboardRoleIds), LEADERSHIP_ROLE_NAMES)
       if (!isLeadership) rows = rows.filter((t) => canSeeTask(t, { isLeadership, callerId: interaction.user.id }))
-      // `.get().value`, not `getUser()`: an autocomplete interaction carries only
-      // the raw id of a user option (no `resolved` block), so getUser() is null.
-      const filterAssigneeId = interaction.options.get('filter_assignee')?.value
-      if (filterAssigneeId) rows = rows.filter((t) => holdersOf(t).includes(String(filterAssigneeId)))
-      const filterProjectId = interaction.options.getString('filter_project')
-      if (filterProjectId) rows = rows.filter((t) => String(t.projectId ?? '') === filterProjectId)
     }
     if (focused.name === 'unblock') {
       // With a real task picked, offer only its current blockers — an empty

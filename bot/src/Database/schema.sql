@@ -519,3 +519,19 @@ CREATE TABLE IF NOT EXISTS `projectmember` (
   CONSTRAINT `fk_projectmember_guild` FOREIGN KEY (`guildConfigId`) REFERENCES `guildconfig`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_projectmember_project` FOREIGN KEY (`projectId`) REFERENCES `project`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+
+CREATE TABLE IF NOT EXISTS `taskactivity` (
+  `id`             VARCHAR(36) NOT NULL,
+  `guildConfigId`  VARCHAR(36) NOT NULL,
+  `taskId`         VARCHAR(36) NOT NULL,
+  `actorDiscordId` VARCHAR(64) DEFAULT NULL,
+  `actorLabel`     VARCHAR(100) DEFAULT NULL,
+  `changes`        JSON DEFAULT NULL,
+  `createdAt`      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_taskactivity_task` (`taskId`, `createdAt`),
+  KEY `idx_taskactivity_guild` (`guildConfigId`),
+  CONSTRAINT `fk_taskactivity_guild` FOREIGN KEY (`guildConfigId`) REFERENCES `guildconfig`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_taskactivity_task` FOREIGN KEY (`taskId`) REFERENCES `task`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
