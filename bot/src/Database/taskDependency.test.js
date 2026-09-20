@@ -55,14 +55,14 @@ test('guildmember insert: placeholders equal params, and params follow column or
   })
   const cols = sql.match(/\(([^)]+)\) VALUES/)[1].split(',').map((s) => s.trim())
   assert.equal((sql.match(/\?/g) || []).length, params.length)
-  assert.deepEqual(cols, ['id', 'guildConfigId', 'discordId', 'email', 'verifiedAt', 'status', 'roleIds', 'displayName', 'username', 'roleNames'])
-  assert.deepEqual(params, ['gm1', 'g1', 'd1', 'a@granjur.com', '2026-09-17 00:00:00', 'verified', '["r1","r2"]', 'Nauraiz', 'nauraiz_101104', '[]'])
+  assert.deepEqual(cols, ['id', 'guildConfigId', 'discordId', 'email', 'verifiedAt', 'status', 'roleIds', 'displayName', 'username', 'roleNames', 'avatarUrl'])
+  assert.deepEqual(params, ['gm1', 'g1', 'd1', 'a@granjur.com', '2026-09-17 00:00:00', 'verified', '["r1","r2"]', 'Nauraiz', 'nauraiz_101104', '[]', null])
   assert.match(sql, /INSERT INTO `guildmember`/)
 })
 
 test('guildmember insert: unspecified fields fall back to the insert defaults', () => {
   const { params } = guildMemberInsertSql({ id: 'gm2', guildConfigId: 'g1', discordId: 'd2' })
-  assert.deepEqual(params, ['gm2', 'g1', 'd2', null, null, 'pending', '[]', null, null, '[]'])
+  assert.deepEqual(params, ['gm2', 'g1', 'd2', null, null, 'pending', '[]', null, null, '[]', null])
 })
 
 test('guildmember update sets: roleNames is written as JSON', () => {
@@ -76,5 +76,20 @@ test('guildmember insert: roleNames is the tenth column and defaults to an empty
   const cols = sql.match(/\(([^)]+)\) VALUES/)[1].split(',').map((s) => s.trim())
   assert.equal(cols[9], 'roleNames')
   assert.equal(params[9], '[]')
+  assert.equal((sql.match(/\?/g) || []).length, params.length)
+})
+
+test('guildmember update sets: avatarUrl is written only when given', () => {
+  assert.deepEqual(guildMemberUpdateSets({ avatarUrl: 'https://cdn.discordapp.com/a.png' }), {
+    sets: ['avatarUrl = ?'], vals: ['https://cdn.discordapp.com/a.png'],
+  })
+  assert.deepEqual(guildMemberUpdateSets({ avatarUrl: undefined }), { sets: [], vals: [] })
+})
+
+test('guildmember insert: avatarUrl is the eleventh column and defaults to null', () => {
+  const { sql, params } = guildMemberInsertSql({ id: 'x', guildConfigId: 'g', discordId: 'u' })
+  const cols = sql.match(/\(([^)]+)\) VALUES/)[1].split(',').map((s) => s.trim())
+  assert.equal(cols[10], 'avatarUrl')
+  assert.equal(params[10], null)
   assert.equal((sql.match(/\?/g) || []).length, params.length)
 })

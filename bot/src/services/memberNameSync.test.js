@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { toNameUpdates, syncGuildMemberNames, syncOneMember, roleNamesOf } from './memberNameSync.js'
+import { toNameUpdates, syncGuildMemberNames, syncOneMember, roleNamesOf, avatarUrlOf } from './memberNameSync.js'
 
 const m = (id, displayName, username, bot = false) => ({ id, displayName, user: { username, bot } })
 
@@ -16,8 +16,8 @@ test('toNameUpdates: changed names update, unchanged are skipped, unknown member
     { id: 'r2', discordId: '2', displayName: 'Afaq', username: null },
   ]
   const out = toNameUpdates(discord, rows)
-  assert.deepEqual(out.updates, [{ id: 'r2', displayName: 'Afaq Khawar', username: 'afaqkhawar9299', roleNames: [] }])
-  assert.deepEqual(out.inserts, [{ discordId: '3', displayName: 'New Person', username: 'newp', roleNames: [] }])
+  assert.deepEqual(out.updates, [{ id: 'r2', displayName: 'Afaq Khawar', username: 'afaqkhawar9299', roleNames: [], avatarUrl: null }])
+  assert.deepEqual(out.inserts, [{ discordId: '3', displayName: 'New Person', username: 'newp', roleNames: [], avatarUrl: null }])
 })
 
 test('toNameUpdates: names are clipped to the column widths', () => {
@@ -47,7 +47,7 @@ test('syncGuildMemberNames writes updates and pending inserts through the seam',
   const n = await syncGuildMemberNames(guild, { db, cfg })
   assert.equal(n, 2)
   assert.equal(findManyWhere.all, true)
-  assert.deepEqual(calls[0], ['update', { where: { id: 'r1' }, data: { displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: [] } }])
+  assert.deepEqual(calls[0], ['update', { where: { id: 'r1' }, data: { displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: [], avatarUrl: null } }])
   assert.equal(calls[1][0], 'upsert')
   assert.equal(calls[1][1].create.status, 'pending')
   assert.equal(calls[1][1].create.displayName, 'Hassan Abid')
@@ -66,7 +66,7 @@ test('syncOneMember: a member whose stored name differs updates that row', async
   member.guild = { id: 'guild1' }
   await syncOneMember(member, { db })
   assert.equal(calls.length, 1)
-  assert.deepEqual(calls[0], ['update', { where: { id: 'r1' }, data: { displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: [] } }])
+  assert.deepEqual(calls[0], ['update', { where: { id: 'r1' }, data: { displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: [], avatarUrl: null } }])
 })
 
 test('syncOneMember: a member with no row upserts a pending row', async () => {
@@ -136,11 +136,51 @@ test('toNameUpdates: a changed role list is an update even when names are unchan
   const discord = [withRoles(m('1', 'Nauraiz', 'nauraiz_101104'), ['Senior Dev'])]
   const rows = [{ id: 'r1', discordId: '1', displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: '["Frontend"]' }]
   const out = toNameUpdates(discord, rows)
-  assert.deepEqual(out.updates, [{ id: 'r1', displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: ['Senior Dev'] }])
+  assert.deepEqual(out.updates, [{ id: 'r1', displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: ['Senior Dev'], avatarUrl: null }])
 })
 
 test('toNameUpdates: an identical role list (stored as JSON text) is not an update', () => {
   const discord = [withRoles(m('1', 'Nauraiz', 'nauraiz_101104'), ['Frontend', 'Senior Dev'])]
   const rows = [{ id: 'r1', discordId: '1', displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: '["Frontend","Senior Dev"]' }]
   assert.deepEqual(toNameUpdates(discord, rows).updates, [])
+})
+
+const CDN = 'https://cdn.discordapp.com/avatars/1/abc.png?size=64'
+const withAvatar = (member, url) => ({ ...member, displayAvatarURL: () => url })
+
+test('avatarUrlOf: accepts a Discord CDN url and refuses anything else', () => {
+  assert.equal(avatarUrlOf(withAvatar(m('1', 'N', 'n'), CDN)), CDN)
+  assert.equal(avatarUrlOf(withAvatar(m('1', 'N', 'n'), 'https://evil.example/a.png')), null)
+  assert.equal(avatarUrlOf(withAvatar(m('1', 'N', 'n'), 'http://cdn.discordapp.com/a.png')), null)
+  assert.equal(avatarUrlOf(m('1', 'N', 'n')), null) // no displayAvatarURL at all
+  assert.equal(avatarUrlOf(null), null)
+})
+
+test('avatarUrlOf: asks for a small static png', () => {
+  let asked = null
+  avatarUrlOf({ displayAvatarURL: (o) => { asked = o; return CDN } })
+  assert.deepEqual(asked, { extension: 'png', size: 64 })
+})
+
+test('toNameUpdates: a changed avatar is an update even when names and roles are unchanged', () => {
+  const discord = [withAvatar(m('1', 'Nauraiz', 'nauraiz_101104'), CDN)]
+  const rows = [{ id: 'r1', discordId: '1', displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: '[]', avatarUrl: 'https://cdn.discordapp.com/avatars/1/old.png?size=64' }]
+  assert.deepEqual(toNameUpdates(discord, rows).updates, [{ id: 'r1', displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: [], avatarUrl: CDN }])
+})
+
+test('toNameUpdates: an unchanged avatar is not an update', () => {
+  const discord = [withAvatar(m('1', 'Nauraiz', 'nauraiz_101104'), CDN)]
+  const rows = [{ id: 'r1', discordId: '1', displayName: 'Nauraiz', username: 'nauraiz_101104', roleNames: '[]', avatarUrl: CDN }]
+  assert.deepEqual(toNameUpdates(discord, rows).updates, [])
+})
+
+test('toNameUpdates: an avatar that cannot be read never blanks a stored one', () => {
+  const discord = [m('1', 'Renamed', 'nauraiz_101104')]
+  const rows = [{ id: 'r1', discordId: '1', displayName: 'Old', username: 'nauraiz_101104', roleNames: '[]', avatarUrl: CDN }]
+  assert.equal(toNameUpdates(discord, rows).updates[0].avatarUrl, CDN)
+})
+
+test('toNameUpdates: a new member carries their avatar into the insert', () => {
+  const out = toNameUpdates([withAvatar(m('3', 'New', 'newp'), CDN)], [])
+  assert.equal(out.inserts[0].avatarUrl, CDN)
 })

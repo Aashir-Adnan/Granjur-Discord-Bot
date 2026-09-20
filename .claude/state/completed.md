@@ -4,6 +4,19 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-20 — /update-task filters fixed, Discord avatars and scope badges on the Team site (built on branches, NOT YET MERGED)
+
+`/update-task` `filter_assignee` never filtered (autocomplete `getUser()` is null); fixed, and
+the task picker now also searches/labels by project and scope. Member Discord avatars are
+stored (`guildmember.avatarUrl`, migration 020), passed through CSAAS, and drawn on the Team
+site (task list, board, detail, People). Board cards ~1.5x, scope badge on every card, info
+preview popover, filter dropdown arrows fixed.
+Bot `feat/update-task-search-and-avatars` (3332e3b, 5dba05d; 650 tests) · CSAAS
+`feat/discord-avatars` (c357808) · UBS-Doc `feat/team-avatars-board` (e9382ef; 223 tests).
+Deploy order bot → CSAAS → site. See `knowledge/project-tasks-site.md`.
+
+---
+
 ## 2026-09-18 — Per-project Discord sections, project-aware meetings, readable task channels (built and reviewed on branch `feat/project-sections`, NOT YET MERGED)
 
 Every project gets its own Discord category (ten channels: members, docs, meetings

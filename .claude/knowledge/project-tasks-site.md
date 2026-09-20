@@ -362,6 +362,33 @@ then restart). The CSAAS read endpoint's `members[].roleNames` field only exists
 the bot's migration 018 has run, so CSAAS cannot go out ahead of the bot even for the
 read side.
 
+### Avatars, scope badges and the /update-task filters (2026-09-20)
+
+- **Autocomplete quirk that hid a shipped defect:** in an autocomplete interaction Discord
+  sends only the raw id of a User option — no `resolved` block — so
+  `options.getUser(name)` is `null` there. Read other options with `options.get(name)?.value`.
+  `/update-task`'s `filter_assignee` used `getUser()` and silently never filtered; the first
+  tests faked `getUser`, which is why nothing caught it. Autocomplete tests now build the
+  interaction on the real `CommandInteractionOptionResolver` (`autocompleteInteraction()` in
+  `update-task.test.js`). Any new autocomplete that reads another option must be tested that way.
+- **Filters only apply if filled before typing `task`** (Discord evaluates autocomplete with the
+  options entered so far). The `task` picker therefore also searches project name, scope and
+  assignee names, and each choice label carries the project.
+- **Avatars:** `guildmember.avatarUrl` (migration 020) is written by `memberNameSync` from
+  `member.displayAvatarURL({ extension: 'png', size: 64 })`, accepted only when it starts with
+  `https://cdn.discordapp.com/` (it ends up in an `<img src>` on the site, which re-checks with
+  `safeAvatarUrl`). An unreadable avatar never blanks a stored one. Global avatar changes do not
+  fire `GuildMemberUpdate`, so a new picture appears at the next 6-hour sync. CSAAS passes
+  `avatarUrl` through (key omitted, not null, when unknown) and falls back to the old
+  `guildmember` select if the column is missing, so deploy order cannot break the page — but
+  keep bot first so pictures appear.
+- **Board:** cards are ~1.5x the old size (`min-w-[375px]` columns). The info button portals a
+  `position: fixed` popover to `<body>` because the board's `overflow-x-auto` container would
+  clip an absolute one; placement is `previewLogic.popoverPosition`.
+- **Tailwind trap in this site:** `design.css` rules such as `.chip` and `.input-base` are
+  unlayered, so they beat Tailwind utilities (`.input-base { width: 100% }` defeats `w-auto`;
+  `.chip` padding beats `px-*`). Size a select through a wrapper, not the select.
+
 ## Related
 
 [[project-docs]] (the other bot-to-site data path, UBS-Doc markdown into MySQL — this

@@ -32,21 +32,30 @@ export function holdersOf(task) {
  * are what tell two similar tasks apart.
  *
  * @param {object} task
- * @param {{ nameFor?: (id: string) => string|null, max?: number }} [opts]
+ * The project, when known, sits between the title and the status so two tasks
+ * with the same title in different projects can be told apart; it is the first
+ * thing dropped when the line is too long.
+ *
+ * @param {object} task
+ * @param {{ nameFor?: (id: string) => string|null, projectName?: string|null, max?: number }} [opts]
  */
-export function taskChoiceLabel(task, { nameFor = () => null, max = 100 } = {}) {
+export function taskChoiceLabel(task, { nameFor = () => null, projectName = null, max = 100 } = {}) {
   const status = String(task?.status || 'open')
   const holders = holdersOf(task)
   const who = holders.length
     ? holders.map((id) => nameFor(id) || id).join(', ')
     : 'unassigned'
 
-  const suffix = ` · ${status} · ${who}`
+  const leanSuffix = ` · ${status} · ${who}`
+  const project = String(projectName || '').trim()
+  const shortProject = project.length > 22 ? `${project.slice(0, 21)}…` : project
+  const fullSuffix = shortProject ? ` · ${shortProject} · ${status} · ${who}` : leanSuffix
   const title = String(task?.title || task?.id || 'Task')
 
   // Reserve the suffix, give the rest to the title. If the suffix alone would
   // overflow (many assignees), it is the suffix that gets cut instead — a label
   // with no title is useless, one with no third assignee is not.
+  const suffix = max - fullSuffix.length >= 12 ? fullSuffix : leanSuffix
   const room = max - suffix.length
   if (room >= 12) {
     const head = title.length > room ? `${title.slice(0, room - 1)}…` : title
