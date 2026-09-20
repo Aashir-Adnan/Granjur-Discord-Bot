@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS guildmember (
   displayName VARCHAR(100),
   username VARCHAR(64),
   roleNames JSON DEFAULT NULL,
+  avatarUrl VARCHAR(255) DEFAULT NULL,
   verifiedAt DATETIME(3),
   status VARCHAR(32) DEFAULT 'pending',
   roleIds JSON DEFAULT ('[]'),

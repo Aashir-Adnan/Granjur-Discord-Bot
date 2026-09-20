@@ -140,6 +140,7 @@ async function guildMemberUpsert({ where, create, update }) {
       displayName: update.displayName,
       username: update.username,
       roleNames: update.roleNames,
+      avatarUrl: update.avatarUrl,
     });
     sets.push("verifiedAt = ?", "updatedAt = CURRENT_TIMESTAMP(3)");
     vals.push(update.verifiedAt ?? existing.verifiedAt);
@@ -177,6 +178,7 @@ export function guildMemberInsertSql(data) {
     ["displayName", data.displayName ?? null],
     ["username", data.username ?? null],
     ["roleNames", toJson(data.roleNames || [])],
+    ["avatarUrl", data.avatarUrl ?? null],
   ];
   return {
     sql: `INSERT INTO \`guildmember\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
@@ -193,6 +195,7 @@ export function guildMemberUpdateSets(data = {}) {
   if (data.displayName !== undefined) { sets.push("displayName = ?"); vals.push(data.displayName); }
   if (data.username !== undefined) { sets.push("username = ?"); vals.push(data.username); }
   if (data.roleNames !== undefined) { sets.push("roleNames = ?"); vals.push(toJson(data.roleNames)); }
+  if (data.avatarUrl !== undefined) { sets.push("avatarUrl = ?"); vals.push(data.avatarUrl); }
   return { sets, vals };
 }
 

@@ -21,6 +21,15 @@ export function roleNamesOf(member) {
     .sort((a, b) => a.localeCompare(b))
     .slice(0, 25)
 }
+/**
+ * The member's Discord avatar as a small PNG URL, or null when it cannot be
+ * worked out. Only Discord's own CDN is accepted: this value is later put in
+ * an <img src> on another site, so nothing else may reach that column.
+ */
+export function avatarUrlOf(member) {
+  const url = member?.displayAvatarURL?.({ extension: 'png', size: 64 })
+  return typeof url === 'string' && url.startsWith('https://cdn.discordapp.com/') ? url.slice(0, 255) : null
+}
 const storedRoles = (v) => {
   if (Array.isArray(v)) return v
   if (typeof v === 'string' && v) {
@@ -44,14 +53,17 @@ export function toNameUpdates(discordMembers = [], dbRows = []) {
     const displayName = clip(member.displayName ?? member.user?.username, 100)
     const username = clip(member.user?.username, 64)
     const roleNames = roleNamesOf(member)
+    const avatarUrl = avatarUrlOf(member)
     const row = byDiscordId.get(String(member.id))
     if (!row) {
-      inserts.push({ discordId: String(member.id), displayName, username, roleNames })
+      inserts.push({ discordId: String(member.id), displayName, username, roleNames, avatarUrl })
       continue
     }
     const rolesChanged = JSON.stringify(storedRoles(row.roleNames)) !== JSON.stringify(roleNames)
-    if (row.displayName !== displayName || row.username !== username || rolesChanged) {
-      updates.push({ id: row.id, displayName, username, roleNames })
+    // An avatar we cannot read this time never blanks one we already hold.
+    const avatarChanged = avatarUrl !== null && (row.avatarUrl ?? null) !== avatarUrl
+    if (row.displayName !== displayName || row.username !== username || rolesChanged || avatarChanged) {
+      updates.push({ id: row.id, displayName, username, roleNames, avatarUrl: avatarUrl ?? row.avatarUrl ?? null })
     }
   }
   return { updates, inserts }
@@ -60,13 +72,14 @@ export function toNameUpdates(discordMembers = [], dbRows = []) {
 /** Writes an updates/inserts diff through the db seam. Returns the row count written. */
 async function applyNameWrites(guildId, { updates, inserts }, dbArg) {
   for (const u of updates) {
-    await dbArg.guildMember.update({ where: { id: u.id }, data: { displayName: u.displayName, username: u.username, roleNames: u.roleNames } })
+    await dbArg.guildMember.update({ where: { id: u.id }, data: { displayName: u.displayName, username: u.username, roleNames: u.roleNames, avatarUrl: u.avatarUrl } })
   }
   for (const i of inserts) {
     await dbArg.guildMember.upsert({
       where: { guildId_discordId: { guildId, discordId: i.discordId } },
-      create: { guildId, discordId: i.discordId, status: 'pending', displayName: i.displayName, username: i.username, roleNames: i.roleNames },
-      update: { displayName: i.displayName, username: i.username, roleNames: i.roleNames },
+      create: { guildId, discordId: i.discordId, status: 'pending', displayName: i.displayName, username: i.username, roleNames: i.roleNames, avatarUrl: i.avatarUrl },
+      // undefined leaves an existing avatar alone (the update builder skips it).
+      update: { displayName: i.displayName, username: i.username, roleNames: i.roleNames, avatarUrl: i.avatarUrl ?? undefined },
     })
   }
   return updates.length + inserts.length
