@@ -11,30 +11,18 @@
 // so nothing is held in memory and a restart cannot orphan a panel.
 
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, LabelBuilder, ModalBuilder,
-  StringSelectMenuBuilder, StringSelectMenuOptionBuilder, TextInputBuilder, TextInputStyle,
-  UserSelectMenuBuilder, EmbedBuilder, MessageFlags,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
+  UserSelectMenuBuilder, EmbedBuilder,
 } from 'discord.js'
-import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
-import { holdersOf, idList } from '../utils/taskLabel.js'
-import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
-import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
-import { notifyTaskUpdate } from './taskUpdateNotify.js'
-import { canSeeTask, commitUpdate, sameIds } from '../commands/update-task.js'
+import db, { getOrCreateGuildConfig } from '../db/index.js'
+import { holdersOf } from '../utils/taskLabel.js'
+import { scopeLabel } from '../utils/taskScope.js'
+import { canSeeTask } from '../commands/update-task.js'
+import { context, showHub } from './taskHub.js'
 
 export const PAGE_SIZE = 25
-export const EDIT_MODAL_PREFIX = 'ut_edit:'
 const NONE = '-'
-const STATUS_OPTIONS = [
-  { label: 'Open', value: 'open' },
-  { label: 'Pending', value: 'pending' },
-  { label: 'In progress', value: 'in_progress' },
-  { label: 'Resolved', value: 'resolved' },
-  { label: 'Closed', value: 'closed' },
-  { label: 'Done', value: 'done' },
-]
 const TERMINAL = new Set(['resolved', 'closed', 'done'])
-const NOT_FOUND = 'That task is not available to you any more. Run **/update-task** again.'
 
 // ---------------------------------------------------------------- state ----
 
@@ -163,79 +151,7 @@ export function buildFinderPayload({ rows, projects, state, isLeadership, caller
   return { embeds: [embed], components, content: '' }
 }
 
-// ------------------------------------------------------------- the modal ----
-
-/** The Edit modal, prefilled from the task. Five fields: the most a modal holds. */
-export function buildEditModal(task) {
-  const status = String(task.status || 'open')
-  const scope = task.scope ? String(task.scope) : null
-  const holders = holdersOf(task)
-
-  const statusMenu = new StringSelectMenuBuilder().setCustomId('status').setRequired(true).setOptions(
-    STATUS_OPTIONS.map((o) => new StringSelectMenuOptionBuilder().setLabel(o.label).setValue(o.value).setDefault(o.value === status)),
-  )
-  const scopeMenu = new StringSelectMenuBuilder().setCustomId('scope').setRequired(false).setPlaceholder('Not set').setMinValues(0).setMaxValues(1).setOptions(
-    SCOPE_CHOICES.map((o) => new StringSelectMenuOptionBuilder().setLabel(o.name).setValue(o.value).setDefault(o.value === scope)),
-  )
-  const modal = new ModalBuilder()
-    .setCustomId(`${EDIT_MODAL_PREFIX}${task.id}`)
-    .setTitle(clip(`Edit: ${task.title || 'task'}`, 45))
-    .addLabelComponents(
-      new LabelBuilder().setLabel('Status').setStringSelectMenuComponent(statusMenu),
-      new LabelBuilder().setLabel('Scope').setStringSelectMenuComponent(scopeMenu),
-    )
-  // A user select holds at most 25 people. Past that, leave assignees to the
-  // slash command rather than silently dropping the extras on save.
-  if (holders.length <= 25) {
-    const people = new UserSelectMenuBuilder().setCustomId('assignees').setRequired(false).setPlaceholder('Nobody').setMinValues(0).setMaxValues(25)
-    if (holders.length) people.setDefaultUsers(holders)
-    modal.addLabelComponents(new LabelBuilder().setLabel('Assignees').setUserSelectMenuComponent(people))
-  }
-  modal.addLabelComponents(
-    new LabelBuilder().setLabel('Title').setTextInputComponent(
-      new TextInputBuilder().setCustomId('title').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200).setValue(String(task.title || 'Untitled').slice(0, 200)),
-    ),
-  )
-  const description = new TextInputBuilder().setCustomId('description').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(2000)
-  if (task.description) description.setValue(String(task.description).slice(0, 2000))
-  modal.addLabelComponents(new LabelBuilder().setLabel('Description').setTextInputComponent(description))
-  return modal
-}
-
-/**
- * The updates a submitted modal amounts to: only fields that differ from the
- * task. Pure. `values.assignees` is undefined when the modal had no such field.
- */
-export function updatesFromModal(task, values) {
-  const updates = {}
-  const status = values.status
-  if (status && status !== task.status) updates.status = status
-  // No selection leaves the scope alone: clearing one is not offered here.
-  if (values.scope && values.scope !== (task.scope ?? null)) updates.scope = values.scope
-  const title = String(values.title ?? '').trim()
-  if (title && title !== String(task.title ?? '')) updates.title = title
-  if (values.description !== undefined) {
-    const description = String(values.description ?? '').trim()
-    if (description !== String(task.description ?? '').trim()) updates.description = description || null
-  }
-  if (values.assignees !== undefined) {
-    const next = [...new Set(idList(values.assignees))]
-    // Compared with who holds the task (a bug's tagged members count), so
-    // opening and saving without touching the field writes nothing.
-    if (!sameIds(next, holdersOf(task))) updates.assigneeIds = next
-  }
-  return updates
-}
-
-const modalValues = (fields, id) => fields?.fields?.get?.(id)?.values ?? []
-
 // ------------------------------------------------------------- handlers ----
-
-async function context(interaction, { db: dbArg, getConfig }) {
-  const cfg = await getConfig(interaction.guild.id)
-  const isLeadership = memberPassesRoleGate(interaction.guild, interaction.member, ensureStringArray(cfg.dashboardRoleIds), LEADERSHIP_ROLE_NAMES)
-  return { cfg, isLeadership }
-}
 
 async function panelFor(interaction, state, { db: dbArg, getConfig }) {
   const { cfg, isLeadership } = await context(interaction, { db: dbArg, getConfig })
@@ -267,14 +183,8 @@ export async function handleFinderComponent(interaction, deps = {}) {
   }
 
   if (action === 'task') {
-    // Opens a modal, so this component is not deferred (see index.js).
-    const taskId = interaction.values?.[0]
-    const { cfg, isLeadership } = await context(interaction, d)
-    const task = taskId ? await d.db.task.findFirst({ where: { id: taskId, guildConfigId: cfg.id } }) : null
-    if (!task || !canSeeTask(task, { isLeadership, callerId: interaction.user.id })) {
-      return interaction.reply({ content: NOT_FOUND, flags: MessageFlags.Ephemeral })
-    }
-    return interaction.showModal(buildEditModal(task))
+    // Picking a task opens its hub: the message with every editable property.
+    return showHub(interaction, interaction.values?.[0], d)
   }
 
   const next = { ...state }
@@ -282,28 +192,4 @@ export async function handleFinderComponent(interaction, deps = {}) {
   else if (action === 'person') { next.person = interaction.values?.[0] ?? null; next.page = 0 }
   // prev / next / done / anyone carry their target state in their own id.
   return respond(interaction, await panelFor(interaction, next, d))
-}
-
-/** The Edit modal was submitted. `interaction` is already deferred (ephemeral). */
-export async function handleEditSubmit(interaction, deps = {}) {
-  const d = { db, getConfig: getOrCreateGuildConfig, notify: notifyTaskUpdate, ...deps }
-  const taskId = String(interaction.customId).slice(EDIT_MODAL_PREFIX.length)
-  const { cfg, isLeadership } = await context(interaction, d)
-  const task = await d.db.task.findFirst({ where: { id: taskId, guildConfigId: cfg.id } })
-  if (!task || !canSeeTask(task, { isLeadership, callerId: interaction.user.id })) {
-    return interaction.editReply({ content: NOT_FOUND })
-  }
-  const f = interaction.fields
-  const hasAssignees = Boolean(f?.fields?.has?.('assignees'))
-  const updates = updatesFromModal(task, {
-    status: modalValues(f, 'status')[0],
-    scope: modalValues(f, 'scope')[0],
-    title: f.getTextInputValue('title'),
-    description: f?.fields?.has?.('description') ? f.getTextInputValue('description') : undefined,
-    assignees: hasAssignees ? modalValues(f, 'assignees') : undefined,
-  })
-  if (Object.keys(updates).length === 0) {
-    return interaction.editReply({ content: 'Nothing changed.' })
-  }
-  return commitUpdate(interaction, { db: d.db, notify: d.notify, cfg, task, updates })
 }

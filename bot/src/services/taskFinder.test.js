@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   PAGE_SIZE, defaultState, encodeState, decodeState, parseFinderId, filterTasks, pageOf,
-  buildFinderPayload, buildEditModal, updatesFromModal, showFinder, handleFinderComponent, handleEditSubmit,
+  buildFinderPayload, showFinder, handleFinderComponent,
 } from './taskFinder.js'
 
 const admin = () => ({ permissions: { has: (p) => p === 'Administrator' } })
@@ -127,59 +127,6 @@ test('no matches: no task list, and the message says so', () => {
   assert.match(p.embeds[0].toJSON().description, /No tasks match/)
 })
 
-// ------------------------------------------------------------- the modal ----
-
-test('the edit modal has the five fields, prefilled from the task', () => {
-  const m = buildEditModal({ ...HELD, description: 'Body', scope: 'qa' }).toJSON()
-  assert.equal(m.custom_id, 'ut_edit:H')
-  const ids = m.components.map((c) => c.component.custom_id)
-  assert.deepEqual(ids, ['status', 'scope', 'assignees', 'title', 'description'])
-  const byId = Object.fromEntries(m.components.map((c) => [c.component.custom_id, c.component]))
-  assert.equal(byId.status.options.find((o) => o.default).value, 'open')
-  assert.equal(byId.scope.options.find((o) => o.default).value, 'qa')
-  assert.deepEqual(byId.assignees.default_values.map((d) => d.id), ['u1'])
-  assert.equal(byId.title.value, 'My feature')
-  assert.equal(byId.description.value, 'Body')
-  assert.ok(m.title.length <= 45)
-})
-
-test('a bug is prefilled with its tagged members, and a task with no scope has none preselected', () => {
-  const m = buildEditModal(BUG).toJSON()
-  const byId = Object.fromEntries(m.components.map((c) => [c.component.custom_id, c.component]))
-  assert.deepEqual(byId.assignees.default_values.map((d) => d.id), ['u1'])
-  assert.equal(byId.scope.options.some((o) => o.default), false)
-})
-
-test('past 25 holders the assignees field is left out rather than silently truncated', () => {
-  const crowd = { ...HELD, assigneeIds: Array.from({ length: 26 }, (_, i) => String(1000 + i)) }
-  const ids = buildEditModal(crowd).toJSON().components.map((c) => c.component.custom_id)
-  assert.deepEqual(ids, ['status', 'scope', 'title', 'description'])
-})
-
-test('updatesFromModal writes only what changed', () => {
-  const same = { status: 'open', scope: 'qa', title: 'My feature', description: '', assignees: ['u1'] }
-  assert.deepEqual(updatesFromModal(HELD, same), {})
-  assert.deepEqual(updatesFromModal(HELD, { ...same, status: 'done', scope: 'design', title: '  New  ', description: 'Text' }), {
-    status: 'done', scope: 'design', title: 'New', description: 'Text',
-  })
-  assert.deepEqual(updatesFromModal(HELD, { ...same, assignees: ['u1', 'u3'] }), { assigneeIds: ['u1', 'u3'] })
-  assert.deepEqual(updatesFromModal(HELD, { ...same, assignees: [] }), { assigneeIds: [] })
-})
-
-test('updatesFromModal: no scope selected leaves it alone; a blank title is ignored; a cleared description is null', () => {
-  const t = { ...HELD, description: 'was here' }
-  assert.deepEqual(updatesFromModal(t, { status: 'open', scope: undefined, title: '   ', description: '', assignees: ['u1'] }), { description: null })
-})
-
-test('updatesFromModal: saving a bug untouched does not turn its tagged members into assignees', () => {
-  const out = updatesFromModal(BUG, { status: 'open', scope: undefined, title: 'A bug', description: '', assignees: ['u1'] })
-  assert.deepEqual(out, {})
-})
-
-test('updatesFromModal: a modal without the assignees or description field leaves them alone', () => {
-  assert.deepEqual(updatesFromModal(HELD, { status: 'open', title: 'My feature' }), {})
-})
-
 // ------------------------------------------------------------- handlers ----
 
 const getConfig = async () => ({ id: 'g1' })
@@ -191,6 +138,7 @@ function fakeDb(tasks) {
     calls, activity,
     task: {
       findMany: async () => tasks,
+      findByIds: async ({ where }) => tasks.filter((t) => where.ids.includes(t.id)),
       findFirst: async ({ where }) => tasks.find((t) => t.id === where.id) ?? null,
       update: async (a) => { calls.push(['update', a]); return null },
     },
@@ -245,51 +193,17 @@ test('close removes the panel', async () => {
   assert.deepEqual(it.sent.edits[0].components, [])
 })
 
-test('picking a task opens the edit modal', async () => {
-  const it = fakeInteraction({ customId: 'utf_task:-:-:0:0', values: ['H'], deferred: false })
-  await handleFinderComponent(it, { db: fakeDb(rows), getConfig })
-  assert.equal(it.sent.modals.length, 1)
-  assert.equal(it.sent.modals[0].toJSON().custom_id, 'ut_edit:H')
-})
-
-test('picking a task that is not yours is refused, without opening a modal', async () => {
-  const it = fakeInteraction({ customId: 'utf_task:-:-:0:0', values: ['O'], deferred: false, member: plain() })
+test('picking a task shows its hub, not a modal', async () => {
+  const it = fakeInteraction({ customId: 'utf_task:-:-:0:0', values: ['H'] })
   await handleFinderComponent(it, { db: fakeDb(rows), getConfig })
   assert.equal(it.sent.modals.length, 0)
-  assert.match(it.sent.replies[0].content, /not available/)
+  assert.equal(it.sent.edits[0].embeds[0].toJSON().title, 'My feature')
+  assert.ok(it.sent.edits[0].components.length >= 3)
 })
 
-function modalFields({ status = 'open', scope = [], assignees = ['u1'], title = 'My feature', description = '' } = {}) {
-  const map = new Map([
-    ['status', { values: [status] }], ['scope', { values: scope }], ['assignees', { values: assignees }],
-    ['title', { value: title }], ['description', { value: description }],
-  ])
-  return { fields: map, getTextInputValue: (id) => map.get(id).value }
-}
-
-test('submitting the modal applies the changes through the shared update path and records who did it', async () => {
-  const db = fakeDb([HELD])
-  const notified = []
-  const it = fakeInteraction({ customId: 'ut_edit:H', fields: modalFields({ status: 'in_progress', scope: ['design'], assignees: ['u1', 'u3'] }) })
-  await handleEditSubmit(it, { db, getConfig, notify: async (a) => { notified.push(a); return { channelId: null, created: false, dmed: [] } } })
-  assert.deepEqual(db.calls[0][1].data, { status: 'in_progress', scope: 'design', assigneeIds: ['u1', 'u3'] })
-  assert.equal(notified.length, 1)
-  assert.equal(db.activity[0].actorDiscordId, 'u1')
-  assert.equal(it.sent.edits[0].embeds[0].toJSON().title, 'Task updated')
-})
-
-test('submitting the modal without changing anything says so and writes nothing', async () => {
-  const db = fakeDb([HELD])
-  const it = fakeInteraction({ customId: 'ut_edit:H', fields: modalFields({ scope: ['qa'] }) })
-  await handleEditSubmit(it, { db, getConfig, notify: async () => ({ channelId: null, created: false, dmed: [] }) })
-  assert.equal(it.sent.edits[0].content, 'Nothing changed.')
-  assert.deepEqual(db.calls, [])
-})
-
-test('a modal submitted for a task the member cannot see writes nothing', async () => {
-  const db = fakeDb([OTHER])
-  const it = fakeInteraction({ customId: 'ut_edit:O', member: plain(), fields: modalFields({ status: 'done', assignees: ['u2'] }) })
-  await handleEditSubmit(it, { db, getConfig, notify: async () => ({}) })
+test('picking a task that is not yours shows nothing of it', async () => {
+  const it = fakeInteraction({ customId: 'utf_task:-:-:0:0', values: ['O'], member: plain() })
+  await handleFinderComponent(it, { db: fakeDb(rows), getConfig })
   assert.match(it.sent.edits[0].content, /not available/)
-  assert.deepEqual(db.calls, [])
+  assert.deepEqual(it.sent.edits[0].embeds, [])
 })
