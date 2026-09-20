@@ -180,7 +180,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       "backlog_approve_btn", // shows confirm-approval modal
       "bug_repo", // repo select → title/description modal (legacy, kept for ticket)
       "create_task_show_modal", // opens details modal
-      "utf_task", // /update-task finder: picking a task opens the edit modal
+      "uth_basics", // /update-task hub: opens the details modal
+      "uth_counts", // /update-task hub: opens the test-counts modal
       "create_task_repo", // repo select → details modal for bug
       // create-task: type buttons and quick steps skip defer; repo/project step defers (async DB work)
       "create_task_type_feature",
@@ -202,8 +203,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
         ));
     // Modals that defer inside their handler to avoid "already acknowledged" (40060)
     const noDeferModalIds = ["create_task_modal"];
+    // The /update-task hub modals answer with deferUpdate themselves, so the hub
+    // message is edited in place instead of a second reply appearing.
     const skipModalDefer =
-      interaction.isModalSubmit() && noDeferModalIds.includes(customId);
+      interaction.isModalSubmit() &&
+      (noDeferModalIds.includes(customId) || customId.startsWith("ut_edit:") || customId.startsWith("ut_counts:"));
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
       if (!skipDefer) {
         try {

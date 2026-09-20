@@ -402,6 +402,16 @@ read side.
   Modals with selects need discord.js >= 14.25 (locked). The bug-holder trap: a bug's people
   are `taggedMemberIds`, so the modal compares against `holdersOf(task)`, not `assigneeIds`,
   or an untouched save would copy tagged members into assignees.
+- **Task hub (`services/taskHub.js`):** a modal holds only five fields, so picking a task in the
+  panel opens a hub message instead: an embed of every current value plus project /
+  implementation / add-blocker / remove-blocker selects (saved on pick) and buttons for the
+  Edit-details modal, a Test-counts modal (0–127, signed TINYINT; blank = unchanged), Back and
+  Close. Custom ids are `uth_<action>:<taskId>`. The two modal-opening buttons must skip
+  index.js's automatic `deferUpdate` (`noDeferComponentIds`), and the modal submits skip the
+  automatic `deferReply` and answer with `deferUpdate`, so the hub is edited in place.
+  `runUpdate` (extracted from `commitUpdate`) writes and notifies without replying; both the
+  slash command and the hub use it. Test fakes must return row copies: a fake that mutates the
+  caller's snapshot on update hides the activity diff.
 - **Activity log:** `taskactivity` (migration 021), one row per update from
   `applyTaskUpdate` (+ blocker add/remove in `applyDependencyChange`). Title/description
   bodies are never stored. A site drag has no Discord id: `internalTaskRoute` matches the

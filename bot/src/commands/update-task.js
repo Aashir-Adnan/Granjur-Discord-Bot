@@ -221,33 +221,56 @@ export async function execute(interaction, { db: dbArg = db, notify = notifyTask
 }
 
 /**
+ * Moving a task between projects moves the ROW, not the channel: nothing here
+ * re-parents it, and the overwrite merge that repairs task channels keeps the
+ * old project role's allow, so the old project's members go on seeing a task
+ * that is no longer theirs until the section is rebuilt. Saying so is the whole
+ * fix — a silent half-move is the thing to avoid. Null when the project did not
+ * change. Pure.
+ */
+export function projectMoveNote(task, updates) {
+  if (!('projectId' in updates) || updates.projectId === (task.projectId ?? null)) return null
+  return `This task now belongs to ${updates.projectName ? `**${updates.projectName}**` : 'no project'}, but its channel has not moved and still lets the previous project's role see it. Run **/project-setup** — pick the project from the **project:** option's suggestions — to move the channel into the right section.`
+}
+
+/**
+ * Write an already-validated update (and blocker change) and run its
+ * consequences, without replying. Every refusal returns `{ error }` before the
+ * task row is written, so a refused dependency never leaves a half-applied
+ * update. Throws if the write itself fails. Shared by the slash command, the
+ * Edit modal and the task hub.
+ */
+export async function runUpdate(interaction, { db: dbArg = db, notify = notifyTaskUpdate, cfg, task, updates, blockedById = null, unblockId = null }) {
+  const dep = await applyDependencyChange({ db: dbArg, cfg, task, blockedById, unblockId, actorId: interaction.user.id })
+  if (dep.error) return { error: dep.error }
+
+  let notified = { channelId: task.discordChannelId || null, created: false, dmed: [] }
+  let warning = ''
+  if (Object.keys(updates).length > 0) {
+    ;({ warning, notified } = await applyTaskUpdate({
+      db: dbArg,
+      client: interaction.client,
+      guild: interaction.guild,
+      task,
+      updates,
+      actor: { discordId: interaction.user.id },
+      notify,
+    }))
+  }
+  return { dep, warning, notified }
+}
+
+/**
  * Apply an already-validated update (and blocker change) to `task` and reply.
  * Shared by the slash command and the Edit modal, so both write, notify and
  * report identically. `interaction` must already be deferred.
  */
 export async function commitUpdate(interaction, { db: dbArg = db, notify = notifyTaskUpdate, cfg, task, updates, blockedById = null, unblockId = null }) {
-  const guild = interaction.guild
   const taskId = task.id
-  const hasUpdates = Object.keys(updates).length > 0
   try {
-    // Every refusal returns here, before the task row is written, so a refused
-    // dependency never leaves a half-applied update.
-    const dep = await applyDependencyChange({ db: dbArg, cfg, task, blockedById, unblockId, actorId: interaction.user.id })
-    if (dep.error) return interaction.editReply({ content: dep.error })
-
-    let notified = { channelId: task.discordChannelId || null, created: false, dmed: [] }
-    let warning = ''
-    if (hasUpdates) {
-      ;({ warning, notified } = await applyTaskUpdate({
-        db: dbArg,
-        client: interaction.client,
-        guild,
-        task,
-        updates,
-        actor: { discordId: interaction.user.id },
-        notify,
-      }))
-    }
+    const result = await runUpdate(interaction, { db: dbArg, notify, cfg, task, updates, blockedById, unblockId })
+    if (result.error) return interaction.editReply({ content: result.error })
+    const { dep, warning, notified } = result
 
     const embed = new EmbedBuilder()
       .setTitle('Task updated')
@@ -268,13 +291,8 @@ export async function commitUpdate(interaction, { db: dbArg = db, notify = notif
     // keeps the old project role's allow, so the old project's members go on
     // seeing a task that is no longer theirs until the section is rebuilt.
     // Saying so is the whole fix — a silent half-move is the thing to avoid.
-    if ('projectId' in updates && updates.projectId !== (task.projectId ?? null)) {
-      embed.addFields({
-        name: 'Project changed',
-        value: `This task now belongs to ${updates.projectName ? `**${updates.projectName}**` : 'no project'}, but its channel has not moved and still lets the previous project's role see it. Run **/project-setup** — pick the project from the **project:** option's suggestions — to move the channel into the right section.`,
-        inline: false,
-      })
-    }
+    const moveNote = projectMoveNote(task, updates)
+    if (moveNote) embed.addFields({ name: 'Project changed', value: moveNote, inline: false })
     if (notified.channelId) {
       embed.addFields({
         name: notified.created ? 'Channel created' : 'Task channel',
