@@ -133,6 +133,10 @@ export default async function handleInteractions(interaction) {
       return runCreateTaskHandler(interaction, async (i) =>
         (await import("../services/timePanel.js")).handleTimeComponent(i),
       );
+    if (customId.startsWith("clk_"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/clockWatch.js")).handleClockButton(i),
+      );
     if (customId.startsWith("uths_"))
       return runCreateTaskHandler(interaction, async (i) =>
         (await import("../services/taskHub.js")).handleSubtasksComponent(i),
