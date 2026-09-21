@@ -468,7 +468,7 @@ export function planProjectSection(project, observed = {}, opts = {}) {
   const tasks = planTasks(project, observed, channels, role, warnings)
   // Passed through as observed: what the applier will edit is exactly what a
   // preview lists.
-  const voice = observed.voiceActivity ?? { category: false, channels: [] }
+  const voice = observed.voiceActivity ?? { category: [], channels: [] }
   return { role, category, channels, tasks, voice, warnings }
 }
 
@@ -480,9 +480,10 @@ export function planProjectSection(project, observed = {}, opts = {}) {
  * What the project role may do inside its own category. The section channels
  * are created with no overwrites of their own, so they inherit these.
  */
-// UseVAD is "Use Voice Activity". Without it a member of the project role talks in
-// the section's voice channels by push-to-talk only whenever the server's
-// @everyone role does not grant it — Connect and Speak alone do not give it.
+// UseVAD is "Use Voice Activity" and Stream is "Video" (screen share and camera).
+// Connect and Speak give neither: without UseVAD a member of the project role is
+// push-to-talk only, and without Stream cannot share a screen, whenever the
+// server's @everyone role does not grant them.
 const ROLE_ALLOW = [
   PermissionFlagsBits.ViewChannel,
   PermissionFlagsBits.SendMessages,
@@ -490,6 +491,7 @@ const ROLE_ALLOW = [
   PermissionFlagsBits.Connect,
   PermissionFlagsBits.Speak,
   PermissionFlagsBits.UseVAD,
+  PermissionFlagsBits.Stream,
 ]
 
 const REASON = 'Project section'
@@ -571,20 +573,27 @@ function bitsOf(permissions) {
   }
 }
 
+/** The two voice permissions Connect and Speak do not include, by discord.js name. */
+const VOICE_EXTRAS = ['UseVAD', 'Stream']
+const VOICE_EXTRA_WORDS = { UseVAD: 'voice activity', Stream: 'screen sharing' }
+
 /**
- * True when the project role has an overwrite here that neither allows nor
- * denies "Use Voice Activity" — the push-to-talk-only gap. An explicit DENY is a
- * human's decision (a push-to-talk room) and is left alone; a missing overwrite
- * or an unreadable one is not ours to create or judge.
+ * Which of "Use Voice Activity" and "Video" (screen share) the project role's
+ * overwrite here neither allows nor denies — the gaps a repair may fill. An
+ * explicit DENY of a permission is a human's decision (a push-to-talk room, no
+ * screen sharing) and is left alone; a missing overwrite or an unreadable one
+ * is not ours to create or judge. Empty when there is nothing to fill.
  */
-function lacksVoiceActivity(overwrite) {
-  if (!overwrite) return false
+function voiceGaps(overwrite) {
+  if (!overwrite) return []
   const allow = bitsOf(overwrite.allow)
   const deny = bitsOf(overwrite.deny)
-  if (allow === null) return false
-  if ((allow & PermissionFlagsBits.UseVAD) !== 0n) return false
-  if (deny !== null && (deny & PermissionFlagsBits.UseVAD) !== 0n) return false
-  return true
+  if (allow === null) return []
+  return VOICE_EXTRAS.filter((name) => {
+    const bit = PermissionFlagsBits[name]
+    if ((allow & bit) !== 0n) return false
+    return !(deny !== null && (deny & bit) !== 0n)
+  })
 }
 
 /** True when the overwrite hands out ViewChannel. Unreadable reads as "no". */
@@ -880,15 +889,16 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
   }
 
   // Voice channels inside the project's category that were created without
-  // "Use Voice Activity" for the project role (Discord copies a category's
+  // "Use Voice Activity" / "Video" for the project role (Discord copies a category's
   // overwrites once, at creation, so fixing the category never reaches them).
-  const voiceActivity = { category: false, channels: [] }
+  const voiceActivity = { category: [], channels: [] }
   if (roleId && categoryId) {
     const roleOverwrite = (channel) => channel?.permissionOverwrites?.cache?.get?.(roleId)
-    voiceActivity.category = lacksVoiceActivity(roleOverwrite(category))
+    voiceActivity.category = voiceGaps(roleOverwrite(category))
     for (const channel of all) {
       if (channel.parentId !== categoryId || channel.type !== ChannelType.GuildVoice) continue
-      if (lacksVoiceActivity(roleOverwrite(channel))) voiceActivity.channels.push({ id: channel.id, name: channel.name })
+      const gaps = voiceGaps(roleOverwrite(channel))
+      if (gaps.length) voiceActivity.channels.push({ id: channel.id, name: channel.name, gaps })
     }
   }
 
@@ -1147,22 +1157,26 @@ export async function applyProjectSection(
   }
 
   // 4b. Push-to-talk repair. The project role gets "Use Voice Activity" on the
-  //     category and on the voice channels inside it that lack it — one
+  //     category and on the voice channels inside it that lack it (and screen
+  //     sharing, which travels with it) — one
   //     overwrite edit each, MERGED into what the role already has there
   //     (`permissionOverwrites.edit`, never a replace), and only for the ids the
   //     plan listed, so a preview and a run agree. A channel that has since left
   //     the category is skipped.
   const voice = plan?.voice
-  if (categoryId && projectRoleId && (voice?.category || voice?.channels?.length)) {
+  if (categoryId && projectRoleId && (voice?.category?.length || voice?.channels?.length)) {
     const targets = []
-    if (voice.category && result.category) targets.push(result.category)
+    if (voice.category?.length && result.category) targets.push({ channel: result.category, gaps: voice.category })
     for (const entry of voice.channels ?? []) {
       const channel = guild.channels.cache.get(entry.id)
-      if (channel && channel.parentId === categoryId) targets.push(channel)
+      if (channel && channel.parentId === categoryId && entry.gaps?.length) targets.push({ channel, gaps: entry.gaps })
     }
-    for (const target of targets) {
+    for (const { channel: target, gaps } of targets) {
       try {
-        await target.permissionOverwrites.edit(projectRoleId, { UseVAD: true }, { reason: REASON })
+        // Only the permissions the plan listed, each set to allow: nothing the
+        // role already has here is read back or replaced.
+        const changes = Object.fromEntries(gaps.map((name) => [name, true]))
+        await target.permissionOverwrites.edit(projectRoleId, changes, { reason: REASON })
         result.voiceFixed.push(target.name ?? String(target.id))
       } catch (e) {
         note(result.warnings, `voice activity on "${target.name ?? target.id}"`, e)

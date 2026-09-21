@@ -82,6 +82,10 @@ export async function execute(interaction) {
         PermissionFlagsBits.ViewChannel,
         PermissionFlagsBits.Connect,
         PermissionFlagsBits.Speak,
+        // Not implied by Connect/Speak: without them the room is push-to-talk
+        // only and nobody can share a screen wherever @everyone lacks them.
+        PermissionFlagsBits.UseVAD,
+        PermissionFlagsBits.Stream,
       ],
     });
     textOverwrites.push({

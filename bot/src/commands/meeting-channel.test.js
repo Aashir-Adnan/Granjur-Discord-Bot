@@ -129,7 +129,7 @@ function assertTodayShapes(guild, parent) {
     type: ChannelType.GuildVoice,
     parent,
     permissionOverwrites: [
-      { id: GUILD_ID, allow: ['ViewChannel', 'Connect', 'Speak', 'UseVAD', 'ReadMessageHistory'] },
+      { id: GUILD_ID, allow: ['ViewChannel', 'Connect', 'Speak', 'UseVAD', 'Stream', 'ReadMessageHistory'] },
     ],
   })
 }
@@ -493,7 +493,7 @@ test('a meeting that fell back to the public category carries no privacy line', 
   assert.doesNotMatch(i.replies[0].content, /you do not hold it/)
 })
 
-// --- push-to-talk: the voice channel gets "Use Voice Activity" for the project role ---
+// --- push-to-talk / screen share: the voice channel gets Use Voice Activity and Video ---
 
 /** Make created voice channels carry an overwrite cache and record overwrite edits. */
 function withVoiceOverwrites(guild, { inherited = null } = {}) {
@@ -511,19 +511,19 @@ function withVoiceOverwrites(guild, { inherited = null } = {}) {
   }
   return edits
 }
-const denyingVad = (roleId) => ({ id: roleId, deny: { has: (p) => p === PermissionFlagsBits.UseVAD } })
+const denying = (roleId, ...names) => ({ id: roleId, deny: { has: (p) => names.some((n) => PermissionFlagsBits[n] === p) } })
 
-test('a meeting voice channel inside a project gets voice activity for the project role, and nothing else', async () => {
+test('a meeting voice channel inside a project gets voice activity and screen sharing for the project role, and nothing else', async () => {
   const project = { ...FRAMEWORK, discordRoleId: 'role1' }
   const guild = fakeGuild({ channels: [category(PROJ_CAT)] })
   const edits = withVoiceOverwrites(guild)
   const { deps } = seams([project])
   await execute(fakeInteraction(guild, { project: project.id }), deps)
   assert.equal(edits.length, 1)
-  assert.deepEqual(edits[0], ['role1', { UseVAD: true }])
+  assert.deepEqual(edits[0], ['role1', { UseVAD: true, Stream: true }])
 })
 
-test('outside a project the voice channel is created exactly as before and no overwrite is edited', async () => {
+test('outside a project the voice channel is created as before, plus screen sharing, and no overwrite is edited', async () => {
   const guild = fakeGuild({ channels: [globalCategory()] })
   const edits = withVoiceOverwrites(guild)
   const { deps } = seams()
@@ -532,17 +532,22 @@ test('outside a project the voice channel is created exactly as before and no ov
   assertTodayShapes(guild, GLOBAL_CAT)
 })
 
-test('a project with no role is not touched, and a category that denies voice activity on purpose is respected', async () => {
+test('a project with no role is not touched, and a permission the category denies on purpose is respected', async () => {
   const noRole = fakeGuild({ channels: [category(PROJ_CAT)] })
   const noRoleEdits = withVoiceOverwrites(noRole)
   await execute(fakeInteraction(noRole, { project: FRAMEWORK.id }), seams([FRAMEWORK]).deps)
   assert.equal(noRoleEdits.length, 0)
 
   const project = { ...FRAMEWORK, discordRoleId: 'role1' }
-  const denied = fakeGuild({ channels: [category(PROJ_CAT)] })
-  const deniedEdits = withVoiceOverwrites(denied, { inherited: denyingVad('role1') })
-  await execute(fakeInteraction(denied, { project: project.id }), seams([project]).deps)
-  assert.equal(deniedEdits.length, 0)
+  const pttOnly = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const pttEdits = withVoiceOverwrites(pttOnly, { inherited: denying('role1', 'UseVAD') })
+  await execute(fakeInteraction(pttOnly, { project: project.id }), seams([project]).deps)
+  assert.deepEqual(pttEdits, [['role1', { Stream: true }]], 'only the permission that was not denied is added')
+
+  const both = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const bothEdits = withVoiceOverwrites(both, { inherited: denying('role1', 'UseVAD', 'Stream') })
+  await execute(fakeInteraction(both, { project: project.id }), seams([project]).deps)
+  assert.equal(bothEdits.length, 0)
 })
 
 test('a refused overwrite edit does not fail the command', async () => {

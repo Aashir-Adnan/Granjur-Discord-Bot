@@ -192,10 +192,13 @@ export function renderPlan(project, plan = {}) {
   if (channels) lines.push(`Channels: ${channels}`)
   const tasks = summarise(plan?.tasks, TASK_WORDS)
   if (tasks) lines.push(`Task channels: ${tasks}`)
-  const voiceCount = (plan?.voice?.channels?.length ?? 0) + (plan?.voice?.category ? 1 : 0)
+  const voiceCategory = plan?.voice?.category ?? []
+  const voiceCount = (plan?.voice?.channels?.length ?? 0) + (voiceCategory.length ? 1 : 0)
   if (voiceCount) {
+    const wanted = new Set([...voiceCategory, ...(plan.voice.channels ?? []).flatMap((c) => c.gaps ?? [])])
+    const what = [wanted.has('UseVAD') && 'voice activity', wanted.has('Stream') && 'screen sharing'].filter(Boolean).join(' and ')
     lines.push(
-      `Voice: ${voiceCount} voice channel(s)${plan.voice.category ? ' (and the category)' : ''} will let the project role use voice activity — they are push-to-talk only today.`
+      `Voice: ${voiceCount} voice channel(s)${voiceCategory.length ? ' (and the category)' : ''} will let the project role use ${what || 'voice'} — today they are push-to-talk only or cannot share a screen.`
     )
   }
 
@@ -252,7 +255,7 @@ export function renderResult(project, result = {}) {
   }
 
   if (voiceFixed.length) {
-    lines.push(`Voice activity turned on for the project role in ${voiceFixed.length} place(s) — no more push-to-talk only.`)
+    lines.push(`Voice activity and screen sharing turned on for the project role in ${voiceFixed.length} place(s).`)
   }
 
   const sync = result?.roleSync
