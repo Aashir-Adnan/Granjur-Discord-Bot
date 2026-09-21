@@ -52,6 +52,7 @@ function fakeDb({ tasks = [], deps = [], removed = 1 } = {}) {
       findByIds: async ({ where }) => tasks.filter((t) => where.ids.includes(t.id)),
       findFirst: async ({ where }) => tasks.find((t) => t.id === where.id) ?? null,
       findMany: async () => tasks,
+      findChildren: async ({ where }) => tasks.filter((t) => t.parentTaskId === where.parentTaskId),
       update: async (args) => { calls.push(['update', args]); return args.data },
     },
     project: { findFirst: async () => null, findMany: async () => [] },
@@ -461,4 +462,25 @@ test('execute: a blank task is treated as no task', async () => {
   const it = fakeInteraction({ task: '   ' })
   await execute(it, { db, notify: fakeNotify(), getConfig })
   assert.equal(it.replies[0].embeds[0].toJSON().title, 'Find a task')
+})
+
+test('execute: finishing a task with an open subtask is refused with the subtask named, and nothing is written', async () => {
+  const parent = { id: 'P', guildConfigId: 'g1', title: 'Parent', status: 'in_progress', assigneeIds: ['1'] }
+  const sub = { id: 'S', guildConfigId: 'g1', title: 'Write the tests', status: 'open', parentTaskId: 'P' }
+  const db = fakeDb({ tasks: [parent, sub, B] })
+  const it = fakeInteraction({ task: 'P', status: 'done', blocked_by: 'B' })
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.match(it.replies[0].content, /can't be marked done yet/)
+  assert.match(it.replies[0].content, /Write the tests/)
+  // The refusal comes before the blocker change, so nothing is half-applied.
+  assert.deepEqual(kinds(db), [])
+})
+
+test('execute: a parent whose subtasks are all finished can be finished', async () => {
+  const parent = { id: 'P', guildConfigId: 'g1', title: 'Parent', status: 'in_progress', assigneeIds: ['1'] }
+  const sub = { id: 'S', guildConfigId: 'g1', title: 'Write the tests', status: 'done', parentTaskId: 'P' }
+  const db = fakeDb({ tasks: [parent, sub] })
+  const it = fakeInteraction({ task: 'P', status: 'done' })
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.equal(kinds(db)[0], 'update')
 })
