@@ -325,3 +325,61 @@ test('a 100-character task title stays inside the field limits', () => {
   for (const f of json.fields) assert.ok(f.value.length <= 1024, `${f.name} is ${f.value.length}`)
   assert.ok(JSON.stringify(json).length < 6000)
 })
+
+// ------------------------------------------------- fix round 1: gate and tail ----
+
+test('autocomplete for a non-leader is empty and reads nothing but the config, for project and task', async () => {
+  const reads = []
+  const spy = (name) => new Proxy({}, { get: (_, method) => async () => { reads.push(`${name}.${String(method)}`); return [] } })
+  const db = { clockEntry: spy('clockEntry'), task: spy('task'), project: spy('project'), projectMember: spy('projectMember') }
+  let configReads = 0
+  const cfgSpy = async () => { configReads += 1; return { id: 'g1', timezone: 'UTC' } }
+  for (const name of ['project', 'task', 'range']) {
+    const it = fakeInteraction({}, { member: PLAIN })
+    it.options.getFocused = (full) => (full ? { name, value: '' } : '')
+    await autocomplete(it, { db, getConfig: cfgSpy })
+    assert.deepEqual(it.responses, [[]], `${name}: an empty list`)
+  }
+  assert.deepEqual(reads, [], 'no db.clockEntry / db.task / db.project / db.projectMember call')
+  assert.ok(configReads >= 1, 'the config is read to evaluate the gate')
+})
+
+test('autocomplete for a server that is not set up is empty', async () => {
+  const it = fakeInteraction({}, { member: ADMIN })
+  it.options.getFocused = (full) => (full ? { name: 'project', value: '' } : '')
+  await autocomplete(it, { db: fakeDb(), getConfig: async () => null })
+  assert.deepEqual(it.responses, [[]])
+})
+
+test('the "and N more" tail survives worst-case lines, N is truthful, and no line is cut', () => {
+  const N = 14
+  const title = 'w'.repeat(100)
+  const entries = Array.from({ length: N }, (_, i) => ({ taskId: `t${i}`, discordId: 'u1', minutes: (1234 + i) * 60 + 59 }))
+  const tasks = Array.from({ length: N }, (_, i) => ({ id: `t${i}`, title, estimateMinutes: 480, projectId: null }))
+  const p = buildReportPayload({ entries, tasks, projects: [], filters: { label: 'this week' }, nameFor })
+  const field = p.embeds[0].toJSON().fields.find((f) => f.name === 'Top tasks')
+  assert.ok(field.value.length <= 1024, `is ${field.value.length}`)
+  const lines = field.value.split('\n')
+  const tail = lines.pop()
+  const m = tail.match(/^…and (\d+) more$/)
+  assert.ok(m, `the tail is present: ${tail}`)
+  assert.ok(lines.length < 10, 'a line was dropped to make room')
+  assert.equal(Number(m[1]), N - lines.length, 'N is the total minus the lines shown')
+  for (const l of lines) {
+    assert.ok(l.startsWith('•') && l.endsWith('**over**'), `line is whole: ${l}`)
+    assert.equal((l.match(/\*\*/g) || []).length % 2, 0, `balanced ** in: ${l}`)
+  }
+})
+
+test('a list of 10 or fewer lines that is too long still keeps a truthful tail', () => {
+  const N = 10
+  const entries = Array.from({ length: N }, (_, i) => ({ taskId: `t${i}`, discordId: 'u1', minutes: (1234 + i) * 60 + 59 }))
+  const tasks = Array.from({ length: N }, (_, i) => ({ id: `t${i}`, title: 'w'.repeat(100), estimateMinutes: 480, projectId: null }))
+  const p = buildReportPayload({ entries, tasks, projects: [], filters: { label: 'this week' }, nameFor })
+  const field = p.embeds[0].toJSON().fields.find((f) => f.name === 'Top tasks')
+  assert.ok(field.value.length <= 1024)
+  const lines = field.value.split('\n')
+  const m = lines.pop().match(/^…and (\d+) more$/)
+  assert.ok(m)
+  assert.equal(Number(m[1]), N - lines.length)
+})

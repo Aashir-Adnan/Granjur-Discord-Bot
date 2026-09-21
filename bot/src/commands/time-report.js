@@ -31,11 +31,21 @@ const NO_TIME = 'No time logged for these filters.'
 const clip = (s, n) => (String(s).length > n ? `${String(s).slice(0, n - 1)}…` : String(s))
 const isClosed = (e) => e && e.minutes !== null && e.minutes !== undefined
 
-/** A list as one field value: the top LISTED lines, an "and N more" tail, at most 1024 characters. */
+/**
+ * A list as one field value: the top LISTED lines and an "and N more" tail, at
+ * most 1024 characters. When they do not fit, whole lines are dropped from the
+ * end (and counted into N) so the tail always survives and no line is cut.
+ */
 function listField(name, lines) {
   const shown = lines.slice(0, LISTED)
-  if (lines.length > LISTED) shown.push(`…and ${lines.length - LISTED} more`)
-  return { name, value: clip(shown.join('\n'), 1024), inline: false }
+  let value = ''
+  for (;;) {
+    const hidden = lines.length - shown.length
+    value = shown.join('\n') + (hidden ? `${shown.length ? '\n' : ''}…and ${hidden} more` : '')
+    if (value.length <= 1024 || !shown.length) break
+    shown.pop()
+  }
+  return { name, value: clip(value, 1024), inline: false }
 }
 
 const largestFirst = (map) => [...map.entries()].sort((a, b) => b[1] - a[1])
@@ -163,6 +173,15 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
 
 /** `project` offers projects, `task` the clock-in picker; nothing else has choices. */
 export async function autocomplete(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
+  // Leadership only, decided before any database read: autocomplete never passes
+  // through the command role gate, so without this every member could list projects.
+  try {
+    const cfg = await getConfig(interaction.guild.id)
+    if (!cfg || !isLeadershipFor(interaction.guild, interaction.member, cfg)) return interaction.respond([]).catch(() => {})
+  } catch (e) {
+    console.error('[time-report] autocomplete gate:', e?.message ?? e)
+    return interaction.respond([]).catch(() => {})
+  }
   const focused = interaction.options.getFocused(true)
   if (focused.name === 'task') return taskAutocomplete(interaction, { db: dbArg, getConfig })
   if (focused.name === 'project') {
