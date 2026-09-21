@@ -84,6 +84,14 @@ export async function updateGuildConfig(guildId, data) {
     sets.push("timezone = ?");
     vals.push(data.timezone);
   }
+  if (data.clockReminderHours !== undefined) {
+    sets.push("clockReminderHours = ?");
+    vals.push(data.clockReminderHours);
+  }
+  if (data.clockCapHours !== undefined) {
+    sets.push("clockCapHours = ?");
+    vals.push(data.clockCapHours);
+  }
   if (sets.length === 0) return getGuildConfig(guildId);
   vals.push(guildId);
   await query(
@@ -349,6 +357,7 @@ export function taskInsertSql(data, pk) {
     ["passedAcceptanceCriteria", data.passedAcceptanceCriteria ?? null],
     ["externalId", ext.externalId],
     ["meetingId", ext.meetingId],
+    ["estimateMinutes", data.estimateMinutes ?? null],
     ["parentTaskId", data.parentTaskId ?? null],
   ];
   return {
@@ -405,6 +414,10 @@ async function taskUpdate({ where, data }) {
   if (data.scope !== undefined) {
     sets.push("scope = ?");
     vals.push(data.scope);
+  }
+  if (data.estimateMinutes !== undefined) {
+    sets.push("estimateMinutes = ?");
+    vals.push(data.estimateMinutes);
   }
   if (data.implementationStatus !== undefined) {
     sets.push("implementationStatus = ?");
@@ -2015,18 +2028,37 @@ async function faqSearch(guildId, queryStr, repoName, limit = 10) {
 }
 
 // ---------- ClockEntry ----------
+export function clockEntryInsertSql(data, pk) {
+  const columns = [
+    ["id", pk],
+    ["guildConfigId", data.guildConfigId],
+    ["discordId", data.discordId],
+    ["clockInAt", data.clockInAt],
+    ["clockOutAt", data.clockOutAt ?? null],
+    ["taskId", data.taskId ?? null],
+    ["minutes", data.minutes ?? null],
+    ["note", data.note ?? null],
+    ["source", data.source ?? "timer"],
+  ];
+  return {
+    sql: `INSERT INTO \`clockentry\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    params: columns.map(([, v]) => v),
+  };
+}
+
+export function clockEntryUpdateSets(data = {}) {
+  const sets = [];
+  const vals = [];
+  for (const col of ["clockInAt", "clockOutAt", "taskId", "minutes", "note", "source", "remindedAt"]) {
+    if (data[col] !== undefined) { sets.push(`${col} = ?`); vals.push(data[col]); }
+  }
+  return { sets, vals };
+}
+
 async function clockEntryCreate({ data }) {
   const pk = id();
-  await query(
-    "INSERT INTO `clockentry` (id, guildConfigId, discordId, clockInAt, clockOutAt) VALUES (?, ?, ?, ?, ?)",
-    [
-      pk,
-      data.guildConfigId,
-      data.discordId,
-      data.clockInAt,
-      data.clockOutAt ?? null,
-    ],
-  );
+  const { sql, params } = clockEntryInsertSql(data, pk);
+  await query(sql, params);
   return queryOne("SELECT * FROM `clockentry` WHERE id = ?", [pk]);
 }
 async function clockEntryFindActive(guildId, discordId) {
@@ -2037,35 +2069,54 @@ async function clockEntryFindActive(guildId, discordId) {
     [cfg.id, discordId],
   );
 }
-async function clockEntryUpdate(id, data) {
-  const sets = [];
-  const vals = [];
-  if (data.clockOutAt !== undefined) {
-    sets.push("clockOutAt = ?");
-    vals.push(data.clockOutAt);
-  }
-  if (sets.length === 0)
-    return queryOne("SELECT * FROM `clockentry` WHERE id = ?", [id]);
-  vals.push(id);
-  await query(
-    `UPDATE \`ClockEntry\` SET ${sets.join(", ")} WHERE id = ?`,
-    vals,
-  );
-  return queryOne("SELECT * FROM `clockentry` WHERE id = ?", [id]);
+async function clockEntryUpdate(entryId, data) {
+  const { sets, vals } = clockEntryUpdateSets(data);
+  if (sets.length === 0) return queryOne("SELECT * FROM `clockentry` WHERE id = ?", [entryId]);
+  vals.push(entryId);
+  // Lowercase, like every other query against this table. It read `ClockEntry`
+  // here and nowhere else, which fails outright on a case-sensitive server.
+  await query(`UPDATE \`clockentry\` SET ${sets.join(", ")} WHERE id = ?`, vals);
+  return queryOne("SELECT * FROM `clockentry` WHERE id = ?", [entryId]);
 }
-async function clockEntryFindMany({ where, orderBy, take }) {
+
+async function clockEntryFindById(entryId) {
+  return queryOne("SELECT * FROM `clockentry` WHERE id = ?", [entryId]);
+}
+
+async function clockEntryFindMany({ where = {}, take = 500 }) {
   let sql = "SELECT * FROM `clockentry` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
-  if (where.discordId) {
-    sql += " AND discordId = ?";
-    params.push(where.discordId);
-  }
-  sql += " ORDER BY clockInAt DESC";
-  if (take) {
-    sql += " LIMIT ?";
-    params.push(take);
-  }
+  if (where.discordId) { sql += " AND discordId = ?"; params.push(where.discordId); }
+  if (where.taskId) { sql += " AND taskId = ?"; params.push(where.taskId); }
+  if (where.since) { sql += " AND clockInAt >= ?"; params.push(where.since); }
+  if (where.until) { sql += " AND clockInAt < ?"; params.push(where.until); }
+  if (where.openOnly) { sql += " AND clockOutAt IS NULL"; }
+  const limit = Math.max(1, Math.min(2000, Number(take) || 500));
+  sql += ` ORDER BY clockInAt DESC LIMIT ${limit}`;
   return query(sql, params);
+}
+
+async function clockEntryFindOpen() {
+  return query("SELECT * FROM `clockentry` WHERE clockOutAt IS NULL ORDER BY clockInAt ASC LIMIT 500", []);
+}
+
+async function clockEntrySumByTask({ guildConfigId, taskIds = [] }) {
+  const ids = taskIds.filter(Boolean).map(String);
+  if (!guildConfigId || ids.length === 0) return [];
+  const placeholders = ids.map(() => "?").join(", ");
+  return query(
+    `SELECT taskId, discordId, SUM(minutes) AS minutes FROM \`clockentry\`
+     WHERE guildConfigId = ? AND minutes IS NOT NULL AND taskId IN (${placeholders})
+     GROUP BY taskId, discordId`,
+    [guildConfigId, ...ids],
+  );
+}
+
+async function projectMemberFindByMember({ where }) {
+  return query(
+    "SELECT * FROM `projectmember` WHERE guildConfigId = ? AND discordId = ? LIMIT 200",
+    [where.guildConfigId, where.discordId],
+  );
 }
 
 // ---------- feature_repositories (many-to-many: task_id for feature tasks) ----------
@@ -2304,6 +2355,7 @@ const db = {
     add: projectMemberAdd,
     remove: projectMemberRemove,
     findByProject: projectMemberFindByProject,
+    findByMember: projectMemberFindByMember,
   },
   faq: {
     findMany: faqFindMany,
@@ -2371,8 +2423,11 @@ const db = {
   clockEntry: {
     create: clockEntryCreate,
     findActive: clockEntryFindActive,
+    findById: clockEntryFindById,
     update: clockEntryUpdate,
     findMany: clockEntryFindMany,
+    findOpen: clockEntryFindOpen,
+    sumByTask: clockEntrySumByTask,
   },
   userChannel: {
     create: userChannelCreate,
