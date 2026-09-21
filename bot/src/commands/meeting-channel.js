@@ -258,11 +258,30 @@ export async function execute(
               'Connect',
               'Speak',
               'UseVAD',
+              'Stream',
               'ReadMessageHistory',
             ],
           },
         ],
       })
+
+  // A voice channel made with no overwrites copies the category's, and the
+  // project role there may carry Connect and Speak without "Use Voice Activity"
+  // (push-to-talk only) or "Video" (no screen sharing). Add just those two for
+  // the project role, merged into what it already has. A permission the
+  // category explicitly DENIES is somebody's policy and is respected.
+  if (inProject && project?.discordRoleId) {
+    const inherited = voiceChannel.permissionOverwrites?.cache?.get?.(project.discordRoleId)
+    const changes = {}
+    for (const name of ['UseVAD', 'Stream']) {
+      if (!inherited?.deny?.has?.(PermissionFlagsBits[name])) changes[name] = true
+    }
+    if (Object.keys(changes).length) {
+      await voiceChannel.permissionOverwrites
+        ?.edit?.(project.discordRoleId, changes)
+        .catch((e) => console.warn('[meeting-channel] voice permissions for the project role:', e?.message ?? e))
+    }
+  }
 
   // The meeting belongs to the project even when its channels fell back.
   const meetingChannel = await ensureMeeting(guild, voiceChannel.id, {

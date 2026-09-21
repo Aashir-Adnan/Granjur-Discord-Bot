@@ -412,6 +412,33 @@ categories that predate the recorded ids. `handleConfirm` (the actual delete) wa
 **not** touched in this fix — it still deletes whatever `execute` listed with no
 re-check at confirm time (backlog item).
 
+## Push-to-talk and screen sharing in meeting voice channels (2026-09-21)
+
+`Connect` + `Speak` include neither **Use Voice Activity** (`UseVAD`) nor **Video**
+(`Stream` — screen share and camera). Nothing in the bot ever granted `Stream`, and only the
+non-project `/meeting-channel` path granted `UseVAD`, so in every other voice channel the bot
+makes both depend on the server's `@everyone` role: a project's voice channels (the section's
+four, and every `/meeting-channel` voice created inside the category with no overwrites of its
+own, which inherit the category's project-role allow) and the private rooms from
+`/create-channel` and `meetingAutoChannel` (per-member allows of View/Connect/Speak only).
+Where `@everyone` lacks them: push-to-talk only, no screen sharing.
+
+Fixed: `ROLE_ALLOW` includes both (new sections); the private-room member allows and the
+non-project `/meeting-channel` `@everyone` allow include both; `/meeting-channel` merges
+whichever the project role's inherited overwrite does not already DENY into the new voice
+channel (a deny is a human's policy); and `observeProjectSection` lists the category and any
+voice channel in it whose project-role overwrite neither allows nor denies one of them
+(`voiceGaps`, per permission). `planProjectSection` passes that through as `plan.voice`,
+`/project-setup` previews it ("Voice: N voice channel(s)… will let the project role use voice
+activity and screen sharing") and `applyProjectSection` repairs it with one merged
+`permissionOverwrites.edit(roleId, { UseVAD: true, Stream: true })` each, only the missing ones
+(`result.voiceFixed`). Presence-only checks elsewhere would not catch this — the role overwrite
+already existed — hence the bit-level test.
+
+Existing channels are repaired by running `/project-setup project:<name>` (preview first);
+Discord never re-copies a category's overwrites onto existing children. Private rooms created
+before the fix keep their old member allows.
+
 ## Related
 
 [[project-tasks-site]], [[project-docs]]

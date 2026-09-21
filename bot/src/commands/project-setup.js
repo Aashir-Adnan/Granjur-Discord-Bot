@@ -192,6 +192,15 @@ export function renderPlan(project, plan = {}) {
   if (channels) lines.push(`Channels: ${channels}`)
   const tasks = summarise(plan?.tasks, TASK_WORDS)
   if (tasks) lines.push(`Task channels: ${tasks}`)
+  const voiceCategory = plan?.voice?.category ?? []
+  const voiceCount = (plan?.voice?.channels?.length ?? 0) + (voiceCategory.length ? 1 : 0)
+  if (voiceCount) {
+    const wanted = new Set([...voiceCategory, ...(plan.voice.channels ?? []).flatMap((c) => c.gaps ?? [])])
+    const what = [wanted.has('UseVAD') && 'voice activity', wanted.has('Stream') && 'screen sharing'].filter(Boolean).join(' and ')
+    lines.push(
+      `Voice: ${voiceCount} voice channel(s)${voiceCategory.length ? ' (and the category)' : ''} will let the project role use ${what || 'voice'} — today they are push-to-talk only or cannot share a screen.`
+    )
+  }
 
   lines.push(...warningLines(plan?.warnings))
 
@@ -218,6 +227,7 @@ export function renderResult(project, result = {}) {
   const moved = result?.moved ?? []
   const granted = result?.granted ?? []
   const opened = result?.opened ?? []
+  const voiceFixed = result?.voiceFixed ?? []
   const taskCount = Number(result?.tasks ?? 0)
 
   const done = []
@@ -242,6 +252,10 @@ export function renderResult(project, result = {}) {
     lines.push(
       `${opened.length} of those channel(s) were also opened to the project role in the same edit — they are now visible to everyone holding it.`
     )
+  }
+
+  if (voiceFixed.length) {
+    lines.push(`Voice activity and screen sharing turned on for the project role in ${voiceFixed.length} place(s).`)
   }
 
   const sync = result?.roleSync

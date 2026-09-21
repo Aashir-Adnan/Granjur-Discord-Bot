@@ -3,7 +3,7 @@
 // .claude/rules/tests-never-touch-production.md.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ChannelType, RESTJSONErrorCodes } from 'discord.js'
+import { ChannelType, PermissionFlagsBits, RESTJSONErrorCodes } from 'discord.js'
 import { execute, autocomplete, data } from './meeting-channel.js'
 
 const GUILD_ID = 'guild1'
@@ -129,7 +129,7 @@ function assertTodayShapes(guild, parent) {
     type: ChannelType.GuildVoice,
     parent,
     permissionOverwrites: [
-      { id: GUILD_ID, allow: ['ViewChannel', 'Connect', 'Speak', 'UseVAD', 'ReadMessageHistory'] },
+      { id: GUILD_ID, allow: ['ViewChannel', 'Connect', 'Speak', 'UseVAD', 'Stream', 'ReadMessageHistory'] },
     ],
   })
 }
@@ -491,4 +491,76 @@ test('a meeting that fell back to the public category carries no privacy line', 
   const i = fakeInteraction(guild, { project: 'p1', member: memberWith() })
   await execute(i, deps)
   assert.doesNotMatch(i.replies[0].content, /you do not hold it/)
+})
+
+// --- push-to-talk / screen share: the voice channel gets Use Voice Activity and Video ---
+
+/** Make created voice channels carry an overwrite cache and record overwrite edits. */
+function withVoiceOverwrites(guild, { inherited = null } = {}) {
+  const edits = []
+  const original = guild.channels.create
+  guild.channels.create = async (opts) => {
+    const ch = await original(opts)
+    if (opts.type === ChannelType.GuildVoice) {
+      ch.permissionOverwrites = {
+        cache: new Map(inherited ? [[inherited.id, inherited]] : []),
+        edit: async (...args) => { edits.push(args) },
+      }
+    }
+    return ch
+  }
+  return edits
+}
+const denying = (roleId, ...names) => ({ id: roleId, deny: { has: (p) => names.some((n) => PermissionFlagsBits[n] === p) } })
+
+test('a meeting voice channel inside a project gets voice activity and screen sharing for the project role, and nothing else', async () => {
+  const project = { ...FRAMEWORK, discordRoleId: 'role1' }
+  const guild = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const edits = withVoiceOverwrites(guild)
+  const { deps } = seams([project])
+  await execute(fakeInteraction(guild, { project: project.id }), deps)
+  assert.equal(edits.length, 1)
+  assert.deepEqual(edits[0], ['role1', { UseVAD: true, Stream: true }])
+})
+
+test('outside a project the voice channel is created as before, plus screen sharing, and no overwrite is edited', async () => {
+  const guild = fakeGuild({ channels: [globalCategory()] })
+  const edits = withVoiceOverwrites(guild)
+  const { deps } = seams()
+  await execute(fakeInteraction(guild), deps)
+  assert.equal(edits.length, 0)
+  assertTodayShapes(guild, GLOBAL_CAT)
+})
+
+test('a project with no role is not touched, and a permission the category denies on purpose is respected', async () => {
+  const noRole = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const noRoleEdits = withVoiceOverwrites(noRole)
+  await execute(fakeInteraction(noRole, { project: FRAMEWORK.id }), seams([FRAMEWORK]).deps)
+  assert.equal(noRoleEdits.length, 0)
+
+  const project = { ...FRAMEWORK, discordRoleId: 'role1' }
+  const pttOnly = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const pttEdits = withVoiceOverwrites(pttOnly, { inherited: denying('role1', 'UseVAD') })
+  await execute(fakeInteraction(pttOnly, { project: project.id }), seams([project]).deps)
+  assert.deepEqual(pttEdits, [['role1', { Stream: true }]], 'only the permission that was not denied is added')
+
+  const both = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const bothEdits = withVoiceOverwrites(both, { inherited: denying('role1', 'UseVAD', 'Stream') })
+  await execute(fakeInteraction(both, { project: project.id }), seams([project]).deps)
+  assert.equal(bothEdits.length, 0)
+})
+
+test('a refused overwrite edit does not fail the command', async () => {
+  const project = { ...FRAMEWORK, discordRoleId: 'role1' }
+  const guild = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const original = guild.channels.create
+  guild.channels.create = async (opts) => {
+    const ch = await original(opts)
+    if (opts.type === ChannelType.GuildVoice) ch.permissionOverwrites = { cache: new Map(), edit: async () => { throw new Error('Missing Permissions') } }
+    return ch
+  }
+  const it = fakeInteraction(guild, { project: project.id })
+  const warn = console.warn; console.warn = () => {}
+  try { await execute(it, seams([project]).deps) } finally { console.warn = warn }
+  assert.match(it.replies[0].content, /Created a dedicated meeting pair/)
 })

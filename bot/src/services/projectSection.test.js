@@ -449,6 +449,8 @@ test('a fresh section creates the role, the category with its two overwrites, an
       PermissionFlagsBits.ReadMessageHistory,
       PermissionFlagsBits.Connect,
       PermissionFlagsBits.Speak,
+      PermissionFlagsBits.UseVAD,
+      PermissionFlagsBits.Stream,
     ],
   })
 
@@ -549,6 +551,8 @@ const ALLOW = [
   PermissionFlagsBits.ReadMessageHistory,
   PermissionFlagsBits.Connect,
   PermissionFlagsBits.Speak,
+  PermissionFlagsBits.UseVAD,
+  PermissionFlagsBits.Stream,
 ]
 
 /** A task channel as /create-task makes it: @everyone denied, its assignee allowed. */
@@ -891,6 +895,8 @@ test('repairing an adopted category MERGES its overwrites, in one edit, keeping 
       PermissionFlagsBits.ReadMessageHistory,
       PermissionFlagsBits.Connect,
       PermissionFlagsBits.Speak,
+      PermissionFlagsBits.UseVAD,
+      PermissionFlagsBits.Stream,
     ],
   })
   assert.equal(sent.length, 3)
@@ -1625,4 +1631,129 @@ test('a topicless channel of the right name is still adopted, as before', async 
   const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
   const observed = observeProjectSection(guild, stored, [])
   assert.equal(observed.channels.meetings?.id, 'h1')
+})
+
+// --- push-to-talk / screen-share repair (voice activity + Video for the project role) ---
+
+const VOICE_ALLOW = PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Connect | PermissionFlagsBits.Speak
+const BOTH = PermissionFlagsBits.UseVAD | PermissionFlagsBits.Stream
+const roleOw = (allow, deny = 0n) => ({ id: 'r1', type: OverwriteType.Role, allow, deny })
+
+/** A channel that records the overwrite edits made through permissionOverwrites.edit. */
+function vadChannel(id, name, { type = ChannelType.GuildVoice, parentId = 'c1', overwrites = [roleOw(VOICE_ALLOW)], failVad = false } = {}) {
+  const ch = fakeChannel(id, name, { type, parentId, overwrites })
+  ch.vadEdits = []
+  ch.permissionOverwrites.edit = async (...args) => {
+    ch.vadEdits.push(args)
+    if (failVad) throw new Error('Missing Permissions')
+  }
+  return ch
+}
+
+const vadGuild = (channels) => fakeGuild({ channels, roles: [{ id: 'r1', name: 'Framework', members: new Map() }] })
+const vadProject = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+
+test('the role allow set includes Use Voice Activity and Video, so a new section is neither push-to-talk nor unable to share a screen', async () => {
+  const guild = fakeGuild()
+  const out = await applyProjectSection(guild, project, planProjectSection(project, empty), { db: fakeDb() })
+  const cat = guild.channels.calls.find((c) => c.type === ChannelType.GuildCategory)
+  const roleAllow = cat.permissionOverwrites.find((o) => o.id === out.role.id).allow
+  assert.ok(roleAllow.includes(PermissionFlagsBits.UseVAD))
+  assert.ok(roleAllow.includes(PermissionFlagsBits.Stream))
+})
+
+test('observe lists voice channels in the category whose project-role overwrite lacks either permission, with which', () => {
+  const cat = vadChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, parentId: null })
+  const stuck = vadChannel('v1', 'meeting-abc-voice')
+  const both = vadChannel('v2', 'framework-backend-voice', { overwrites: [roleOw(VOICE_ALLOW | BOTH)] })
+  const onlyVideo = vadChannel('v3', 'framework-half-voice', { overwrites: [roleOw(VOICE_ALLOW | PermissionFlagsBits.UseVAD)] })
+  const chosen = vadChannel('v4', 'framework-quiet-voice', { overwrites: [roleOw(VOICE_ALLOW, BOTH)] })
+  const denyPtt = vadChannel('v5', 'framework-ptt-voice', { overwrites: [roleOw(VOICE_ALLOW, PermissionFlagsBits.UseVAD)] })
+  const noRole = vadChannel('v6', 'hand-made-voice', { overwrites: [{ id: 'G1', type: OverwriteType.Role, allow: 0n, deny: PermissionFlagsBits.ViewChannel }] })
+  const text = vadChannel('t1', 'framework-chat', { type: ChannelType.GuildText })
+  const elsewhere = vadChannel('v7', 'lounge', { parentId: 'OTHER' })
+  const unreadable = fakeChannel('v8', 'unreadable-voice', { type: ChannelType.GuildVoice, parentId: 'c1' })
+  const guild = vadGuild([cat, stuck, both, onlyVideo, chosen, denyPtt, noRole, text, elsewhere, unreadable])
+
+  const observed = observeProjectSection(guild, vadProject, [])
+
+  assert.deepEqual(observed.voiceActivity.channels, [
+    { id: 'v1', name: 'meeting-abc-voice', gaps: ['UseVAD', 'Stream'] },
+    { id: 'v3', name: 'framework-half-voice', gaps: ['Stream'] },
+    { id: 'v5', name: 'framework-ptt-voice', gaps: ['Stream'] }, // the explicit deny of voice activity is left alone
+  ])
+  assert.deepEqual(observed.voiceActivity.category, ['UseVAD', 'Stream'], 'the category carries the same gap')
+})
+
+test('nothing is listed without a project role, or when the category already allows both', () => {
+  const cat = vadChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, parentId: null, overwrites: [roleOw(VOICE_ALLOW | BOTH)] })
+  const stuck = vadChannel('v1', 'meeting-abc-voice')
+  const noRoleGuild = fakeGuild({ channels: [cat, stuck] })
+  assert.deepEqual(observeProjectSection(noRoleGuild, { ...project, discordCategoryId: 'c1' }, []).voiceActivity, { category: [], channels: [] })
+  const guild = vadGuild([cat, stuck])
+  assert.deepEqual(observeProjectSection(guild, vadProject, []).voiceActivity.category, [])
+})
+
+test('the plan carries the voice repairs through, and defaults to none', () => {
+  const voiceActivity = { category: ['UseVAD'], channels: [{ id: 'v1', name: 'a', gaps: ['Stream'] }] }
+  const observed = { ...empty, roleId: 'r1', categoryId: 'c1', categoryName: '📂 FRAMEWORK', voiceActivity }
+  assert.deepEqual(planProjectSection(project, observed).voice, voiceActivity)
+  assert.deepEqual(planProjectSection(project, empty).voice, { category: [], channels: [] })
+})
+
+test('applying the plan adds ONLY the missing permissions to the project role, merged, on the category and each listed channel', async () => {
+  const cat = vadChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, parentId: null })
+  const v1 = vadChannel('v1', 'meeting-abc-voice')
+  const v2 = vadChannel('v2', 'meeting-def-voice', { overwrites: [roleOw(VOICE_ALLOW | PermissionFlagsBits.UseVAD)] })
+  const guild = vadGuild([cat, v1, v2])
+  const plan = planProjectSection(vadProject, observeProjectSection(guild, vadProject, []))
+
+  const out = await applyProjectSection(guild, vadProject, plan, { db: fakeDb() })
+
+  const sent = (ch) => { assert.equal(ch.vadEdits.length, 1, `${ch.name}: exactly one overwrite edit`); return ch.vadEdits[0] }
+  for (const ch of [cat, v1]) {
+    const [roleId, changes, options] = sent(ch)
+    assert.equal(roleId, 'r1')
+    assert.deepEqual(changes, { UseVAD: true, Stream: true }, 'nothing else about the role\'s overwrite is touched')
+    assert.ok(options.reason)
+  }
+  assert.deepEqual(sent(v2)[1], { Stream: true }, 'a permission it already has is not re-sent')
+  assert.deepEqual(out.voiceFixed.sort(), ['meeting-abc-voice', 'meeting-def-voice', '📂 FRAMEWORK'].sort())
+})
+
+test('a channel that is not in the plan, or that left the category since, gets no edit', async () => {
+  const cat = vadChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, parentId: null, overwrites: [roleOw(VOICE_ALLOW | BOTH)] })
+  const moved = vadChannel('v1', 'meeting-abc-voice', { parentId: 'SOMEWHERE-ELSE' })
+  const unplanned = vadChannel('v9', 'never-listed-voice')
+  const guild = vadGuild([cat, moved, unplanned])
+  const plan = { ...planProjectSection(vadProject, observeProjectSection(guild, vadProject, [])), voice: { category: [], channels: [{ id: 'v1', name: 'meeting-abc-voice', gaps: ['UseVAD'] }] } }
+
+  const out = await applyProjectSection(guild, vadProject, plan, { db: fakeDb() })
+
+  assert.equal(moved.vadEdits.length, 0)
+  assert.equal(unplanned.vadEdits.length, 0)
+  assert.deepEqual(out.voiceFixed, [])
+})
+
+test('one channel refusing the edit becomes a warning and the rest are still repaired', async () => {
+  const cat = vadChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, parentId: null, overwrites: [roleOw(VOICE_ALLOW | BOTH)] })
+  const bad = vadChannel('v1', 'a-voice', { failVad: true })
+  const good = vadChannel('v2', 'b-voice')
+  const guild = vadGuild([cat, bad, good])
+  const plan = planProjectSection(vadProject, observeProjectSection(guild, vadProject, []))
+
+  const out = await quiet(() => applyProjectSection(guild, vadProject, plan, { db: fakeDb() }))
+
+  assert.deepEqual(out.voiceFixed, ['b-voice'])
+  assert.ok(out.warnings.some((w) => /voice activity on "a-voice"/.test(w) && /Missing Permissions/.test(w)), out.warnings.join(' | '))
+})
+
+test('a run with no project role never edits voice overwrites', async () => {
+  const cat = vadChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, parentId: null })
+  const v1 = vadChannel('v1', 'a-voice')
+  const guild = fakeGuild({ channels: [cat, v1] })
+  const plan = { ...planProjectSection(project, empty), role: { action: 'refuse', name: 'Framework' }, category: { action: 'reuse', id: 'c1', name: '📂 FRAMEWORK' }, channels: [], tasks: [], voice: { category: ['UseVAD'], channels: [{ id: 'v1', name: 'a-voice', gaps: ['UseVAD'] }] } }
+  const out = await applyProjectSection(guild, { ...project, discordCategoryId: 'c1' }, plan, { db: fakeDb() })
+  assert.equal(v1.vadEdits.length + cat.vadEdits.length, 0)
+  assert.deepEqual(out.voiceFixed, [])
 })

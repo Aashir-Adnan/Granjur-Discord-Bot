@@ -153,6 +153,11 @@ async function createMeetingChannelAndJoin(guild, meeting) {
             PermissionFlagsBits.ViewChannel,
             PermissionFlagsBits.Connect,
             PermissionFlagsBits.Speak,
+            // Not implied by Connect/Speak: without them the room is
+            // push-to-talk only and nobody can share a screen wherever the
+            // server's @everyone role does not grant them.
+            PermissionFlagsBits.UseVAD,
+            PermissionFlagsBits.Stream,
           ],
         });
         textPermissionOverwrites.push({
