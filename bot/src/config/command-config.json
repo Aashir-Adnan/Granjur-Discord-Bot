@@ -84,6 +84,10 @@
     "my-time": [
       "Verified"
     ],
+    "time-report": [
+      "CEO",
+      "Server Manager"
+    ],
     "sql-dump": [
       "Senior Dev",
       "CEO",
@@ -179,6 +183,7 @@
     "clock-out": true,
     "log-time": true,
     "my-time": true,
+    "time-report": true,
     "sql-dump": true,
     "create-task": true,
     "update-task": true,
@@ -301,6 +306,11 @@
       "summary": "See your tracked time, and fix or delete an entry.",
       "syntax": "`/my-time [range:<range>] [person:<member>]`",
       "detail": "Shows your time for **today**, **this week** (the default), **this month** or **all time**: a running timer, a total per task, and your recent entries. Pick an entry from the list to **Edit** its duration, the day it ended or its note, or to **Delete** it. A running timer is stopped with **/clock-out**, not here. CEO and Server Manager can pass **person** to see, edit and delete someone else's entries; every change to time on a task is written to that task's activity log."
+    },
+    "time-report": {
+      "summary": "The team's tracked time by person, project and task.",
+      "syntax": "`/time-report [person:<member>] [project:<project>] [task:<task>] [range:<range>]`",
+      "detail": "CEO and Server Manager only. One report of the team's closed time entries for **today**, **this week** (the default), **this month** or **all time**: totals per person and per project (largest first), and the top tasks, each shown as time logged **of** its estimate with a percentage and an **over** flag when it has gone past the estimate. Narrow it with **person**, **project** or **task**; picking **No task — general work** shows only time logged against no task. Lists show the top 10 with an 'and N more' note. Running timers are not counted. Only the latest 2000 entries are read, and the report says so when that limit is hit."
     },
     "sql-dump": {
       "summary": "Versioned SQL dumps per project schema (history, not project-db).",
