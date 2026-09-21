@@ -4,6 +4,19 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ---
 
+## 2026-09-21 — Task hierarchy: subtasks, no finishing over open ones, auto-done parent (built on branches, NOT YET MERGED)
+
+A task can have up to 25 subtasks (one level). A task with an open subtask cannot be finished
+(refused in the shared update path; 409 to the site); finishing the last subtask completes the
+parent automatically, reopening one reopens a finished parent. Subtasks have no Discord channel
+(news goes to the parent's). Discord: Subtasks checklist + Add subtask in the task hub. Site:
+checklist in task detail (clickable with the update permission), nested list, "3/5" chips.
+Migration 022 (`task.parentTaskId`). Bot `feat/task-hierarchy` (b5e936e, a3c690e; 761 tests) ·
+CSAAS `feat/task-hierarchy` (01c6d88) · UBS-Doc `feat/task-hierarchy-ui` (6fa887c; 254 tests).
+Deploy order bot → CSAAS → site. See `knowledge/project-tasks-site.md`.
+
+---
+
 ## 2026-09-20 — /update-task Find panel + Edit modal, task activity log, creator/updater cards (built on branches, NOT YET MERGED)
 
 `/update-task` with no task opens a Find panel (project, person, paged task list) then an Edit
