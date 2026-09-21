@@ -1,6 +1,6 @@
 import { SlashCommandBuilder } from 'discord.js'
-import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
-import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
+import db, { getOrCreateGuildConfig } from '../db/index.js'
+import { isLeadershipFor, memberProjectIdsOf } from '../utils/timeAccess.js'
 import { clockableTasks } from '../utils/timeTaskPicker.js'
 import { entryMinutes, formatDuration, overlaps, parseDuration } from '../utils/timeTracking.js'
 import { GENERAL } from './clock-in.js'
@@ -55,20 +55,6 @@ export function entryWindow(minutes, when, now = new Date()) {
   return { clockInAt: new Date(end.getTime() - minutes * 60000), clockOutAt: end }
 }
 
-function isLeadershipFor(interaction, cfg) {
-  return memberPassesRoleGate(
-    interaction.guild,
-    interaction.member,
-    ensureStringArray(cfg.dashboardRoleIds),
-    LEADERSHIP_ROLE_NAMES,
-  )
-}
-
-async function memberProjectIdsOf(dbArg, cfg, discordId) {
-  const rows = await dbArg.projectMember.findByMember({ where: { guildConfigId: cfg.id, discordId } })
-  return (rows || []).map((r) => r.projectId)
-}
-
 /** True when the entry just written overlaps another entry of the same person. */
 async function overlapsAnother(dbArg, cfg, userId, entry) {
   const nearby = await dbArg.clockEntry.findMany({
@@ -117,7 +103,7 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     const allowed = task
       ? clockableTasks([task], {
           memberProjectIds: await memberProjectIdsOf(dbArg, cfg, userId),
-          isLeadership: isLeadershipFor(interaction, cfg),
+          isLeadership: isLeadershipFor(interaction.guild, interaction.member, cfg),
           callerId: userId,
         }).length > 0
       : false

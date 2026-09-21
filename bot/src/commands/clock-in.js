@@ -1,6 +1,6 @@
 import { SlashCommandBuilder } from 'discord.js'
-import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
-import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
+import db, { getOrCreateGuildConfig } from '../db/index.js'
+import { isLeadershipFor, memberProjectIdsOf } from '../utils/timeAccess.js'
 import { clockableTasks } from '../utils/timeTaskPicker.js'
 import { taskChoiceLabel, holdersOf } from '../utils/taskLabel.js'
 import { entryMinutes, formatDuration } from '../utils/timeTracking.js'
@@ -25,20 +25,6 @@ export async function closeEntry(dbArg, entry, { at = new Date(), note = null, s
 }
 
 const NOT_AVAILABLE = 'That task is not available to you.'
-
-function isLeadershipFor(interaction, cfg) {
-  return memberPassesRoleGate(
-    interaction.guild,
-    interaction.member,
-    ensureStringArray(cfg.dashboardRoleIds),
-    LEADERSHIP_ROLE_NAMES,
-  )
-}
-
-async function memberProjectIdsOf(dbArg, cfg, discordId) {
-  const rows = await dbArg.projectMember.findByMember({ where: { guildConfigId: cfg.id, discordId } })
-  return (rows || []).map((r) => r.projectId)
-}
 
 /** A task's title for a reply, or a plain fallback when it cannot be found. */
 async function titleOf(dbArg, cfg, taskId) {
@@ -66,7 +52,7 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     const allowed = task
       ? clockableTasks([task], {
           memberProjectIds: await memberProjectIdsOf(dbArg, cfg, userId),
-          isLeadership: isLeadershipFor(interaction, cfg),
+          isLeadership: isLeadershipFor(interaction.guild, interaction.member, cfg),
           callerId: userId,
         }).length > 0
       : false
@@ -119,7 +105,7 @@ export async function autocomplete(interaction, { db: dbArg = db, getConfig = ge
     const rows = await dbArg.task.findMany({ where: { guildConfigId: cfg.id }, orderBy: { updatedAt: 'desc' }, take: 200 })
     const tasks = clockableTasks(rows, {
       memberProjectIds: await memberProjectIdsOf(dbArg, cfg, interaction.user.id),
-      isLeadership: isLeadershipFor(interaction, cfg),
+      isLeadership: isLeadershipFor(interaction.guild, interaction.member, cfg),
       callerId: interaction.user.id,
     })
 
