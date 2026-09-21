@@ -78,6 +78,9 @@
     "clock-out": [
       "Verified"
     ],
+    "log-time": [
+      "Verified"
+    ],
     "sql-dump": [
       "Senior Dev",
       "CEO",
@@ -171,6 +174,7 @@
     "edit-docs": true,
     "clock-in": true,
     "clock-out": true,
+    "log-time": true,
     "sql-dump": true,
     "create-task": true,
     "update-task": true,
@@ -283,6 +287,11 @@
       "summary": "Stop tracking your time.",
       "syntax": "`/clock-out [note:<text>]`",
       "detail": "Stops your running timer and reports the session length and, for a task, that task's new total across everyone. Add an optional note about what you got done."
+    },
+    "log-time": {
+      "summary": "Add time you already spent on a task.",
+      "syntax": "`/log-time task:<task> duration:<time> [when:<day>] [note:<text>]`",
+      "detail": "Log work you did without a timer. Duration takes **2h30m**, **90m**, **2.5h** or **1:30**; there is no maximum. **when** is the day the work ended: **today** (the default), **yesterday** or **YYYY-MM-DD** (UTC days). The entry ends at the current time of day on that date and runs backwards by the duration, and it cannot end in the future. You can pick your own tasks and any task in a project you belong to; leadership can pick any task, and **No task — general work** is always available. The reply shows the task's new total across everyone, and warns you if the entry overlaps another of yours. It is still saved, so check **/my-time**."
     },
     "sql-dump": {
       "summary": "Versioned SQL dumps per project schema (history, not project-db).",
