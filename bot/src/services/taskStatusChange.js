@@ -8,6 +8,7 @@ import db from '../db/index.js'
 import { notifyTaskUpdate } from './taskUpdateNotify.js'
 import { blockerWarning, openBlockers } from '../utils/taskDeps.js'
 import { activityChanges, recordTaskActivity } from './taskActivity.js'
+import { assertCanFinish, syncParent } from './taskHierarchy.js'
 
 /** Discord embed fields cap at 1024; the reply description has room for more. */
 export const WARNING_MAX = 1500
@@ -24,6 +25,8 @@ export const WARNING_MAX = 1500
  * @returns {Promise<{ warning: string, notified: { channelId: string|null, created: boolean, dmed: string[] } }>}
  */
 export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, actor = {}, notify = notifyTaskUpdate, guild = null, record = recordTaskActivity }) {
+  // A task with an open subtask cannot be finished: refuse before anything is written.
+  await assertCanFinish({ db: dbArg, task, updates })
   await dbArg.task.update({ where: { id: task.id }, data: updates })
 
   // Who did what. `actor.activityId` is the Discord member a site user was
@@ -86,6 +89,12 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
     } catch (e) {
       console.error('[taskStatusChange] channel id write-back:', e?.message ?? e)
     }
+  }
+
+  // A subtask changed status: bring its parent in line (done once every subtask
+  // is finished, back to in progress if one is open again). Best-effort.
+  if (task.parentTaskId && updates.status && updates.status !== task.status) {
+    await syncParent({ db: dbArg, client, guild, parentId: task.parentTaskId, apply: applyTaskUpdate, notify })
   }
 
   return { warning, notified }

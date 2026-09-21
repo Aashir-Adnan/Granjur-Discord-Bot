@@ -23,10 +23,14 @@ import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.j
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
 import { wouldCycle } from '../utils/taskDeps.js'
 import { notifyTaskUpdate } from './taskUpdateNotify.js'
+import { applyTaskUpdate } from './taskStatusChange.js'
+import { createSubtask } from './taskHierarchy.js'
+import { MAX_SUBTASKS, TaskRuleError, checklistText, isFinished, subtaskProgress } from '../utils/taskHierarchy.js'
 import { canSeeTask, projectMoveNote, runUpdate, sameIds } from '../commands/update-task.js'
 
 export const EDIT_MODAL_PREFIX = 'ut_edit:'
 export const COUNTS_MODAL_PREFIX = 'ut_counts:'
+export const SUBTASK_MODAL_PREFIX = 'ut_sub:'
 const NONE = '-'
 export const MAX_TEST_COUNT = 127 // the column is a signed TINYINT
 export const NOT_FOUND = 'That task is not available to you any more. Run **/update-task** again.'
@@ -47,6 +51,7 @@ const IMPLEMENTATION_OPTIONS = [
 const TERMINAL = new Set(['resolved', 'closed', 'done'])
 const clip = (s, n) => (String(s).length > n ? `${String(s).slice(0, n - 1)}…` : String(s))
 const idFor = (action, taskId) => `uth_${action}:${taskId}`
+const subIdFor = (action, taskId) => `uths_${action}:${taskId}`
 
 // ---------------------------------------------------------------- access ----
 
@@ -70,7 +75,19 @@ async function loadHub(interaction, taskId, d) {
   const blockerIds = deps.filter((x) => x.taskId === task.id).map((x) => String(x.blockedByTaskId))
   const blockers = blockerIds.length ? await d.db.task.findByIds({ where: { guildConfigId: cfg.id, ids: blockerIds } }) : []
   const candidates = blockerCandidates(task, recent, deps, blockerIds)
-  return { cfg, task, projects, blockers, candidates }
+
+  // Hierarchy: a top-level task has subtasks; a subtask has a parent (which this
+  // person may not be allowed to see — then there is no "Parent task" button).
+  let children = []
+  let parent = null
+  let canSeeParent = false
+  if (task.parentTaskId) {
+    parent = await d.db.task.findFirst({ where: { id: task.parentTaskId, guildConfigId: cfg.id } }).catch(() => null)
+    canSeeParent = Boolean(parent) && canSeeTask(parent, { isLeadership, callerId: interaction.user.id })
+  } else {
+    children = await d.db.task.findChildren({ where: { parentTaskId: task.id } }).catch(() => [])
+  }
+  return { cfg, task, projects, blockers, candidates, children, parent, canSeeParent }
 }
 
 /**
@@ -93,7 +110,7 @@ const testsText = (t) => [['API', t.passedApiTests], ['QA', t.passedQaTests], ['
   .map(([n, v]) => `${n} ${v === null || v === undefined ? '—' : v}`).join(' · ')
 
 /** The hub message. Pure apart from building discord.js objects. */
-export function buildHubPayload({ task, projects, blockers, candidates, notice = '', nameFor = () => null }) {
+export function buildHubPayload({ task, projects, blockers, candidates, children = [], parent = null, canSeeParent = false, notice = '', nameFor = () => null }) {
   const holders = holdersOf(task)
   const embed = new EmbedBuilder()
     .setTitle(clip(task.title || 'Task', 250))
@@ -112,6 +129,12 @@ export function buildHubPayload({ task, projects, blockers, candidates, notice =
       },
     )
     .setFooter({ text: 'Project, implementation and blockers save as soon as you pick them.' })
+  if (task.parentTaskId && parent) {
+    embed.addFields({ name: 'Subtask of', value: clip(`${parent.title || parent.id} (${String(parent.status || 'open').replace(/_/g, ' ')})`, 1000), inline: false })
+  } else if (children.length) {
+    const p = subtaskProgress(children)
+    embed.addFields({ name: `Subtasks — ${p.done} of ${p.total} done`, value: checklistText(children, nameFor), inline: false })
+  }
 
   const components = []
 
@@ -149,12 +172,23 @@ export function buildHubPayload({ task, projects, blockers, candidates, notice =
     ))
   }
 
-  components.push(new ActionRowBuilder().addComponents(
+  const buttons = [
     new ButtonBuilder().setCustomId(idFor('basics', task.id)).setLabel('Edit details').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(idFor('counts', task.id)).setLabel('Test counts').setStyle(ButtonStyle.Secondary),
+  ]
+  if (task.parentTaskId) {
+    // One level only: a subtask has no subtasks. It links up to its parent when
+    // the person is allowed to see that.
+    if (canSeeParent) buttons.push(new ButtonBuilder().setCustomId(idFor('parent', task.id)).setLabel('Parent task').setStyle(ButtonStyle.Secondary))
+  } else {
+    const p = subtaskProgress(children)
+    buttons.push(new ButtonBuilder().setCustomId(idFor('subs', task.id)).setLabel(p.total ? `Subtasks ${p.done}/${p.total}` : 'Subtasks').setStyle(ButtonStyle.Secondary))
+  }
+  buttons.push(
     new ButtonBuilder().setCustomId(idFor('back', task.id)).setLabel('Back to list').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(idFor('close', task.id)).setLabel('Close').setStyle(ButtonStyle.Danger),
-  ))
+  )
+  components.push(new ActionRowBuilder().addComponents(buttons))
 
   return { content: clip(notice, 1900), embeds: [embed], components }
 }
@@ -280,7 +314,7 @@ const modalValues = (fields, id) => fields?.fields?.get?.(id)?.values ?? []
 
 // -------------------------------------------------------------- handlers ----
 
-const depsOf = (deps) => ({ db, getConfig: getOrCreateGuildConfig, notify: notifyTaskUpdate, ...deps })
+const depsOf = (deps) => ({ db, getConfig: getOrCreateGuildConfig, notify: notifyTaskUpdate, apply: applyTaskUpdate, ...deps })
 
 const gone = { content: NOT_FOUND, embeds: [], components: [] }
 const respond = (interaction, payload) =>
@@ -333,6 +367,12 @@ export async function handleHubComponent(interaction, deps = {}) {
   const loaded = await loadHub(interaction, taskId, d)
   if (!loaded.task) return respond(interaction, gone)
   const value = interaction.values?.[0]
+
+  if (action === 'parent') {
+    if (!loaded.canSeeParent) return showHub(interaction, taskId, d, '❌ That parent task is not available to you.')
+    return showHub(interaction, loaded.parent.id, d)
+  }
+  if (action === 'subs') return showSubtasks(interaction, taskId, d)
 
   if (action === 'basics') return interaction.showModal(buildEditModal(loaded.task))
   if (action === 'counts') return interaction.showModal(buildCountsModal(loaded.task))
@@ -391,4 +431,149 @@ export async function handleCountsSubmit(interaction, deps = {}) {
   if (error) return showHub(interaction, taskId, d, `❌ ${error}`)
   if (Object.keys(updates).length === 0) return showHub(interaction, taskId, d, 'Nothing changed.')
   return saveAndShow(interaction, loaded, d, { updates })
+}
+
+// ------------------------------------------------------------- subtasks ----
+
+/** The checklist message for a parent. Pure apart from building discord.js objects. */
+export function buildSubtasksPayload({ parent, children, notice = '', nameFor = () => null }) {
+  const p = subtaskProgress(children)
+  const embed = new EmbedBuilder()
+    .setTitle(clip(`Subtasks of ${parent.title || 'task'}`, 250))
+    .setColor(p.total && p.done === p.total ? 0x57f287 : 0x5865f2)
+    .setDescription(p.total ? `**${p.done} of ${p.total} done.** ${p.done === p.total ? 'Every subtask is finished.' : 'The task can be finished once every subtask is.'}` : 'No subtasks yet — add the first one.')
+    .addFields({ name: 'Checklist', value: checklistText(children, nameFor), inline: false })
+
+  const components = []
+  if (children.length) {
+    components.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(subIdFor('toggle', parent.id))
+        .setPlaceholder('Tick the subtasks that are finished')
+        .setMinValues(0)
+        .setMaxValues(Math.min(children.length, 25))
+        .setOptions(children.slice(0, 25).map((c) => new StringSelectMenuOptionBuilder()
+          .setLabel(clip(c.title || c.id, 100))
+          .setValue(String(c.id))
+          .setDescription(clip(String(c.status || 'open').replace(/_/g, ' '), 100))
+          .setDefault(isFinished(c.status)))),
+    ))
+  }
+  components.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(subIdFor('add', parent.id)).setLabel('Add subtask').setStyle(ButtonStyle.Primary).setDisabled(children.length >= MAX_SUBTASKS),
+    new ButtonBuilder().setCustomId(subIdFor('back', parent.id)).setLabel('Back to task').setStyle(ButtonStyle.Secondary),
+  ))
+  return { content: clip(notice, 1900), embeds: [embed], components }
+}
+
+/** The "Add subtask" form: title, description, scope and assignees. */
+export function buildSubtaskModal(parent) {
+  return new ModalBuilder()
+    .setCustomId(`${SUBTASK_MODAL_PREFIX}${parent.id}`)
+    .setTitle(clip(`New subtask: ${parent.title || 'task'}`, 45))
+    .addLabelComponents(
+      new LabelBuilder().setLabel('Title').setTextInputComponent(
+        new TextInputBuilder().setCustomId('title').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200),
+      ),
+      new LabelBuilder().setLabel('Description').setTextInputComponent(
+        new TextInputBuilder().setCustomId('description').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(2000),
+      ),
+      new LabelBuilder().setLabel('Scope').setStringSelectMenuComponent(
+        new StringSelectMenuBuilder().setCustomId('scope').setRequired(false).setPlaceholder('Not set').setMinValues(0).setMaxValues(1).setOptions(
+          SCOPE_CHOICES.map((o) => new StringSelectMenuOptionBuilder().setLabel(o.name).setValue(o.value)),
+        ),
+      ),
+      new LabelBuilder().setLabel('Assignees').setUserSelectMenuComponent(
+        new UserSelectMenuBuilder().setCustomId('assignees').setRequired(false).setPlaceholder('Nobody yet').setMinValues(0).setMaxValues(25),
+      ),
+    )
+}
+
+/**
+ * What ticking and unticking the checklist amounts to: the subtasks to finish
+ * (ticked but open) and the ones to reopen (unticked but finished). Pure.
+ */
+export function checklistChanges(children, tickedIds) {
+  const ticked = new Set((tickedIds || []).map(String))
+  return {
+    finish: children.filter((c) => ticked.has(String(c.id)) && !isFinished(c.status)),
+    reopen: children.filter((c) => !ticked.has(String(c.id)) && isFinished(c.status)),
+  }
+}
+
+/** Draw the checklist for `parentId` (a top-level task the person can see). */
+export async function showSubtasks(interaction, parentId, deps = {}, notice = '') {
+  const d = depsOf(deps)
+  const loaded = await loadHub(interaction, parentId, d)
+  if (!loaded.task) return respond(interaction, gone)
+  if (loaded.task.parentTaskId) return showHub(interaction, parentId, d, '❌ A subtask cannot have subtasks of its own.')
+  return respond(interaction, buildSubtasksPayload({ parent: loaded.task, children: loaded.children, notice, nameFor: nameForIn(interaction) }))
+}
+
+/** Every `uths_*` component on the checklist. */
+export async function handleSubtasksComponent(interaction, deps = {}) {
+  const d = depsOf(deps)
+  const i = String(interaction.customId).indexOf(':')
+  const action = String(interaction.customId).slice(0, i === -1 ? undefined : i).replace(/^uths_/, '')
+  const parentId = i === -1 ? '' : String(interaction.customId).slice(i + 1)
+
+  if (action === 'back') return showHub(interaction, parentId, d)
+  const loaded = await loadHub(interaction, parentId, d)
+  if (!loaded.task) return respond(interaction, gone)
+  if (action === 'add') return interaction.showModal(buildSubtaskModal(loaded.task))
+
+  if (action === 'toggle') {
+    const { finish, reopen } = checklistChanges(loaded.children, interaction.values)
+    const done = []
+    const failed = []
+    for (const [list, status] of [[reopen, 'open'], [finish, 'done']]) {
+      for (const child of list) {
+        try {
+          await d.apply({ db: d.db, client: interaction.client, guild: interaction.guild, task: child, updates: { status }, actor: { discordId: interaction.user.id }, notify: d.notify })
+          done.push(`${status === 'done' ? '☑' : '☐'} ${child.title}`)
+        } catch (e) {
+          if (!(e instanceof TaskRuleError)) console.error('[task-hub] subtask toggle:', e)
+          failed.push(`❌ ${child.title}: ${e?.message ?? String(e)}`)
+        }
+      }
+    }
+    // The parent may have completed (or reopened) as a result: say so.
+    const after = await d.db.task.findFirst({ where: { id: parentId, guildConfigId: loaded.cfg.id } })
+    const lines = [...done, ...failed]
+    if (after && after.status !== loaded.task.status) lines.push(`Parent is now **${String(after.status).replace(/_/g, ' ')}** (automatic).`)
+    return showSubtasks(interaction, parentId, d, lines.length ? lines.join('\n') : 'No change.')
+  }
+  return showSubtasks(interaction, parentId, d)
+}
+
+/** The "Add subtask" modal was submitted. */
+export async function handleSubtaskSubmit(interaction, deps = {}) {
+  const d = depsOf(deps)
+  await ack(interaction)
+  const parentId = String(interaction.customId).slice(SUBTASK_MODAL_PREFIX.length)
+  const loaded = await loadHub(interaction, parentId, d)
+  if (!loaded.task) return interaction.editReply(gone)
+
+  const f = interaction.fields
+  let notice
+  try {
+    const child = await createSubtask({
+      db: d.db, client: interaction.client, guild: interaction.guild, parent: loaded.task,
+      fields: {
+        title: f.getTextInputValue('title'),
+        description: f.getTextInputValue('description'),
+        scope: modalValues(f, 'scope')[0] || null,
+        assigneeIds: modalValues(f, 'assignees'),
+      },
+      actor: { discordId: interaction.user.id },
+      notify: d.notify,
+      apply: d.apply,
+    })
+    const reopened = isFinished(loaded.task.status) ? ' The task was reopened.' : ''
+    notice = `✅ Added **${child.title}**.${reopened}`
+  } catch (e) {
+    if (!(e instanceof TaskRuleError)) console.error('[task-hub] add subtask:', e)
+    notice = `❌ ${e?.message ?? String(e)}`
+  }
+  return showSubtasks(interaction, parentId, d, notice)
 }

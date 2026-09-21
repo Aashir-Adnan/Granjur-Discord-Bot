@@ -5,6 +5,7 @@ import { timingSafeEqual } from 'node:crypto'
 import db from '../db/index.js'
 import { applyTaskUpdate } from './taskStatusChange.js'
 import { TASK_STATUSES } from '../utils/taskDeps.js'
+import { TaskRuleError } from '../utils/taskHierarchy.js'
 
 export function safeEqual(a, b) {
   const x = Buffer.from(String(a ?? '')); const y = Buffer.from(String(b ?? ''))
@@ -43,6 +44,8 @@ export async function handleStatusRequest({ headers = {}, body = {}, db: dbArg =
     const { warning } = await apply({ db: dbArg, client, task, updates: { status }, actor: { label: `${name} (via the site)`, activityId } })
     return { status: 200, body: { ok: true, task: { id: task.id, status }, warning: warning || '', unchanged: false } }
   } catch (e) {
+    // A rule the user broke (finishing a task with open subtasks), not a fault.
+    if (e instanceof TaskRuleError) return { status: 409, body: { ok: false, message: e.message } }
     console.error('[internal] status route:', e?.message ?? e)
     return { status: 500, body: { ok: false, message: e?.message || 'internal error' } }
   }

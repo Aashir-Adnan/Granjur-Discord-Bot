@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS task (
   passedAcceptanceCriteria TINYINT(1),
   externalId VARCHAR(128) DEFAULT NULL,
   meetingId VARCHAR(36) DEFAULT NULL,
+  parentTaskId VARCHAR(36) DEFAULT NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   KEY (guildConfigId),
@@ -99,6 +100,7 @@ CREATE TABLE IF NOT EXISTS task (
   KEY (createdAt),
   UNIQUE KEY uq_task_externalId (externalId),
   KEY idx_task_meetingId (meetingId),
+  KEY idx_task_parent (parentTaskId),
   FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
   FOREIGN KEY (repositoryId) REFERENCES repository(id) ON DELETE SET NULL
 );

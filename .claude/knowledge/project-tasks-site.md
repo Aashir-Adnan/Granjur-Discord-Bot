@@ -412,6 +412,21 @@ read side.
   `runUpdate` (extracted from `commitUpdate`) writes and notifies without replying; both the
   slash command and the hub use it. Test fakes must return row copies: a fake that mutates the
   caller's snapshot on update hides the activity diff.
+- **Task hierarchy (migration 022, `task.parentTaskId`):** one level (a subtask has no
+  subtasks), no foreign key (a missing parent row = top-level). Rules live in pure
+  `utils/taskHierarchy.js` and are applied in `applyTaskUpdate` — the one path every edit
+  takes — via `services/taskHierarchy.js`: `assertCanFinish` throws `TaskRuleError` (409 from
+  the internal route) *before* anything is written, and `runUpdate` catches it first so a
+  refused finish never leaves a blocker half-applied; `syncParent` then completes the parent
+  when the last subtask is finished or puts a finished parent back in progress (label
+  "Automatic (…)" in the activity log). `createSubtask` makes a `feature` row, no Discord
+  channel (max 25 per parent), inheriting project/repository. `notifyTaskUpdate` sends a
+  subtask's news to its PARENT's channel and neither creates a channel nor edits permissions
+  for it (assignees are DM'd; they see the parent's channel only through the project role).
+  UI: hub gets a Subtasks button (checklist multi-select where defaults = finished; ticking =
+  done, unticking = open) and an Add-subtask modal (`ut_sub:`); a subtask's hub has a
+  Parent-task button when the person can see the parent. `uths_add` and the modal prefix are
+  in index.js's no-defer lists like the other modal openers.
 - **Activity log:** `taskactivity` (migration 021), one row per update from
   `applyTaskUpdate` (+ blocker add/remove in `applyDependencyChange`). Title/description
   bodies are never stored. A site drag has no Discord id: `internalTaskRoute` matches the

@@ -84,3 +84,18 @@ test('a failing member lookup never blocks the update', async () => {
     assert.equal(seen.actor.activityId, null)
   } finally { console.error = orig }
 })
+
+test('finishing a task that has open subtasks is a 409 with the rule\'s own message, not a 500', async () => {
+  const { TaskRuleError } = await import('../utils/taskHierarchy.js')
+  const orig = console.error; const errors = []; console.error = (...a) => errors.push(a)
+  try {
+    const r = await handleStatusRequest({
+      ...ok, body: { ...ok.body, status: 'done' }, db, client: {}, secret: 's3cret',
+      apply: async () => { throw new TaskRuleError('**Git Sync** can\'t be marked done yet — 2 subtasks are still open') },
+    })
+    assert.equal(r.status, 409)
+    assert.equal(r.body.ok, false)
+    assert.match(r.body.message, /2 subtasks are still open/)
+    assert.equal(errors.length, 0) // a rule refusal is not logged as a fault
+  } finally { console.error = orig }
+})

@@ -6,6 +6,8 @@ import { notifyTaskUpdate } from '../services/taskUpdateNotify.js'
 import { applyTaskUpdate } from '../services/taskStatusChange.js'
 import { recordTaskActivity } from '../services/taskActivity.js'
 import { showFinder } from '../services/taskFinder.js'
+import { assertCanFinish } from '../services/taskHierarchy.js'
+import { TaskRuleError } from '../utils/taskHierarchy.js'
 import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
 
@@ -241,6 +243,14 @@ export function projectMoveNote(task, updates) {
  * Edit modal and the task hub.
  */
 export async function runUpdate(interaction, { db: dbArg = db, notify = notifyTaskUpdate, cfg, task, updates, blockedById = null, unblockId = null }) {
+  // A subtask rule refusal comes back as an error like a refused blocker, and —
+  // checked here, before the blocker change — leaves nothing half-applied.
+  try {
+    await assertCanFinish({ db: dbArg, task, updates })
+  } catch (e) {
+    if (e instanceof TaskRuleError) return { error: e.message }
+    throw e
+  }
   const dep = await applyDependencyChange({ db: dbArg, cfg, task, blockedById, unblockId, actorId: interaction.user.id })
   if (dep.error) return { error: dep.error }
 

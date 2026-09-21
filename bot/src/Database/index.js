@@ -314,46 +314,61 @@ async function taskFindByIds({ where }) {
   );
 }
 
+/**
+ * The INSERT for a task: one ordered list of [column, value] so the column list
+ * and the parameters cannot drift apart (the old hand-counted placeholder list
+ * had 27 of each).
+ */
+export function taskInsertSql(data, pk) {
+  const ext = buildTaskInsertValues(data);
+  const columns = [
+    ["id", pk],
+    ["guildConfigId", data.guildConfigId],
+    ["type", data.type ?? (data.is_bug ? "bug" : "feature")],
+    ["is_bug", data.is_bug ? 1 : 0],
+    ["is_feature", data.is_feature ? 1 : 0],
+    ["title", data.title ?? null],
+    ["description", data.description ?? null],
+    ["status", data.status ?? (data.is_bug ? "pending" : "open")],
+    ["createdBy", data.createdBy ?? null],
+    ["assigneeIds", toJson(data.assigneeIds || [])],
+    ["taggedMemberIds", toJson(data.taggedMemberIds || [])],
+    ["repositoryId", data.repositoryId ?? null],
+    ["projectId", data.projectId ?? null],
+    ["projectName", data.projectName ?? null],
+    ["discordChannelId", data.discordChannelId ?? null],
+    ["discordThreadId", data.discordThreadId ?? null],
+    ["externalIssueUrl", data.externalIssueUrl ?? null],
+    ["externalIssueNumber", data.externalIssueNumber ?? null],
+    ["modules", toJson(data.modules || [])],
+    ["handlerId", data.handlerId ?? null],
+    ["scope", data.scope ?? null],
+    ["implementationStatus", data.implementationStatus ?? null],
+    ["passedApiTests", data.passedApiTests ?? null],
+    ["passedQaTests", data.passedQaTests ?? null],
+    ["passedAcceptanceCriteria", data.passedAcceptanceCriteria ?? null],
+    ["externalId", ext.externalId],
+    ["meetingId", ext.meetingId],
+    ["parentTaskId", data.parentTaskId ?? null],
+  ];
+  return {
+    sql: `INSERT INTO \`task\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    params: columns.map(([, v]) => v),
+  };
+}
+
 async function taskCreate({ data }) {
   const pk = id();
-  const taskExternalValues = buildTaskInsertValues(data);
-  await query(
-    `INSERT INTO \`task\` (id, guildConfigId, type, is_bug, is_feature, title, description, status, createdBy, assigneeIds, taggedMemberIds,
-     repositoryId, projectId, projectName, discordChannelId, discordThreadId, externalIssueUrl, externalIssueNumber,
-     modules, handlerId, scope, implementationStatus, passedApiTests, passedQaTests, passedAcceptanceCriteria,
-     externalId, meetingId)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      pk,
-      data.guildConfigId,
-      data.type ?? (data.is_bug ? "bug" : "feature"),
-      data.is_bug ? 1 : 0,
-      data.is_feature ? 1 : 0,
-      data.title ?? null,
-      data.description ?? null,
-      data.status ?? (data.is_bug ? "pending" : "open"),
-      data.createdBy ?? null,
-      toJson(data.assigneeIds || []),
-      toJson(data.taggedMemberIds || []),
-      data.repositoryId ?? null,
-      data.projectId ?? null,
-      data.projectName ?? null,
-      data.discordChannelId ?? null,
-      data.discordThreadId ?? null,
-      data.externalIssueUrl ?? null,
-      data.externalIssueNumber ?? null,
-      toJson(data.modules || []),
-      data.handlerId ?? null,
-      data.scope ?? null,
-      data.implementationStatus ?? null,
-      data.passedApiTests ?? null,
-      data.passedQaTests ?? null,
-      data.passedAcceptanceCriteria ?? null,
-      taskExternalValues.externalId,
-      taskExternalValues.meetingId,
-    ],
-  );
+  const { sql, params } = taskInsertSql(data, pk);
+  await query(sql, params);
   return queryOne("SELECT * FROM `task` WHERE id = ?", [pk]);
+}
+
+// The subtasks of one task, oldest first. A parent holds at most 25 (the
+// checklist select's limit), so 100 is a safe ceiling.
+async function taskFindChildren({ where }) {
+  if (!where?.parentTaskId) return [];
+  return query("SELECT * FROM `task` WHERE parentTaskId = ? ORDER BY createdAt ASC LIMIT 100", [where.parentTaskId]);
 }
 
 async function taskUpdate({ where, data }) {
@@ -2212,6 +2227,7 @@ const db = {
     create: taskCreate,
     update: taskUpdate,
     count: taskCount,
+    findChildren: taskFindChildren,
   },
   ticketDoc: {
     findMany: ticketDocFindMany,

@@ -11,6 +11,7 @@ function fakeDb({ deps = [], tasks = [], cfg = { id: 'g1', guildId: 'guild1' } }
     task: {
       update: async (a) => { calls.push(['update', a]); return null },
       findByIds: async ({ where }) => tasks.filter((t) => where.ids.includes(t.id)),
+      findChildren: async ({ where }) => tasks.filter((t) => t.parentTaskId === where.parentTaskId),
     },
     taskActivity: { add: async ({ data }) => { activity.push(data) } },
     taskDependency: { findByTask: async ({ where }) => deps.filter((d) => d.taskId === where.taskId) },
