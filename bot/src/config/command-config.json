@@ -275,14 +275,14 @@
       "detail": "Pick a project, then submit a page title and markdown body. The page is saved in the bot database and shows up in **/docs** under that project. It is not published to the documentation site, and a page synced from the documentation repository cannot be edited here — pick a different title if one already holds that address."
     },
     "clock-in": {
-      "summary": "Clock in (start tracking time).",
-      "syntax": "`/clock-in`",
-      "detail": "Records your clock-in time. Use **/clock-out** when done."
+      "summary": "Start tracking your time against a task.",
+      "syntax": "`/clock-in task:<task>`",
+      "detail": "Pick the task you are working on, or **No task — general work**. You can pick your own tasks and any task in a project you belong to; leadership can pick any task. Clocking in on the task you are already on changes nothing and tells you how long it has run. Picking a different task stops the old timer and starts the new one in one step. Use **/clock-out** when you finish."
     },
     "clock-out": {
-      "summary": "Clock out (stop tracking time).",
-      "syntax": "`/clock-out`",
-      "detail": "Records your clock-out time and logs the session."
+      "summary": "Stop tracking your time.",
+      "syntax": "`/clock-out [note:<text>]`",
+      "detail": "Stops your running timer and reports the session length and, for a task, that task's new total across everyone. Add an optional note about what you got done."
     },
     "sql-dump": {
       "summary": "Versioned SQL dumps per project schema (history, not project-db).",
