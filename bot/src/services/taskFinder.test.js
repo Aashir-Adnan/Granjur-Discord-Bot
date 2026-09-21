@@ -139,6 +139,7 @@ function fakeDb(tasks) {
     task: {
       findMany: async () => tasks,
       findByIds: async ({ where }) => tasks.filter((t) => where.ids.includes(t.id)),
+      findChildren: async ({ where }) => tasks.filter((t) => t.parentTaskId === where.parentTaskId),
       findFirst: async ({ where }) => tasks.find((t) => t.id === where.id) ?? null,
       update: async (a) => { calls.push(['update', a]); return null },
     },
@@ -206,4 +207,16 @@ test('picking a task that is not yours shows nothing of it', async () => {
   await handleFinderComponent(it, { db: fakeDb(rows), getConfig })
   assert.match(it.sent.edits[0].content, /not available/)
   assert.deepEqual(it.sent.edits[0].embeds, [])
+})
+
+test('the task list shows a parent\'s subtask progress and a subtask\'s parent', () => {
+  const P = { id: 'P', title: 'Parent task', status: 'in_progress', assigneeIds: ['u1'] }
+  const S1 = { id: 'S1', title: 'Write tests', status: 'open', assigneeIds: ['u1'], parentTaskId: 'P' }
+  const S2 = { id: 'S2', title: 'Deploy', status: 'done', assigneeIds: ['u1'], parentTaskId: 'P' }
+  const p = buildFinderPayload({ rows: [P, S1, S2], projects: [], state: { ...defaultState(), done: true }, isLeadership: true, callerId: 'x', nameFor: () => 'Ana' })
+  const menu = json(p)[2].components[0]
+  const byValue = Object.fromEntries(menu.options.map((o) => [o.value, o.description]))
+  assert.equal(byValue.P, 'in_progress · Ana · 1/2 subtasks')
+  assert.equal(byValue.S1, 'open · ↳ Parent task · Ana')
+  for (const o of menu.options) assert.ok(o.description.length <= 100)
 })

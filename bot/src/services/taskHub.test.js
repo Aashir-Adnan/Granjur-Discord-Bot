@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   buildHubPayload, buildEditModal, updatesFromModal, buildCountsModal, countsFromModal, blockerCandidates, noticeFor,
   showHub, handleHubComponent, handleEditSubmit, handleCountsSubmit, MAX_TEST_COUNT,
+  buildSubtasksPayload, buildSubtaskModal, checklistChanges, showSubtasks, handleSubtasksComponent, handleSubtaskSubmit,
 } from './taskHub.js'
 
 const admin = () => ({ permissions: { has: (p) => p === 'Administrator' } })
@@ -54,14 +55,14 @@ test('the hub shows every editable property and never more than five rows', () =
   assert.match(field('Blocked by'), /Router fix \(open\)/)
   // project, implementation, add-blocker, remove-blocker, buttons
   assert.deepEqual(customIds(p).map((id) => id.split(':')[0]), [
-    'uth_proj', 'uth_impl', 'uth_block', 'uth_unblock', 'uth_basics', 'uth_counts', 'uth_back', 'uth_close',
+    'uth_proj', 'uth_impl', 'uth_block', 'uth_unblock', 'uth_basics', 'uth_counts', 'uth_subs', 'uth_back', 'uth_close',
   ])
   assert.ok(p.components.length <= 5)
 })
 
 test('the blocker rows only appear when there is something to pick', () => {
   const none = buildHubPayload({ ...baseHub, candidates: [], blockers: [] })
-  assert.deepEqual(customIds(none).map((id) => id.split(':')[0]), ['uth_proj', 'uth_impl', 'uth_basics', 'uth_counts', 'uth_back', 'uth_close'])
+  assert.deepEqual(customIds(none).map((id) => id.split(':')[0]), ['uth_proj', 'uth_impl', 'uth_basics', 'uth_counts', 'uth_subs', 'uth_back', 'uth_close'])
 })
 
 test('the project and implementation selects preselect the current values', () => {
@@ -164,13 +165,15 @@ function fakeDb(tasks, { deps = [] } = {}) {
   const activity = []
   const dependencies = [...deps]
   return {
-    calls, activity, dependencies,
+    calls, activity, dependencies, tasks,
     task: {
       // Rows are copied out, as a real database returns them: the caller's snapshot
       // must not change underneath it when the update lands.
       findMany: async () => tasks.map((t) => ({ ...t })),
       findFirst: async ({ where }) => { const t = tasks.find((x) => x.id === where.id); return t ? { ...t } : null },
       findByIds: async ({ where }) => tasks.filter((t) => where.ids.includes(t.id)).map((t) => ({ ...t })),
+      findChildren: async ({ where }) => tasks.filter((t) => t.parentTaskId === where.parentTaskId).map((t) => ({ ...t })),
+      create: async ({ data }) => { const row = { id: `new${tasks.length}`, ...data }; tasks.push(row); calls.push(['create', row.id]); return { ...row } },
       update: async (a) => { calls.push(['update', a]); const t = tasks.find((x) => x.id === a.where.id); if (t) Object.assign(t, a.data); return null },
     },
     project: { findMany: async () => projects, findFirst: async ({ where }) => projects.find((p) => p.id === where.id) ?? null },
@@ -381,4 +384,192 @@ test('a failing write is reported on the hub instead of leaving it hanging', asy
     await handleHubComponent(it, { db, getConfig, notify })
     assert.match(lastNotice(it), /Update failed: db down/)
   } finally { console.error = orig }
+})
+
+// ------------------------------------------------------------- subtasks ----
+
+const PARENT = { id: 'P', guildConfigId: 'g1', title: 'Parent task', status: 'in_progress', assigneeIds: ['u1'], projectId: 'p1', projectName: 'Framework' }
+const S1 = { id: 'S1', guildConfigId: 'g1', title: 'Write tests', status: 'open', assigneeIds: ['u2'], parentTaskId: 'P' }
+const S2 = { id: 'S2', guildConfigId: 'g1', title: 'Deploy', status: 'done', assigneeIds: ['u3'], parentTaskId: 'P' }
+const hier = () => [{ ...PARENT }, { ...S1 }, { ...S2 }]
+
+test('the hub of a parent shows its checklist and progress, and a Subtasks button with the count', () => {
+  const p = buildHubPayload({ ...baseHub, task: PARENT, children: [S1, S2], nameFor: (id) => ({ u2: 'Ben', u3: 'Cy' })[id] })
+  const e = p.embeds[0].toJSON()
+  const field = e.fields.find((f) => f.name.startsWith('Subtasks'))
+  assert.equal(field.name, 'Subtasks — 1 of 2 done')
+  assert.equal(field.value, '☐ Write tests — Ben\n☑ Deploy — Cy')
+  const buttons = json(p).at(-1).components
+  assert.equal(buttons.find((b) => b.custom_id.startsWith('uth_subs')).label, 'Subtasks 1/2')
+})
+
+test('a parent with no subtasks shows no checklist field, just a plain Subtasks button', () => {
+  const p = buildHubPayload({ ...baseHub, task: PARENT, children: [] })
+  assert.equal(p.embeds[0].toJSON().fields.some((f) => f.name.startsWith('Subtasks')), false)
+  assert.equal(json(p).at(-1).components.find((b) => b.custom_id.startsWith('uth_subs')).label, 'Subtasks')
+})
+
+test('the hub of a subtask names its parent, has no Subtasks button, and links up only when the parent is visible', () => {
+  const withParent = buildHubPayload({ ...baseHub, task: S1, parent: PARENT, canSeeParent: true })
+  assert.match(withParent.embeds[0].toJSON().fields.find((f) => f.name === 'Subtask of').value, /Parent task \(in progress\)/)
+  const ids = customIds(withParent).map((id) => id.split(':')[0])
+  assert.ok(ids.includes('uth_parent'))
+  assert.ok(!ids.includes('uth_subs'))
+  const hidden = buildHubPayload({ ...baseHub, task: S1, parent: PARENT, canSeeParent: false })
+  assert.ok(!customIds(hidden).map((id) => id.split(':')[0]).includes('uth_parent'))
+  assert.ok(json(withParent).length <= 5)
+})
+
+test('the checklist preselects the finished subtasks and stays within Discord limits', () => {
+  const p = buildSubtasksPayload({ parent: PARENT, children: [S1, S2] })
+  const menu = json(p)[0].components[0]
+  assert.deepEqual(menu.options.filter((o) => o.default).map((o) => o.value), ['S2'])
+  assert.equal(menu.min_values, 0)
+  assert.equal(menu.max_values, 2)
+  assert.match(p.embeds[0].toJSON().description, /1 of 2 done/)
+  const many = Array.from({ length: 25 }, (_, i) => ({ id: `${'k'.repeat(24)}${i % 10}`, title: 'T'.repeat(150), status: 'open' }))
+  const full = json(buildSubtasksPayload({ parent: PARENT, children: many, notice: 'n'.repeat(5000) }))
+  assert.ok(full[0].components[0].options.length <= 25)
+  assert.equal(full[1].components[0].disabled, true) // cannot add a 26th
+  for (const id of customIds(buildSubtasksPayload({ parent: { ...PARENT, id: 'a'.repeat(25) }, children: many }))) assert.ok(id.length <= 100)
+})
+
+test('an empty checklist has no select, and says to add the first subtask', () => {
+  const p = buildSubtasksPayload({ parent: PARENT, children: [] })
+  assert.equal(json(p).length, 1)
+  assert.match(p.embeds[0].toJSON().description, /add the first one/)
+  assert.equal(json(p)[0].components[0].disabled, false)
+})
+
+test('checklistChanges finishes what was newly ticked and reopens what was unticked', () => {
+  const { finish, reopen } = checklistChanges([S1, S2], ['S1'])
+  assert.deepEqual(finish.map((c) => c.id), ['S1'])
+  assert.deepEqual(reopen.map((c) => c.id), ['S2'])
+  assert.deepEqual(checklistChanges([S1, S2], ['S2']), { finish: [], reopen: [] })
+})
+
+test('the add-subtask modal has title, description, scope and assignees', () => {
+  const m = buildSubtaskModal(PARENT).toJSON()
+  assert.equal(m.custom_id, 'ut_sub:P')
+  assert.deepEqual(m.components.map((c) => c.component.custom_id), ['title', 'description', 'scope', 'assignees'])
+  assert.ok(m.title.length <= 45)
+})
+
+test('the Subtasks button shows the checklist; on a subtask it is refused', async () => {
+  const db = fakeDb(hier())
+  const it = fakeInteraction({ customId: 'uth_subs:P' })
+  await handleHubComponent(it, { db, getConfig })
+  assert.equal(it.sent.edits[0].embeds[0].toJSON().title, 'Subtasks of Parent task')
+  const sub = fakeInteraction()
+  await showSubtasks(sub, 'S1', { db, getConfig })
+  assert.match(sub.sent.edits[0].content, /cannot have subtasks of its own/)
+})
+
+test('ticking the last open subtask finishes it, completes the parent automatically, and says so', async () => {
+  const db = fakeDb(hier())
+  const it = fakeInteraction({ customId: 'uths_toggle:P', values: ['S1', 'S2'] })
+  await handleSubtasksComponent(it, { db, getConfig, notify })
+  assert.equal(db.tasks.find((t) => t.id === 'S1').status, 'done')
+  assert.equal(db.tasks.find((t) => t.id === 'P').status, 'done')
+  const text = it.sent.edits.at(-1).content
+  assert.match(text, /☑ Write tests/)
+  assert.match(text, /Parent is now \*\*done\*\* \(automatic\)/)
+  assert.equal(db.activity.find((a) => a.taskId === 'P').actorLabel, 'Automatic (all subtasks done)')
+})
+
+test('ticking one of two leaves the parent alone; unticking a finished one reopens the parent', async () => {
+  const db = fakeDb([{ ...PARENT }, { ...S1 }, { ...S2, status: 'open' }])
+  const a = fakeInteraction({ customId: 'uths_toggle:P', values: ['S1'] })
+  await handleSubtasksComponent(a, { db, getConfig, notify })
+  assert.equal(db.tasks.find((t) => t.id === 'P').status, 'in_progress')
+  assert.doesNotMatch(a.sent.edits.at(-1).content, /Parent is now/)
+
+  const db2 = fakeDb([{ ...PARENT, status: 'done' }, { ...S1, status: 'done' }, { ...S2 }])
+  const b = fakeInteraction({ customId: 'uths_toggle:P', values: ['S2'] })
+  await handleSubtasksComponent(b, { db: db2, getConfig, notify })
+  assert.equal(db2.tasks.find((t) => t.id === 'S1').status, 'open')
+  assert.equal(db2.tasks.find((t) => t.id === 'P').status, 'in_progress')
+  assert.match(b.sent.edits.at(-1).content, /Parent is now \*\*in progress\*\*/)
+})
+
+test('submitting the checklist unchanged does nothing', async () => {
+  const db = fakeDb(hier())
+  const it = fakeInteraction({ customId: 'uths_toggle:P', values: ['S2'] })
+  await handleSubtasksComponent(it, { db, getConfig, notify })
+  assert.deepEqual(db.calls, [])
+  assert.equal(it.sent.edits.at(-1).content, 'No change.')
+})
+
+test('the checklist controls are refused for a parent the person cannot see', async () => {
+  const db = fakeDb([{ ...PARENT, assigneeIds: ['u9'] }, { ...S1 }])
+  const it = fakeInteraction({ customId: 'uths_toggle:P', values: ['S1'], member: plain() })
+  await handleSubtasksComponent(it, { db, getConfig, notify })
+  assert.match(it.sent.edits[0].content, /not available/)
+  assert.deepEqual(db.calls, [])
+})
+
+test('Add subtask opens the modal; Back returns to the task hub', async () => {
+  const db = fakeDb(hier())
+  const add = fakeInteraction({ customId: 'uths_add:P', deferred: false })
+  await handleSubtasksComponent(add, { db, getConfig })
+  assert.equal(add.sent.modals[0].toJSON().custom_id, 'ut_sub:P')
+  const back = fakeInteraction({ customId: 'uths_back:P' })
+  await handleSubtasksComponent(back, { db, getConfig })
+  assert.equal(back.sent.edits[0].embeds[0].toJSON().title, 'Parent task')
+})
+
+function subFields({ title = 'New sub', description = 'why', scope = ['qa'], assignees = ['u2'] } = {}) {
+  const map = new Map([['title', { value: title }], ['description', { value: description }], ['scope', { values: scope }], ['assignees', { values: assignees }]])
+  return { fields: map, getTextInputValue: (id) => map.get(id).value }
+}
+
+test('submitting the add-subtask modal creates the subtask under the parent and shows it in the checklist', async () => {
+  const db = fakeDb(hier())
+  const it = fakeInteraction({ customId: 'ut_sub:P', fields: subFields() })
+  await handleSubtaskSubmit(it, { db, getConfig, notify })
+  const child = db.tasks.find((t) => t.title === 'New sub')
+  assert.equal(child.parentTaskId, 'P')
+  assert.deepEqual(child.assigneeIds, ['u2'])
+  assert.equal(child.scope, 'qa')
+  assert.equal(child.projectName, 'Framework')
+  assert.match(it.sent.edits.at(-1).content, /✅ Added \*\*New sub\*\*/)
+  assert.match(JSON.stringify(it.sent.edits.at(-1).embeds[0].toJSON()), /New sub/)
+})
+
+test('adding a subtask to a finished parent says it was reopened', async () => {
+  const db = fakeDb([{ ...PARENT, status: 'done' }, { ...S2 }])
+  const it = fakeInteraction({ customId: 'ut_sub:P', fields: subFields() })
+  await handleSubtaskSubmit(it, { db, getConfig, notify })
+  assert.match(it.sent.edits.at(-1).content, /The task was reopened/)
+  assert.equal(db.tasks.find((t) => t.id === 'P').status, 'in_progress')
+})
+
+test('a bad subtask (blank title) or a subtask as parent is reported, not created', async () => {
+  const db = fakeDb(hier())
+  const blank = fakeInteraction({ customId: 'ut_sub:P', fields: subFields({ title: '   ' }) })
+  await handleSubtaskSubmit(blank, { db, getConfig, notify })
+  assert.match(blank.sent.edits.at(-1).content, /❌ A subtask needs a title/)
+  const nested = fakeInteraction({ customId: 'ut_sub:S1', fields: subFields() })
+  await handleSubtaskSubmit(nested, { db, getConfig, notify })
+  assert.match(nested.sent.edits.at(-1).content, /cannot have subtasks/)
+  assert.equal(db.calls.filter((c) => c[0] === 'create').length, 0)
+})
+
+test('the Parent task button opens the parent hub; for a parent the person cannot see it says so', async () => {
+  const db = fakeDb([{ ...PARENT, assigneeIds: ['u9'] }, { ...S1, assigneeIds: ['u1'] }])
+  const denied = fakeInteraction({ customId: 'uth_parent:S1', member: plain() })
+  await handleHubComponent(denied, { db, getConfig })
+  assert.match(denied.sent.edits[0].content, /not available to you/)
+  const ok = fakeInteraction({ customId: 'uth_parent:S1' })
+  await handleHubComponent(ok, { db, getConfig })
+  assert.equal(ok.sent.edits[0].embeds[0].toJSON().title, 'Parent task')
+})
+
+test('finishing a parent from the details modal while a subtask is open is refused on the hub', async () => {
+  const db = fakeDb(hier().map((t) => (t.id === 'S2' ? { ...t, status: 'open' } : t)))
+  const it = fakeInteraction({ customId: 'ut_edit:P', fields: detailsFields({ status: 'done', title: 'Parent task', assignees: ['u1'] }) })
+  await handleEditSubmit(it, { db, getConfig, notify })
+  assert.match(lastNotice(it), /❌ \*\*Parent task\*\* can't be marked done yet/)
+  assert.equal(db.tasks.find((t) => t.id === 'P').status, 'in_progress')
+  assert.deepEqual(db.calls, [])
 })

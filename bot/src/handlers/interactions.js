@@ -66,6 +66,10 @@ export default async function handleInteractions(interaction) {
       return runCreateTaskHandler(interaction, async (i) =>
         (await import("../services/taskHub.js")).handleCountsSubmit(i),
       );
+    if (customId.startsWith("ut_sub:"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/taskHub.js")).handleSubtaskSubmit(i),
+      );
     if (customId === "create_task_modal")
       return runCreateTaskHandler(interaction, (i) =>
         createTaskCmd.handleTaskModal(i),
@@ -120,6 +124,10 @@ export default async function handleInteractions(interaction) {
     if (customId.startsWith("uth_"))
       return runCreateTaskHandler(interaction, async (i) =>
         (await import("../services/taskHub.js")).handleHubComponent(i),
+      );
+    if (customId.startsWith("uths_"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/taskHub.js")).handleSubtasksComponent(i),
       );
     if (customId.startsWith("mtg_"))
       return (await import("../commands/meetingReview.js")).route(interaction);
@@ -268,6 +276,10 @@ export default async function handleInteractions(interaction) {
       return runCreateTaskHandler(interaction, async (i) =>
         (await import("../services/taskHub.js")).handleHubComponent(i),
       );
+    if (customId.startsWith("uths_"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/taskHub.js")).handleSubtasksComponent(i),
+      );
     if (customId.startsWith("mtg_"))
       return (await import("../commands/meetingReview.js")).route(interaction);
     if (customId === "set_roles_member")
@@ -287,6 +299,10 @@ export default async function handleInteractions(interaction) {
     if (customId.startsWith("uth_"))
       return runCreateTaskHandler(interaction, async (i) =>
         (await import("../services/taskHub.js")).handleHubComponent(i),
+      );
+    if (customId.startsWith("uths_"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/taskHub.js")).handleSubtasksComponent(i),
       );
     if (customId.startsWith("mtg_"))
       return (await import("../commands/meetingReview.js")).route(interaction);

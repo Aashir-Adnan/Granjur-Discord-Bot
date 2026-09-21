@@ -18,6 +18,7 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 import { holdersOf } from '../utils/taskLabel.js'
 import { scopeLabel } from '../utils/taskScope.js'
 import { canSeeTask } from '../commands/update-task.js'
+import { childStats } from '../utils/taskHierarchy.js'
 import { context, showHub } from './taskHub.js'
 
 export const PAGE_SIZE = 25
@@ -93,6 +94,8 @@ export function buildFinderPayload({ rows, projects, state, isLeadership, caller
   const { items, page, pages } = pageOf(matches, state.page)
   const s = { ...state, page }
   const projectName = new Map((projects || []).map((p) => [String(p.id), String(p.name || '')]))
+  const stats = childStats(rows)
+  const titleOf = new Map((rows || []).map((t) => [String(t.id), t.title]))
 
   const components = []
 
@@ -122,7 +125,11 @@ export function buildFinderPayload({ rows, projects, state, isLeadership, caller
         .setOptions(items.map((t) => {
           const who = holdersOf(t).map((id) => nameFor(id) || id).join(', ') || 'unassigned'
           const proj = projectName.get(String(t.projectId ?? ''))
-          const bits = [String(t.status || 'open'), scopeLabel(t.scope), proj, who].filter(Boolean)
+          // A subtask says whose it is; a parent says how far along it is.
+          const sub = t.parentTaskId ? `↳ ${titleOf.get(String(t.parentTaskId)) ?? 'a task'}` : null
+          const st = stats.get(String(t.id))
+          const progress = st ? `${st.done}/${st.total} subtasks` : null
+          const bits = [String(t.status || 'open'), scopeLabel(t.scope), sub ?? proj, who, progress].filter(Boolean)
           return new StringSelectMenuOptionBuilder()
             .setLabel(clip(t.title || t.id, 100))
             .setValue(String(t.id))
