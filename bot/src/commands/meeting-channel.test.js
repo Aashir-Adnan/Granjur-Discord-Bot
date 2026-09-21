@@ -3,7 +3,7 @@
 // .claude/rules/tests-never-touch-production.md.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ChannelType, RESTJSONErrorCodes } from 'discord.js'
+import { ChannelType, PermissionFlagsBits, RESTJSONErrorCodes } from 'discord.js'
 import { execute, autocomplete, data } from './meeting-channel.js'
 
 const GUILD_ID = 'guild1'
@@ -491,4 +491,71 @@ test('a meeting that fell back to the public category carries no privacy line', 
   const i = fakeInteraction(guild, { project: 'p1', member: memberWith() })
   await execute(i, deps)
   assert.doesNotMatch(i.replies[0].content, /you do not hold it/)
+})
+
+// --- push-to-talk: the voice channel gets "Use Voice Activity" for the project role ---
+
+/** Make created voice channels carry an overwrite cache and record overwrite edits. */
+function withVoiceOverwrites(guild, { inherited = null } = {}) {
+  const edits = []
+  const original = guild.channels.create
+  guild.channels.create = async (opts) => {
+    const ch = await original(opts)
+    if (opts.type === ChannelType.GuildVoice) {
+      ch.permissionOverwrites = {
+        cache: new Map(inherited ? [[inherited.id, inherited]] : []),
+        edit: async (...args) => { edits.push(args) },
+      }
+    }
+    return ch
+  }
+  return edits
+}
+const denyingVad = (roleId) => ({ id: roleId, deny: { has: (p) => p === PermissionFlagsBits.UseVAD } })
+
+test('a meeting voice channel inside a project gets voice activity for the project role, and nothing else', async () => {
+  const project = { ...FRAMEWORK, discordRoleId: 'role1' }
+  const guild = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const edits = withVoiceOverwrites(guild)
+  const { deps } = seams([project])
+  await execute(fakeInteraction(guild, { project: project.id }), deps)
+  assert.equal(edits.length, 1)
+  assert.deepEqual(edits[0], ['role1', { UseVAD: true }])
+})
+
+test('outside a project the voice channel is created exactly as before and no overwrite is edited', async () => {
+  const guild = fakeGuild({ channels: [globalCategory()] })
+  const edits = withVoiceOverwrites(guild)
+  const { deps } = seams()
+  await execute(fakeInteraction(guild), deps)
+  assert.equal(edits.length, 0)
+  assertTodayShapes(guild, GLOBAL_CAT)
+})
+
+test('a project with no role is not touched, and a category that denies voice activity on purpose is respected', async () => {
+  const noRole = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const noRoleEdits = withVoiceOverwrites(noRole)
+  await execute(fakeInteraction(noRole, { project: FRAMEWORK.id }), seams([FRAMEWORK]).deps)
+  assert.equal(noRoleEdits.length, 0)
+
+  const project = { ...FRAMEWORK, discordRoleId: 'role1' }
+  const denied = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const deniedEdits = withVoiceOverwrites(denied, { inherited: denyingVad('role1') })
+  await execute(fakeInteraction(denied, { project: project.id }), seams([project]).deps)
+  assert.equal(deniedEdits.length, 0)
+})
+
+test('a refused overwrite edit does not fail the command', async () => {
+  const project = { ...FRAMEWORK, discordRoleId: 'role1' }
+  const guild = fakeGuild({ channels: [category(PROJ_CAT)] })
+  const original = guild.channels.create
+  guild.channels.create = async (opts) => {
+    const ch = await original(opts)
+    if (opts.type === ChannelType.GuildVoice) ch.permissionOverwrites = { cache: new Map(), edit: async () => { throw new Error('Missing Permissions') } }
+    return ch
+  }
+  const it = fakeInteraction(guild, { project: project.id })
+  const warn = console.warn; console.warn = () => {}
+  try { await execute(it, seams([project]).deps) } finally { console.warn = warn }
+  assert.match(it.replies[0].content, /Created a dedicated meeting pair/)
 })

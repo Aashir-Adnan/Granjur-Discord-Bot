@@ -466,7 +466,10 @@ export function planProjectSection(project, observed = {}, opts = {}) {
   // section, and on a refusal there may be none.
   const channels = planChannels(project, observed, role)
   const tasks = planTasks(project, observed, channels, role, warnings)
-  return { role, category, channels, tasks, warnings }
+  // Passed through as observed: what the applier will edit is exactly what a
+  // preview lists.
+  const voice = observed.voiceActivity ?? { category: false, channels: [] }
+  return { role, category, channels, tasks, voice, warnings }
 }
 
 // ---------------------------------------------------------------------------
@@ -477,12 +480,16 @@ export function planProjectSection(project, observed = {}, opts = {}) {
  * What the project role may do inside its own category. The section channels
  * are created with no overwrites of their own, so they inherit these.
  */
+// UseVAD is "Use Voice Activity". Without it a member of the project role talks in
+// the section's voice channels by push-to-talk only whenever the server's
+// @everyone role does not grant it — Connect and Speak alone do not give it.
 const ROLE_ALLOW = [
   PermissionFlagsBits.ViewChannel,
   PermissionFlagsBits.SendMessages,
   PermissionFlagsBits.ReadMessageHistory,
   PermissionFlagsBits.Connect,
   PermissionFlagsBits.Speak,
+  PermissionFlagsBits.UseVAD,
 ]
 
 const REASON = 'Project section'
@@ -562,6 +569,22 @@ function bitsOf(permissions) {
   } catch {
     return null
   }
+}
+
+/**
+ * True when the project role has an overwrite here that neither allows nor
+ * denies "Use Voice Activity" — the push-to-talk-only gap. An explicit DENY is a
+ * human's decision (a push-to-talk room) and is left alone; a missing overwrite
+ * or an unreadable one is not ours to create or judge.
+ */
+function lacksVoiceActivity(overwrite) {
+  if (!overwrite) return false
+  const allow = bitsOf(overwrite.allow)
+  const deny = bitsOf(overwrite.deny)
+  if (allow === null) return false
+  if ((allow & PermissionFlagsBits.UseVAD) !== 0n) return false
+  if (deny !== null && (deny & PermissionFlagsBits.UseVAD) !== 0n) return false
+  return true
 }
 
 /** True when the overwrite hands out ViewChannel. Unreadable reads as "no". */
@@ -856,6 +879,19 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
     })
   }
 
+  // Voice channels inside the project's category that were created without
+  // "Use Voice Activity" for the project role (Discord copies a category's
+  // overwrites once, at creation, so fixing the category never reaches them).
+  const voiceActivity = { category: false, channels: [] }
+  if (roleId && categoryId) {
+    const roleOverwrite = (channel) => channel?.permissionOverwrites?.cache?.get?.(roleId)
+    voiceActivity.category = lacksVoiceActivity(roleOverwrite(category))
+    for (const channel of all) {
+      if (channel.parentId !== categoryId || channel.type !== ChannelType.GuildVoice) continue
+      if (lacksVoiceActivity(roleOverwrite(channel))) voiceActivity.channels.push({ id: channel.id, name: channel.name })
+    }
+  }
+
   return {
     roleId,
     roleCandidate,
@@ -865,6 +901,7 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
     categoryChannelCount: categoryId ? all.filter((c) => c.parentId === categoryId).length : 0,
     channels,
     tasks: observedTasks,
+    voiceActivity,
     // Counted, not silently dropped: the operator's reply says how many
     // channels the rows point at were left alone and why.
     sharedTaskChannels: sharedChannelIds.size,
@@ -910,6 +947,7 @@ export async function applyProjectSection(
     moved: [],
     granted: [],
     opened: [],
+    voiceFixed: [],
     membersChannel: null,
     tasks: 0,
     warnings: [],
@@ -1104,6 +1142,30 @@ export async function applyProjectSection(
         ;(task.action === 'rename' ? result.renamed : result.moved).push(task.name)
       } catch (e) {
         note(result.warnings, `task channel "${task.name}"`, e)
+      }
+    }
+  }
+
+  // 4b. Push-to-talk repair. The project role gets "Use Voice Activity" on the
+  //     category and on the voice channels inside it that lack it — one
+  //     overwrite edit each, MERGED into what the role already has there
+  //     (`permissionOverwrites.edit`, never a replace), and only for the ids the
+  //     plan listed, so a preview and a run agree. A channel that has since left
+  //     the category is skipped.
+  const voice = plan?.voice
+  if (categoryId && projectRoleId && (voice?.category || voice?.channels?.length)) {
+    const targets = []
+    if (voice.category && result.category) targets.push(result.category)
+    for (const entry of voice.channels ?? []) {
+      const channel = guild.channels.cache.get(entry.id)
+      if (channel && channel.parentId === categoryId) targets.push(channel)
+    }
+    for (const target of targets) {
+      try {
+        await target.permissionOverwrites.edit(projectRoleId, { UseVAD: true }, { reason: REASON })
+        result.voiceFixed.push(target.name ?? String(target.id))
+      } catch (e) {
+        note(result.warnings, `voice activity on "${target.name ?? target.id}"`, e)
       }
     }
   }

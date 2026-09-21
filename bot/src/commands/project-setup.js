@@ -192,6 +192,12 @@ export function renderPlan(project, plan = {}) {
   if (channels) lines.push(`Channels: ${channels}`)
   const tasks = summarise(plan?.tasks, TASK_WORDS)
   if (tasks) lines.push(`Task channels: ${tasks}`)
+  const voiceCount = (plan?.voice?.channels?.length ?? 0) + (plan?.voice?.category ? 1 : 0)
+  if (voiceCount) {
+    lines.push(
+      `Voice: ${voiceCount} voice channel(s)${plan.voice.category ? ' (and the category)' : ''} will let the project role use voice activity — they are push-to-talk only today.`
+    )
+  }
 
   lines.push(...warningLines(plan?.warnings))
 
@@ -218,6 +224,7 @@ export function renderResult(project, result = {}) {
   const moved = result?.moved ?? []
   const granted = result?.granted ?? []
   const opened = result?.opened ?? []
+  const voiceFixed = result?.voiceFixed ?? []
   const taskCount = Number(result?.tasks ?? 0)
 
   const done = []
@@ -242,6 +249,10 @@ export function renderResult(project, result = {}) {
     lines.push(
       `${opened.length} of those channel(s) were also opened to the project role in the same edit — they are now visible to everyone holding it.`
     )
+  }
+
+  if (voiceFixed.length) {
+    lines.push(`Voice activity turned on for the project role in ${voiceFixed.length} place(s) — no more push-to-talk only.`)
   }
 
   const sync = result?.roleSync

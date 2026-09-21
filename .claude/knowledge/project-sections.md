@@ -412,6 +412,25 @@ categories that predate the recorded ids. `handleConfirm` (the actual delete) wa
 **not** touched in this fix — it still deletes whatever `execute` listed with no
 re-check at confirm time (backlog item).
 
+## Push-to-talk only in project voice channels (2026-09-21)
+
+`Connect` + `Speak` do not include **Use Voice Activity** (`UseVAD`). A project's voice
+channels — the section's four and every `/meeting-channel` voice created inside the category
+with no overwrites of its own — inherit the category's project-role allow, which had no
+`UseVAD`, so wherever the server's `@everyone` lacks it people could only push-to-talk. (The
+non-project `/meeting-channel` path always allowed `UseVAD` explicitly for `@everyone`, which is
+why only project channels showed it.) Fixed three ways: `ROLE_ALLOW` now includes `UseVAD`
+(new sections); `/meeting-channel` merges `UseVAD` into the project role's inherited overwrite
+on the new voice channel (skipped if the role's overwrite explicitly *denies* it — a human's
+push-to-talk policy); and `observeProjectSection` lists the category and any voice channel in it
+whose project-role overwrite neither allows nor denies `UseVAD`, which `planProjectSection`
+passes through as `plan.voice`, `/project-setup` previews ("Voice: N voice channel(s)…") and
+`applyProjectSection` repairs with one merged `permissionOverwrites.edit(roleId, { UseVAD: true })`
+each (`result.voiceFixed`). Presence-only checks elsewhere would not have caught this — the role
+overwrite already existed — hence the bit-level test. Existing channels are repaired by running
+`/project-setup project:<name>` (preview first); Discord never re-copies a category's overwrites
+onto existing children.
+
 ## Related
 
 [[project-tasks-site]], [[project-docs]]

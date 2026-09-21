@@ -1042,3 +1042,17 @@ test('a planner warning reaches the console even when its block is dropped from 
     logged.join(' | ')
   )
 })
+
+test('the preview says which voice channels will stop being push-to-talk, so the run is never a surprise', () => {
+  const text = renderPlan({ name: 'Framework' }, { voice: { category: true, channels: [{ id: 'v1', name: 'a' }, { id: 'v2', name: 'b' }] } })
+  assert.match(text, /Preview, nothing was changed/)
+  assert.match(text, /Voice: 3 voice channel\(s\) \(and the category\) will let the project role use voice activity/)
+  assert.doesNotMatch(renderPlan({ name: 'Framework' }, { voice: { category: false, channels: [] } }), /Voice:/)
+  assert.match(renderPlan({ name: 'Framework' }, { voice: { category: false, channels: [{ id: 'v1', name: 'a' }] } }), /Voice: 1 voice channel\(s\) will/)
+})
+
+test('a run reports how many places got voice activity, and says nothing when there were none', () => {
+  assert.match(renderResult({ name: 'Framework' }, { voiceFixed: ['a', 'b'] }), /Voice activity turned on for the project role in 2 place\(s\)/)
+  assert.doesNotMatch(renderResult({ name: 'Framework' }, { voiceFixed: [] }), /Voice activity/)
+  assert.equal(renderResult({ name: 'Framework' }, {}), '**Framework** — nothing to change.')
+})
