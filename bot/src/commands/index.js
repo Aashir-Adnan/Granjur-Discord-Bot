@@ -31,6 +31,7 @@ import * as editDocsCmd from './edit-docs.js'
 import * as clockInCmd from './clock-in.js'
 import * as clockOutCmd from './clock-out.js'
 import * as logTimeCmd from './log-time.js'
+import * as myTimeCmd from './my-time.js'
 import * as sqlDumpCmd from './sql-dump.js'
 import * as closeFeatureCmd from './close-feature.js'
 import * as resolveBugCmd from './resolve-bug.js'
@@ -81,6 +82,7 @@ const commandModules = [
   clockInCmd,
   clockOutCmd,
   logTimeCmd,
+  myTimeCmd,
   sqlDumpCmd,
   closeFeatureCmd,
   resolveBugCmd,

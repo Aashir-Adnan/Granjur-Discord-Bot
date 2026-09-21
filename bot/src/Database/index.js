@@ -2083,6 +2083,12 @@ async function clockEntryFindById(entryId) {
   return queryOne("SELECT * FROM `clockentry` WHERE id = ?", [entryId]);
 }
 
+// `run` is a seam for the test; production always uses the pool.
+export async function clockEntryRemove(entryId, { run = query } = {}) {
+  const res = await run("DELETE FROM `clockentry` WHERE id = ?", [entryId]);
+  return { removed: Number(res?.affectedRows ?? 0) };
+}
+
 async function clockEntryFindMany({ where = {}, take = 500 }) {
   let sql = "SELECT * FROM `clockentry` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
@@ -2425,6 +2431,7 @@ const db = {
     findActive: clockEntryFindActive,
     findById: clockEntryFindById,
     update: clockEntryUpdate,
+    remove: clockEntryRemove,
     findMany: clockEntryFindMany,
     findOpen: clockEntryFindOpen,
     sumByTask: clockEntrySumByTask,

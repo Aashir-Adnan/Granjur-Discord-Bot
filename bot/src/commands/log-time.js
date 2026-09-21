@@ -21,7 +21,7 @@ export const data = new SlashCommandBuilder()
     o.setName('note').setDescription('What you got done (optional)').setRequired(false).setMaxLength(500))
 
 const NOT_AVAILABLE = 'That task is not available to you.'
-const BAD_DURATION = 'I could not read that duration. Try 2h30m, 90m, 2.5h or 1:30.'
+export const BAD_DURATION = 'I could not read that duration. Try 2h30m, 90m, 2.5h or 1:30.'
 const BAD_WHEN = 'I could not read that date. Use today, yesterday or YYYY-MM-DD.'
 const IN_THE_FUTURE = 'That is in the future.'
 const TOO_LARGE = 'That duration is too large to store.'
@@ -71,6 +71,27 @@ async function overlapsAnother(dbArg, cfg, userId, entry) {
   return overlaps([...others, entry]).some((pair) => pair.includes(entry))
 }
 
+/**
+ * The guards every stored entry window must pass — /log-time and the /my-time
+ * editor share them: a duration the column can hold, a date that exists, an end
+ * that is not in the future (judged against the REAL `now`), and a start the
+ * database can store. `clockSource` is what "the current time of day" means for
+ * the window (defaults to `now`); the /my-time editor passes the entry's own end
+ * so its time of day is kept.
+ * @returns {{ window: {clockInAt: Date, clockOutAt: Date} } | { error: string }}
+ */
+export function resolveEntryWindow(minutes, when, { now = new Date(), clockSource = now } = {}) {
+  // No maximum by design; the only limit is what the column can hold.
+  if (!Number.isSafeInteger(minutes) || minutes > MAX_STORABLE_MINUTES) return { error: TOO_LARGE }
+  const window = entryWindow(minutes, when, clockSource)
+  if (!window) return { error: BAD_WHEN }
+  if (window.clockOutAt.getTime() > now.getTime()) return { error: IN_THE_FUTURE }
+  if (!Number.isFinite(window.clockInAt.getTime()) || window.clockInAt.getUTCFullYear() < MIN_STORABLE_YEAR) {
+    return { error: TOO_LARGE }
+  }
+  return { window }
+}
+
 export async function execute(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig, now = new Date() } = {}) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
@@ -80,17 +101,10 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
 
   const minutes = parseDuration(interaction.options.getString('duration'))
   if (minutes === null) return interaction.editReply({ content: BAD_DURATION })
-  // No maximum by design; the only limit is what the column can hold.
-  if (!Number.isSafeInteger(minutes) || minutes > MAX_STORABLE_MINUTES) {
-    return interaction.editReply({ content: TOO_LARGE })
-  }
 
-  const window = entryWindow(minutes, interaction.options.getString('when'), now)
-  if (!window) return interaction.editReply({ content: BAD_WHEN })
-  if (window.clockOutAt.getTime() > now.getTime()) return interaction.editReply({ content: IN_THE_FUTURE })
-  if (!Number.isFinite(window.clockInAt.getTime()) || window.clockInAt.getUTCFullYear() < MIN_STORABLE_YEAR) {
-    return interaction.editReply({ content: TOO_LARGE })
-  }
+  const resolved = resolveEntryWindow(minutes, interaction.options.getString('when'), { now })
+  if (resolved.error) return interaction.editReply({ content: resolved.error })
+  const { window } = resolved
 
   const picked = String(interaction.options.getString('task') ?? GENERAL).trim() || GENERAL
   const userId = interaction.user.id

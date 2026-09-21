@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { clockEntryInsertSql, clockEntryUpdateSets, taskInsertSql } from './index.js'
+import { clockEntryInsertSql, clockEntryUpdateSets, clockEntryRemove, taskInsertSql } from './index.js'
 
 test('clockentry insert: placeholders equal params and follow the column order', () => {
   const { sql, params } = clockEntryInsertSql({
@@ -40,4 +40,17 @@ test('task insert: estimateMinutes is a column and its value lands in the matchi
   assert.ok(cols.includes('estimateMinutes'))
   assert.equal(build({ estimateMinutes: 240 }), 240)
   assert.equal(build({}), null)
+})
+
+// The remove test injects the query runner: nothing here touches a database.
+test('clockentry remove: deletes by id from the lowercase table and reports how many rows went', async () => {
+  const calls = []
+  const run = async (sql, params) => { calls.push([sql, params]); return { affectedRows: 1 } }
+  assert.deepEqual(await clockEntryRemove('ce1', { run }), { removed: 1 })
+  assert.deepEqual(calls, [['DELETE FROM `clockentry` WHERE id = ?', ['ce1']]])
+})
+
+test('clockentry remove: an id that is already gone reports zero removed', async () => {
+  assert.deepEqual(await clockEntryRemove('nope', { run: async () => ({ affectedRows: 0 }) }), { removed: 0 })
+  assert.deepEqual(await clockEntryRemove('nope', { run: async () => undefined }), { removed: 0 })
 })
