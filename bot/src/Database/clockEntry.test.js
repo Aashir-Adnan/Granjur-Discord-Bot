@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { clockEntryInsertSql, clockEntryUpdateSets, clockEntryRemove, taskInsertSql } from './index.js'
+import { clockEntryInsertSql, clockEntryUpdateSets, clockEntryRemove, taskInsertSql, clockEntrySumByPersonRangeSql } from './index.js'
 
 test('clockentry insert: placeholders equal params and follow the column order', () => {
   const { sql, params } = clockEntryInsertSql({
@@ -53,4 +53,16 @@ test('clockentry remove: deletes by id from the lowercase table and reports how 
 test('clockentry remove: an id that is already gone reports zero removed', async () => {
   assert.deepEqual(await clockEntryRemove('nope', { run: async () => ({ affectedRows: 0 }) }), { removed: 0 })
   assert.deepEqual(await clockEntryRemove('nope', { run: async () => undefined }), { removed: 0 })
+})
+
+test('sumByPersonRange groups a date-bounded span by person', () => {
+  const sql = clockEntrySumByPersonRangeSql()
+  assert.match(sql, /SUM\(minutes\)/)
+  assert.match(sql, /GROUP BY discordId/)
+  // An open timer has no minutes yet and must not count as zero.
+  assert.match(sql, /minutes IS NOT NULL/)
+  assert.match(sql, /clockInAt >= \?/)
+  assert.match(sql, /clockInAt < \?/)
+  // Half-open: an entry starting exactly at the next midnight belongs to the next day.
+  assert.ok(!/clockInAt <= \?/.test(sql))
 })
