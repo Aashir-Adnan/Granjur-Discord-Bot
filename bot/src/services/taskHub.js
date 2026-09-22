@@ -5,10 +5,13 @@
 // property. The hub is a message with the task's current values and the rest of
 // the controls: Project, Implementation status, Blocked by / Unblock as
 // selects; "Edit details" (status, scope, assignees, title, description) and
-// "Test counts" as buttons that open modals. Each change is saved as soon as it
-// is made, through the same update path as the slash command (notifications,
-// blocker checks and the activity log are identical), and the hub redraws with
-// what happened.
+// "Counts & estimate" (API/QA/AC counts plus the time estimate — the button row
+// is already full, so the estimate rides along in this modal) as buttons that
+// open modals. Each change is saved as soon as it is made, through the same
+// update path as the slash command (notifications, blocker checks and the
+// activity log are identical), and the hub redraws with what happened. Time
+// actually logged against the task (from /clock-in, /clock-out and /log-time)
+// shows read-only on the hub's Time field, next to the estimate.
 //
 // State is the task id in each custom id (`uth_<action>:<taskId>`); nothing is
 // held in memory.
@@ -21,6 +24,7 @@ import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
 import { holdersOf, idList } from '../utils/taskLabel.js'
 import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
+import { formatDuration, parseDuration } from '../utils/timeTracking.js'
 import { wouldCycle } from '../utils/taskDeps.js'
 import { notifyTaskUpdate } from './taskUpdateNotify.js'
 import { applyTaskUpdate } from './taskStatusChange.js'
@@ -33,6 +37,10 @@ export const COUNTS_MODAL_PREFIX = 'ut_counts:'
 export const SUBTASK_MODAL_PREFIX = 'ut_sub:'
 const NONE = '-'
 export const MAX_TEST_COUNT = 127 // the column is a signed TINYINT
+// task.estimateMinutes is a 32-bit INT; no business maximum by design.
+export const MAX_ESTIMATE_MINUTES = 2147483647
+const BAD_DURATION = 'I could not read that duration. Try 2h30m, 90m, 2.5h or 1:30.'
+const ESTIMATE_TOO_LARGE = 'That estimate is too large to store.'
 export const NOT_FOUND = 'That task is not available to you any more. Run **/update-task** again.'
 
 const STATUS_OPTIONS = [
@@ -87,7 +95,19 @@ async function loadHub(interaction, taskId, d) {
   } else {
     children = await d.db.task.findChildren({ where: { parentTaskId: task.id } }).catch(() => [])
   }
-  return { cfg, task, projects, blockers, candidates, children, parent, canSeeParent }
+
+  // Total minutes logged against this task. A fake or real db without
+  // `clockEntry` (or one that rejects) must never break the hub — even a
+  // synchronous TypeError from a missing namespace is swallowed.
+  let timeLogged = 0
+  try {
+    const rows = await d.db.clockEntry?.sumByTask?.({ guildConfigId: cfg.id, taskIds: [task.id] })
+    timeLogged = (rows || []).reduce((sum, r) => sum + Number(r.minutes), 0)
+  } catch (e) {
+    timeLogged = 0
+  }
+
+  return { cfg, task, projects, blockers, candidates, children, parent, canSeeParent, timeLogged }
 }
 
 /**
@@ -109,8 +129,15 @@ export function blockerCandidates(task, rows, deps, currentBlockerIds = []) {
 const testsText = (t) => [['API', t.passedApiTests], ['QA', t.passedQaTests], ['AC', t.passedAcceptanceCriteria]]
   .map(([n, v]) => `${n} ${v === null || v === undefined ? '—' : v}`).join(' · ')
 
+/** What the hub's "Time" field reads: logged time against the estimate, if any. Pure. */
+function timeFieldValue(task, timeLogged) {
+  const hasEstimate = task.estimateMinutes !== null && task.estimateMinutes !== undefined
+  if (hasEstimate) return `${formatDuration(timeLogged || 0)} of ${formatDuration(task.estimateMinutes)}`
+  return timeLogged ? formatDuration(timeLogged) : 'Nothing logged'
+}
+
 /** The hub message. Pure apart from building discord.js objects. */
-export function buildHubPayload({ task, projects, blockers, candidates, children = [], parent = null, canSeeParent = false, notice = '', nameFor = () => null }) {
+export function buildHubPayload({ task, projects, blockers, candidates, children = [], parent = null, canSeeParent = false, notice = '', nameFor = () => null, timeLogged = 0 }) {
   const holders = holdersOf(task)
   const embed = new EmbedBuilder()
     .setTitle(clip(task.title || 'Task', 250))
@@ -121,6 +148,7 @@ export function buildHubPayload({ task, projects, blockers, candidates, children
       { name: 'Project', value: task.projectName || 'None', inline: true },
       { name: 'Implementation', value: task.implementationStatus ? String(task.implementationStatus).replace(/_/g, ' ') : 'Not set', inline: true },
       { name: 'Tests passed', value: testsText(task), inline: true },
+      { name: 'Time', value: timeFieldValue(task, timeLogged), inline: true },
       { name: 'Assignees', value: holders.length ? clip(holders.map((id) => nameFor(id) || `<@${id}>`).join(', '), 1000) : 'Nobody', inline: true },
       {
         name: 'Blocked by',
@@ -174,7 +202,7 @@ export function buildHubPayload({ task, projects, blockers, candidates, children
 
   const buttons = [
     new ButtonBuilder().setCustomId(idFor('basics', task.id)).setLabel('Edit details').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(idFor('counts', task.id)).setLabel('Test counts').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(idFor('counts', task.id)).setLabel('Counts & estimate').setStyle(ButtonStyle.Secondary),
   ]
   if (task.parentTaskId) {
     // One level only: a subtask has no subtasks. It links up to its parent when
@@ -195,7 +223,7 @@ export function buildHubPayload({ task, projects, blockers, candidates, children
 
 /** Short account of what a save did, shown above the hub. Pure. */
 export function noticeFor(task, updates, result) {
-  const label = { status: 'status', scope: 'scope', title: 'title', description: 'description', assigneeIds: 'assignees', projectId: 'project', projectName: null, implementationStatus: 'implementation status', passedApiTests: 'API tests', passedQaTests: 'QA tests', passedAcceptanceCriteria: 'acceptance criteria' }
+  const label = { status: 'status', scope: 'scope', title: 'title', description: 'description', assigneeIds: 'assignees', projectId: 'project', projectName: null, implementationStatus: 'implementation status', passedApiTests: 'API tests', passedQaTests: 'QA tests', passedAcceptanceCriteria: 'acceptance criteria', estimateMinutes: 'estimate' }
   const changed = [...new Set(Object.keys(updates).map((k) => (k in label ? label[k] : k)).filter(Boolean))]
   const lines = []
   if (changed.length) lines.push(`✅ Saved: ${changed.join(', ')}.`)
@@ -273,20 +301,23 @@ export function updatesFromModal(task, values) {
   return updates
 }
 
-/** "Test counts": three optional whole numbers. */
+/** "Counts & estimate": three optional whole numbers plus a fourth, optional duration. */
 export function buildCountsModal(task) {
   const field = (id, label, current) => {
     const input = new TextInputBuilder().setCustomId(id).setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(3).setPlaceholder('unchanged')
     if (current !== null && current !== undefined) input.setValue(String(current))
     return new LabelBuilder().setLabel(label).setTextInputComponent(input)
   }
+  const estimate = new TextInputBuilder().setCustomId('estimate').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(20).setPlaceholder('e.g. 8h or 2h30m')
+  if (task.estimateMinutes !== null && task.estimateMinutes !== undefined) estimate.setValue(formatDuration(task.estimateMinutes))
   return new ModalBuilder()
     .setCustomId(`${COUNTS_MODAL_PREFIX}${task.id}`)
-    .setTitle(clip(`Test counts: ${task.title || 'task'}`, 45))
+    .setTitle(clip(`Counts & estimate: ${task.title || 'task'}`, 45))
     .addLabelComponents(
       field('api', 'API tests passed', task.passedApiTests),
       field('qa', 'QA tests passed', task.passedQaTests),
       field('ac', 'Acceptance criteria passed', task.passedAcceptanceCriteria),
+      new LabelBuilder().setLabel('Estimate').setTextInputComponent(estimate),
     )
 }
 
@@ -294,6 +325,12 @@ export function buildCountsModal(task) {
  * Updates from a submitted counts modal. A blank field leaves that count alone;
  * anything that is not a whole number from 0 to MAX_TEST_COUNT is an error and
  * nothing is saved. Pure.
+ *
+ * `values.estimate` is a duration string, handled the same way as the count
+ * fields but through `parseDuration`: `undefined` (a modal opened before this
+ * field existed) leaves the estimate alone; blank clears it to `null`; an
+ * unparseable value is refused; a value too large for the INT column is
+ * refused; an unchanged value writes nothing.
  * @returns {{ updates: object, error: string|null }}
  */
 export function countsFromModal(task, values) {
@@ -307,6 +344,19 @@ export function countsFromModal(task, values) {
     }
     if (String(task[column] ?? '') !== String(Number(raw))) updates[column] = Number(raw)
   }
+
+  if (values.estimate !== undefined) {
+    const raw = String(values.estimate ?? '').trim()
+    if (!raw) {
+      if (task.estimateMinutes !== null && task.estimateMinutes !== undefined) updates.estimateMinutes = null
+    } else {
+      const minutes = parseDuration(raw)
+      if (minutes === null) return { updates: {}, error: BAD_DURATION }
+      if (!Number.isSafeInteger(minutes) || minutes > MAX_ESTIMATE_MINUTES) return { updates: {}, error: ESTIMATE_TOO_LARGE }
+      if (Number(task.estimateMinutes ?? NaN) !== minutes) updates.estimateMinutes = minutes
+    }
+  }
+
   return { updates, error: null }
 }
 
@@ -427,6 +477,7 @@ export async function handleCountsSubmit(interaction, deps = {}) {
   const f = interaction.fields
   const { updates, error } = countsFromModal(loaded.task, {
     api: f.getTextInputValue('api'), qa: f.getTextInputValue('qa'), ac: f.getTextInputValue('ac'),
+    estimate: f?.fields?.has?.('estimate') ? f.getTextInputValue('estimate') : undefined,
   })
   if (error) return showHub(interaction, taskId, d, `❌ ${error}`)
   if (Object.keys(updates).length === 0) return showHub(interaction, taskId, d, 'Nothing changed.')

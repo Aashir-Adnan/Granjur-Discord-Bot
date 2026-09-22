@@ -38,6 +38,12 @@ test('changeSummary never inlines a title or description diff, and skips assigne
   assert.deepEqual(lines, ['**title** updated', '**description** updated'])
 })
 
+test('changeSummary formats an estimate change as a duration, not raw minutes', () => {
+  assert.deepEqual(changeSummary({ estimateMinutes: null }, { estimateMinutes: 480 }), ['**estimate**: `—` → `8h`'])
+  assert.deepEqual(changeSummary({ estimateMinutes: 480 }, { estimateMinutes: 200 }), ['**estimate**: `8h` → `3h 20m`'])
+  assert.deepEqual(changeSummary({ estimateMinutes: 480 }, { estimateMinutes: null }), ['**estimate**: `8h` → `—`'])
+})
+
 test('ownsChannel tells a task channel from the meeting channel it was announced in', () => {
   assert.equal(ownsChannel('b62ffdcece31488c893f56be0', 'feature-f56be0'), true)
   assert.equal(ownsChannel('b62ffdcece31488c893f56be0', 'bug-f56be0'), true)

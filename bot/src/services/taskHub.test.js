@@ -60,6 +60,26 @@ test('the hub shows every editable property and never more than five rows', () =
   assert.ok(p.components.length <= 5)
 })
 
+test('the hub shows logged time against the estimate', () => {
+  const p = buildHubPayload({ ...baseHub, task: { ...HELD, estimateMinutes: 480 }, timeLogged: 200 })
+  const field = p.embeds[0].toJSON().fields.find((f) => f.name === 'Time')
+  assert.equal(field.value, '3h 20m of 8h')
+  const none = buildHubPayload({ ...baseHub, timeLogged: 0 })
+  assert.equal(none.embeds[0].toJSON().fields.find((f) => f.name === 'Time').value, 'Nothing logged')
+})
+
+test('the hub shows an estimate with nothing logged yet, and logged time with no estimate at all', () => {
+  const est = buildHubPayload({ ...baseHub, task: { ...HELD, estimateMinutes: 480 } })
+  assert.equal(est.embeds[0].toJSON().fields.find((f) => f.name === 'Time').value, '0m of 8h')
+  const logged = buildHubPayload({ ...baseHub, timeLogged: 125 })
+  assert.equal(logged.embeds[0].toJSON().fields.find((f) => f.name === 'Time').value, '2h 5m')
+})
+
+test('the counts button is relabelled Counts & estimate', () => {
+  const buttons = json(buildHubPayload(baseHub)).at(-1).components
+  assert.equal(buttons.find((b) => b.custom_id.startsWith('uth_counts')).label, 'Counts & estimate')
+})
+
 test('the blocker rows only appear when there is something to pick', () => {
   const none = buildHubPayload({ ...baseHub, candidates: [], blockers: [] })
   assert.deepEqual(customIds(none).map((id) => id.split(':')[0]), ['uth_proj', 'uth_impl', 'uth_basics', 'uth_counts', 'uth_subs', 'uth_back', 'uth_close'])
@@ -134,15 +154,23 @@ test('updatesFromModal writes only what changed', () => {
   assert.deepEqual(updatesFromModal(HELD, { status: 'open', title: 'My feature' }), {})
 })
 
-test('the counts modal has three optional fields prefilled with the current numbers', () => {
+test('the counts modal has four optional fields prefilled with the current numbers', () => {
   const m = buildCountsModal(HELD).toJSON()
   assert.equal(m.custom_id, 'ut_counts:H')
   const byId = Object.fromEntries(m.components.map((c) => [c.component.custom_id, c.component]))
-  assert.deepEqual(Object.keys(byId), ['api', 'qa', 'ac'])
+  assert.deepEqual(Object.keys(byId), ['api', 'qa', 'ac', 'estimate'])
   assert.equal(byId.api.value, '3')
   assert.equal(byId.qa.value, undefined) // null: nothing prefilled
   assert.equal(byId.ac.value, '1')
+  assert.equal(byId.estimate.value, undefined) // no estimate set: nothing prefilled
   assert.ok(m.title.length <= 45)
+})
+
+test('the counts modal carries the estimate as a fourth field, prefilled', () => {
+  const m = buildCountsModal({ ...HELD, estimateMinutes: 480 }).toJSON()
+  const ids = m.components.map((c) => c.component.custom_id)
+  assert.deepEqual(ids, ['api', 'qa', 'ac', 'estimate'])
+  assert.equal(m.components[3].component.value, '8h')
 })
 
 test('countsFromModal: blank leaves a count alone, numbers save, junk saves nothing', () => {
@@ -153,6 +181,37 @@ test('countsFromModal: blank leaves a count alone, numbers save, junk saves noth
     const out = countsFromModal(HELD, { api: '5', qa: bad, ac: '' })
     assert.deepEqual(out.updates, {}, bad)
     assert.match(out.error, /whole numbers from 0 to 127/)
+  }
+})
+
+test('the estimate accepts a duration and clears on an empty field', () => {
+  assert.deepEqual(countsFromModal({ ...HELD, estimateMinutes: null }, { api: '', qa: '', ac: '', estimate: '8h' }).updates, { estimateMinutes: 480 })
+  assert.deepEqual(countsFromModal({ ...HELD, estimateMinutes: 480 }, { api: '', qa: '', ac: '', estimate: '' }).updates, { estimateMinutes: null })
+  assert.deepEqual(countsFromModal({ ...HELD, estimateMinutes: 480 }, { api: '', qa: '', ac: '', estimate: '8h' }).updates, {}, 'unchanged writes nothing')
+})
+
+test('a modal with no estimate field at all leaves the estimate alone (an old client before this deploy)', () => {
+  assert.deepEqual(countsFromModal({ ...HELD, estimateMinutes: 480 }, { api: '', qa: '', ac: '' }).updates, {})
+})
+
+test('an unreadable estimate saves nothing and says so', () => {
+  const out = countsFromModal(HELD, { api: '', qa: '', ac: '', estimate: 'ages' })
+  assert.deepEqual(out.updates, {})
+  assert.match(out.error, /2h30m|duration/i)
+})
+
+test('an estimate too large to store is refused; a large-but-storable one is accepted', () => {
+  const huge = countsFromModal(HELD, { api: '', qa: '', ac: '', estimate: '99999999999999999999h' })
+  assert.deepEqual(huge.updates, {})
+  assert.match(huge.error, /too large/i)
+  assert.deepEqual(countsFromModal({ ...HELD, estimateMinutes: null }, { api: '', qa: '', ac: '', estimate: '200h' }).updates, { estimateMinutes: 12000 })
+})
+
+test('an estimate round-trips through formatDuration and parseDuration', () => {
+  for (const minutes of [480, 200]) {
+    const m = buildCountsModal({ ...HELD, estimateMinutes: minutes }).toJSON()
+    const prefilled = m.components[3].component.value
+    assert.equal(countsFromModal({ ...HELD, estimateMinutes: null }, { api: '', qa: '', ac: '', estimate: prefilled }).updates.estimateMinutes, minutes)
   }
 })
 
@@ -218,6 +277,31 @@ test('showHub draws the hub; for a task that is not yours it draws nothing of it
   await showHub(denied, 'O', { db: fakeDb(fresh()), getConfig })
   assert.match(denied.sent.edits[0].content, /not available/)
   assert.deepEqual(denied.sent.edits[0].embeds, [])
+})
+
+test('showHub adds up logged time through clockEntry.sumByTask, and never breaks when the db lacks it', async () => {
+  const db = fakeDb(fresh())
+  db.clockEntry = {
+    sumByTask: async ({ guildConfigId, taskIds }) => {
+      assert.equal(guildConfigId, 'g1')
+      assert.deepEqual(taskIds, ['H'])
+      return [{ taskId: 'H', discordId: 'u1', minutes: 100 }, { taskId: 'H', discordId: 'u2', minutes: 25 }]
+    },
+  }
+  const it = fakeInteraction()
+  await showHub(it, 'H', { db, getConfig })
+  const field = (edits) => edits[0].embeds[0].toJSON().fields.find((f) => f.name === 'Time')
+  assert.equal(field(it.sent.edits).value, '2h 5m')
+
+  const noNamespace = fakeInteraction()
+  await showHub(noNamespace, 'H', { db: fakeDb(fresh()), getConfig }) // no clockEntry namespace at all
+  assert.equal(field(noNamespace.sent.edits).value, 'Nothing logged')
+
+  const rejecting = fakeDb(fresh())
+  rejecting.clockEntry = { sumByTask: async () => { throw new Error('no column') } }
+  const failing = fakeInteraction()
+  await showHub(failing, 'H', { db: rejecting, getConfig })
+  assert.equal(field(failing.sent.edits).value, 'Nothing logged')
 })
 
 test('the details and counts buttons open their modals', async () => {
@@ -373,6 +457,23 @@ test('a bad test count saves nothing and says why', async () => {
   await handleCountsSubmit(it, { db, getConfig, notify })
   assert.deepEqual(db.calls, [])
   assert.match(lastNotice(it), /❌ Test counts must be whole numbers/)
+})
+
+test('submitting counts with an estimate saves it and logs exactly one activity row', async () => {
+  const db = fakeDb(fresh())
+  const it = fakeInteraction({ customId: 'ut_counts:H', fields: countsFields({ api: '', qa: '', ac: '', estimate: '8h' }) })
+  await handleCountsSubmit(it, { db, getConfig, notify })
+  assert.deepEqual(db.calls[0][1].data, { estimateMinutes: 480 })
+  assert.equal(db.activity.length, 1)
+  assert.deepEqual(db.activity[0].changes, [{ field: 'estimateMinutes', from: null, to: 480 }])
+  assert.match(lastNotice(it), /Saved: estimate/)
+})
+
+test('submitting counts from a modal with no estimate field leaves the estimate untouched', async () => {
+  const db = fakeDb(fresh())
+  const it = fakeInteraction({ customId: 'ut_counts:H', fields: countsFields({ api: '3', qa: '9', ac: '' }) })
+  await handleCountsSubmit(it, { db, getConfig, notify })
+  assert.deepEqual(db.calls[0][1].data, { passedQaTests: 9 })
 })
 
 test('a failing write is reported on the hub instead of leaving it hanging', async () => {

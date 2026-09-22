@@ -17,6 +17,7 @@ const SCALAR_FIELDS = {
   passedApiTests: 'passedApiTests',
   passedQaTests: 'passedQaTests',
   passedAcceptanceCriteria: 'passedAcceptanceCriteria',
+  estimateMinutes: 'estimateMinutes',
 }
 
 /**

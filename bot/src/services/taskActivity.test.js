@@ -41,6 +41,16 @@ test('test counts compare by value, so 2 -> "2" is not a change', () => {
   assert.deepEqual(activityChanges(before, { passedQaTests: 5 }), [{ field: 'passedQaTests', from: 2, to: 5 }])
 })
 
+test('an estimate change is recorded in minutes, including clearing it to null', () => {
+  assert.deepEqual(activityChanges({ estimateMinutes: null }, { estimateMinutes: 480 }), [
+    { field: 'estimateMinutes', from: null, to: 480 },
+  ])
+  assert.deepEqual(activityChanges({ estimateMinutes: 480 }, { estimateMinutes: 480 }), [])
+  assert.deepEqual(activityChanges({ estimateMinutes: 480 }, { estimateMinutes: null }), [
+    { field: 'estimateMinutes', from: 480, to: null },
+  ])
+})
+
 function fakeDb({ fail = false } = {}) {
   const rows = []
   return {
