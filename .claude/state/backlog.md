@@ -4,6 +4,83 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Task time tracking — deferred follow-ups
+From the 2026-09-22 build (merged and deployed, see `completed.md`). Each item below was
+confirmed real by a reviewer and consciously deferred as Minor — none blocks the feature.
+
+**Bot**
+- **Task-picker autocomplete prefilters to the 200 most recently updated tasks guild-wide
+  BEFORE applying the caller's access/typed filters**, so an older task a member has access to
+  cannot be picked even by exact title. Shared by `/clock-in`, `/log-time` and `/time-report`
+  (they all delegate to `clock-in.js`'s `autocomplete`). Hits `/log-time` hardest. Fix: filter
+  before slicing, or raise the cap.
+- **Two concurrent `/clock-in` calls can both pass `findActive`** and leave two open entries —
+  no DB uniqueness guard. The older duplicate leaks and is eventually cap-closed by the watcher.
+- **`/my-time` redraws at the default week range after every edit/delete**, so someone browsing
+  "all time" is bounced back to this week; a refused leadership action bounces the viewer to
+  their own panel.
+- **A 0-minute entry cannot be re-saved unchanged** — its `0m` prefill fails `parseDuration`.
+  Reachable for a sub-30-second timer. Delete still works.
+- **A note-only edit rewrites `clockInAt = clockOutAt − minutes`**, drifting the stored start by
+  up to ±30s (totals unaffected). Moving an entry's day without changing its duration writes no
+  activity-log row.
+- **`/time-report` wording/rounding:** 481-of-480 reads "100% — over" while 479-of-480 reads
+  "100%" (percent rounds, flag compares raw — consider `Math.floor`); a task filter matching no
+  rows in range reads "task unknown"; filter labels are not independently clipped.
+- **`/log-time` refuses a pre-year-1000 date with "too large to store"** — right refusal, wrong
+  wording. The overlap warning also ignores the caller's own *running* timer.
+- **`clockWatch` swallows a failed guild-config read** (`.catch(() => null)`), which silently
+  falls back to the 12h default *and* skips role removal, with no log line. Task-title lookup
+  failures are swallowed the same way. Its in-flight guard is single-process only — two bot
+  instances on one database would double-DM.
+- **Command/service layering is inverted in three places:** `services/timePanel.js` imports from
+  `commands/log-time.js`, `services/clockWatch.js` from `commands/clock-in.js`, and
+  `commands/time-report.js` from `services/timePanel.js`. No import cycles; `resolveEntryWindow`,
+  `entryWindow` and `closeEntry` belong under `utils/`.
+- **`clockEntryFindOpen()` ignores its documented `guildConfigId` option** (takes no args at all).
+  Harmless today — the watcher groups by guild itself.
+- Missing tests: `findMany` clamp/filters, `sumByTask`/`findByMember` SQL, `overlaps()`
+  containment, `midnightOf` for a zone that skips local midnight, two guild caps in one watcher
+  pass, and spec §12's cross-path `minutes === entryMinutes(...)` invariant as a named test.
+- **No command configures `clockReminderHours`/`clockCapHours`** — database-only settings
+  (defaults 6 and 12), though the spec called them "configurable per guild".
+
+**CSAAS**
+- **`resolveScope` does not require `__identityVerified` before granting `scope: 'all'`.** It
+  inherits a **pre-existing** trust gap in `portalAuthz.js` (`actionPerformerURDD` read from
+  `dp ?? req.body ?? req.query`, with `bindActorToToken` only closing it when the caller owns an
+  active URDD) that is shared by every portal endpoint — not introduced by this feature, but this
+  feature newly routes the team's hours through it. One-line hardening available:
+  `if (!email) return "self"`. **Worth raising with whoever owns the framework's auth layer.**
+- **The `view_discord_time` permission does not actually contain the data it appears to gate** —
+  `discordTasks.js` runs with `permission: null` and now ships per-person `timeByPerson` on every
+  task, so any signed-in portal user can reconstruct most of the team's hours by summing it.
+  Spec §11 explicitly sanctions this, so it is conformant, not a defect — but know it.
+- **"This week" disagrees across repos for non-UTC guilds:** the endpoint uses UTC-Monday, while
+  the bot's `/time-report` uses each guild's configured timezone. Product decision: give the
+  endpoint the guild timezone (needs a `guildconfig` read), or label the tab "week (UTC)".
+- **Project names come from the denormalised `task.projectName` snapshot**, so a renamed project
+  shows its old name on the Time tab and its current name on the Tasks tab. One more
+  `LEFT JOIN granjur.project` fixes it. Deleted-task time buckets as "No project" rather than
+  spec §4's "Deleted task".
+- Smaller: `since > until` returns empty instead of 400; `loadMemberInfo` reads the whole roster
+  even in self scope and degrades all-or-nothing (unlike `discordTasks.js`'s per-column
+  fallback); the email lookup omits `TRIM` and is not guild-scoped; the NULL-`discordId` case
+  relies on implicit SQL three-valued logic with nothing stating it.
+
+**Site**
+- **`TaskDetail`'s Time field is effectively unconditional** now that CSAAS sends `timeLogged: 0`
+  on every task, so every task page shows "0m logged" — while the list/board/preview chips
+  deliberately hide at zero. Defensible (the page already mixes always-render and hide-when-empty
+  fields) but worth a deliberate decision:
+  `(task.timeLogged ?? 0) > 0 || (task.estimateMinutes ?? 0) > 0` matches the neighbours.
+- **`TaskTime` (`tasksLogic.ts`) and `TimeReportPerson` (`api.ts`) are structurally identical**
+  duplicate interfaces feeding the same `<Avatar>`. Two places to change if the shape moves.
+- The week picker has no upper bound (you can page into empty future weeks forever) and its range
+  label omits the year, so a Dec–Jan week reads "Dec 28 – Jan 3".
+- On a fetch error with no cached data, the error banner is followed by two "Nothing here for
+  this range" cards (the empty-state branch requires `!error`).
+
 ## Per-project sections — follow-ups
 From the 2026-09-18 build on branch `feat/project-sections` (built and reviewed,
 **not yet merged** — see `session.md`). See `.claude/knowledge/project-sections.md`.

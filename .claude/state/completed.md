@@ -2,6 +2,43 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+
+---
+
+## 2026-09-22 — Task time tracking: clock in/out against a task, /log-time, /my-time, /time-report, estimates (MERGED AND DEPLOYED)
+
+Replaces the dead-end shift clock (`/clock-in`/`/clock-out` wrote `clockentry` rows nothing ever
+read — and its clock-out was broken by a `ClockEntry` table-name casing bug, so production held
+exactly one row, never closed). People now clock against a specific task or general work, correct
+their own entries after the fact, and leadership can see where the hours went. Estimates live on
+the task and are compared against all-time logged minutes.
+
+- **Data:** migration 023 adds `clockentry.taskId/minutes/note/source/remindedAt`,
+  `task.estimateMinutes`, `guildconfig.clockReminderHours/clockCapHours`, two indexes, and
+  backfills pre-existing rows (closed rows get real durations; the one legacy open row was closed
+  at `minutes = 0, source = 'legacy'` rather than a fabricated 12h — verified in production).
+- **Commands:** `/clock-in` (task or General), `/clock-out`, `/log-time` (retroactive, overlap
+  warning), `/my-time` (own entries, edit/delete panel; leadership may pass `person:`),
+  `/time-report` (leadership only, gated autocomplete). 43 → 46 commands.
+- **Watcher:** `clockWatch.js` DMs at 6h and caps a runaway timer at 12h (both per-guild
+  configurable via the database), removes the clocked-in role, re-reads before closing so a real
+  `/clock-out` racing a pass is never overwritten.
+- **No maximum on a single entry** (owner's explicit call) — the only refusal is the INT column's
+  storage ceiling, enforced at all four write paths.
+- **CSAAS:** `timeLogged`/`estimateMinutes`/`timeByPerson` on every task in the tasks read;
+  new `GET /api/discord/time/report` (self-scoped without `view_discord_time`, team-wide with it);
+  permission migration `20260922_1_view_discord_time_permission.sql` (Platform Admin + Admin),
+  applied automatically by `runMigrationsOnStart.js`.
+- **Site:** Time section on the task page (estimate bar, per-person breakdown), duration chips on
+  list rows / board cards / the preview popover, and a new Team → Time tab with a week picker.
+
+Spec `docs/superpowers/specs/2026-09-22-task-time-tracking-design.md`, plan
+`docs/superpowers/plans/2026-09-22-task-time-tracking.md`. 13 tasks via subagent-driven
+development, each task-reviewed, then one whole-branch final review per repo (each found real
+defects — see backlog for what was deliberately deferred).
+
+Merges: bot `8d52bb1` (f0609f8..c5af897, 974 tests), CSAAS `b0791b3` (2bbb225..38640d5),
+site `db5d434` (bcc5048..ce21dd3, 270 tests). All three pushed and deployed 2026-09-22.
 ---
 
 ## 2026-09-21 — Task hierarchy: subtasks, no finishing over open ones, auto-done parent (built on branches, NOT YET MERGED)

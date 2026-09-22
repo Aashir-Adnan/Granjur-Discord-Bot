@@ -1,86 +1,40 @@
 # Current Session
 
-**Date:** 2026-09-18
+**Date:** 2026-09-22
 
 ## Goal
-Task 11 (the last task of `docs/superpowers/plans/2026-09-18-project-sections.md`)
-was documentation-only: write down what branch `feat/project-sections` actually
-built and shipped, since the design spec drifted from the code during the build
-(especially the role-adoption rules in spec §5/§13) and the ledger is the only
-complete record otherwise. No code, tests, or config were touched.
+Design and build task time tracking end-to-end across all three repos, then merge and deploy it.
+Owner's framing: "a command for each user to clock time for a task, so we can log that time and
+then track time for that particular task or that user."
 
-## Outcome
-- `.claude/knowledge/project-sections.md` — new reference: the ten-channel section
-  layout, id-based repair and its three-way-guarded name fallback, the Discord
-  limits that shape the whole design (2 edits/10min, 50/category, no overwrite
-  cascade onto existing children), the fail-closed role-adoption model built in
-  the final fix wave (`adopt_role`, the subset-of-`@everyone` permission test,
-  the "elsewhere overwrite" refusal, `rolesFetched`), merge-never-replace
-  overwrites and why the checks are presence-only on purpose, shared/meeting
-  review channel exclusion, project inference from a channel, duplicate-slug
-  refusal, `/project-setup`'s preview/backfill procedure, the Administrator
-  requirement, and the tests-plus-poisoned-DATABASE_URL discipline. Indexed in
-  `.claude/knowledge/README.md`.
-- `.claude/state/backlog.md` — new "Per-project sections — follow-ups" section:
-  the `LIMIT 200` roster cap, unscoped `projectFindFirst`, the meeting pipeline's
-  write-after-send ordering, dead `feature.js`/`bug.js`, the untyped `@everyone`
-  overwrite in the global meeting-voice path, residual name-fallback adoption
-  risk, cross-reporting gaps in the result buckets, the `missingOverwrites`/
-  `mergedOverwrites` cache-guard mismatch, `/cleanup`'s unrechecked confirm
-  handler, a task moved between projects keeping its old channel/role, archiving
-  a finished project, and the 12 orphan global-Meetings channels.
-- `.claude/state/completed.md` — new entry, commit range `7e78f9f..7f40a42`,
-  explicitly "NOT YET MERGED."
-- This file, rewritten.
-- Report: `.superpowers/sdd/2026-09-18-project-sections/task-11-report.md`.
+## Outcome — COMPLETE, MERGED AND DEPLOYED
+Full brainstorm → spec → plan → subagent-driven-development cycle. See `completed.md` for the
+feature summary and `backlog.md` for the deferred follow-ups.
 
-## What remains
-1. **Merge** `feat/project-sections` into `main` (21 commits, 615 tests passing,
-   whole-branch review clean after the two-part final fix wave — see the ledger's
-   last ~60 lines for the full sign-off chain).
-2. **Deploy.** Migration 019 runs automatically. Migration 020 does not exist —
-   it was written then deleted as a no-op (`meeting.projectId` was already in
-   `schema.sql`); if any dev database already applied it, its filename will sit
-   harmlessly in that database's applied-migrations ledger. This wave's commits
-   changed **no** `SlashCommandBuilder` (`data`) exports, so no re-registration is
-   needed for anything final-wave touched — but earlier tasks in this same branch
-   DID change command options (`/project-members`, `/meeting-channel`, the new
-   `/project-setup`, `/create-project-categories` lost `create_roles`,
-   `/create-project-role`), so confirm the registration state at deploy (`pm2
-   logs` should show 44 commands after restart).
-3. **Backfill**, per project, not `all:true` — `capReply` keeps blocks from the
-   FRONT, so a nine-project `all:true` run truncates the LAST projects' warnings
-   out of the reply entirely (console still logs everything via `logWarnings`).
-   Expect most of the 9 existing projects to REFUSE their legacy role on the
-   first pass: only 5 `projectmember` rows exist across 4 of the 9 projects, so
-   most legacy roles have holders that aren't project members. That's the safe
-   outcome — nobody gains or loses a role, the section is hidden but repairable.
-   Use `preview:true adopt_role:true` to see exactly who would change before
-   running for real. A legacy role that holds an overwrite on some OTHER channel
-   is unadoptable by any command, even with `adopt_role:true` — renaming the
-   project or clearing that overwrite is the only way out.
-4. **Live checks the test suite cannot cover** (fakes only, by the repo's own
-   testing rule):
-   - Bot's own role holds Administrator — check this FIRST, before any real
-     `/project-setup` run. Every section category denies `@everyone` with no
-     allow for the bot at all.
-   - `/project-setup project:Framework preview:true`, read the plan, then the
-     real run, then `/project-setup all:true` for the rest.
-   - A non-member cannot see a project meeting's two channels.
-   - A project member who is NOT an assignee CAN see a moved task channel (the
-     merged project-role allow).
-   - A `bug-triage-*` meeting review channel is left untouched by
-     `/project-setup` (topic-based ticket-channel exclusion).
-   - `/create-task` a feature in a project → lands in that project's category
-     with a readable name; `/meeting-channel` run inside a project channel →
-     both new channels land there; `/project-members add` → panel updates and
-     the person can see the section.
+- Spec: `docs/superpowers/specs/2026-09-22-task-time-tracking-design.md`
+- Plan: `docs/superpowers/plans/2026-09-22-task-time-tracking.md` (13 tasks)
+- Merges: bot `8d52bb1`, CSAAS `b0791b3`, site `db5d434` — all pushed and deployed 2026-09-22.
+- Migration 023 verified applied in production; the single legacy `clockentry` row (open since
+  2026-09-02, orphaned by the old `ClockEntry` casing bug) closed at `minutes = 0, source = 'legacy'`.
 
-## Open threads (parked, inherited from before this branch)
-- FAQ error-lookup design, section 3.
-- `STT_PROVIDER=soniox` experiment on the VM.
-- Stray production `guildconfig` row `b23782a7c09e433bab78d866b` (`guildId =
-  'guild1'`, inserted 2026-09-17T10:48:49Z by a test that reached production —
-  see `.claude/rules/tests-never-touch-production.md`) — confirmed read-only,
-  still awaiting the owner's go-ahead to delete. See `.claude/state/backlog.md`
-  "Project tasks site — follow-ups" for the exact `DELETE` statement.
+## Knowledge written
+- `.claude/knowledge/project-tasks-site.md` — gained a "Task time tracking" section.
+
+## Decisions worth remembering
+- **No maximum on a single time entry** — the owner's explicit call. The only refusal is the INT
+  column's storage ceiling (2147483647 minutes), enforced at all four write paths. Do not
+  reintroduce a business cap.
+- **An unknown historical duration is recorded as 0, never guessed.** Migration 023 closes
+  legacy open rows at `minutes = 0, source = 'legacy'` rather than fabricating the 12h the
+  watcher would otherwise have applied (plus a DM per owner).
+- **Bound SQL date parameters must match the frame the data was written in, not "UTC" by reflex.**
+  The bot's pool has no `timezone` option (mysql2 defaults to `'local'`), so `clockentry.clockInAt`
+  holds the bot host's local wall-clock digits; CSAAS's `DB_TIMEZONE='+05:00'` exists precisely to
+  read that correctly. A blanket "never bind a Date, always format UTC" rule silently dropped the
+  newest ~5h of every report until it was caught by the final review.
+- **`commandRoles`/`canUseCommand` is enforced only at slash-command execute time.** A
+  leadership-only command's `autocomplete` export must gate itself or it leaks data.
+
+## Open question for the owner
+`.claude/state/completed.md` still labels the 2026-09-20 and 2026-09-21 entries "NOT YET MERGED",
+but their merge commits are in `main`. Someone should confirm and correct those two labels.
