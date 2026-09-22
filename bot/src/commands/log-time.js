@@ -2,7 +2,7 @@ import { SlashCommandBuilder } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import { isLeadershipFor, memberProjectIdsOf } from '../utils/timeAccess.js'
 import { clockableTasks } from '../utils/timeTaskPicker.js'
-import { entryMinutes, formatDuration, overlaps, parseDuration } from '../utils/timeTracking.js'
+import { BAD_DURATION, MAX_STORABLE_MINUTES, entryMinutes, formatDuration, overlaps, parseDuration } from '../utils/timeTracking.js'
 import { GENERAL } from './clock-in.js'
 
 // The same task picker as /clock-in: same access rule, same choices.
@@ -21,13 +21,12 @@ export const data = new SlashCommandBuilder()
     o.setName('note').setDescription('What you got done (optional)').setRequired(false).setMaxLength(500))
 
 const NOT_AVAILABLE = 'That task is not available to you.'
-export const BAD_DURATION = 'I could not read that duration. Try 2h30m, 90m, 2.5h or 1:30.'
+// Re-exported: timePanel.js imports BAD_DURATION from here.
+export { BAD_DURATION }
 const BAD_WHEN = 'I could not read that date. Use today, yesterday or YYYY-MM-DD.'
 const IN_THE_FUTURE = 'That is in the future.'
 const TOO_LARGE = 'That duration is too large to store.'
 
-// The clockentry.minutes column is a 32-bit INT.
-const MAX_STORABLE_MINUTES = 2147483647
 // MySQL DATETIME starts in the year 1000.
 const MIN_STORABLE_YEAR = 1000
 const OVERLAP_LOOKBACK_MS = 7 * 86400000

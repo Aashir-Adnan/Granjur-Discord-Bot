@@ -80,6 +80,16 @@ async function remind(client, dbArg, entry, now) {
 }
 
 async function stop(client, dbArg, entry, cfg, capMin) {
+  // Re-read: a pass snapshots every open entry via findOpen() up front, then
+  // can take tens of seconds (up to 500 entries, with DM sends) to reach this
+  // one. A real /clock-out, or a /clock-in on a different task (which also
+  // closes this entry), can land in between. Closing unconditionally here
+  // would silently overwrite that real clock-out with a fabricated cap
+  // duration and then strip the role from someone already clocked into
+  // something else.
+  const fresh = await dbArg.clockEntry.findById(entry.id)
+  if (!fresh || fresh.clockOutAt) return // closed under us since the pass snapshot; leave the real clock-out alone
+
   // Closed AT the cap, not at now: a bot that was down for a day must not log a day.
   const at = new Date(new Date(entry.clockInAt).getTime() + capMin * 60000)
   await closeEntry(dbArg, entry, { at, source: 'auto_stopped' })

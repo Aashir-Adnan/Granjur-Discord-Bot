@@ -18,11 +18,25 @@ const NAMES = { u1: 'Ana', u2: 'Ben' }
 const nameFor = (id) => NAMES[id] ?? null
 
 // A db whose every method records its calls, so "nothing was read" is checkable.
-function fakeDb({ entries = [], tasks = [], projects = [] } = {}) {
+// `totals`, when given, is what clockEntry.sumByTask returns (rows shaped like
+// the real SQL SUM, grouped by task and person); by default it is derived from
+// `entries` themselves, so a report whose only data is its range-scoped
+// entries sees the same all-time total as before (range and all-time coincide).
+function fakeDb({ entries = [], tasks = [], projects = [], totals = null } = {}) {
   const reads = []
+  const defaultTotals = entries
+    .filter((e) => e.taskId && e.minutes !== null && e.minutes !== undefined)
+    .map((e) => ({ taskId: e.taskId, discordId: e.discordId, minutes: e.minutes }))
   return {
     reads,
-    clockEntry: { findMany: async (q) => { reads.push(['clockEntry.findMany', q]); return entries } },
+    clockEntry: {
+      findMany: async (q) => { reads.push(['clockEntry.findMany', q]); return entries },
+      sumByTask: async (q) => {
+        reads.push(['clockEntry.sumByTask', q])
+        const rows = totals ?? defaultTotals
+        return rows.filter((r) => q.taskIds.includes(String(r.taskId)))
+      },
+    },
     task: { findByIds: async (q) => { reads.push(['task.findByIds', q]); return tasks.filter((t) => q.where.ids.includes(t.id)) } },
     project: { findMany: async (q) => { reads.push(['project.findMany', q]); return projects } },
   }
@@ -90,6 +104,20 @@ test('leadership reads this week by default, scoped to the guild config', async 
   assert.ok(!('discordId' in find.where) && !('taskId' in find.where))
   assert.match(shown(it), /this week/)
   assert.match(shown(it), /7h/)
+})
+
+test('a task over its estimate all-time, but not within the report range, still gets the over flag', async () => {
+  const db = fakeDb({
+    entries: [entry({ taskId: 'H', discordId: 'u1', minutes: 120 })], // 2h logged this week
+    tasks: [{ id: 'H', title: 'My feature', estimateMinutes: 480 }], // 8h estimate
+    totals: [{ taskId: 'H', discordId: 'u1', minutes: 1200 }], // 20h logged all-time
+  })
+  const it = fakeInteraction({}, { member: ADMIN })
+  await execute(it, { db, getConfig, now: NOW })
+  const t = shown(it)
+  assert.match(t, /2h this week/, 'the range figure leads')
+  assert.match(t, /20h of 8h \(250%\)/, 'the all-time total drives the estimate comparison')
+  assert.match(t, /over/i, 'a false negative: 2h this week alone would not be over')
 })
 
 test('the person and task options narrow the read; the range widens it', async () => {
@@ -221,6 +249,32 @@ test('a task that is over its estimate is flagged', () => {
   assert.match(t, /10h of 8h/)
   assert.match(t, /125%/)
   assert.match(t, /over/i)
+})
+
+test('totalByTask, not the range-scoped total, drives the percent and the over flag', () => {
+  const p = buildReportPayload({
+    entries: [{ taskId: 'H', discordId: 'u1', minutes: 120 }],
+    tasks: [{ id: 'H', title: 'My feature', estimateMinutes: 480 }],
+    projects: [], filters: { label: 'this week' }, nameFor: () => 'Ana',
+    totalByTask: new Map([['H', 1200]]),
+  })
+  const t = text(p)
+  assert.match(t, /2h this week/)
+  assert.match(t, /20h of 8h \(250%\)/)
+  assert.match(t, /over/i)
+})
+
+test('when the all-time total matches the range total the line is unchanged from before', () => {
+  const p = buildReportPayload({
+    entries: [{ taskId: 'H', discordId: 'u1', minutes: 300 }],
+    tasks: [{ id: 'H', title: 'My feature', estimateMinutes: 480 }],
+    projects: [], filters: { label: 'all time' }, nameFor: () => 'Ana',
+    totalByTask: new Map([['H', 300]]),
+  })
+  const t = text(p)
+  assert.match(t, /5h of 8h \(63%\)/)
+  assert.doesNotMatch(t, /this week/)
+  assert.doesNotMatch(t, /all time ·/)
 })
 
 test('people and projects are ordered largest first; missing projects and general work get their own rows', () => {

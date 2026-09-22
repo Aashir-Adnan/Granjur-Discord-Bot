@@ -57,7 +57,7 @@ const largestFirst = (map) => [...map.entries()].sort((a, b) => b[1] - a[1])
  * Only closed entries count. `filters` is `{ label, person?, project?, task? }`
  * (display text); `truncated` and `running` add a note to the description.
  */
-export function buildReportPayload({ entries, tasks, projects, filters = {}, nameFor = () => null, truncated = false, running = 0 }) {
+export function buildReportPayload({ entries, tasks, projects, filters = {}, nameFor = () => null, truncated = false, running = 0, totalByTask = new Map() }) {
   const closed = (entries || []).filter(isClosed)
   const taskById = new Map((tasks || []).map((t) => [String(t.id), t]))
   const projectName = new Map((projects || []).map((p) => [String(p.id), String(p.name || p.id)]))
@@ -101,14 +101,23 @@ export function buildReportPayload({ entries, tasks, projects, filters = {}, nam
     `• **${clip(projectLabel(key), 60)}** — ${formatDuration(m)}`)))
 
   // Top tasks, with the estimate where one is set. General work is not a task.
+  // The percent and the "over" flag compare the estimate against the task's
+  // ALL-TIME total (matching the hub's own "X of Y"), not this report's
+  // range-scoped `m` — a task can be well over its estimate lifetime while
+  // showing little logged this week. `m` stays the leading displayed number.
+  // When no all-time total is known for a task (or it equals `m`, as it always
+  // does for range 'all'), the line looks exactly as before.
   const taskLines = largestFirst(byTask).filter(([taskId]) => taskId !== null).map(([taskId, m]) => {
     const task = taskById.get(String(taskId))
     if (!task) return `• **Deleted task** — ${formatDuration(m)}`
     const title = clip(task.title || 'Untitled', 60)
     const estimate = Number(task.estimateMinutes)
     if (!(estimate > 0)) return `• **${title}** — ${formatDuration(m)}`
-    const pct = Math.round((m / estimate) * 100)
-    return `• **${title}** — ${formatDuration(m)} of ${formatDuration(estimate)} (${pct}%)${m > estimate ? ' — **over**' : ''}`
+    const total = totalByTask.has(String(taskId)) ? totalByTask.get(String(taskId)) : m
+    const pct = Math.round((total / estimate) * 100)
+    const over = total > estimate ? ' — **over**' : ''
+    if (total === m) return `• **${title}** — ${formatDuration(m)} of ${formatDuration(estimate)} (${pct}%)${over}`
+    return `• **${title}** — ${formatDuration(m)} ${label} · ${formatDuration(total)} of ${formatDuration(estimate)} (${pct}%)${over}`
   })
   if (taskLines.length) embed.addFields(listField('Top tasks', taskLines))
 
@@ -143,10 +152,21 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
   const rows = (await dbArg.clockEntry.findMany({ where, take: FETCH_LIMIT })) || []
 
   const ids = [...new Set(rows.map((e) => e.taskId).filter(Boolean).map(String))]
-  const [tasks, projects] = await Promise.all([
+  const [tasks, projects, totalRows] = await Promise.all([
     ids.length ? dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids } }) : [],
     dbArg.project.findMany({ where: { guildConfigId: cfg.id } }),
+    ids.length ? dbArg.clockEntry.sumByTask({ guildConfigId: cfg.id, taskIds: ids }) : [],
   ])
+
+  // All-time logged minutes per task (a SQL SUM, grouped by person too — folded
+  // here into one total per task), for the estimate comparison below. This is
+  // NOT range-scoped: it is the same all-time total the hub's "X of Y" already
+  // shows, so the two never silently disagree.
+  const totalByTask = new Map()
+  for (const r of totalRows || []) {
+    const key = String(r.taskId)
+    totalByTask.set(key, (totalByTask.get(key) ?? 0) + Number(r.minutes))
+  }
 
   // The project and general-work filters run here, on the fetched rows.
   const projectOf = new Map((tasks || []).map((t) => [String(t.id), t.projectId ? String(t.projectId) : null]))
@@ -168,6 +188,7 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     entries, tasks: tasks || [], projects: projects || [], filters, nameFor,
     truncated: rows.length === FETCH_LIMIT,
     running: entries.filter((e) => !isClosed(e)).length,
+    totalByTask,
   }))
 }
 

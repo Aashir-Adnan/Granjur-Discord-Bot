@@ -5,6 +5,14 @@
 export const DEFAULT_REMIND_HOURS = 6
 export const DEFAULT_CAP_HOURS = 12
 
+// The clockentry.minutes / task.estimateMinutes columns are 32-bit INTs; this
+// is the storage ceiling, not a business maximum — /log-time and the task
+// hub's estimate both share it, so a duration that fits one fits the other.
+export const MAX_STORABLE_MINUTES = 2147483647
+
+/** What to say when parseDuration returns null. Shared by every duration entry point. */
+export const BAD_DURATION = 'I could not read that duration. Try 2h30m, 90m, 2.5h or 1:30.'
+
 /**
  * Minutes from what a person typed: "2h30m", "2h 30m", "2.5h", "90m", "90",
  * "1:30". Null for anything that is not a positive duration. There is NO upper

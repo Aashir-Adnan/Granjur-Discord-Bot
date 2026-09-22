@@ -61,3 +61,23 @@ SET @sql = IF(@idx_exists = 0, 'ALTER TABLE clockentry ADD KEY idx_clockentry_pe
 PREPARE stmt FROM @sql;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
+
+-- Backfill: legacy rows closed before this migration have clockOutAt but no
+-- minutes (every read path treats minutes IS NULL as "still open" or "not
+-- really closed" — see isClosed()/closed()/sumByTask's own NULL filter).
+-- ROUND(...SECOND.../60), not TIMESTAMPDIFF(MINUTE,...), to match
+-- entryMinutes()'s own rounding exactly (spec: minutes === entryMinutes(...)
+-- for every entry, backfilled ones included).
+UPDATE clockentry
+SET minutes = ROUND(TIMESTAMPDIFF(SECOND, clockInAt, clockOutAt) / 60)
+WHERE minutes IS NULL AND clockOutAt IS NOT NULL;
+
+-- Legacy rows that were never closed at all (same root cause) must not be
+-- left for the watcher's first pass to auto-stop at a fabricated 12h each,
+-- with a DM to every owner. An unknown historical duration is recorded as 0
+-- (source 'legacy'), never guessed — guessing 12h for a row that could be
+-- months old would be worse than showing nothing. Fix by hand via /my-time
+-- edit if the true duration is known out of band.
+UPDATE clockentry
+SET clockOutAt = clockInAt, minutes = 0, source = 'legacy'
+WHERE clockOutAt IS NULL;

@@ -128,6 +128,27 @@ test('an entry past the cap is closed AT the cap and marked auto_stopped', async
   assert.equal(client.sent[0].components, undefined, 'the stop notice carries no buttons')
 })
 
+test('a real clock-out landing between findOpen and the cap-close write is not overwritten', async () => {
+  const db = fakeWatchDb([{ id: 'e1', discordId: 'u1', taskId: 'H', clockInAt: START }])
+  // findOpen returns a snapshot copy, like a real query result. The stored row
+  // is then closed by a genuine /clock-out AFTER that snapshot is taken but
+  // before this pass reaches the entry.
+  const originalFindOpen = db.clockEntry.findOpen
+  db.clockEntry.findOpen = async (...args) => {
+    const snapshot = (await originalFindOpen(...args)).map((r) => ({ ...r }))
+    db.rows[0].clockOutAt = new Date('2026-09-22T05:00:00Z')
+    db.rows[0].minutes = 300
+    return snapshot
+  }
+  const client = fakeClient()
+  await runClockWatchPass(client, { db, now: at(20) })
+  assert.equal(new Date(db.rows[0].clockOutAt).toISOString(), '2026-09-22T05:00:00.000Z', 'the real clock-out is not overwritten')
+  assert.equal(db.rows[0].minutes, 300)
+  assert.notEqual(db.rows[0].source, 'auto_stopped')
+  assert.deepEqual(client.removed, [], 'the role is not stripped for an entry the watcher did not actually close')
+  assert.equal(client.sent.length, 0, 'no auto-stop DM for an entry the watcher left alone')
+})
+
 test('the cap message for general work does not name a task', async () => {
   const db = fakeWatchDb([{ id: 'e1', discordId: 'u1', taskId: null, clockInAt: START }])
   const client = fakeClient()

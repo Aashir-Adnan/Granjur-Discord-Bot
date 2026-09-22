@@ -24,7 +24,7 @@ import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
 import { holdersOf, idList } from '../utils/taskLabel.js'
 import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
-import { formatDuration, parseDuration } from '../utils/timeTracking.js'
+import { BAD_DURATION, MAX_STORABLE_MINUTES as MAX_ESTIMATE_MINUTES, formatDuration, parseDuration } from '../utils/timeTracking.js'
 import { wouldCycle } from '../utils/taskDeps.js'
 import { notifyTaskUpdate } from './taskUpdateNotify.js'
 import { applyTaskUpdate } from './taskStatusChange.js'
@@ -37,9 +37,7 @@ export const COUNTS_MODAL_PREFIX = 'ut_counts:'
 export const SUBTASK_MODAL_PREFIX = 'ut_sub:'
 const NONE = '-'
 export const MAX_TEST_COUNT = 127 // the column is a signed TINYINT
-// task.estimateMinutes is a 32-bit INT; no business maximum by design.
-export const MAX_ESTIMATE_MINUTES = 2147483647
-const BAD_DURATION = 'I could not read that duration. Try 2h30m, 90m, 2.5h or 1:30.'
+export { MAX_ESTIMATE_MINUTES }
 const ESTIMATE_TOO_LARGE = 'That estimate is too large to store.'
 export const NOT_FOUND = 'That task is not available to you any more. Run **/update-task** again.'
 
