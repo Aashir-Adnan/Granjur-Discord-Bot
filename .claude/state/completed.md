@@ -4,6 +4,37 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-23 — UBS-Doc: copy a task's link, and a theme toggle on the sign-in screen (MERGED, NOT PUSHED)
+
+Two small site-only features, brainstormed as bounded changes (no spec, no plan document).
+
+- **Copy task link.** `screens/team/CopyLinkButton.tsx` plus `taskUrl(origin, taskId)` in
+  `detailLogic.ts`, wired into the task detail header and the preview popover's action row, so a
+  link can be grabbed from the board without opening the task. The link is built from the id
+  alone: the internal `<Link>`s carry the board's current filter string, and pasting that into
+  chat would drop the reader into your view rather than on the task. Guards
+  `navigator.clipboard` before use — outside a secure context the property is undefined and
+  `.writeText` throws synchronously, which the APIBuilder precedent it otherwise follows would
+  turn into a blank page.
+- **Sign-in theme toggle.** The screen was pinned dark deliberately (notes at `SignIn.tsx:6` and
+  above `.portal-google-btn` in `portal-compat.css` both said so); the owner asked for the
+  toggle, overriding that. The sidebar's Light/Dark pill moved into a shared
+  `components/ThemeSwitch.tsx` rather than being copied. Light values are AppLayout's own —
+  `#04070F` under a `rgba(250,248,255,0.88)` overlay, shader at 0.18, `card-light` — so the two
+  backgrounds cannot drift. Two colours needed their own treatment: the Google button keeps its
+  white fill in both themes but loses its white border against a pale card, and the
+  `@granjur.com` accent washes out at indigo-400.
+
+**Verification.** 284 tests and `tsc` clean on merged `main`. Both themes checked in a headless
+browser. A capture artifact worth remembering: the aurora heading renders blank in a headless
+screenshot because its blur-in reveal never fires — forcing `prefers-reduced-motion`, which
+`design.css:658` maps to `opacity: 1`, is what proves the text is actually there. Not visually
+verified: the sidebar pill after the extraction, and the copy button itself, both of which sit
+behind the sign-in gate.
+
+**Commits (UBS-Doc):** `a3c70c3`, `b393c34`, merged as `38ef723` and `81f8133`. `main` is 4
+ahead of `origin/main` — not pushed, not deployed.
+
 ## 2026-09-22 — Time reporting follow-ups: CSV export, Time-tab person filter, daily 23:59 report (MERGED AND DEPLOYED)
 
 Three follow-ups on the same day's task time tracking. Spec

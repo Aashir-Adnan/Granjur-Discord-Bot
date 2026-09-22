@@ -1,39 +1,29 @@
 # Current Session
 
-**Date:** 2026-09-22
+**Date:** 2026-09-23
 
 ## Goal
-Follow-ups on the task time tracking shipped earlier the same day: a CSV export, a person filter
-on the site's Time tab, and a daily 23:59 report posted to a channel everyone can read.
+Two small UBS-Doc features asked for after the time reporting work: a button that copies a
+task's URL (for chasing updates), and a theme toggle on the sign-in screen.
 
-## Outcome — COMPLETE, MERGED AND DEPLOYED
-Brainstorm → spec → plan → subagent-driven-development, 6 tasks across the three repos. See
-`completed.md` for what shipped and `backlog.md` for what was deliberately deferred.
+## Outcome — COMPLETE, MERGED LOCALLY, NOT PUSHED
+Both brainstormed as bounded changes — an existing flow to edit in each case, so a short design
+in chat and approval, no spec or plan document. See `completed.md` for what shipped.
 
-- Spec: `docs/superpowers/specs/2026-09-22-time-reporting-followups-design.md`
-- Plan: `docs/superpowers/plans/2026-09-22-time-reporting-followups.md`
-- Merges: bot `9dcac65`, CSAAS `b192294`, site `a09410e` — all pushed and deployed 2026-09-22.
-- Verified in production: migration 024 applied; the first pass adopted `2026-09-21` and posted
-  nothing, as designed. The first real report lands at 23:59 Asia/Karachi, which also creates
-  `#time-reports`.
+UBS-Doc `main` is 4 commits ahead of `origin/main`. Nothing is pushed or deployed; the owner was
+asked about that separately.
 
-## Decisions worth remembering
-- **A timer still running at 23:59 counts as zero and the day is then closed for good.** When
-  `clockWatch` later auto-stops a forgotten timer it attributes up to 12h to a day whose public
-  post already said "0m", and nothing revisits that post. We chose honest disclosure (an embed
-  footer) over changing when the report posts. If that trade stops being acceptable, the fix is
-  a spec change — post after midnight, or count elapsed-so-far.
-- **`guildMemberFindMany` silently caps at 25 rows unless `where.all` is true.** Any new caller
-  that reads a full roster must pass it; the daily report's test pins this.
-- **Two repos bind SQL dates in deliberately opposite ways.** The bot binds raw `Date`s (its pool
-  has no `timezone` option, so writes and reads agree); CSAAS binds strings through
-  `toMysqlUtc` (its pool sets `+05:00`). Each is correct in its own repo and wrong in the other.
-- **`__identityVerified`/`actor_email` are derived, never supplied.** `config.js` merges the
-  request body wholesale into the auth payload, so any endpoint that trusts those fields to skip
-  a permission check is forgeable unless the middleware strips them first — which it now does.
-- **An unknown value is recorded as unknown, not guessed.** Same principle as the September
-  migration that closed legacy rows at 0 minutes rather than a fabricated 12h.
+## Decisions worth not re-litigating
+- **The copied link drops the filter string on purpose.** The board's own `<Link>`s keep
+  `?project=…&assignee=…` so navigating preserves your view. A link handed to someone else must
+  not — "here is the task" should not mean "here is the task, inside my filters".
+- **The sign-in screen's dark-only rule was overridden by the owner, not by oversight.** Two
+  comments in the codebase asserted it. Both were updated. If a designer ever objects, the
+  alternative considered was a toggle that only sets the preference for after sign-in — rejected
+  because a visible switch that changes nothing on screen reads as broken.
+- **Light styling is AppLayout's recipe, reused rather than invented**, so the login page and the
+  app cannot end up different shades of light.
 
-## Open question for the owner
-`.claude/state/completed.md` still labels the 2026-09-20 and 2026-09-21 entries "NOT YET MERGED"
-although their merge commits are in `main`. Flagged on 2026-09-22 and still uncorrected.
+## Still unverified
+The sidebar's theme pill after being extracted into `ThemeSwitch`, and the copy button's
+rendering. Both are behind the sign-in gate, which a headless browser cannot pass.
