@@ -4,6 +4,42 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-23 — Project Stats tab, and the Time tab under the shared filters (IMPLEMENTED ON BRANCHES, NOT MERGED)
+
+Spec `docs/superpowers/specs/2026-09-23-project-stats-and-time-filters-design.md`, plan
+`docs/superpowers/plans/2026-09-23-project-stats-and-time-filters.md`, 8 tasks via
+subagent-driven development — every task reviewed, 1–2 fix rounds each, a final
+whole-branch review clean after one fix wave.
+
+- **CSAAS** branch `feat/project-stats`, 6 commits `2e8d503..28a6830`: `b2f6a30`
+  refactor `timeScope.js` extraction; `e04c3fa` project filter on report/entries;
+  `1c850da` stats endpoint; `cf776e6` DB-local day bucketing for completions; `4c6c22e`
+  stale sort/cap tests; `28a6830` guild-scoped project clause + stale header. Files:
+  `Src/Apis/ProjectSpecificApis/DiscordTasks/{timeScope.js,discordProjectStats.js,
+  discordTimeReport.js,discordTimeEntries.js}`, tests under
+  `Services/SysScripts/TestScripts/discord-tasks-test/{timeScope,stats,time,entries}.test.js`.
+  All 8 discord-tasks-test scripts pass.
+- **UBS-Doc** branch `feat/project-stats`, 11 commits `ecfc40f..00ae80c`: `d047086` route
+  + API client; `168538a` apiCall helper; `4d8dc73` statsLogic; `8cb5e31` stackByMember
+  guard; `d005321` Time tab under shared filters; `947511e` personId guard before scope
+  known; `ffb6aa1` chart components; `59a3ad1` chart fixes (pointer-events, keys,
+  chartChrome, contrast, a11y, format); `f365ad5` Stats tab; `7cd7194` fetch dedupe +
+  ring; `00ae80c` tasks-error banner, estimate tile hidden under self scope,
+  label/comment fixes. Files: `src/components/discordTasks/api.ts`,
+  `src/screens/team/{teamNav.ts,statsLogic.ts,TeamLayout.tsx,TimeTab.tsx,Stats.tsx}`,
+  `src/screens/team/charts/{axes.ts,chartChrome.tsx,Sparkline.tsx,Bars.tsx,
+  StackedBars.tsx,CumulativeLines.tsx}`, `src/app/routes.tsx`, tests
+  `statsLogic.test.ts`, `teamNav.test.ts`. `tsc` clean, 304 vitest tests pass. The
+  working tree also carries unrelated uncommitted changes from other work
+  (`src/components/meetingWorkflow/LiveTranscribeStage.jsx`,
+  `src/styles/portal-compat.css`, `audioCapture*.js`) that were deliberately left
+  untouched.
+
+**Status: IMPLEMENTED ON BRANCHES, NOT MERGED, NOT PUSHED, NOT DEPLOYED** — awaiting the
+owner's go-ahead on both `feat/project-stats` branches. A manual browser walkthrough of
+the Time and Stats tabs was NOT performed (the devtools tooling could not attach to the
+owner's running Chrome); see `session.md` for what a walkthrough should check.
+
 ## 2026-09-23 — #time-reports was visible to everyone and readable by nobody (PUSHED)
 
 The first daily report posted, and members got "You do not have permission to view the message

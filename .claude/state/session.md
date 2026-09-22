@@ -3,27 +3,47 @@
 **Date:** 2026-09-23
 
 ## Goal
-Two small UBS-Doc features asked for after the time reporting work: a button that copies a
-task's URL (for chasing updates), and a theme toggle on the sign-in screen.
+Project Stats tab, and the Time tab under the shared filters — spec
+`docs/superpowers/specs/2026-09-23-project-stats-and-time-filters-design.md`, plan
+`docs/superpowers/plans/2026-09-23-project-stats-and-time-filters.md`.
 
-## Outcome — COMPLETE, MERGED LOCALLY, NOT PUSHED
-Both brainstormed as bounded changes — an existing flow to edit in each case, so a short design
-in chat and approval, no spec or plan document. See `completed.md` for what shipped.
-
-UBS-Doc `main` is 4 commits ahead of `origin/main`. Nothing is pushed or deployed; the owner was
-asked about that separately.
+## Outcome — COMPLETE, IMPLEMENTED ON BRANCHES, NOT MERGED, NOT PUSHED, NOT DEPLOYED
+8 code tasks via subagent-driven development, every task reviewed, 1–2 fix rounds each, a
+final whole-branch review clean after one fix wave. See `completed.md` for the commits
+and files per repo — CSAAS `feat/project-stats` (6 commits `2e8d503..28a6830`), UBS-Doc
+`feat/project-stats` (11 commits `ecfc40f..00ae80c`). Both branches sit unmerged and
+unpushed, awaiting the owner's go-ahead.
 
 ## Decisions worth not re-litigating
-- **The copied link drops the filter string on purpose.** The board's own `<Link>`s keep
-  `?project=…&assignee=…` so navigating preserves your view. A link handed to someone else must
-  not — "here is the task" should not mean "here is the task, inside my filters".
-- **The sign-in screen's dark-only rule was overridden by the owner, not by oversight.** Two
-  comments in the codebase asserted it. Both were updated. If a designer ever objects, the
-  alternative considered was a toggle that only sets the preference for after sign-in — rejected
-  because a visible switch that changes nothing on screen reads as broken.
-- **Light styling is AppLayout's recipe, reused rather than invented**, so the login page and the
-  app cannot end up different shades of light.
+- Time series come from the new `/api/discord/projects/stats` endpoint; snapshot numbers
+  come from the tasks payload (activity capped at 15/task there).
+- Completions are bucketed by DB-local day via `toMysqlUtc(...).slice(0,10)` so all
+  series share one frame.
+- Assignee options are the roster on every tab; `timeSelfScoped` hides the Assignee
+  select on Time only.
+- Under self scope the Time person is always the caller, and no entries request fires
+  before the first report lands.
+- The "Logged vs estimate" tile is hidden under self scope because `timeLogged` on the
+  tasks payload is NOT permission-gated (pre-existing exposure — see `backlog.md`).
+- Sparkline draws a flat line for all-zero.
+- Charts are hand-rolled SVG, with all math in `statsLogic.ts` (tested). No chart
+  library.
+- A zero-task project has no overview card (`applyFilters` drops it — consistent with
+  People/Tasks).
 
 ## Still unverified
-The sidebar's theme pill after being extracted into `ThemeSwitch`, and the copy button's
-rendering. Both are behind the sign-in gate, which a headless browser cannot pass.
+A manual browser walkthrough of the Time and Stats tabs was NOT performed — the devtools
+tooling could not attach to the owner's running Chrome. What the owner should check:
+overview cards/rings/sparklines, a card click setting the Project filter, the "View
+tasks" deep link, the KPI row, member bars, all four chart tooltips, Monday labels under
+90d/All, Assignee narrowing, the 30/90/All refetch, both themes, and that the Time and
+Stats tabs show only Project + Assignee in the filter bar.
+
+The UBS-Doc working tree also carries unrelated uncommitted changes from other work
+(`src/components/meetingWorkflow/LiveTranscribeStage.jsx`, `src/styles/portal-compat.css`,
+`audioCapture*.js`) that were deliberately left untouched throughout this build.
+
+## Next step
+Owner decides on merge/deploy for both `feat/project-stats` branches (CSAAS and UBS-Doc).
+Nothing else is pending on this feature; see `backlog.md`'s "Project Stats — deferred
+follow-ups" for what was consciously left for later.

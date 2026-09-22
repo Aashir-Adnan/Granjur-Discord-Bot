@@ -477,6 +477,28 @@ a duration (`8h`), not raw minutes.
 against this table used lowercase `` `clockentry` `` — silently fatal on a case-sensitive
 server (production). Fixed in Task 1; every query here is now lowercase.
 
+## Stats tab and project-filtered time (2026-09-23)
+
+- `GET /api/discord/projects/stats?since=&until=&project=` (CSAAS
+  `discordProjectStats.js`) returns per-project, per-day sparse series: `created`,
+  `completed`, `events`, `time` (per person), plus `stale` (open, 14 days idle, capped
+  50) and `cycleMinutes`. Days are `DATE_FORMAT(col,'%Y-%m-%d')` strings of the STORED
+  digits — the guild's local day only because the VM's zone matches the guild's.
+  `since` omitted = all time. Time rows follow the report's scope rule (`timeScope`).
+- `completed` comes from `taskactivity` rows with a `status` change to
+  closed/done/resolved (`JSON_SEARCH` on `$[*].field`), reduced in JS. Terminal tasks
+  with no such row (pre-migration-021) are dated by `updatedAt`; the response sets
+  `approximateCompletion` and the tab prints a note.
+- `timeScope.js` is the ONE home for verified-email → identity → scope → guild ids.
+  All three time endpoints import it with their own `__hooks`.
+- `/api/discord/time/report` and `/time/entries` accept `project=<docsSlug>` (a SQL
+  subquery on `granjur.project.docsSlug`) and echo `project`.
+- Site: the Team shell's Assignee options are the roster (`payload.members`), not task
+  assignees. Time and Stats show only Project + Assignee. `TeamContext.timeSelfScoped`
+  hides the Assignee select on Time for callers without `view_discord_time`.
+- Charts are hand-rolled SVG in `src/screens/team/charts/`; all math is in
+  `statsLogic.ts` (tested). No chart library.
+
 ## Related
 
 [[project-docs]] (the other bot-to-site data path, UBS-Doc markdown into MySQL — this

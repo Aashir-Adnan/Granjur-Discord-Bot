@@ -4,6 +4,42 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Project Stats — deferred follow-ups
+From the 2026-09-23 build (implemented on branches, not merged — see `completed.md` and
+`session.md`). See `.claude/knowledge/project-tasks-site.md` ("Stats tab and
+project-filtered time").
+
+**CSAAS**
+- `discordTasks.js` emits `timeLogged`/`timeByPerson` with no `view_discord_time` gate —
+  pre-existing exposure surfaced by spec §7; for the owner to decide.
+- The overview request (no `project`) runs the unbounded `task`, `JSON_SEARCH` and
+  `MAX(createdAt)` queries it never renders — gate on `project` or bound them before any
+  large guild.
+- `/api/discord/tasks` caps at 2000 tasks while stats reads all (they diverge past 2000).
+- `soft()` failures on `taskactivity`/`clockentry` are invisible to the client — consider
+  a `degraded` flag.
+- `toMysqlUtc`/`resolveProject`/`projectClause` live in `discordTimeReport.js` — move
+  beside `timeScope.js`.
+- `status.test.js` prints "[discord-tasks] bot unreachable" noise.
+- `stats.test.js` leaves `DB_TIMEZONE` set on the report module's hooks.
+
+**Site**
+- `bucketKeys` builds the key window from the browser's local calendar while server keys
+  are DB-local — a viewer behind the DB zone loses the newest day; extend one bucket past
+  `until` or clamp to the response's day range.
+- TimeTab compares the entries' echoed `project` but not the report's.
+- Zero-task projects get no overview card although §4.2 lists them — amend the spec or
+  special-case.
+- The KPI grid leaves an empty `xl` track when the estimate tile is hidden under self
+  scope.
+- The range toggle uses `role="tablist"` (should be radiogroup/aria-pressed).
+- `StackedBars`' tooltip height is unbounded past ~10 members.
+- Per-card `earliestDay` under All time makes overview sparklines span different windows.
+- `assigneeOptions` in `tasksLogic.ts` is production-dead.
+- `Bars.tsx` exports `Legend` beside `chartChrome.tsx`.
+- Component tests for the shell's per-tab control gating, TimeTab's `personId` guard and
+  Stats' stale-response gate, if the section ever gains a DOM test environment.
+
 ## Time reporting follow-ups — deferred follow-ups
 From the 2026-09-22 build (merged and deployed, see `completed.md`). Each was confirmed real by a
 reviewer and consciously deferred as Minor.
