@@ -4,6 +4,58 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Time reporting follow-ups — deferred follow-ups
+From the 2026-09-22 build (merged and deployed, see `completed.md`). Each was confirmed real by a
+reviewer and consciously deferred as Minor.
+
+**Bot**
+- **The bot is never granted `SendMessages` on the `#time-reports` channel it creates**
+  (`services/dailyTimeReport.js`), though the spec says it should be. It works only because the
+  bot is Administrator — an assumption `commands/bug.js` already ships on. If that ever changes,
+  the daily report silently stops.
+- **`guild.members.fetch({ user: ids })` caps at 100 ids** (Discord's `REQUEST_GUILD_MEMBERS`
+  limit). At 15-17 approved members this is fine; past ~100 the request stops resolving and the
+  pass blocks for the 120s timeout every tick before falling back to unhydrated names. Chunk the
+  ids, or use the plain `guild.members.fetch()` the rest of the repo uses.
+- No param-order test for `clockEntrySumByPersonRange` — swapping `since`/`until` would ship
+  green, since the service's tests fake the whole method.
+- `pad` is duplicated between `utils/timeTracking.js` and `services/dailyTimeReport.js`;
+  `TICK_MS` is unexported (so the interval is untestable) while `clockWatch` exports its own;
+  `startDailyTimeReport` itself has no test.
+- No index matching the new aggregate's `(guildConfigId, clockInAt)` shape.
+- No admin command sets `timeReportChannelId` — changing the channel means editing the row by
+  hand. Same known gap as `clockReminderHours`/`clockCapHours`.
+- The en-GB embed title renders "Time — Tuesday, 22 September 2026"; the spec's example had no
+  comma.
+
+**CSAAS**
+- **`portalAuthz.js`'s `pickFrom` still reads `req.body`/`req.query`.** The new middleware fix
+  sanitizes `decryptedPayload` only, so the invariant now depends on two files agreeing: the
+  moment anyone routes `__identityVerified` through `pickFrom`, or reads `req.body.actor_email`
+  directly, the forgery returns with no test to catch it. Deleting from `req.body`/`req.query`
+  too — or dropping the fallback — would make the sanitization total rather than
+  load-bearing-by-coincidence. **Worth doing with whoever owns the framework's auth layer.**
+- An orphaned task would yield a non-null `taskId` with a null `taskTitle`, against the spec's
+  contract; the site would render a titleless group. No task-delete path exists today.
+- No test pins the entries API object's `bindActorToToken: true` / `accessToken: true`, although
+  the endpoint's whole model rests on them. Low severity only because both now fail closed.
+- **The 7 assert-based scripts in `discord-tasks-test/` sit inside jest's `testMatch`** and none
+  defines a `test()`, so `npm test` counts each as a failing suite. Pre-existing pattern, but it
+  means "the jest baseline is unchanged" cannot be verified by stashing once a new script is
+  committed. Move them out of `testMatch` or wrap them.
+
+**Site**
+- `entriesByTask` groups general work under the magic string `'__general__'`; a real task id of
+  that literal would merge into it (ids are 24-char hex, so unreachable).
+- `Number(e.minutes) || 0` renders `0m` on screen while the CSV writes the raw value, so one bad
+  row can read differently in the two places.
+- `detail.entries` is dereferenced without an `Array.isArray` guard, unlike `TeamLayout`'s
+  treatment of the same transport — a shape surprise white-screens the tab.
+- The `truncated` notice says "narrow the range", but the range is fixed at one week and cannot
+  be narrowed from that UI. Unreachable in practice (5000 entries in a week).
+- `rangeLabel` and `csvFilename` each duplicate the "last day covered" arithmetic.
+- The unselected select option reads "Select a person…"; the spec named "Everyone".
+
 ## Task time tracking — deferred follow-ups
 From the 2026-09-22 build (merged and deployed, see `completed.md`). Each item below was
 confirmed real by a reviewer and consciously deferred as Minor — none blocks the feature.

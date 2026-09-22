@@ -3,6 +3,38 @@
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
 
+
+## 2026-09-22 — Time reporting follow-ups: CSV export, Time-tab person filter, daily 23:59 report (MERGED AND DEPLOYED)
+
+Three follow-ups on the same day's task time tracking. Spec
+`docs/superpowers/specs/2026-09-22-time-reporting-followups-design.md`, plan
+`docs/superpowers/plans/2026-09-22-time-reporting-followups.md`, 6 tasks via subagent-driven
+development.
+
+- **Daily report (bot).** `services/dailyTimeReport.js` posts each day's per-person totals at
+  23:59 in the guild's own timezone to `#time-reports` (auto-created, `@everyone` may read but
+  not send). Every approved member is listed, zeros included; the embed discloses that timers
+  still running at the cutoff are not counted. Migration 024 adds
+  `guildconfig.timeReportChannelId` and `lastTimeReportOn` — the "already posted" guard is a
+  persisted column, not an in-memory Map, so a restart near midnight cannot double-post. The
+  first pass after deploy adopts the current day silently. A long outage posts once, for the most
+  recent due day only, never a backlog.
+- **Entries endpoint (CSAAS).** `GET /api/discord/time/entries?discordId=&since=&until=` returns
+  ONE person's individual entries — single-person by construction, so "the export is never mixed"
+  is an API property, not a UI convention. Self always allowed; anyone else needs
+  `view_discord_time`, else 403 (it refuses rather than narrowing, unlike the aggregate report).
+- **Site.** The Team → Time tab gains a person filter (options restricted to the caller when the
+  report is self-scoped) and a Download CSV button generating the file in the browser from the
+  entries already on screen. Per-task breakdown per person.
+- **Security fix in shared middleware.** `actorBinding.js` now deletes client-supplied
+  `__identityVerified`/`actor_email` before deriving them. `config.js` merges the request body
+  wholesale into the auth payload, and the middleware previously only ever *set* those fields —
+  so a valid token whose user had no email row could forge them and read another employee's
+  hours through the new endpoint's self-path. Pre-existing gap, newly exploitable; the fix also
+  makes a `bindActorToToken` misconfiguration fail closed instead of open.
+
+Merges: bot `9dcac65` (1002 tests), CSAAS `b192294` (7 test scripts), site `a09410e` (281 tests,
+tsc clean). All pushed and deployed 2026-09-22; migration 024 verified applied in production.
 ---
 
 ## 2026-09-22 — Task time tracking: clock in/out against a task, /log-time, /my-time, /time-report, estimates (MERGED AND DEPLOYED)
