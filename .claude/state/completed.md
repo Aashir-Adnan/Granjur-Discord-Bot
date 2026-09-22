@@ -4,6 +4,32 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-23 — #time-reports was visible to everyone and readable by nobody (PUSHED)
+
+The first daily report posted, and members got "You do not have permission to view the message
+history of #time-reports" instead of it. Cause: `dailyTimeReport.js` created the channel with
+`allow: [ViewChannel]` only. This guild's @everyone role does not carry ReadMessageHistory at
+the role level, so a channel has to grant it explicitly — which is why every other public
+channel this bot creates pairs the two bits (`init.js:125`, `meetingAutoChannel.js`,
+`create-channel.js`). ViewChannel alone buys a sidebar entry and an empty room.
+
+Two changes, because fixing the create path does nothing for a channel that already exists:
+
+- The create overwrite now allows `ViewChannel` **and** `ReadMessageHistory` (SendMessages
+  still denied — it is a read-only report channel by design).
+- `reconcileChannelAccess` repairs an already-configured channel, once per process, guarded by
+  a `reconciledThisRun` WeakMap keyed on `db` like the other guards in the file. It runs
+  **before** the due-day checks, not inside `resolveChannel`: today's report was already sent
+  and the day already closed, so a repair on the post path would not have run until 23:59 the
+  next day. It only edits when @everyone is actually missing a bit, and only once per process,
+  so an admin who deliberately locks the channel down later is not overridden every 60s. A
+  failed edit (missing ManageRoles) warns and still posts.
+
+Files: `bot/src/services/dailyTimeReport.js`, `bot/src/services/dailyTimeReport.test.js`
+(+4 tests: the create overwrite's two bits, the repair, the repair on an already-posted day,
+the already-readable no-op, and a failed repair that still posts). 1006 tests pass.
+Commit `95fa9d4`, pushed to main (deploy pipeline restarts pm2, which triggers the repair).
+
 ## 2026-09-23 — UBS-Doc: copy a task's link, and a theme toggle on the sign-in screen (MERGED, NOT PUSHED)
 
 Two small site-only features, brainstormed as bounded changes (no spec, no plan document).
