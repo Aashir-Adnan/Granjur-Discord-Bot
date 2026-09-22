@@ -281,6 +281,19 @@ test('a failed persist of a newly created channel id aborts the post', async () 
   assert.equal(created.length, 1, 'the channel was created')
   assert.equal(sent.length, 0, 'nothing was posted, since the new id could not be persisted')
   assert.equal(state.lastTimeReportOn, '2026-09-21', 'the day is not marked done either')
+
+  // The reviewer's repro: with the persist still failing, every following
+  // tick used to see the config still empty and create yet another channel —
+  // 5 ticks, 5 channels, 0 posts. The in-memory "already created this run"
+  // guard must stop that after the first one.
+  const now = new Date('2026-09-22T23:59:00Z')
+  for (let i = 0; i < 4; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await quietly(() => runDailyReportPass(client, { db, getConfig, update, now }))
+  }
+  assert.equal(created.length, 1, 'four more ticks created no further channels')
+  assert.equal(sent.length, 0, 'the id is still unpersisted, so still nothing is posted')
+  assert.equal(state.lastTimeReportOn, '2026-09-21', 'the day is still not marked done')
 })
 
 // ---- finding 5: bulk roster hydration -----------------------------------
@@ -363,6 +376,19 @@ test('the embed actually contains the totals — description and team total', as
   assert.match(embed.description, /\*\*Ali\*\* — 1h 30m/)
   assert.equal(embed.fields[0].name, 'Team total')
   assert.equal(embed.fields[0].value, '1h 30m')
+})
+
+// ---- finding 7: a timer still running at the cutoff must not read as a ---
+// ---- silent, uncorrected 0m ----------------------------------------------
+
+test('the embed footer discloses that still-running timers are not counted', async () => {
+  const h = harness({ totals: [{ discordId: '1', minutes: 90 }] })
+  await runDailyReportPass(h.client, {
+    db: h.db, getConfig: h.getConfig, update: h.update, now: new Date('2026-09-22T23:59:00Z'),
+  })
+  assert.equal(h.sent.length, 1)
+  const embed = h.sent[0].embeds[0].toJSON()
+  assert.equal(embed.footer?.text, 'Timers still running at 23:59 are not counted.')
 })
 
 test('lastTimeReportOn as a Date (what mysql2 actually returns for a DATE column) is read correctly', async () => {

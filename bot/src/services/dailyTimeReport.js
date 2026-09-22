@@ -63,6 +63,20 @@ function postedMapFor(dbArg) {
   return m
 }
 
+// Backstop for "a channel was created this run, but its id could not be
+// persisted": db -> Map<guildId, true>. Mirrors postedThisRun's shape. A
+// failed persist already aborts this pass's post (see resolveChannel below),
+// but with nothing remembering that a channel now exists, every following
+// tick would see the config still empty and create yet another #time-reports
+// while it keeps failing to save the id. Set right after a create whose
+// persist attempt fails; checked before ever calling `channels.create` again.
+const createdThisRun = new WeakMap()
+function createdMapFor(dbArg) {
+  let m = createdThisRun.get(dbArg)
+  if (!m) { m = new Map(); createdThisRun.set(dbArg, m) }
+  return m
+}
+
 /**
  * The channel to post in: the configured one, or a fresh #time-reports that
  * @everyone can read but not write.
@@ -74,9 +88,11 @@ function postedMapFor(dbArg) {
  * pass skips its post and retries next tick. Likewise, a `create` that
  * succeeds but whose id we then fail to persist must not be posted into:
  * that id would be lost and every following due day would create yet
- * another channel.
+ * another channel. And once that has happened once this run, it must not
+ * happen again on the next tick — `createdGuard` remembers it, the same way
+ * `postedThisRun` remembers a send that outran its state write.
  */
-async function resolveChannel(guild, cfg, update) {
+async function resolveChannel(guild, cfg, update, dbArg) {
   if (cfg.timeReportChannelId) {
     try {
       const existing = await guild.channels.fetch(cfg.timeReportChannelId)
@@ -88,6 +104,14 @@ async function resolveChannel(guild, cfg, update) {
       }
       // Unknown Channel: the configured channel really is gone; fall through and recreate it.
     }
+  }
+
+  const createdGuard = createdMapFor(dbArg)
+  if (createdGuard.get(guild.id)) {
+    // Already created a channel this run and failed to persist its id — do
+    // not create a second one; just keep skipping this guild until either
+    // the persist succeeds or the process restarts.
+    return null
   }
 
   const created = await guild.channels.create({
@@ -110,7 +134,10 @@ async function resolveChannel(guild, cfg, update) {
   } catch (e) {
     // The id could not be persisted: posting now would mean the next due day
     // creates ANOTHER channel (config still shows none configured), and the
-    // day after that another. Abort this pass's post instead.
+    // day after that another. Abort this pass's post instead, and remember
+    // that a channel already exists so the next tick does not create yet
+    // another one on top of it.
+    createdGuard.set(guild.id, true)
     console.warn('[dailyTimeReport] could not persist the new channel id, skipping this post:', errText(e))
     return null
   }
@@ -188,6 +215,13 @@ export async function runDailyReportPass(client, {
           continue
         }
 
+        // Resolved before the two DB reads and the bulk member fetch below:
+        // a guild whose channel cannot be resolved (or created, or persisted)
+        // should cost one REST call per tick, not a full pass's worth of work
+        // every single minute forever.
+        const channel = await resolveChannel(guild, cfg, update, dbArg)
+        if (!channel) continue
+
         const { since, until } = dayWindow(due, tz)
         const totals = await dbArg.clockEntry.sumByPersonRange({ guildConfigId: cfg.id, since, until })
         // `all: true` or guildMemberFindMany silently caps the roster at 25.
@@ -197,8 +231,6 @@ export async function runDailyReportPass(client, {
 
         const members = await hydrateRoster(guild, rows || [])
         const ranked = rankDailyTotals(members, totals)
-        const channel = await resolveChannel(guild, cfg, update)
-        if (!channel) continue
 
         const label = new Intl.DateTimeFormat('en-GB', {
           weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: tz,
@@ -210,6 +242,11 @@ export async function runDailyReportPass(client, {
           .setDescription(reportLines(ranked).join('\n') || 'Nobody is on the roster yet.')
           .addFields({ name: 'Team total', value: formatDuration(total) })
           .setColor(0x5865f2)
+          // The aggregate excludes open timers (no minutes yet), and the day
+          // is closed for good right after this post — clockWatch's later
+          // auto-stop of a forgotten timer never revisits it. Say so, rather
+          // than let a running timer silently read as 0m.
+          .setFooter({ text: 'Timers still running at 23:59 are not counted.' })
 
         await channel.send({ embeds: [embed] })
         // Recorded in-memory immediately: even if the persisted write below
