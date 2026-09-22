@@ -78,6 +78,16 @@
     "clock-out": [
       "Verified"
     ],
+    "log-time": [
+      "Verified"
+    ],
+    "my-time": [
+      "Verified"
+    ],
+    "time-report": [
+      "CEO",
+      "Server Manager"
+    ],
     "sql-dump": [
       "Senior Dev",
       "CEO",
@@ -171,6 +181,9 @@
     "edit-docs": true,
     "clock-in": true,
     "clock-out": true,
+    "log-time": true,
+    "my-time": true,
+    "time-report": true,
     "sql-dump": true,
     "create-task": true,
     "update-task": true,
@@ -275,14 +288,29 @@
       "detail": "Pick a project, then submit a page title and markdown body. The page is saved in the bot database and shows up in **/docs** under that project. It is not published to the documentation site, and a page synced from the documentation repository cannot be edited here — pick a different title if one already holds that address."
     },
     "clock-in": {
-      "summary": "Clock in (start tracking time).",
-      "syntax": "`/clock-in`",
-      "detail": "Records your clock-in time. Use **/clock-out** when done."
+      "summary": "Start tracking your time against a task.",
+      "syntax": "`/clock-in task:<task>`",
+      "detail": "Pick the task you are working on, or **No task — general work**. You can pick your own tasks and any task in a project you belong to; leadership can pick any task. Clocking in on the task you are already on changes nothing and tells you how long it has run. Picking a different task stops the old timer and starts the new one in one step. Use **/clock-out** when you finish."
     },
     "clock-out": {
-      "summary": "Clock out (stop tracking time).",
-      "syntax": "`/clock-out`",
-      "detail": "Records your clock-out time and logs the session."
+      "summary": "Stop tracking your time.",
+      "syntax": "`/clock-out [note:<text>]`",
+      "detail": "Stops your running timer and reports the session length and, for a task, that task's new total across everyone. Add an optional note about what you got done."
+    },
+    "log-time": {
+      "summary": "Add time you already spent on a task.",
+      "syntax": "`/log-time task:<task> duration:<time> [when:<day>] [note:<text>]`",
+      "detail": "Log work you did without a timer. Duration takes **2h30m**, **90m**, **2.5h** or **1:30**; there is no maximum. **when** is the day the work ended: **today** (the default), **yesterday** or **YYYY-MM-DD** (UTC days). The entry ends at the current time of day on that date and runs backwards by the duration, and it cannot end in the future. You can pick your own tasks and any task in a project you belong to; leadership can pick any task, and **No task — general work** is always available. The reply shows the task's new total across everyone, and warns you if the entry overlaps another of yours. It is still saved, so check **/my-time**."
+    },
+    "my-time": {
+      "summary": "See your tracked time, and fix or delete an entry.",
+      "syntax": "`/my-time [range:<range>] [person:<member>]`",
+      "detail": "Shows your time for **today**, **this week** (the default), **this month** or **all time**: a running timer, a total per task, and your recent entries. Pick an entry from the list to **Edit** its duration, the day it ended or its note, or to **Delete** it. A running timer is stopped with **/clock-out**, not here. CEO and Server Manager can pass **person** to see, edit and delete someone else's entries; every change to time on a task is written to that task's activity log."
+    },
+    "time-report": {
+      "summary": "The team's tracked time by person, project and task.",
+      "syntax": "`/time-report [person:<member>] [project:<project>] [task:<task>] [range:<range>]`",
+      "detail": "CEO and Server Manager only. One report of the team's closed time entries for **today**, **this week** (the default), **this month** or **all time**: totals per person and per project (largest first), and the top tasks, each shown as time logged **of** its estimate with a percentage and an **over** flag when it has gone past the estimate. Narrow it with **person**, **project** or **task**; picking **No task — general work** shows only time logged against no task. Lists show the top 10 with an 'and N more' note. Running timers are not counted. Only the latest 2000 entries are read, and the report says so when that limit is hit."
     },
     "sql-dump": {
       "summary": "Versioned SQL dumps per project schema (history, not project-db).",
@@ -307,7 +335,7 @@
     "update-task": {
       "summary": "Update an existing task (status, scope, assignees, project, etc.).",
       "syntax": "`/update-task` (opens the Find panel) — or — `/update-task task:<pick> [status] [scope] [assignees] [project] [blocked_by] [unblock] …`",
-      "detail": "Run **/update-task** with nothing filled in to open the **Find a task** panel: pick a project, (CEO/Server Manager) pick a person, choose the task from the list, and its **task page** opens with everything you can change: **Edit details** (status, scope, assignees, title, description), **Test counts**, and dropdowns for project, implementation status and blockers (add or remove) — dropdown changes save as soon as you pick them. **Subtasks** opens a checklist: tick subtasks as finished, or add one (title, description, scope, assignees). A task cannot be finished while any subtask is open, and finishing the last subtask completes the task automatically; reopening a subtask reopens a finished task. Subtasks have no Discord channel of their own — their updates go in the parent's channel. Finished tasks are hidden until you press **Show finished**. To go straight to a task, type in the **task** field instead (it also searches by project, scope and person) and set any field as options — including blockers (**blocked_by**/**unblock**), **project**, and the API/QA/AC counts. CEO and Server Manager see and can update every task; everyone else only sees, and can only update, a task they hold (assigned to a feature, tagged on a bug); pasting an id that is not yours is refused the same as one that does not exist. Every change is recorded (who, what, when) and shown on the task's page in UBS Doc. Attaching a project makes the task show up under that project in **/dashboard**."
+      "detail": "Run **/update-task** with nothing filled in to open the **Find a task** panel: pick a project, (CEO/Server Manager) pick a person, choose the task from the list, and its **task page** opens with everything you can change: **Edit details** (status, scope, assignees, title, description), **Counts & estimate** (API/QA/AC counts plus a time estimate), and dropdowns for project, implementation status and blockers (add or remove) — dropdown changes save as soon as you pick them. **Subtasks** opens a checklist: tick subtasks as finished, or add one (title, description, scope, assignees). A task cannot be finished while any subtask is open, and finishing the last subtask completes the task automatically; reopening a subtask reopens a finished task. Subtasks have no Discord channel of their own — their updates go in the parent's channel. Finished tasks are hidden until you press **Show finished**. To go straight to a task, type in the **task** field instead (it also searches by project, scope and person) and set any field as options — including blockers (**blocked_by**/**unblock**), **project**, and the API/QA/AC counts. CEO and Server Manager see and can update every task; everyone else only sees, and can only update, a task they hold (assigned to a feature, tagged on a bug); pasting an id that is not yours is refused the same as one that does not exist. Every change is recorded (who, what, when) and shown on the task's page in UBS Doc. Attaching a project makes the task show up under that project in **/dashboard**."
     },
     "create-project-role": {
       "summary": "Create or repair a project's role, and with it the project's whole private section.",

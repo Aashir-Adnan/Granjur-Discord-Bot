@@ -19,6 +19,7 @@ import { startTicketReminder } from "./services/ticketReminder.js";
 import { startMeetingPipelineWorker } from "./services/meetingPipelineWorker.js";
 import { startDocsSync } from "./services/docsSync.js";
 import { startMemberNameSync, syncOneMember } from "./services/memberNameSync.js";
+import { startClockWatch } from "./services/clockWatch.js";
 import {
   isRateLimitError,
   getRetryAfter,
@@ -53,6 +54,7 @@ client.once(Events.ClientReady, async () => {
   startMeetingPipelineWorker(client);
   startDocsSync(client);
   startMemberNameSync(client);
+  startClockWatch(client);
   console.log(`Logged in as ${client.user.tag}`);
 });
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -183,6 +185,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       "uth_basics", // /update-task hub: opens the details modal
       "uth_counts", // /update-task hub: opens the test-counts modal
       "uths_add", // subtask checklist: opens the add-subtask modal
+      "mt_edit", // /my-time: opens the edit-entry modal
       "create_task_repo", // repo select → details modal for bug
       // create-task: type buttons and quick steps skip defer; repo/project step defers (async DB work)
       "create_task_type_feature",
@@ -208,7 +211,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     // message is edited in place instead of a second reply appearing.
     const skipModalDefer =
       interaction.isModalSubmit() &&
-      (noDeferModalIds.includes(customId) || customId.startsWith("ut_edit:") || customId.startsWith("ut_counts:") || customId.startsWith("ut_sub:"));
+      (noDeferModalIds.includes(customId) || customId.startsWith("ut_edit:") || customId.startsWith("ut_counts:") || customId.startsWith("ut_sub:") || customId.startsWith("mt_edit:"));
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
       if (!skipDefer) {
         try {

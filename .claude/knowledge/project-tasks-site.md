@@ -437,6 +437,46 @@ read side.
   flagged `unknown` and the site shows "Former member" instead of an id tail (the cause of
   the reported "shows a number" was not verified against production data).
 
+## Task time tracking (migration 023)
+
+`clockentry`: `taskId` (nullable, no FK — deleting a task must never delete the hours
+someone worked), `minutes` (stored alongside `clockInAt`/`clockOutAt` so a closed entry's
+duration survives a retroactive edit without recomputing it, and so `/log-time` can write
+a manual entry that never had a live timer), `note`, `source` (`timer` | `manual` |
+`auto_stopped`), `remindedAt`. `db.clockEntry.sumByTask({ guildConfigId, taskIds })` is one
+`SUM(minutes) ... GROUP BY taskId, discordId` query, filtered to `minutes IS NOT NULL`
+(open entries have none). `task.estimateMinutes` is a plain nullable INT column.
+
+Commands: `/clock-in`, `/clock-out`, `/log-time` (retroactive), `/my-time` (edit/delete your
+own entries), `/time-report` (leadership, by person/project/task, gated on the dashboard
+role). `services/clockWatch.js` polls every 5 minutes: reminds once at
+`clockReminderHours` (default 6, DM with Keep going/Stop now buttons, `remindedAt` stamped
+even when the DM fails so a closed-DM user is not retried every pass) and auto-closes at
+`clockCapHours` (default 12) — closed AT the cap instant, not at "now", so a bot outage
+does not log a full day; `source: 'auto_stopped'`. `guildconfig.clockReminderHours` /
+`clockCapHours` are database-only settings (no slash command); null means the default.
+
+Storage limits, not business limits: `parseDuration` has no upper bound by design (a long
+entry is someone's real week), but anything written to a 32-bit INT column is checked with
+`Number.isSafeInteger(minutes) && minutes <= 2147483647` and refused ("too large to store")
+rather than silently truncated — see `log-time.js`'s `resolveEntryWindow` and
+`taskHub.js`'s `countsFromModal` (the estimate).
+
+**Hub UI (Task 8):** the hub's button row is already at 5 buttons and the hub itself at
+Discord's 5-action-row ceiling, so there is no separate "Time" button. The estimate rides
+as a 4th field on the existing counts modal (`Counts & estimate`, custom id unchanged:
+`uth_counts:<id>`/`ut_counts:<id>`), prefilled/parsed with `formatDuration`/`parseDuration`
+and round-tripping exactly. Logged time is read-only on the hub's `Time` embed field
+(`db.clockEntry.sumByTask` via `loadHub`, wrapped so a missing `clockEntry` namespace or a
+rejected call — even a synchronous TypeError — never breaks the hub; total defaults to 0).
+An estimate change is activity-logged (`estimateMinutes` in `taskActivity.js`'s
+`SCALAR_FIELDS`) and, when it reaches a task's own channel via `notifyTaskUpdate`, shown as
+a duration (`8h`), not raw minutes.
+
+`clockEntryUpdate`'s query once read `` `ClockEntry` `` (capitalised) while every other query
+against this table used lowercase `` `clockentry` `` — silently fatal on a case-sensitive
+server (production). Fixed in Task 1; every query here is now lowercase.
+
 ## Related
 
 [[project-docs]] (the other bot-to-site data path, UBS-Doc markdown into MySQL — this

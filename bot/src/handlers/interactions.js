@@ -70,6 +70,10 @@ export default async function handleInteractions(interaction) {
       return runCreateTaskHandler(interaction, async (i) =>
         (await import("../services/taskHub.js")).handleSubtaskSubmit(i),
       );
+    if (customId.startsWith("mt_edit:"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/timePanel.js")).handleTimeEditSubmit(i),
+      );
     if (customId === "create_task_modal")
       return runCreateTaskHandler(interaction, (i) =>
         createTaskCmd.handleTaskModal(i),
@@ -124,6 +128,14 @@ export default async function handleInteractions(interaction) {
     if (customId.startsWith("uth_"))
       return runCreateTaskHandler(interaction, async (i) =>
         (await import("../services/taskHub.js")).handleHubComponent(i),
+      );
+    if (customId.startsWith("mt_"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/timePanel.js")).handleTimeComponent(i),
+      );
+    if (customId.startsWith("clk_"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/clockWatch.js")).handleClockButton(i),
       );
     if (customId.startsWith("uths_"))
       return runCreateTaskHandler(interaction, async (i) =>
@@ -299,6 +311,10 @@ export default async function handleInteractions(interaction) {
     if (customId.startsWith("uth_"))
       return runCreateTaskHandler(interaction, async (i) =>
         (await import("../services/taskHub.js")).handleHubComponent(i),
+      );
+    if (customId.startsWith("mt_"))
+      return runCreateTaskHandler(interaction, async (i) =>
+        (await import("../services/timePanel.js")).handleTimeComponent(i),
       );
     if (customId.startsWith("uths_"))
       return runCreateTaskHandler(interaction, async (i) =>

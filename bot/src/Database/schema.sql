@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS guildconfig (
   seniorRoleIds JSON DEFAULT ('[]'),
   clockedInRoleId VARCHAR(64),
   timezone VARCHAR(64) DEFAULT NULL,
+  clockReminderHours INT DEFAULT NULL,
+  clockCapHours INT DEFAULT NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 );
@@ -89,6 +91,7 @@ CREATE TABLE IF NOT EXISTS task (
   externalId VARCHAR(128) DEFAULT NULL,
   meetingId VARCHAR(36) DEFAULT NULL,
   parentTaskId VARCHAR(36) DEFAULT NULL,
+  estimateMinutes INT DEFAULT NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   KEY (guildConfigId),
@@ -444,9 +447,16 @@ CREATE TABLE IF NOT EXISTS clockentry (
   discordId VARCHAR(64) NOT NULL,
   clockInAt DATETIME(3) NOT NULL,
   clockOutAt DATETIME(3),
+  taskId VARCHAR(36) DEFAULT NULL,
+  minutes INT DEFAULT NULL,
+  note VARCHAR(500) DEFAULT NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'timer',
+  remindedAt DATETIME(3) DEFAULT NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   KEY (guildConfigId, discordId),
   KEY (clockInAt),
+  KEY idx_clockentry_task (guildConfigId, taskId),
+  KEY idx_clockentry_person (guildConfigId, discordId, clockInAt),
   FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 

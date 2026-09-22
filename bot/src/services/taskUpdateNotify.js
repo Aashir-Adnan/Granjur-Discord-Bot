@@ -14,6 +14,7 @@ import { holdersOf, idList } from '../utils/taskLabel.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
 import { isTicketChannel } from '../utils/taskChannelName.js'
 import { openBlockers, TERMINAL_STATUSES, unblockNotice } from '../utils/taskDeps.js'
+import { formatDuration } from '../utils/timeTracking.js'
 import db from '../db/index.js'
 
 export { TERMINAL_STATUSES }
@@ -26,6 +27,7 @@ const FIELD_LABELS = {
   passedApiTests: 'API tests passed',
   passedQaTests: 'QA tests passed',
   passedAcceptanceCriteria: 'acceptance criteria passed',
+  estimateMinutes: 'estimate',
 }
 
 /** Who gained and who lost the task. Pure. */
@@ -53,6 +55,12 @@ export function changeSummary(before, updates) {
     // A description or title diff is unreadable inline; say it changed.
     if (key === 'description' || key === 'title') {
       lines.push(`**${label}** updated`)
+      continue
+    }
+    // The estimate is stored in minutes; the channel post reads a duration.
+    // formatDuration(null/undefined) is already '—', matching the fallback below.
+    if (key === 'estimateMinutes') {
+      lines.push(`**${label}**: \`${formatDuration(prev)}\` → \`${formatDuration(next)}\``)
       continue
     }
     lines.push(`**${label}**: \`${prev ?? '—'}\` → \`${next ?? '—'}\``)
