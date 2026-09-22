@@ -92,6 +92,14 @@ export async function updateGuildConfig(guildId, data) {
     sets.push("clockCapHours = ?");
     vals.push(data.clockCapHours);
   }
+  if (data.timeReportChannelId !== undefined) {
+    sets.push("timeReportChannelId = ?");
+    vals.push(data.timeReportChannelId);
+  }
+  if (data.lastTimeReportOn !== undefined) {
+    sets.push("lastTimeReportOn = ?");
+    vals.push(data.lastTimeReportOn);
+  }
   if (sets.length === 0) return getGuildConfig(guildId);
   vals.push(guildId);
   await query(
@@ -2118,6 +2126,23 @@ async function clockEntrySumByTask({ guildConfigId, taskIds = [] }) {
   );
 }
 
+// Per-person totals for one date span. A separate SQL aggregate rather than a
+// findMany + JS sum because the daily post is public and must be exact: a
+// capped fetch that silently understates somebody's day is worse than no post.
+// `since`/`until` are bound as JS Dates, matching clockEntryFindMany and every
+// clockentry write — this pool has no `timezone` option, so both sides of the
+// comparison use the same local wall-clock convention. Do not "fix" to ISO.
+export function clockEntrySumByPersonRangeSql() {
+  return `SELECT discordId, SUM(minutes) AS minutes FROM \`clockentry\`
+     WHERE guildConfigId = ? AND minutes IS NOT NULL AND clockInAt >= ? AND clockInAt < ?
+     GROUP BY discordId`;
+}
+
+async function clockEntrySumByPersonRange({ guildConfigId, since, until }) {
+  if (!guildConfigId || !since || !until) return [];
+  return query(clockEntrySumByPersonRangeSql(), [guildConfigId, since, until]);
+}
+
 async function projectMemberFindByMember({ where }) {
   return query(
     "SELECT * FROM `projectmember` WHERE guildConfigId = ? AND discordId = ? LIMIT 200",
@@ -2435,6 +2460,7 @@ const db = {
     findMany: clockEntryFindMany,
     findOpen: clockEntryFindOpen,
     sumByTask: clockEntrySumByTask,
+    sumByPersonRange: clockEntrySumByPersonRange,
   },
   userChannel: {
     create: userChannelCreate,

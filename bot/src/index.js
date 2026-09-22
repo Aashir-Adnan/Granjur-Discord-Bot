@@ -20,6 +20,7 @@ import { startMeetingPipelineWorker } from "./services/meetingPipelineWorker.js"
 import { startDocsSync } from "./services/docsSync.js";
 import { startMemberNameSync, syncOneMember } from "./services/memberNameSync.js";
 import { startClockWatch } from "./services/clockWatch.js";
+import { startDailyTimeReport } from "./services/dailyTimeReport.js";
 import {
   isRateLimitError,
   getRetryAfter,
@@ -55,6 +56,7 @@ client.once(Events.ClientReady, async () => {
   startDocsSync(client);
   startMemberNameSync(client);
   startClockWatch(client);
+  startDailyTimeReport(client);
   console.log(`Logged in as ${client.user.tag}`);
 });
 client.on(Events.InteractionCreate, async (interaction) => {

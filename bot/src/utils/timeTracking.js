@@ -173,3 +173,45 @@ export function overlaps(entries) {
   }
   return out
 }
+
+const pad = (n) => String(n).padStart(2, '0')
+
+/**
+ * The local day whose report is owed at `now`: today once the local clock
+ * reaches the cutoff, otherwise yesterday — whose own 23:59 has already gone.
+ *
+ * Yesterday is computed in calendar terms (Date.UTC normalises day 0 and day
+ * -1 across month and year ends) rather than by subtracting 24h, which would
+ * land on the wrong date across a DST change.
+ */
+export function dueReportDay(now, tz = 'UTC', { hour = 23, minute = 59 } = {}) {
+  const local = new Date(now.getTime() + offsetMinutes(now, tz) * 60000)
+  const h = local.getUTCHours()
+  const past = h > hour || (h === hour && local.getUTCMinutes() >= minute)
+  const { y, m, d } = localDate(now, tz)
+  const ref = new Date(Date.UTC(y, m, past ? d : d - 1))
+  return `${ref.getUTCFullYear()}-${pad(ref.getUTCMonth() + 1)}-${pad(ref.getUTCDate())}`
+}
+
+/** The half-open [since, until) instants covering local day `key` in `tz`. */
+export function dayWindow(key, tz = 'UTC') {
+  const [y, m, d] = String(key).split('-').map(Number)
+  return { since: midnightOf(y, m - 1, d, tz), until: midnightOf(y, m - 1, d + 1, tz) }
+}
+
+/**
+ * Every roster member with their minutes for the day — zero when they logged
+ * nothing, because the daily post lists everyone on purpose. Highest first,
+ * ties alphabetical, so the zeros collect into a predictable block.
+ */
+export function rankDailyTotals(members, totals) {
+  const byId = new Map()
+  for (const row of totals || []) byId.set(String(row.discordId), Number(row.minutes) || 0)
+  return (members || [])
+    .map((mem) => ({
+      discordId: String(mem.discordId),
+      name: mem.name,
+      minutes: byId.get(String(mem.discordId)) || 0,
+    }))
+    .sort((a, b) => b.minutes - a.minutes || String(a.name).localeCompare(String(b.name)))
+}

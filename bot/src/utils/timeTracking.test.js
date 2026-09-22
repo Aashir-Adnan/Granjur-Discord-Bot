@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   parseDuration, formatDuration, entryMinutes, runawayState, weekStart, dayStart, rangeFor,
   sumByTask, sumByPerson, overlaps, DEFAULT_REMIND_HOURS, DEFAULT_CAP_HOURS,
+  dayWindow, dueReportDay, rankDailyTotals,
 } from './timeTracking.js'
 
 test('parseDuration accepts every shape a person will type', () => {
@@ -200,4 +201,48 @@ test('rangeFor reaches one minute past now, so an entry made this second is incl
     assert.equal(iso(rangeFor(k, now, 'UTC').until), '2026-09-22T15:01:00.000Z', k)
   }
   assert.equal(rangeFor('TODAY ', now, 'UTC').label, 'today', 'the keyword is trimmed and case-insensitive')
+})
+
+test('dueReportDay is today once the cutoff passes, yesterday before it', () => {
+  // 23:58 local -> yesterday is still the day owed a report.
+  assert.equal(dueReportDay(new Date('2026-09-22T18:58:00Z'), 'Asia/Karachi'), '2026-09-21')
+  // 23:59 local -> today is now due.
+  assert.equal(dueReportDay(new Date('2026-09-22T18:59:00Z'), 'Asia/Karachi'), '2026-09-22')
+  // Just after local midnight, yesterday is due (and still unposted if we were down).
+  assert.equal(dueReportDay(new Date('2026-09-22T19:30:00Z'), 'Asia/Karachi'), '2026-09-22')
+})
+
+test('dueReportDay rolls back across a month boundary without date arithmetic bugs', () => {
+  assert.equal(dueReportDay(new Date('2026-09-01T05:00:00Z'), 'UTC'), '2026-08-31')
+})
+
+test('dayWindow is the half-open local day', () => {
+  const { since, until } = dayWindow('2026-09-22', 'Asia/Karachi')
+  assert.equal(since.toISOString(), '2026-09-21T19:00:00.000Z')
+  assert.equal(until.toISOString(), '2026-09-22T19:00:00.000Z')
+})
+
+test('dayWindow spans a month end', () => {
+  const { until } = dayWindow('2026-09-30', 'UTC')
+  assert.equal(until.toISOString(), '2026-10-01T00:00:00.000Z')
+})
+
+test('rankDailyTotals gives everyone a row, zeros included, highest first', () => {
+  const members = [
+    { discordId: '1', name: 'Ali' },
+    { discordId: '2', name: 'Zara' },
+    { discordId: '3', name: 'Bilal' },
+  ]
+  const totals = [{ discordId: '2', minutes: 120 }]
+  assert.deepEqual(rankDailyTotals(members, totals), [
+    { discordId: '2', name: 'Zara', minutes: 120 },
+    // Ties break alphabetically so the zero block reads predictably.
+    { discordId: '1', name: 'Ali', minutes: 0 },
+    { discordId: '3', name: 'Bilal', minutes: 0 },
+  ])
+})
+
+test('rankDailyTotals ignores totals for people not on the roster', () => {
+  const ranked = rankDailyTotals([{ discordId: '1', name: 'Ali' }], [{ discordId: '9', minutes: 60 }])
+  assert.deepEqual(ranked, [{ discordId: '1', name: 'Ali', minutes: 0 }])
 })
