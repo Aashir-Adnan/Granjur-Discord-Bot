@@ -215,7 +215,11 @@ test('Unknown Channel (10003) recreates the channel and persists the new id', as
   await runDailyReportPass(client, { db, getConfig, update, now: new Date('2026-09-22T23:59:00Z') })
   assert.equal(created.length, 1)
   assert.equal(created[0].permissionOverwrites[0].id, 'everyone')
-  assert.deepEqual(created[0].permissionOverwrites[0].allow, [PermissionFlagsBits.ViewChannel])
+  assert.deepEqual(
+    created[0].permissionOverwrites[0].allow,
+    [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+    'ViewChannel without ReadMessageHistory is a channel everyone sees and nobody can read',
+  )
   assert.deepEqual(created[0].permissionOverwrites[0].deny, [PermissionFlagsBits.SendMessages])
   assert.equal(sent.length, 1)
   assert.equal(state.timeReportChannelId, 'chan2', 'the new channel id is persisted')
@@ -451,4 +455,122 @@ test('one guild failing does not stop another guild from posting', async () => {
   await quietly(() => runDailyReportPass(client, { db, getConfig, update, now: new Date('2026-09-22T23:59:00Z') }))
   assert.equal(sentA.length, 0, 'guild A failed partway through and posted nothing')
   assert.equal(sentB.length, 1, 'guild B still gets its report despite guild A failing')
+})
+
+// ---- the readable-channel repair ----------------------------------------
+
+// A permission overwrite as discord.js hands it back: allow is a bitfield
+// with .has(), not an array.
+function overwrite(bits) {
+  return { allow: { has: (bit) => bits.includes(bit) } }
+}
+
+function readableHarness({ bits, edits }) {
+  const sent = []
+  const channel = {
+    id: 'chan1',
+    send: async (payload) => { sent.push(payload); return { id: 'msg1' } },
+    permissionOverwrites: {
+      cache: new Map(bits ? [['everyone', overwrite(bits)]] : []),
+      edit: async (id, perms) => { edits.push({ id, perms }) },
+    },
+  }
+  const guild = {
+    id: 'g1',
+    roles: { everyone: { id: 'everyone' } },
+    members: { fetch: async ({ user }) => new Map(user.map((id) => [id, { id, displayName: `User ${id}` }])) },
+    channels: { fetch: async () => channel, create: async () => { throw new Error('must not create') } },
+  }
+  const client = { guilds: { cache: new Map([['g1', guild]]) } }
+  const db = {
+    clockEntry: { sumByPersonRange: async () => [] },
+    guildMember: { findMany: async () => [{ discordId: '1', displayName: 'Ali', status: 'approved' }] },
+  }
+  const state = { id: 'cfg1', timezone: 'UTC', lastTimeReportOn: '2026-09-21', timeReportChannelId: 'chan1' }
+  const getConfig = async () => ({ ...state })
+  const update = async (guildId, data) => { Object.assign(state, data) }
+  return { client, db, getConfig, update, sent, state }
+}
+
+test('a configured channel @everyone cannot read is opened up, once', async () => {
+  const edits = []
+  // The channel as production actually has it: ViewChannel only.
+  const h = readableHarness({ bits: [PermissionFlagsBits.ViewChannel], edits })
+
+  await runDailyReportPass(h.client, {
+    db: h.db, getConfig: h.getConfig, update: h.update, now: new Date('2026-09-22T23:59:00Z'),
+  })
+  assert.equal(edits.length, 1, 'the unreadable channel is repaired')
+  assert.equal(edits[0].id, 'everyone')
+  assert.deepEqual(edits[0].perms, { ViewChannel: true, ReadMessageHistory: true })
+  assert.equal(h.sent.length, 1, 'and the report still goes out')
+
+  // Next day, same process: the repair is not re-applied every tick.
+  h.state.lastTimeReportOn = '2026-09-22'
+  await runDailyReportPass(h.client, {
+    db: h.db, getConfig: h.getConfig, update: h.update, now: new Date('2026-09-23T23:59:00Z'),
+  })
+  assert.equal(edits.length, 1, 'once per process run, not once per tick')
+  assert.equal(h.sent.length, 2)
+})
+
+test('the repair happens on a day that is already posted', async () => {
+  // Production's exact state: today's report already went out into a channel
+  // nobody could read. If the repair only ran on the post path, the fix would
+  // not land until 23:59 tomorrow.
+  const edits = []
+  const h = readableHarness({ bits: [PermissionFlagsBits.ViewChannel], edits })
+  h.state.lastTimeReportOn = '2026-09-22'
+
+  await runDailyReportPass(h.client, {
+    db: h.db, getConfig: h.getConfig, update: h.update, now: new Date('2026-09-23T09:00:00Z'),
+  })
+  assert.equal(h.sent.length, 0, 'the day is already done — nothing new is posted')
+  assert.equal(edits.length, 1, 'but the channel is opened up straight away')
+  assert.deepEqual(edits[0].perms, { ViewChannel: true, ReadMessageHistory: true })
+})
+
+test('a channel @everyone can already read is left alone', async () => {
+  const edits = []
+  const h = readableHarness({
+    bits: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+    edits,
+  })
+
+  await runDailyReportPass(h.client, {
+    db: h.db, getConfig: h.getConfig, update: h.update, now: new Date('2026-09-22T23:59:00Z'),
+  })
+  assert.equal(edits.length, 0, 'nothing to repair, so no permission write')
+  assert.equal(h.sent.length, 1)
+})
+
+test('a failed permission repair warns but still posts', async () => {
+  // Built inline rather than via the harness: here the edit itself throws.
+  const sent = []
+  const channel = {
+    id: 'chan1',
+    send: async (payload) => { sent.push(payload) },
+    permissionOverwrites: {
+      cache: new Map([['everyone', overwrite([PermissionFlagsBits.ViewChannel])]]),
+      edit: async () => { throw new Error('Missing Permissions') },
+    },
+  }
+  const guild = {
+    id: 'g1',
+    roles: { everyone: { id: 'everyone' } },
+    members: { fetch: async ({ user }) => new Map(user.map((id) => [id, { id, displayName: `User ${id}` }])) },
+    channels: { fetch: async () => channel, create: async () => { throw new Error('must not create') } },
+  }
+  const client = { guilds: { cache: new Map([['g1', guild]]) } }
+  const db = {
+    clockEntry: { sumByPersonRange: async () => [] },
+    guildMember: { findMany: async () => [{ discordId: '1', displayName: 'Ali', status: 'approved' }] },
+  }
+  const state = { id: 'cfg1', timezone: 'UTC', lastTimeReportOn: '2026-09-21', timeReportChannelId: 'chan1' }
+  const getConfig = async () => ({ ...state })
+  const update = async (guildId, data) => { Object.assign(state, data) }
+
+  await quietly(() => runDailyReportPass(client, { db, getConfig, update, now: new Date('2026-09-22T23:59:00Z') }))
+  assert.equal(sent.length, 1, 'an unreadable report still beats no report')
+  assert.equal(state.lastTimeReportOn, '2026-09-22')
 })

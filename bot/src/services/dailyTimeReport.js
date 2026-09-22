@@ -77,6 +77,74 @@ function createdMapFor(dbArg) {
   return m
 }
 
+// Guilds whose channel has already been checked this run: db ->
+// Map<guildId, true>. The check below repairs a channel created before
+// ReadMessageHistory was granted, but only once per process — an admin who
+// later locks the channel down on purpose should not have the bot silently
+// undo them every 60 seconds.
+const reconciledThisRun = new WeakMap()
+function reconciledMapFor(dbArg) {
+  let m = reconciledThisRun.get(dbArg)
+  if (!m) { m = new Map(); reconciledThisRun.set(dbArg, m) }
+  return m
+}
+
+/** Does @everyone already have both bits allowed on this channel? */
+function everyoneCanRead(channel, everyoneId) {
+  const ow = channel?.permissionOverwrites?.cache?.get?.(everyoneId)
+  if (!ow || typeof ow.allow?.has !== 'function') return false
+  return ow.allow.has(PermissionFlagsBits.ViewChannel) && ow.allow.has(PermissionFlagsBits.ReadMessageHistory)
+}
+
+/**
+ * Opens a channel back up to @everyone.
+ *
+ * Failing to edit it (most likely a missing ManageRoles) is warned about but
+ * never blocks a post: an unreadable report still beats no report, and the
+ * warning is what says which one happened.
+ */
+async function ensureEveryoneCanRead(guild, channel) {
+  const everyoneId = guild.roles?.everyone?.id
+  if (!everyoneId) return
+  if (everyoneCanRead(channel, everyoneId)) return
+  if (typeof channel?.permissionOverwrites?.edit !== 'function') return
+
+  try {
+    await channel.permissionOverwrites.edit(everyoneId, { ViewChannel: true, ReadMessageHistory: true })
+  } catch (e) {
+    console.warn('[dailyTimeReport] could not open the channel to @everyone:', errText(e))
+  }
+}
+
+/**
+ * Repairs a configured channel that @everyone cannot actually read.
+ *
+ * The first #time-reports was created with ViewChannel only, so it exists in
+ * production as a channel everyone can see and nobody can read. Fixing the
+ * create path does nothing for it — that channel is already made.
+ *
+ * This runs before the due-day checks rather than inside resolveChannel,
+ * which only runs on a day that still owes a post: a repair deferred to
+ * there would leave an already-posted report unreadable for up to a day.
+ * The once-per-run guard keeps the cost at one channel fetch per process,
+ * not one per tick.
+ */
+async function reconcileChannelAccess(guild, cfg, dbArg) {
+  if (!cfg.timeReportChannelId) return
+  const guard = reconciledMapFor(dbArg)
+  if (guard.get(guild.id)) return
+  guard.set(guild.id, true)
+
+  let channel = null
+  try {
+    channel = await guild.channels.fetch(cfg.timeReportChannelId)
+  } catch {
+    // Whatever went wrong here, the post path below reports it properly.
+    return
+  }
+  if (channel) await ensureEveryoneCanRead(guild, channel)
+}
+
 /**
  * The channel to post in: the configured one, or a fresh #time-reports that
  * @everyone can read but not write.
@@ -120,7 +188,13 @@ async function resolveChannel(guild, cfg, update, dbArg) {
     topic: 'Daily time totals, posted automatically at 23:59.',
     permissionOverwrites: [{
       id: guild.roles.everyone.id,
-      allow: [PermissionFlagsBits.ViewChannel],
+      // ViewChannel alone is not enough to make a channel readable. This
+      // guild's @everyone role does not carry ReadMessageHistory, so a
+      // channel that only allows ViewChannel shows up in the sidebar and
+      // then refuses to render a single message — which is exactly what the
+      // first #time-reports did. Every other public channel this bot makes
+      // pairs the two (see init.js); so does this one.
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
       deny: [PermissionFlagsBits.SendMessages],
     }],
   }).catch((e) => {
@@ -197,6 +271,10 @@ export async function runDailyReportPass(client, {
       try {
         const cfg = await getConfig(guild.id).catch(() => null)
         if (!cfg) continue
+
+        // Before the due checks: a channel that nobody can read should be
+        // fixed the moment this process starts, not at the next 23:59.
+        await reconcileChannelAccess(guild, cfg, dbArg)
 
         const tz = isValidZone(cfg.timezone) ? cfg.timezone : 'UTC'
         const due = dueReportDay(now, tz)
