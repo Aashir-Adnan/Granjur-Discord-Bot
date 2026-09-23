@@ -45,7 +45,8 @@ The UBS-Doc working tree also carries unrelated uncommitted changes from other w
 `audioCapture*.js`) that were deliberately left untouched throughout this build.
 
 ## Next step
-Nothing pending on this feature except the owner's browser walkthrough listed above and the
-backlog decisions (notably the ungated `timeLogged` on `/api/discord/tasks`).
+The owner walked through the Time and Stats tabs on production on 2026-09-23 and confirmed
+both work. Nothing pending on this feature except the backlog decisions (notably the ungated
+`timeLogged` on `/api/discord/tasks`).
 Nothing else is pending on this feature; see `backlog.md`'s "Project Stats — deferred
 follow-ups" for what was consciously left for later.
