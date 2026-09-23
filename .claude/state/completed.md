@@ -4,7 +4,7 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
-## 2026-09-23 — Project Stats tab, and the Time tab under the shared filters (MERGED, NOT PUSHED)
+## 2026-09-23 — Project Stats tab, and the Time tab under the shared filters (SHIPPED)
 
 Spec `docs/superpowers/specs/2026-09-23-project-stats-and-time-filters-design.md`, plan
 `docs/superpowers/plans/2026-09-23-project-stats-and-time-filters.md`, 8 tasks via
@@ -35,11 +35,12 @@ whole-branch review clean after one fix wave.
   `src/styles/portal-compat.css`, `audioCapture*.js`) that were deliberately left
   untouched.
 
-**Status: MERGED LOCALLY, NOT PUSHED, NOT DEPLOYED.** At the owner's "merge back locally" both
-branches were merged `--no-ff` into `main` (CSAAS `9f779d0`, UBS-Doc `c2ad4a4`), the suites
-re-run green on the merged result (9/9 scripts; `tsc` clean + 304 tests), and the
-`feat/project-stats` branches deleted. Both `main`s are ahead of `origin/main`; deploy order
-when pushed is CSAAS first (spec §10). A manual browser walkthrough of
+**Status: SHIPPED.** Merged `--no-ff` into `main` (CSAAS `9f779d0`, UBS-Doc `c2ad4a4`),
+suites green on the merged result (9/9 scripts; `tsc` clean + 304 tests), branches deleted,
+then pushed CSAAS first and the site second (spec §10). Verified: the CSAAS "Deploy to Azure"
+run 35832910941 succeeded (the API returned 502 for ~30s during the pm2 restart, then
+`/api/discord/projects/stats` answered with the token validator's 401 — the object resolves);
+Vercel marked `c2ad4a4` a successful Production deployment. A manual browser walkthrough of
 the Time and Stats tabs was NOT performed (the devtools tooling could not attach to the
 owner's running Chrome); see `session.md` for what a walkthrough should check.
 
