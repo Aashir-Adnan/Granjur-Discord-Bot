@@ -7,12 +7,13 @@ Project Stats tab, and the Time tab under the shared filters — spec
 `docs/superpowers/specs/2026-09-23-project-stats-and-time-filters-design.md`, plan
 `docs/superpowers/plans/2026-09-23-project-stats-and-time-filters.md`.
 
-## Outcome — COMPLETE, IMPLEMENTED ON BRANCHES, NOT MERGED, NOT PUSHED, NOT DEPLOYED
+## Outcome — COMPLETE, MERGED LOCALLY, NOT PUSHED, NOT DEPLOYED
 8 code tasks via subagent-driven development, every task reviewed, 1–2 fix rounds each, a
 final whole-branch review clean after one fix wave. See `completed.md` for the commits
 and files per repo — CSAAS `feat/project-stats` (6 commits `2e8d503..28a6830`), UBS-Doc
-`feat/project-stats` (11 commits `ecfc40f..00ae80c`). Both branches sit unmerged and
-unpushed, awaiting the owner's go-ahead.
+`feat/project-stats` (11 commits `ecfc40f..00ae80c`). Both merged `--no-ff` into `main`
+(CSAAS `9f779d0`, UBS-Doc `c2ad4a4`), suites green on the merged result, branches deleted.
+Neither `main` is pushed.
 
 ## Decisions worth not re-litigating
 - Time series come from the new `/api/discord/projects/stats` endpoint; snapshot numbers
@@ -44,6 +45,7 @@ The UBS-Doc working tree also carries unrelated uncommitted changes from other w
 `audioCapture*.js`) that were deliberately left untouched throughout this build.
 
 ## Next step
-Owner decides on merge/deploy for both `feat/project-stats` branches (CSAAS and UBS-Doc).
+Owner decides on push/deploy of both `main`s — CSAAS first, then the site (spec §10) — and
+does the browser walkthrough listed above.
 Nothing else is pending on this feature; see `backlog.md`'s "Project Stats — deferred
 follow-ups" for what was consciously left for later.
