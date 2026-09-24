@@ -9,6 +9,17 @@ See `.claude/knowledge/status-buckets.md`. Every item below was ruled a parked m
 implementation review — see `.superpowers/sdd/2026-09-24-status-buckets/progress.md`. Newest
 (latest task) first.
 
+- A task assigned and marked done in the same edit gets a fresh channel in Done that is
+  unlocked and unstamped: `applyTaskUpdate` runs the mover before `notify`, and it is
+  `notifyTaskUpdate` that opens the channel for the new assignee — so the mover saw no
+  channel to lock, and the channel that appears a moment later never enters the Done
+  transition. It is created straight into the Done bucket (the placement step reads the
+  new status), just writable and with no 14-day stamp, until the next status write.
+- A Done ticket its bucket had no room for is locked and stamped while sitting in another
+  bucket (brief-mandated: the Done transition runs regardless of whether the move
+  happened). It reads as a live ticket in Open or In progress that silently refuses
+  messages and disappears in a fortnight — consider a warning line on the reply, or the
+  channel, when `reason` is `'full'` or `'no-bucket'` on the way into Done.
 - JSDoc for `plan.buckets` types only the `open` key fully; several "ten section channels"
   strings remain in `projectSection.js` (pre-existing inconsistency, not introduced here).
 - The identical two-line comment explaining the move-into-Done call is duplicated in
@@ -21,9 +32,6 @@ implementation review — see `.superpowers/sdd/2026-09-24-status-buckets/progre
 - The meeting mirror's idempotent retry reuses an existing task row but passes `status: 'open'`
   literally (plan-mandated); a row whose status had drifted would be misplaced until the next
   `/project-setup`.
-- `sweepRetiredTickets` treats Discord's 10003 as "already gone" only on the fetch path
-  (`channelOf`); a stale-cached channel whose `delete()` itself throws 10003 is counted `failed`
-  and retried next tick (self-corrects once the retry misses the cache).
 - `retireTicketChannel`/`reviveTicketChannel` wrap the lock/unlock call in a redundant outer
   try/catch — `lockTicketChannel`/`unlockTicketChannel` never throw for a single refused edit,
   they count it as `failed` instead.

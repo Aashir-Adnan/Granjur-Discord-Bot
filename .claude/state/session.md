@@ -42,6 +42,29 @@ reworded to "N of those created"; F5 `intoBuckets` hardcoded the bucket keys —
 (`rawPosition` → `position`, the bucket reply wording). Full suite 1172 pass / 0 fail.
 Report: `.superpowers/sdd/2026-09-24-status-buckets/task-8-report.md` → "Branch fix round 1".
 
+## Branch fix round 2 (2026-09-25, final whole-branch review)
+Six findings in one commit on `feat/status-buckets`, on top of `dd810f6`:
+`fix(buckets): never touch a non-ticket channel, sweep backoff, read-only notice`.
+**C1** the mover trusted `task.discordChannelId`, but `meetingPipelineStages` writes the
+meeting's REVIEW channel id onto every task a meeting produced — finishing an unassigned
+meeting task moved the shared channel into Done, locked it, stamped it and let the sweep
+delete it. Two layers: the mover now returns `reason: 'not-ticket'` (no move, no Done
+transition) when `isTicketChannel` says no, and `sweepRetiredTickets` refuses to delete a
+non-ticket channel (clears the stamp, keeps the id, new `skipped` counter).
+**I2** a permanently failing delete kept its stamp and, since `findRetirable` returns the
+oldest hundred, shadowed every newer row forever — a failed delete now pushes the stamp to
+`now + RETRY_AFTER_MS` (6h); 10003 from `delete()` itself now counts as "already gone".
+**I3** `/update-task`, the hub and the site board posted nothing when a channel went
+read-only — `applyTaskUpdate` now passes `extraLines` for both directions across the Done
+boundary, suppressed on `not-ticket`.
+**M4** a backfill `move` sent `{ name, parent, topic }`; now parent-only.
+**M6** the dead duplicate bucket bind in step 2b removed.
+**M8** `schema.sql` gained `channelRetireAt` and its index.
+Six new tests; four existing expectations updated (the sweep's return shape gained
+`skipped` in three assertions, and "a delete that throws keeps the stamp" became "is
+retried six hours later"); two test fixtures made ticket-shaped. Full suite 1178 pass / 0
+fail. Report: `.superpowers/sdd/2026-09-24-status-buckets/final-fix-report.md`.
+
 ## Open items before merge
 See `backlog.md` → "Status buckets — deferred follow-ups" for every parked minor from the
 build's reviews (none blocks merge). Beyond that:

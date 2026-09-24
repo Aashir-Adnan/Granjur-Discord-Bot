@@ -1189,6 +1189,8 @@ export async function applyProjectSection(
             permissionOverwrites: categoryOverwrites(guild, roleId),
             reason: REASON,
           })
+          channelIds[entry.storeKey] = cat.id
+          bucketIdByKey[entry.key] = cat.id
           result.created.push(entry.name)
           result.buckets.created.push(entry.name)
         } else {
@@ -1214,9 +1216,10 @@ export async function applyProjectSection(
               result.buckets.renamed.push(entry.name)
             }
           }
+          // No bind here: this branch already bound the bucket above, before
+          // its repair edit, and re-binding after the edit is what the first
+          // cut did wrong.
         }
-        channelIds[entry.storeKey] = cat.id
-        bucketIdByKey[entry.key] = cat.id
       } catch (e) {
         note(result.warnings, `bucket "${entry.name}"`, e)
       }
@@ -1391,8 +1394,14 @@ export async function applyProjectSection(
           continue
         }
 
-        const payload = { name: task.name, parent }
-        if (task.topic) payload.topic = task.topic
+        // A `move` is parent-only, exactly like the mover's live edit: the plan
+        // only ever chooses `move` when the name is already right, so sending
+        // `name`/`topic` with it re-writes what it just read — a wasted write
+        // against Discord's two-edits-per-ten-minutes budget, and a needless
+        // chance to clobber a topic the plan did not intend to change. The
+        // allow still rides along when the move also opens the channel.
+        const payload = action === 'move' ? { parent } : { name: task.name, parent }
+        if (action !== 'move' && task.topic) payload.topic = task.topic
         if (overwrites) payload.permissionOverwrites = overwrites
         await channel.edit(payload)
         // A rename or a move that ALSO opens the channel to the project role

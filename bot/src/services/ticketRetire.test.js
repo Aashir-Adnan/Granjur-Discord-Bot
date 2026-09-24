@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { PermissionFlagsBits, PermissionsBitField } from 'discord.js'
-import { RETIRE_AFTER_MS, retireTicketChannel, reviveTicketChannel, sweepRetiredTickets, startTicketRetireSweep } from './ticketRetire.js'
+import { ChannelType, PermissionFlagsBits, PermissionsBitField } from 'discord.js'
+import { RETIRE_AFTER_MS, RETRY_AFTER_MS, retireTicketChannel, reviveTicketChannel, sweepRetiredTickets, startTicketRetireSweep } from './ticketRetire.js'
 
 const bits = (...flags) => new PermissionsBitField(flags)
 const NOW = new Date('2026-09-25T10:00:00Z')
@@ -42,8 +42,9 @@ async function quiet(fn) {
   try { return await fn() } finally { console.warn = real }
 }
 
-test('RETIRE_AFTER_MS is fourteen days', () => {
+test('RETIRE_AFTER_MS is fourteen days, RETRY_AFTER_MS is six hours', () => {
   assert.equal(RETIRE_AFTER_MS, 14 * 24 * 60 * 60 * 1000)
+  assert.equal(RETRY_AFTER_MS, 6 * 60 * 60 * 1000)
 })
 
 test('retire locks the channel and stamps the row fourteen days from now', async () => {
@@ -70,9 +71,12 @@ test('revive unlocks the channel and clears the stamp', async () => {
   assert.deepEqual(db.updates, [{ where: { id: 'T1' }, data: { channelRetireAt: null } }])
 })
 
+// Every channel is ticket-shaped unless a case says otherwise: the sweep now
+// refuses to delete anything `isTicketChannel` does not recognise.
+const asTicket = (c) => ({ type: ChannelType.GuildText, topic: `Feature: Thing — Task ${c.id}`, ...c })
 function fakeClient(channels, { fetchError = null } = {}) {
   const deleted = []
-  const map = new Map(channels.map((c) => [c.id, { ...c, delete: async () => { if (c.deleteFails) throw new Error('Missing Permissions'); deleted.push(c.id) } }]))
+  const map = new Map(channels.map((c) => [c.id, { ...asTicket(c), delete: async () => { if (c.deleteError) throw c.deleteError; if (c.deleteFails) throw new Error('Missing Permissions'); deleted.push(c.id) } }]))
   return {
     deleted,
     channels: {
@@ -95,7 +99,7 @@ test('sweep deletes only channels past their stamp and clears both columns', asy
   const out = await sweepRetiredTickets({ client, db, now: () => NOW })
   assert.deepEqual(client.deleted, ['c1'])
   assert.deepEqual(db.updates, [{ where: { id: 'T1' }, data: { discordChannelId: null, channelRetireAt: null } }])
-  assert.deepEqual(out, { deleted: 1, failed: 0 })
+  assert.deepEqual(out, { deleted: 1, failed: 0, skipped: 0 })
 })
 
 test('sweep: a channel Discord already deleted counts as deleted and the row is cleared', async () => {
@@ -104,10 +108,23 @@ test('sweep: a channel Discord already deleted counts as deleted and the row is 
   const client = fakeClient([])
   const out = await sweepRetiredTickets({ client, db, now: () => NOW })
   assert.deepEqual(db.updates, [{ where: { id: 'T1' }, data: { discordChannelId: null, channelRetireAt: null } }])
-  assert.deepEqual(out, { deleted: 1, failed: 0 })
+  assert.deepEqual(out, { deleted: 1, failed: 0, skipped: 0 })
 })
 
-test('sweep: a delete that throws keeps the stamp so the next tick retries, and the others still run', async () => {
+test('sweep: a delete that throws 10003 counts as deleted and clears both columns', async () => {
+  // Same meaning as 10003 on the fetch path: Discord no longer has the channel.
+  const gone = new Error('Unknown Channel'); gone.code = 10003
+  const db = fakeDb({ retirable: [{ id: 'T1', discordChannelId: 'c1', channelRetireAt: new Date(0) }] })
+  const client = fakeClient([{ id: 'c1', deleteError: gone }])
+  const out = await sweepRetiredTickets({ client, db, now: () => NOW })
+  assert.deepEqual(db.updates, [{ where: { id: 'T1' }, data: { discordChannelId: null, channelRetireAt: null } }])
+  assert.deepEqual(out, { deleted: 1, failed: 0, skipped: 0 })
+})
+
+test('sweep: a delete that throws is retried six hours later, and the others still run', async () => {
+  // The stamp moves FORWARD rather than staying put: findRetirable returns the
+  // oldest hundred, so a permanently failing row that kept its stamp would
+  // shadow every newer row forever.
   const rows = [
     { id: 'T1', discordChannelId: 'c1', channelRetireAt: new Date(0) },
     { id: 'T2', discordChannelId: 'c2', channelRetireAt: new Date(0) },
@@ -116,14 +133,29 @@ test('sweep: a delete that throws keeps the stamp so the next tick retries, and 
   const client = fakeClient([{ id: 'c1', deleteFails: true }, { id: 'c2' }])
   const out = await quiet(() => sweepRetiredTickets({ client, db, now: () => NOW }))
   assert.deepEqual(client.deleted, ['c2'])
-  assert.deepEqual(db.updates.map((u) => u.where.id), ['T2'])
-  assert.deepEqual(out, { deleted: 1, failed: 1 })
+  assert.deepEqual(db.updates, [
+    { where: { id: 'T1' }, data: { channelRetireAt: new Date(NOW.getTime() + RETRY_AFTER_MS) } },
+    { where: { id: 'T2' }, data: { discordChannelId: null, channelRetireAt: null } },
+  ])
+  assert.deepEqual(out, { deleted: 1, failed: 1, skipped: 0 })
+})
+
+test('sweep: a stamped row whose channel is not a ticket channel is never deleted', async () => {
+  // An unassigned meeting task's row names the meeting's review channel. The
+  // stamp is cleared so the sweep stops looking at it; the id is kept, because
+  // the channel is real and belongs to something else.
+  const db = fakeDb({ retirable: [{ id: 'T1', discordChannelId: 'rev', channelRetireAt: new Date(0) }] })
+  const client = fakeClient([{ id: 'rev', type: ChannelType.GuildText, name: 'standup-review', topic: '' }])
+  const out = await quiet(() => sweepRetiredTickets({ client, db, now: () => NOW }))
+  assert.deepEqual(client.deleted, [])
+  assert.deepEqual(db.updates, [{ where: { id: 'T1' }, data: { channelRetireAt: null } }])
+  assert.deepEqual(out, { deleted: 0, failed: 0, skipped: 1 })
 })
 
 test('sweep: a failed read is a warning and an empty result, never a throw', async () => {
   const db = { task: { findRetirable: async () => { throw new Error('db down') } } }
   const out = await quiet(() => sweepRetiredTickets({ client: fakeClient([]), db, now: () => NOW }))
-  assert.deepEqual(out, { deleted: 0, failed: 0 })
+  assert.deepEqual(out, { deleted: 0, failed: 0, skipped: 0 })
 })
 
 test('startTicketRetireSweep runs once immediately and returns a clearable timer', async () => {

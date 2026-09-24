@@ -1,7 +1,8 @@
 # Per-project status buckets for ticket channels
 
-Built on branch `feat/status-buckets` (commits d635188..e691909, on top of the
-merged `feat/client-role`/`feat/project-sections` work). Read this before touching
+Built on branch `feat/status-buckets` (commits d635188..e691909, then the review
+fixes `dd810f6` and the whole-branch fix wave after it, on top of the merged
+`feat/client-role`/`feat/project-sections` work). Read this before touching
 `bot/src/utils/statusBuckets.js`, `bot/src/services/ticketBucketMove.js`,
 `bot/src/services/ticketRetire.js`, `/project-setup`'s bucket steps, `/close-feature`,
 `/resolve-bug`, or `/cleanup`'s protection set.
@@ -107,6 +108,19 @@ because they all funnel through the one function. It returns
 - `reason: 'no-channel'` (a second case) — the channel id exists but isn't in
   the guild's cache; the Done transition still runs with `channel: null` (see
   below), just no move is attempted.
+- `reason: 'not-ticket'` — the channel resolved, but `isTicketChannel(channel)`
+  (`bot/src/utils/taskChannelName.js`) says the task does not own it. **No move
+  and no Done transition** — the only `reason` that suppresses the transition
+  as well. A row naming a channel is not proof the task owns it:
+  `meetingPipelineStages.js` writes the meeting's **review** channel id onto
+  every task a meeting produced, and only an assigned one ever gets a ticket of
+  its own, so finishing an unassigned meeting task used to move the whole
+  meeting's shared channel into a Done bucket, lock it, stamp it, and let the
+  sweep delete it fourteen days later. Every other consumer already gated on
+  `isTicketChannel` (`taskUpdateNotify.js`'s `ownsChannel`, the section
+  observer's skip of shared channels); the mover was the one that did not. The
+  unresolvable-channel path above is deliberately left alone — the sweep's own
+  non-ticket guard (below) is what makes that safe.
 - `reason: 'no-project'` — the task has no `projectId` (a project-less ticket,
   e.g. closed via `/close-feature`); the Done transition still runs.
 - `reason: 'no-bucket'` — the project has no bucket category for the target
@@ -144,17 +158,57 @@ cleaned up.
 - **`sweepRetiredTickets({ client, db, now, take })`** reads
   `db.task.findRetirable({ where: { before: now() }, take })` (global, not
   per-guild — see "Spec corrections"), and for each row: resolves the channel
-  via `channelOf` (cache, else `fetch`), deletes it if found, and always clears
-  `discordChannelId`/`channelRetireAt`. Discord's **10003 ("Unknown Channel")**
-  is treated as "already gone" **only on the fetch path** inside `channelOf` —
-  a *cached* channel whose `delete()` itself throws 10003 is counted `failed`
-  and retried next tick (self-corrects, since the retry will then miss the
-  cache and hit the fetch path). A row whose delete throws for any other
-  reason keeps its stamp and is retried too.
+  via `channelOf` (cache, else `fetch`), deletes it if found, and clears
+  `discordChannelId`/`channelRetireAt`. It returns
+  `{ deleted, failed, skipped }`. Three rules decide which counter a row lands
+  under:
+  - **Not a ticket channel → `skipped`, never deleted.** The resolved channel
+    is put through the same `isTicketChannel` gate the mover uses. If it fails,
+    the sweep writes `{ channelRetireAt: null }` **only** — the id is kept,
+    because the channel is real and belongs to something else — warns, and
+    counts `skipped`. This is the second layer behind the mover's
+    `not-ticket` gate, and the reason the mover's unresolvable-channel path can
+    still stamp a row blind: nothing but a channel that still looks like the
+    bot's own ticket ever gets deleted. A channel that is simply gone (`null`)
+    is unaffected and still counts as deleted.
+  - **Gone → `deleted`.** Discord's **10003 ("Unknown Channel")** means
+    "already gone" on **both** paths now: inside `channelOf`'s `fetch`, and
+    from `channel.delete()` itself on a stale cached channel. Both columns are
+    cleared and the row counts `deleted`.
+  - **Any other throw → `failed`, with the stamp pushed forward.** The row's
+    `channelRetireAt` is rewritten to `now() + RETRY_AFTER_MS`
+    (`export const RETRY_AFTER_MS = 6 * 60 * 60 * 1000`). Keeping the stamp —
+    what the first cut did — wedged the sweep: `findRetirable` returns the
+    **oldest hundred rows by stamp**, so a hundred permanently undeletable
+    channels shadowed every newer row forever and nothing else was ever swept
+    again. Pushing the stamp six hours out retries the row later and lets the
+    queue drain meanwhile. A back-off write that itself throws is one more
+    warning, nothing else.
 - **`startTicketRetireSweep(client, { db, intervalMs })`** runs hourly
   (`TICK_MS`), started from `bot/src/index.js`'s `Events.ClientReady` handler
   (`startTicketRetireSweep(client)`), and fires once immediately so a bot
   restarted after a long outage catches up rather than waiting an hour.
+
+## What the channel is told: the read-only notice
+
+`/close-feature` and `/resolve-bug` post "This channel is now read-only and will
+be removed in 14 days." in their own closing message. `/update-task`, the task
+hub and the site's board go through `applyTaskUpdate` instead and used to say
+nothing at all — the channel simply stopped accepting messages. `applyTaskUpdate`
+(`bot/src/services/taskStatusChange.js`) now computes `extraLines` after the
+mover and hands them to `notifyTaskUpdate`, which already accepted the argument:
+
+- crossed **into** the Done bucket (`isDoneBucket(bucketFor(updates.status)) &&
+  !isDoneBucket(bucketFor(task.status))`) → `[READ_ONLY_LINE]`, the same
+  sentence the two commands post.
+- crossed **out of** Done → `[WRITABLE_LINE]` ("This channel is writable
+  again.").
+- anything else, including a status change inside one bucket → `[]`.
+
+Both sentences are exported constants so the wording has one home. The notice is
+suppressed entirely when the mover returned `reason: 'not-ticket'`: a shared
+channel the task does not own was not locked, so telling it it is read-only
+would be a lie posted in front of everyone using it.
 
 ## `/project-setup`
 
@@ -204,7 +258,14 @@ The applier (`applyProjectSection`) performs, in order:
     for it down the `unplaced` path, and told the operator the bucket "could
     not be created" when it plainly existed.
 - **Step 4** — parent each task channel to its bucket's id instead of the
-  section `categoryId`; a channel already correctly named but not yet visible
+  section `categoryId`. A **`move`** sends `{ parent }` alone (plus
+  `permissionOverwrites` when the allow rides along) — the planner only chooses
+  `move` when the name is already right by construction, so sending `name` and
+  `topic` back re-wrote what had just been read, spending part of Discord's
+  two-edits-per-ten-minutes budget on a no-op and giving a topic the plan never
+  meant to change a chance to be clobbered. `both` and `rename` still carry
+  `name`/`topic`, which is the whole point of them. A channel already correctly
+  named but not yet visible
   to the project role gets a standalone `grant`; a rename/move that also needs
   the allow carries it in the same edit (`opens`). "Inside the project's
   space" for the allow decision is the section category **or** any of its
@@ -279,8 +340,20 @@ inside it, as before.
 
 ## Rollout
 
+**Budget the categories before you start.** A Discord guild is capped at **500
+channels**, and every category counts as one. Before this feature a project cost
+one category; now it costs **four** — the section category plus three buckets —
+so each project added is three channels closer to the ceiling on top of its
+thirteen section channels and its ticket channels. Twenty projects is 80
+categories and 260 section channels before a single ticket exists. Count what
+the guild already has against 500 before rolling this out across many projects
+at once; if the ceiling is close, the bucket table
+(`bot/src/utils/statusBuckets.js`) is the one place to shrink, since everything
+else iterates it.
+
 1. Deploy (push to `main`; migration `026_task_channel_retire.sql` runs on the
-   VM).
+   VM — `bot/src/Database/schema.sql` carries the same `channelRetireAt` column
+   and its index, so a from-scratch build matches a migrated one).
 2. Run `/project-setup project:<X>` once per project — `preview:true` first.
    This creates the three buckets, files every existing ticket into the bucket
    matching its status, and stamps already-finished tickets to be removed 14

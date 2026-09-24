@@ -676,6 +676,26 @@ test('a stale role id adds no allow, and the move still happens in one edit', as
   assert.deepEqual(taskCh.edits[0], { name: 'feature-git-sync', parent: 'b-open', topic: 'Feature: Git Sync — Task t1' })
 })
 
+test('a backfill move is parent-only: the name and topic it already has are not rewritten', async () => {
+  // The planner only chooses `move` when the name is already right, so sending
+  // it back re-writes what was just read. The live mover's edit is parent-only
+  // for the same reason; the allow still rides along when one is due.
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
+  const bucket = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory })
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'FEATURES')
+  const guild = fakeGuild({ channels: [cat, bucket, taskCh] })
+  const plan = {
+    role: { action: 'reuse', id: 'gone', name: 'Framework' },
+    category: { action: 'reuse', id: 'c1', name: '📂 FRAMEWORK' },
+    buckets: [{ key: 'open', storeKey: 'bucketOpen', action: 'reuse', id: 'b-open', name: '📂 FRAMEWORK · OPEN' }],
+    channels: [],
+    tasks: [{ taskId: 't1', channelId: 'tc1', action: 'move', bucket: 'open', name: 'feature-git-sync', topic: 'Feature: Git Sync — Task t1' }],
+    warnings: [],
+  }
+  await applyProjectSection(guild, { ...project, discordCategoryId: 'c1' }, plan, { db: fakeDb() })
+  assert.deepEqual(taskCh.edits, [{ parent: 'b-open' }])
+})
+
 test('a channel whose overwrites cannot be read still moves, without an allow that would replace them', async () => {
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
   const taskCh = fakeChannel('tc1', 'feature-0145e3', { parentId: 'FEATURES' })

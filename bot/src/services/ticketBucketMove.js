@@ -6,6 +6,7 @@ import { ChannelType } from 'discord.js'
 import db from '../db/index.js'
 import { CATEGORY_SOFT_CAP } from '../constants.js'
 import { bucketFor, bucketIdsOf, isDoneBucket } from '../utils/statusBuckets.js'
+import { isTicketChannel } from '../utils/taskChannelName.js'
 import { retireTicketChannel, reviveTicketChannel } from './ticketRetire.js'
 
 const valuesOf = (cache) => (cache?.values ? [...cache.values()] : [])
@@ -51,6 +52,18 @@ export async function moveTicketToBucket({
     // still lands (or clears) so a channel that reappears later is honored.
     await runDoneTransition({ to, from, channel: null, task, dbArg, now, retire, revive })
     return { moved: false, bucket: to, reason: 'no-channel' }
+  }
+
+  // A row naming a channel is not proof the task owns it. `meetingPipelineStages`
+  // writes the meeting's REVIEW channel id onto every task a meeting produced,
+  // and only an assigned one ever gets a ticket of its own — so finishing an
+  // unassigned meeting task would otherwise move the shared review channel into
+  // a Done bucket, lock it, stamp it, and let the sweep delete it. The same
+  // `isTicketChannel` gate every other consumer uses (`ownsChannel`, the section
+  // observer) applies here: no move, and no Done transition either.
+  if (!isTicketChannel(channel)) {
+    console.warn(`[ticketBucketMove] ${channelId} is not a ticket channel; task ${task?.id} does not own it, nothing touched.`)
+    return { moved: false, bucket: to, reason: 'not-ticket' }
   }
 
   let moved = false

@@ -5,7 +5,9 @@ import { moveTicketToBucket } from './ticketBucketMove.js'
 
 const cat = (id) => ({ id, type: ChannelType.GuildCategory, parentId: null })
 function ticket(id, parentId, { fail = null } = {}) {
-  const c = { id, type: ChannelType.GuildText, parentId, edits: [] }
+  // A real ticket channel carries the bot's own topic signature; `isTicketChannel`
+  // is what tells it apart from a shared channel a task row merely names.
+  const c = { id, type: ChannelType.GuildText, parentId, topic: `Feature: Thing — Task ${id}`, edits: [] }
   c.edit = async (o) => { c.edits.push(o); if (fail) throw new Error(fail); if (o.parent !== undefined) c.parentId = o.parent; return c }
   return c
 }
@@ -112,6 +114,20 @@ test('a retire that throws is a warning; the move still counts', async () => {
   const g = guildWith([cat('b-open'), cat('b-done'), ch])
   const out = await quiet(() => moveTicketToBucket({ guild: g, task: { id: 'T', projectId: 'p1', discordChannelId: 'c1', status: 'open' }, updates: { status: 'done' }, ...d }))
   assert.equal(out.moved, true)
+})
+
+test('a channel the task does not own is never moved, retired or read about', async () => {
+  // An unassigned meeting task carries the meeting's REVIEW channel id, which
+  // every other consumer skips via `isTicketChannel`. Marking it done must not
+  // move, lock or stamp the channel the whole meeting shares.
+  const d = deps()
+  const review = { id: 'rev', type: ChannelType.GuildText, name: 'standup-review', topic: '', parentId: null, edits: [] }
+  review.edit = async (o) => { review.edits.push(o); return review }
+  const g = guildWith([cat('b-open'), cat('b-done'), review])
+  const out = await quiet(() => moveTicketToBucket({ guild: g, task: { id: 'T', projectId: 'p1', discordChannelId: 'rev', status: 'open' }, updates: { status: 'done' }, ...d }))
+  assert.deepEqual(out, { moved: false, bucket: 'done', reason: 'not-ticket' })
+  assert.deepEqual(review.edits, [])
+  assert.deepEqual(d.log, [])
 })
 
 test('a channel that cannot be resolved still crosses the Done boundary, with no project read and no move', async () => {

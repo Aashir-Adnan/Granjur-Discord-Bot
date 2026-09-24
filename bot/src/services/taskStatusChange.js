@@ -10,6 +10,11 @@ import { blockerWarning, openBlockers } from '../utils/taskDeps.js'
 import { activityChanges, recordTaskActivity } from './taskActivity.js'
 import { assertCanFinish, syncParent } from './taskHierarchy.js'
 import { moveTicketToBucket } from './ticketBucketMove.js'
+import { bucketFor, isDoneBucket } from '../utils/statusBuckets.js'
+
+/** What /close-feature and /resolve-bug already say in the channel they close. */
+export const READ_ONLY_LINE = 'This channel is now read-only and will be removed in 14 days.'
+export const WRITABLE_LINE = 'This channel is writable again.'
 
 /** Discord embed fields cap at 1024; the reply description has room for more. */
 export const WARNING_MAX = 1500
@@ -80,6 +85,18 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
     }
   }
 
+  // What the mover just did to the channel, said in the channel. /close-feature
+  // and /resolve-bug post this sentence themselves; /update-task, the task hub
+  // and the site's board went silent about it until now. Never for a channel the
+  // mover refused to touch because the task does not own it.
+  let extraLines = []
+  if (updates.status !== undefined && placement.reason !== 'not-ticket') {
+    const intoDone = isDoneBucket(bucketFor(updates.status))
+    const wasDone = isDoneBucket(bucketFor(task.status))
+    if (intoDone && !wasDone) extraLines = [READ_ONLY_LINE]
+    else if (!intoDone && wasDone) extraLines = [WRITABLE_LINE]
+  }
+
   let notified = { channelId: task.discordChannelId || null, created: false, dmed: [] }
   try {
     notified = await notify({
@@ -91,6 +108,7 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
       actorId: actor.discordId ?? null,
       actorLabel: actor.label ?? null,
       warning,
+      extraLines,
       db: dbArg,
     })
   } catch (e) {

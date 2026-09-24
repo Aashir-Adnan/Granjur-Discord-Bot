@@ -25,6 +25,21 @@ task. Knowledge: `.claude/knowledge/status-buckets.md` (new); `project-sections.
 dated Corrections section. Full ruling-by-ruling record:
 `.superpowers/sdd/2026-09-24-status-buckets/progress.md`. Not yet merged to `main`.
 
+Two whole-branch review fix waves followed the build. **Round 1, `dd810f6`**: bucket position
+units (`rawPosition` vs the `position` getter), binding a bucket before its repair edit, bucket-
+aware `projectFromChannel`, and the result wording. **Round 2** (final review), the single commit
+`fix(buckets): never touch a non-ticket channel, sweep backoff, read-only notice` — the tip of
+`feat/status-buckets` as of this entry: the
+mover and the sweep now both refuse a channel `isTicketChannel` does not recognise — an
+unassigned meeting task carries the meeting's shared review channel id, and finishing it used to
+move, lock, stamp and eventually delete that channel; a failed sweep delete pushes its stamp
+`RETRY_AFTER_MS` (6h) forward instead of shadowing every newer row forever, and 10003 from
+`delete()` now counts as gone; `/update-task`, the task hub and the site board post the
+read-only / writable-again sentence the two commands already posted; a backfill `move` is
+parent-only; `schema.sql` carries `channelRetireAt`. Reports:
+`.superpowers/sdd/2026-09-24-status-buckets/task-8-report.md` and `final-fix-report.md`.
+1178 tests pass.
+
 ## 2026-09-24 — /request-task: support tasks as a third kind (MERGED, PUSHED)
 
 Client-requested segmentation. `type='task'` with both flags off; `task-` channel prefix, `Task:`

@@ -131,6 +131,33 @@ test('a status change calls the bucket mover after the write and before notify, 
   assert.deepEqual(out.placement, { moved: true, bucket: 'inProgress', reason: null })
 })
 
+test('the channel is told when it goes read-only and when it is writable again', async () => {
+  // /close-feature and /resolve-bug already say this; /update-task, the task hub
+  // and the site's board said nothing until now.
+  const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open', discordChannelId: 'c1', projectId: 'p1' }
+  const seen = []
+  const notify = async (a) => { seen.push(a.extraLines); return { channelId: 'c1', created: false, dmed: [] } }
+  const move = async () => ({ moved: true, bucket: 'done', reason: null })
+
+  await applyTaskUpdate({ db: fakeDb(), client, task, updates: { status: 'done' }, notify, move })
+  assert.deepEqual(seen[0], ['This channel is now read-only and will be removed in 14 days.'])
+
+  await applyTaskUpdate({ db: fakeDb(), client, task: { ...task, status: 'done' }, updates: { status: 'open' }, notify, move: async () => ({ moved: true, bucket: 'open', reason: null }) })
+  assert.deepEqual(seen[1], ['This channel is writable again.'])
+
+  await applyTaskUpdate({ db: fakeDb(), client, task, updates: { status: 'in_progress' }, notify, move: async () => ({ moved: true, bucket: 'inProgress', reason: null }) })
+  assert.deepEqual(seen[2], [])
+})
+
+test('a channel the task does not own is never told it is read-only', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open', discordChannelId: 'rev', projectId: 'p1' }
+  const seen = []
+  const notify = async (a) => { seen.push(a.extraLines); return { channelId: 'rev', created: false, dmed: [] } }
+  const move = async () => ({ moved: false, bucket: 'done', reason: 'not-ticket' })
+  await applyTaskUpdate({ db: fakeDb(), client, task, updates: { status: 'done' }, notify, move })
+  assert.deepEqual(seen[0], [])
+})
+
 test('the mover is not called without a status change, and a mover that throws does not fail the update', async () => {
   const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open', discordChannelId: 'c1' }
   let calls = 0
