@@ -13,10 +13,8 @@ See `.claude/knowledge/client-role.md`. Ordered by how much they matter.
   `interaction.member` first — Discord populates it for guild interactions — so a fetch hiccup
   cannot let a client enumerate names. (Final re-review; Ruling 15.)
 - **After deploy, run `/setup` once** so clients approved before the fix wave get the
-  public-channel denies; nothing re-runs `denyClientOnPublicChannels` for existing clients.
-- **The onboarding CATEGORY keeps its `@everyone` allow** — only its channel is denied. Add the
-  category to `denyClientOnPublicChannels`, or any channel later created under `📥 Onboarding`
-  is visible to clients. (Ruling 18.)
+  public-channel denies; nothing re-runs `denyClientOnPublicChannels` for existing clients
+  (`#time-reports` alone self-heals on the bot's first tick after a restart).
 - **`pendinginvite` rows never expire** — a `kind:'client'` row keeps letting that address through
   `/verify` after the 7-day Discord invite dies. Age them out. (Ruling 12.)
 
@@ -28,8 +26,6 @@ See `.claude/knowledge/client-role.md`. Ordered by how much they matter.
   move it below so a throw there can never skip recording a newly created channel. (Ruling 16.)
 - Denying each `📜 Rules` child desyncs it from its category; denying the category alone would do.
   (Ruling 17.)
-- `denyClientOnPublicChannels` finds the Rules category and `#announcements-all` by NAME; a rename
-  or cold cache defers the deny to the next `/init`/`/setup`. Store their ids at `/init`.
 - `set-roles` `handleApply` does not re-check `memberIsClient` between picker and apply — a
   two-operator race can add staff roles on top of `Client`.
 - Converting client → staff with a failed prior roster read leaves the stale support overwrites

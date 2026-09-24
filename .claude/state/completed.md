@@ -4,6 +4,16 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-24 — Clients could see #time-reports: the public-channel deny is now derived (MERGED, PUSHED)
+
+Owner found the first client could see `#time-reports`. Root cause: `denyClientOnPublicChannels`
+named three `/init` targets, while what makes a channel visible to a client is any `@everyone`
+ViewChannel allow — the daily report's channel, the onboarding category and the `cmd-*` command
+channels all have one. Fixed by deriving the target set from `everyoneCanView(guild, channel)`
+(channel overwrite decides, else the guild `@everyone` role), skipping the support pair by id;
+`#time-reports` also carries the Client deny from creation and repairs it on the per-process
+reconcile. Closes parked Rulings 17/18 territory. `d42292a`, merged `de5c893`; 1085 tests.
+
 ## 2026-09-24 — Client manual pinned in every project support channel (MERGED, PUSHED, DEPLOYED)
 
 Owner follow-up after the acceptance-test instructions. `applyProjectSection` step 3a pins the same
