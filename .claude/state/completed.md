@@ -4,7 +4,7 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
-## 2026-09-24 — Client role in the Discord bot (ON BRANCH feat/client-role — NOT YET MERGED)
+## 2026-09-24 — Client role in the Discord bot (MERGED to main as 4297b2e — NOT YET PUSHED/DEPLOYED)
 
 A `Client` role: clients enter by invitation, are approved without ever receiving `Verified`,
 see only a global `🛟 Support` pair plus a per-project support pair, raise issues and feature
@@ -43,7 +43,7 @@ plus one whole-branch review fix wave. Knowledge: `.claude/knowledge/client-role
 - **Exclusions.** Daily time report skips `kind='client'`; `/cleanup` protects the support pair by
   id (and `🛟 Support` by name); `/time-report` needed nothing (entry-driven).
 
-Migration `025_client_role.sql`. 18 commits `4683821..e66e7f4`; 1079 tests green with
+Migration `025_client_role.sql`. 19 commits `4683821..285f0bc`, merged as `4297b2e`; 1079 tests green with
 `DATABASE_URL=poisoned://no-production-access`. Every ruling made during the build is in the
 final session message and, where it left work, in `backlog.md`.
 
