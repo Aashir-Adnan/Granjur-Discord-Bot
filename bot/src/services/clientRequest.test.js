@@ -107,11 +107,11 @@ test('the lead DM says a client raised it, not that they were assigned it', asyn
 
 test('composeDetails: grouped short fields share a line, long fields get their own, empties are omitted, then the free text', () => {
   const out = composeDetails(ISSUE_FIELDS, {
-    platform: 'Android', os: '14', app_version: '2.4.1', steps: 'open bookings → tap export', expected: 'a CSV download',
+    platform: 'Android', semester: 'Fall 2026', os: '14', app_version: '2.4.1', steps: 'open bookings → tap export', expected: 'a CSV download',
     severity: 'Major', frequency: 'Every time', account: 'ali@acme.com',
   }, 'The spinner never ends.')
   assert.equal(out, [
-    '**Platform:** Android · **OS:** 14 · **App/Browser:** 2.4.1',
+    '**Platform:** Android · **Semester:** Fall 2026 · **OS:** 14 · **App/Browser:** 2.4.1',
     '**Severity:** Major · **Frequency:** Every time · **Account:** ali@acme.com',
     '**Steps:** open bookings → tap export',
     '**Expected:** a CSV download',
@@ -133,8 +133,8 @@ test('the field tables are well-formed and in the agreed order', () => {
     if (f.kind === 'choice') assert.ok(f.choices.length >= 2 && f.choices.length <= 25)
     else assert.ok(f.max > 0 && f.max <= 6000)
   }
-  assert.deepEqual(ISSUE_FIELDS.map((f) => f.name), ['platform', 'os', 'app_version', 'severity', 'frequency', 'when', 'account', 'steps', 'expected'])
-  assert.deepEqual(FEATURE_FIELDS.map((f) => f.name), ['platform', 'priority', 'needed_by', 'problem', 'who', 'example'])
+  assert.deepEqual(ISSUE_FIELDS.map((f) => f.name), ['platform', 'semester', 'os', 'app_version', 'severity', 'frequency', 'when', 'account', 'steps', 'expected'])
+  assert.deepEqual(FEATURE_FIELDS.map((f) => f.name), ['platform', 'semester', 'priority', 'needed_by', 'problem', 'who', 'example'])
 })
 
 test('chunkText splits on the limit and yields nothing for nothing', () => {
