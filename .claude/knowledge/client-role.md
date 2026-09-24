@@ -363,6 +363,19 @@ a channel the Client role already has an overwrite on is never touched.
 `cfg.clientRoleId` exists, and `reconcileChannelAccess` (once per process) repairs it beside the
 `@everyone` repair — so a channel created after the last `/setup` is still closed to clients.
 
+## Structured fields on /report-issue and /request-feature (2026-09-24)
+
+Only `title` and `details` are required. The rest come from two tables in `services/clientRequest.js`
+— `ISSUE_FIELDS` (platform, os, app_version, severity, frequency, when, account, steps, expected)
+and `FEATURE_FIELDS` (platform, priority, needed_by, problem, who, example) — which the builder,
+the option reader and `composeDetails()` all read, so a field is added in one place. `group`
+fields share one line joined with ` · `; the rest get a line each; empties are omitted, so a
+client who fills nothing produces exactly the free text. The composed string IS the task
+description. Attachments are `screenshot`, `screenshot2`, `document`. Because
+`createTaskTicketChannel` shows only the first 1000 characters of a description, a longer one is
+also posted in full as `**Full details**` messages (`chunkText`, 1900 per message) right after
+the pinned embed.
+
 ## Related
 
 [[project-sections]]

@@ -1,26 +1,43 @@
 import { SlashCommandBuilder } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
-import { createClientRequest, clientProjects } from '../services/clientRequest.js'
+import { createClientRequest, clientProjects, composeDetails, ISSUE_FIELDS, FEATURE_FIELDS } from '../services/clientRequest.js'
 import { projectChoices } from './update-task.js'
 
 // Two commands, one implementation. `data` is an array: one module can back
 // several slash commands (see meetingReview.js).
 
-function builder(name, description, what) {
-  return new SlashCommandBuilder()
+// Two screenshots and one document: the pictures are what a report most often
+// lacks, and a log or a spec still has a slot.
+const ATTACHMENTS = [
+  ['screenshot', 'A screenshot of it'],
+  ['screenshot2', 'Another screenshot'],
+  ['document', 'A document (log, spec, PDF)'],
+]
+
+// Discord wants required options first; then the structured fields in the
+// table's order, then project, then the attachments.
+function builder(name, description, what, fields) {
+  const b = new SlashCommandBuilder()
     .setName(name)
     .setDescription(description)
     .addStringOption((o) => o.setName('title').setDescription('A short title').setRequired(true).setMaxLength(200))
     .addStringOption((o) => o.setName('details').setDescription(what).setRequired(true).setMaxLength(2000))
-    .addStringOption((o) => o.setName('project').setDescription('Which project (needed only if you are on more than one)').setRequired(false).setAutocomplete(true))
-    .addAttachmentOption((o) => o.setName('document').setDescription('A document to attach').setRequired(false))
-    .addAttachmentOption((o) => o.setName('document2').setDescription('Another document').setRequired(false))
-    .addAttachmentOption((o) => o.setName('document3').setDescription('Another document').setRequired(false))
+  for (const f of fields) {
+    b.addStringOption((o) => {
+      o.setName(f.name).setDescription(f.description).setRequired(false)
+      if (f.kind === 'choice') o.addChoices(...f.choices.map((c) => ({ name: c, value: c })))
+      else o.setMaxLength(f.max)
+      return o
+    })
+  }
+  b.addStringOption((o) => o.setName('project').setDescription('Which project (needed only if you are on more than one)').setRequired(false).setAutocomplete(true))
+  for (const [n, d] of ATTACHMENTS) b.addAttachmentOption((o) => o.setName(n).setDescription(d).setRequired(false))
+  return b
 }
 
 export const data = [
-  builder('report-issue', 'Report something that is broken', 'What happens, and what you expected'),
-  builder('request-feature', 'Ask for something new', 'What you need and why'),
+  builder('report-issue', 'Report something that is broken', 'What happens (the other fields are optional, but save a round of questions)', ISSUE_FIELDS),
+  builder('request-feature', 'Ask for something new', 'What you need and why', FEATURE_FIELDS),
 ]
 
 /**
@@ -46,9 +63,11 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
   const cfg = await getConfig(guild.id)
   const type = interaction.commandName === 'report-issue' ? 'bug' : 'feature'
   const title = interaction.options.getString('title')
-  const details = interaction.options.getString('details')
+  const fields = type === 'bug' ? ISSUE_FIELDS : FEATURE_FIELDS
+  const values = Object.fromEntries(fields.map((f) => [f.name, interaction.options.getString(f.name)]))
+  const details = composeDetails(fields, values, interaction.options.getString('details'))
   const picked = interaction.options.getString('project')
-  const attachments = ['document', 'document2', 'document3'].map((n) => interaction.options.getAttachment(n)).filter(Boolean)
+  const attachments = ATTACHMENTS.map(([n]) => interaction.options.getAttachment(n)).filter(Boolean)
 
   const rows = await dbArg.projectMember.findByMember({ where: { guildConfigId: cfg.id, discordId: interaction.user.id } })
   const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })

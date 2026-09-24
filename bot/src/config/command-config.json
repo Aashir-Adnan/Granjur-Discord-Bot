@@ -224,13 +224,13 @@
     },
     "report-issue": {
       "summary": "Report something that is broken in your project.",
-      "syntax": "/report-issue title:<short title> details:<what happens> [project] [document] [document2] [document3]",
-      "detail": "Opens a private channel for the issue where the team can ask you for more. Attach up to three documents."
+      "syntax": "/report-issue title:<short title> details:<what happens> [platform] [os] [app_version] [severity] [frequency] [when] [account] [steps] [expected] [project] [screenshot] [screenshot2] [document]",
+      "detail": "Opens a private channel for the issue where the team can ask you for more. The extra fields are optional; attach two screenshots and a document."
     },
     "request-feature": {
       "summary": "Ask for something new in your project.",
-      "syntax": "/request-feature title:<short title> details:<what you need> [project] [document] [document2] [document3]",
-      "detail": "Opens a private channel for the request where the team can ask you for more. Attach up to three documents."
+      "syntax": "/request-feature title:<short title> details:<what you need> [platform] [priority] [needed_by] [problem] [who] [example] [project] [screenshot] [screenshot2] [document]",
+      "detail": "Opens a private channel for the request where the team can ask you for more. The extra fields are optional; attach two screenshots and a document."
     },
     "my-requests": {
       "summary": "List the issues and requests you have raised, with their status.",
