@@ -1090,3 +1090,33 @@ test('the role-sync roster never contains a client row; clientIdsOf is the compl
   assert.deepEqual(clientIdsOf(rows), ['c'])
   assert.deepEqual(staffOnly(null), [])
 })
+
+test('the first roster read failing leaves client access alone instead of throwing out of the run', async () => {
+  const db = fakeDb({ projects: [PROJECT] })
+  let reads = 0
+  db.projectMember.findByProject = async () => {
+    reads += 1
+    if (reads === 1) throw new Error('database went away')
+    return []
+  }
+  const guild = fakeGuild({})
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const content = it.replies.at(-1).content
+  assert.match(content, /could not be read/, 'the run says the roster read failed')
+  assert.match(content, /client/i, 'and that client access was left alone')
+  assert.doesNotMatch(content, /Something went wrong/i)
+})
+
+test('a preview whose roster read fails still renders a plan', async () => {
+  const db = fakeDb({ projects: [PROJECT] })
+  db.projectMember.findByProject = async () => { throw new Error('database went away') }
+  const guild = fakeGuild({})
+  const it = fakeInteraction({ guild, opts: { project: 'p1', preview: true } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.match(it.replies.at(-1).content, /could not be read/)
+})

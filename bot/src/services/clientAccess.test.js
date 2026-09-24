@@ -19,9 +19,12 @@ function fakeChannel(name, { type = ChannelType.GuildText, parentId = null, over
   return ch
 }
 
-function fakeGuild({ roles = [], channels = [] } = {}) {
+// `uncached` channels exist in the guild but not in `channels.cache` — a cold
+// cache after a restart, where a stored id must still resolve through a fetch.
+function fakeGuild({ roles = [], channels = [], uncached = [] } = {}) {
   const roleCache = new Map(roles.map((r) => [r.id, r]))
   const channelCache = new Map(channels.map((c) => [c.id, c]))
+  const fetchable = new Map([...channels, ...uncached].map((c) => [c.id, c]))
   const guild = {
     id: 'g1',
     roles: {
@@ -30,6 +33,7 @@ function fakeGuild({ roles = [], channels = [] } = {}) {
     },
     channels: {
       cache: channelCache,
+      fetch: async (id) => fetchable.get(id) ?? null,
       create: async ({ name, type, parent = null, permissionOverwrites = [] }) => {
         const c = fakeChannel(name, { type, parentId: parent, overwrites: permissionOverwrites })
         channelCache.set(c.id, c)
@@ -159,4 +163,41 @@ test('the public-channel deny is presence-only: a second run edits nothing', asy
     assert.equal(ch.edits.length, 0, `${ch.name} already carries an overwrite for the role`)
   }
   assert.deepEqual(out.denied, [])
+})
+
+test('a stored channel id missing from a cold cache is fetched, not duplicated', async () => {
+  const text = fakeChannel('support', {
+    overwrites: [{ id: 'g1' }, { id: 'r-client' }, { id: 'r-verified' }],
+    pinned: [{ author: { id: 'bot' }, embeds: [{ title: MANUAL_TITLE }] }],
+  })
+  const voice = fakeChannel('support-voice', { type: ChannelType.GuildVoice, overwrites: [{ id: 'g1' }, { id: 'r-client' }, { id: 'r-verified' }] })
+  const guild = fakeGuild({ roles: [{ id: 'r-client', name: 'Client' }], uncached: [text, voice] })
+  const { calls, update } = recorder()
+  const out = await ensureSupportChannels(
+    guild,
+    cfg({ clientRoleId: 'r-client', supportChannelId: text.id, supportVoiceChannelId: voice.id }),
+    { update, botUserId: 'bot' },
+  )
+  assert.equal(out.text.id, text.id, 'the stored text channel was reused')
+  assert.equal(out.voice.id, voice.id, 'the stored voice channel was reused')
+  assert.equal(calls.length, 0, 'nothing to persist — no duplicate was made')
+  assert.equal(text.sent.length, 0)
+})
+
+test('pinned messages that cannot be read do NOT count as "no manual pinned"', async () => {
+  const text = fakeChannel('support', { overwrites: [{ id: 'g1' }, { id: 'r-client' }, { id: 'r-verified' }] })
+  text.messages.fetchPinned = async () => { throw new Error('Missing Access') }
+  const voice = fakeChannel('support-voice', { type: ChannelType.GuildVoice, overwrites: [{ id: 'g1' }, { id: 'r-client' }, { id: 'r-verified' }] })
+  const guild = fakeGuild({ roles: [{ id: 'r-client', name: 'Client' }], channels: [text, voice] })
+  const { update } = recorder()
+  const warned = []
+  const originalWarn = console.warn
+  console.warn = (...a) => warned.push(a)
+  try {
+    await ensureSupportChannels(guild, cfg({ clientRoleId: 'r-client', supportChannelId: text.id, supportVoiceChannelId: voice.id }), { update, botUserId: 'bot' })
+  } finally {
+    console.warn = originalWarn
+  }
+  assert.equal(text.sent.length, 0, 'the manual is not re-posted on every call')
+  assert.equal(warned.length, 1, 'the failure is logged instead')
 })

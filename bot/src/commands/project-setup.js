@@ -546,9 +546,27 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   // off the same roster: `observeProjectSection`'s `clientIds` defaults to
   // `null` ("the roster was not read — plan no client access at all"), so
   // skipping this on any call plans away every client's support access.
-  const rosterRows = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
-  const revokeClients = !fetchFailure && rosterRows.length < ROSTER_LIMIT
-  const observed = observeProjectSection(guild, project, tasks, { rolesFetched, claimedIds, clientIds: clientIdsOf(rosterRows) })
+  //
+  // Unguarded, a failure here threw straight out of `setupProjectSection` —
+  // including out of a preview, which changes nothing and should never be able
+  // to fail on a read. A failure is the same fail-closed shape as everywhere
+  // else in this file: an empty roster, `clientIds: null` so `planClientAccess`
+  // plans NOTHING rather than guessing, and `revokeClients` false.
+  let rosterRows = []
+  let rosterReadFailure = null
+  try {
+    rosterRows = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+  } catch (e) {
+    rosterReadFailure = e?.message || String(e)
+    console.error(`[project-setup] reading the roster for ${project?.name}:`, e)
+    extra.push(
+      `The members of "${project?.name}" could not be read (${rosterReadFailure}), so no client's access to its support channels was granted or taken away — it was left exactly as it is. The rest of the section was still built.`
+    )
+  }
+  const revokeClients = !fetchFailure && !rosterReadFailure && rosterRows.length < ROSTER_LIMIT
+  const observed = observeProjectSection(guild, project, tasks, {
+    rolesFetched, claimedIds, clientIds: rosterReadFailure ? null : clientIdsOf(rosterRows),
+  })
   const plan = planProjectSection(project, observed, { adoptRole, revokeClients })
 
   if (preview) {

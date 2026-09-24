@@ -56,10 +56,14 @@ async function resolveChannel(guild, id) {
   return guild.channels?.cache?.get?.(id) ?? await guild.channels?.fetch?.(id).catch(() => null) ?? null
 }
 
-/** A channel by stored id only. A stored id that no longer resolves is "missing", not "find it by name". */
-function byStoredId(guild, id, type) {
-  if (!id) return null
-  const ch = guild.channels?.cache?.get?.(id) ?? null
+/**
+ * A channel by stored id only. A stored id that no longer resolves is
+ * "missing", not "find it by name" — but a COLD CACHE is not "no longer
+ * resolves": reading only the cache made a restart look like a deleted channel
+ * and built a duplicate beside the real one, so the fetch is the second try.
+ */
+async function byStoredId(guild, id, type) {
+  const ch = await resolveChannel(guild, id)
   return ch && ch.type === type ? ch : null
 }
 
@@ -136,7 +140,18 @@ export async function denyClientOnPublicChannels(guild, cfg, clientRoleId) {
 }
 
 async function ensureManualPinned(text, botUserId) {
-  const pinned = await text.messages?.fetchPinned?.().catch(() => null)
+  let pinned = null
+  if (typeof text?.messages?.fetchPinned === 'function') {
+    try {
+      pinned = await text.messages.fetchPinned()
+    } catch (e) {
+      // "The pins could not be read" is NOT "there are no pins". Read as the
+      // latter, every /init, /setup and first-client approval posted and
+      // pinned the manual again.
+      console.warn(`[clientAccess] pinned messages in #${text?.name} could not be read; leaving the manual alone:`, e?.message || e)
+      return
+    }
+  }
   const have = pinned && [...pinned.values()].some((m) =>
     (!botUserId || m?.author?.id === botUserId) && (m?.embeds ?? []).some((e) => (e?.title ?? e?.data?.title) === MANUAL_TITLE))
   if (have) return
@@ -153,8 +168,8 @@ export async function ensureSupportChannels(guild, cfg, { update = updateGuildCo
   const role = await ensureClientRole(guild, cfg, { update })
   const ids = { clientRoleId: role.id, verifiedRoleId: cfg?.verifiedRoleId ?? null }
 
-  let text = byStoredId(guild, cfg?.supportChannelId, ChannelType.GuildText)
-  let voice = byStoredId(guild, cfg?.supportVoiceChannelId, ChannelType.GuildVoice)
+  let text = await byStoredId(guild, cfg?.supportChannelId, ChannelType.GuildText)
+  let voice = await byStoredId(guild, cfg?.supportVoiceChannelId, ChannelType.GuildVoice)
   let category = (text?.parentId && guild.channels.cache.get(text.parentId))
     || (voice?.parentId && guild.channels.cache.get(voice.parentId))
     || findCategory(guild)

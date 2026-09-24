@@ -51,10 +51,13 @@ client has none, so the existing query already excludes them without a filter.
 
 ## Getting in: `/invite`, `/verify`, two acceptance paths
 
-`/invite` gains an optional `client:true`. With it, the email-domain check is skipped
-for that address and the `pendinginvite` row is written with `kind='client'`. Member
-join (`events/memberAdd.js`) copies `kind` onto the `guildmember` row it upserts when
-the join matches the invite by email.
+`/invite` gains an optional `client:true`, which writes the `pendinginvite` row with
+`kind='client'`. **`/invite` itself runs no email-domain check** — it never did, and the
+design's "the domain check is skipped for a client" describes a check that is not there
+(`isAllowedEmail` and `allowedDomains` were dead imports in `invite.js` until this was
+noticed; they are gone). Acceptance of an outside email happens entirely in `/verify`,
+below. Member join (`events/memberAdd.js`) copies `kind` onto the `guildmember` row it
+upserts when the join matches the invite by email.
 
 `/verify` accepts an email when the ordinary `isAllowedEmail(email)` holds, **or** when
 `clientEmailAccess()` (`bot/src/utils/clientEmail.js`) says the email is a client's —
@@ -119,8 +122,20 @@ back to matching the role by its name (`ROLE_CLIENT`, `'Client'`) — the same p
 `roleGate.js` established for `Verified`. The pinned test for this is a client held by
 stored id whose role was renamed: still denied every command outside `clientCommands`.
 
-Client commands themselves are gated on `Client` in `commandRoles`, so staff never see
-them offered.
+Client commands themselves are gated on `Client` in `commandRoles`. That gate is the
+bot's, not Discord's: Discord still offers `/report-issue` and the rest to everyone, so
+**staff are refused if they try** — and leadership with Manage Server passes
+`canUseCommand`'s bypass before the client check is ever reached, so they *can* run
+them. Nothing hides a client command from a staff member's command list.
+
+`handleAutocomplete` carries the same gate as `handleCommand`, through
+`autocompleteAllowed(member, commandName, { clientRoleId })`. Autocomplete answers from
+the database before any command body runs — project names, task titles, doc pages — so
+a gate on `execute` alone handed a client the whole server through the option list. A
+client reaching the autocomplete of anything outside `getClientCommands()` gets an empty
+list. `memberProjectIdsOf` (`utils/timeAccess.js`) drops `role: 'client'` rows for the
+same reason: a client membership opens that project's two support channels, never its
+task list in /clock-in's picker.
 
 ## The support pair: `ensureSupportChannels`
 
@@ -140,6 +155,30 @@ Repair is **presence-only**, exactly like the project-section repair in
 `project-sections.md`: `repairOverwrites` adds whichever of `@everyone`-deny,
 `Client`-allow, `Verified`-allow the channel is missing, one `permissionOverwrites.edit`
 per missing id, never a whole-array replace.
+
+### The three holes `Verified` does not close: `denyClientOnPublicChannels`
+
+"A client without `Verified` sees nothing" is true of everything granted to `Verified`
+— but `/init` grants **`@everyone: ViewChannel`** on three things, and a client is an
+ordinary guild member, so `@everyone` reaches them: the onboarding channel
+(`cfg.onboardingChannelId`), the whole `📜 Rules` category *and its children*, and
+`#announcements-all`. `denyClientOnPublicChannels(guild, cfg, clientRoleId)` in
+`clientAccess.js` adds `{ ViewChannel: false }` for the `Client` role on exactly those,
+**presence-only** like `repairOverwrites` (skip if any overwrite for that role id is
+already there, one id per `permissionOverwrites.edit`, explicit `OverwriteType.Role`).
+It runs from `ensureSupportChannels`, so `/init`, `/setup` and the first client approval
+all close it, and returns the channel names it newly denied (`result.denied`).
+
+Someone still in **Holding** is unaffected: they do not hold `Client` yet, and
+onboarding is the one channel they need. This is also what makes the pinned manual's
+"you see this support channel and the support channels of your projects, and nothing
+else" literally true.
+
+`byStoredId` resolves **cache then `channels.fetch(id)`**: a cold cache after a restart
+is not "the channel is gone", and reading only the cache built a duplicate support
+channel beside the real one. `ensureManualPinned` likewise distinguishes a `fetchPinned`
+**rejection** from "no pins" — read as the latter it re-posted and re-pinned the manual
+on every single call; a rejection now logs at warn and leaves the channel alone.
 
 The pinned manual (`ensureManualPinned`, content from `clientManual()` in
 `services/clientManual.js`) is posted and pinned **once**, identified by
@@ -242,6 +281,21 @@ raised — no second record type:
   *global* one, which every company's clients share. A request with no project instead
   notices `cfg.adminChannelId` (`#admin`). The global support pair is never used for a
   per-request notice either way.
+
+**No other task's title ever reaches a request channel.** A client sits in their
+request's channel, so anything posted there naming a *different* task is a leak. Two
+places had to be closed and both key on `task.requestedBy`:
+
+- `notifyTaskUpdate` does **not** push `warning` (the `blockerWarning(...)`
+  `taskStatusChange.js` passes it, e.g. "Still blocked by: **Router**") into the channel
+  post for a task with `requestedBy`. The warning still comes back in the function's
+  return and reaches the command reply, which is ephemeral to the developer.
+- `unblockNotices` **skips** any blocked task whose row has `requestedBy` — the notice
+  quotes the blocker's title by construction.
+
+The lead DM for a new request passes `headline: `A client raised **<title>**`` to
+`dmTaskAssignees`, whose default opening clause is "You've been assigned" — a lead was
+not assigned anything.
 
 `notifyTaskUpdate` already DMs task holders on assignment/close; for a task with
 `requestedBy` set, the requester is added to that DM list on every status change,

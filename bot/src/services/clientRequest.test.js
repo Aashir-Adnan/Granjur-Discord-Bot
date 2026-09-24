@@ -46,8 +46,9 @@ function harness({ project = null, leads = [] } = {}) {
     projectMember: { findByProject: async () => leads.map((id) => ({ discordId: id, role: 'lead' })) },
   }
   const createChannel = async (_guild, opts) => { createChannel.opts = opts; return { channel, fellBack: null } }
-  const dm = async (_client, ids) => { dms.push(...ids); return ids.length }
-  return { guild, db, created, sent, dms, channelSends, pinned, createChannel, dm, project,
+  const dmOpts = []
+  const dm = async (_client, ids, opts) => { dms.push(...ids); dmOpts.push(opts); return ids.length }
+  return { guild, db, created, sent, dms, dmOpts, channelSends, pinned, createChannel, dm, project,
     cfg: { id: 'cfg1', adminChannelId: 'admin' }, user: { id: 'u-c', username: 'ali' } }
 }
 
@@ -90,4 +91,14 @@ test('no project: notice goes to the admin channel, nobody is DMed, the channel 
   assert.deepEqual(h.dms, [])
   assert.equal(out.noticedIn, 'admin')
   assert.equal(h.channelSends.length, 0, 'no attachments, no second message')
+})
+
+test('the lead DM says a client raised it, not that they were assigned it', async () => {
+  const h = harness({ project: { id: 'p1', name: 'Framework', discordChannels: { support: 'sup' } }, leads: ['lead1'] })
+  await createClientRequest({
+    guild: h.guild, user: h.user, cfg: h.cfg, type: 'bug', title: 'Login fails', details: 'd',
+    project: h.project, attachments: [], db: h.db, createChannel: h.createChannel, dm: h.dm, client: {},
+  })
+  assert.deepEqual(h.dms, ['lead1'])
+  assert.equal(h.dmOpts[0].headline, 'A client raised **Login fails**')
 })

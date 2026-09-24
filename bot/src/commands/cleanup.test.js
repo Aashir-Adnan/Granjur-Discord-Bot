@@ -177,3 +177,15 @@ test('the support pair and its category are protected by id', async () => {
   assert.ok(!listed.includes('support') && !listed.includes('support-voice'), `support pair listed: ${listed}`)
   assert.ok(listed.includes('old-chat'), 'an unrelated orphan is still listed')
 })
+
+test('the support category is protected by name too, before any id has ever been stored', async () => {
+  // Before the first /init, /setup or client approval, cfg carries no support
+  // ids at all — and a /cleanup run then would have swept the pair away.
+  const supportCat = category('supcat', '🛟 Support')
+  const support = chan('sup', 'support', { parent: supportCat })
+  const supportVoice = chan('supv', 'support-voice', { type: ChannelType.GuildVoice, parent: supportCat })
+  const reply = await run([], [supportCat, support, supportVoice, chan('orphan', 'old-chat')])
+  const listed = listedForDeletion(reply)
+  assert.ok(!listed.includes('support') && !listed.includes('support-voice'), `support pair listed: ${listed}`)
+  assert.deepEqual(listed, ['old-chat'])
+})

@@ -12,7 +12,6 @@ import db, { getOrCreateGuildConfig, guildMemberFindByEmail } from '../db/index.
 import { sendEmail, inviteEmailHtml } from '../Mailer/sendEmail.js'
 import { setInviteUses } from '../events/inviteUsesCache.js'
 import { EPHEMERAL } from '../constants.js'
-import { config, isAllowedEmail } from '../config.js'
 import * as flowStore from '../flows/store.js'
 
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true'
@@ -21,9 +20,6 @@ function debug(...args) {
 }
 
 const MAX_BATCH_INVITES = 20
-
-/** Domains allowed for invite emails (from ALLOWED_EMAIL_DOMAINS env var) */
-const allowedDomains = config.allowedDomains
 
 /** Parse raw input into trimmed, lowercased, unique emails (comma / newline / semicolon separated) */
 export function parseEmails(raw) {

@@ -10,6 +10,7 @@ import {
   CATEGORY_ONBOARDING,
   CHANNEL_ONBOARDING,
   CATEGORY_RULES,
+  CATEGORY_SUPPORT,
   CHANNEL_RULES,
   CATEGORY_DOCUMENTATION,
   CHANNEL_DOCUMENTATION,
@@ -206,6 +207,13 @@ export async function execute(
   const supportCategoryIds = new Set(
     [...supportIds].map((id) => channels.get(id)?.parentId ?? channels.get(id)?.parent?.id).filter(Boolean),
   );
+  // Before the first /init, /setup or client approval has run, cfg carries no
+  // support ids at all — and the pair would then be swept away by the very
+  // command whose job is to leave what the bot built alone. The name is the
+  // fallback for exactly that window, never instead of the ids.
+  for (const [, ch] of channels) {
+    if (ch?.type === ChannelType.GuildCategory && ch.name === CATEGORY_SUPPORT) supportCategoryIds.add(ch.id);
+  }
   const toDelete = [];
 
   for (const [, ch] of channels) {

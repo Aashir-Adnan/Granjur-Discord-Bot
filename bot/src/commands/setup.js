@@ -52,6 +52,18 @@ export async function execute(interaction) {
   const cfg = await getOrCreateGuildConfig(guild.id);
   const tzInput = interaction.options.getString("timezone");
 
+  // Before the timezone branch, which returns: `/setup timezone:x` is still a
+  // /setup, and the support pair is the one thing this command is relied on to
+  // create on a live server. Idempotent — it creates the Client role and the
+  // support pair if they are missing, repairs their overwrites, re-pins the
+  // manual — and cheap when all is well. The timezone reply does not mention it.
+  let support = null;
+  try {
+    support = await ensureSupportChannels(guild, cfg, { botUserId: interaction.client?.user?.id ?? null });
+  } catch (e) {
+    console.warn("[setup] support channels:", e?.message ?? e);
+  }
+
   if (tzInput) {
     if (!isValidZone(tzInput)) {
       return interaction
@@ -77,15 +89,6 @@ export async function execute(interaction) {
   }
 
   // No options -> show current settings
-  // Idempotent: creates the Client role and the support pair if they are
-  // missing, repairs their overwrites, re-pins the manual. Cheap when all is well.
-  let support = null;
-  try {
-    support = await ensureSupportChannels(guild, cfg, { botUserId: interaction.client?.user?.id ?? null });
-  } catch (e) {
-    console.warn("[setup] support channels:", e?.message ?? e);
-  }
-
   const zone = guildZone(cfg);
   const configured = cfg.timezone && isValidZone(cfg.timezone);
   const embed = new EmbedBuilder()

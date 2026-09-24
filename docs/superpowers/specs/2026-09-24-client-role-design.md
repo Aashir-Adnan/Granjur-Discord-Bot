@@ -77,7 +77,7 @@ All of this is migration `025_client_role.sql`, idempotent in the `information_s
 
 `/invite` gains an optional boolean `client`. With `client:true`:
 
-- the email domain check is skipped for those addresses (it is what stops outside emails today);
+- **corrected 2026-09-24 (final review):** `/invite` runs no email-domain check at all — it never did, so there is nothing for `client:true` to skip. Acceptance of an outside email happens entirely in `/verify`, below;
 - each `pendinginvite` row is written with `kind='client'`;
 - the invite email is the same.
 

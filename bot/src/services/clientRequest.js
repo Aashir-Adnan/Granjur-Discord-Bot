@@ -100,7 +100,7 @@ export async function createClientRequest({
     noticedIn = supportChannel.id
     const roster = await dbArg.projectMember.findByProject({ where: { projectId: project.id } }).catch(() => [])
     const leads = (roster ?? []).filter((m) => m?.role === 'lead').map((m) => String(m.discordId))
-    if (leads.length) await dm(client, leads, { title: task.title, channelId: channel.id, note: `A client request${project ? ` on **${project.name}**` : ''}.` })
+    if (leads.length) await dm(client, leads, { title: task.title, channelId: channel.id, headline: `A client raised **${task.title}**`, note: `A client request${project ? ` on **${project.name}**` : ''}.` })
   } else if (cfg.adminChannelId) {
     const admin = await guild.channels?.fetch?.(cfg.adminChannelId).catch(() => null)
     if (admin?.send) {
