@@ -275,7 +275,7 @@ the command's own `commandRoles` entry. This is what closes the three commands w
 list (`close-feature`, `resolve-bug`; `verify` stays open) and every command absent from the map.
 The guild-owner and Manage Server bypasses stay; a client never has them.
 
-Client commands themselves are gated on `Client` in `commandRoles`, so staff do not see them.
+Client commands themselves are gated on `Client` in `commandRoles`, so staff are refused if they try them. *(Corrected 2026-09-24: Discord still offers the commands to everyone, and a Manage Server holder passes the bypass before the client check and can run them.)*
 
 ## 11. Everything that iterates "approved members"
 
