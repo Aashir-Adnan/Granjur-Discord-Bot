@@ -50,6 +50,10 @@ Rule in force: `.claude/rules/tests-never-touch-production.md`.
 - Owner asked for structured fields on the two raising commands → shipped (optional fields,
   screenshots, full-details follow-up when the embed would cut the text).
 
+- Casual chat per project for clients → shipped (`fe8979d` + test fix `0a3b992`). Existing
+  sections need one `/project-setup` run each to get the channel; their clients are granted in
+  the same run.
+
 ## Open items
 See `backlog.md` → "Client role — deferred follow-ups". The one worth raising first: both gates
 fail open when the member cannot be resolved (read `interaction.member`).

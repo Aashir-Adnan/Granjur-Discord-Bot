@@ -4,6 +4,15 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-24 — Casual chat channel per project, open to its clients (MERGED, PUSHED)
+
+`<slug>-casual-chat` is the thirteenth section channel and the third entry in
+`CLIENT_SECTION_KEYS`, so every client-access path (per-client overwrites, `/project-members`
+grant/revoke, `/project-setup` repair) covers it with no other change. `fe0779d`, merged
+`fe8979d`. **Process slip:** that merge was pushed with 8 count assertions red — the verify step
+grepped the summary line, which exits 0 regardless — fixed in `0a3b992`; every verify step now
+gates on `fail 0` explicitly. 1092 tests.
+
 ## 2026-09-24 — Structured fields + screenshots on client requests (MERGED, PUSHED)
 
 Follow-up `de1a102` (merged `2f85053`): optional `semester` text field on both commands, first
