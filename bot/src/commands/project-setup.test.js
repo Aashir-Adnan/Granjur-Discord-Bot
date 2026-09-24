@@ -7,6 +7,8 @@ import {
   autocomplete,
   renderPlan,
   renderResult,
+  staffOnly,
+  clientIdsOf,
 } from './project-setup.js'
 
 // --- fakes ------------------------------------------------------------------
@@ -1057,4 +1059,11 @@ test('a run reports how many places got the voice permissions, and says nothing 
   assert.match(renderResult({ name: 'Framework' }, { voiceFixed: ['a', 'b'] }), /Voice activity and screen sharing turned on for the project role in 2 place\(s\)/)
   assert.doesNotMatch(renderResult({ name: 'Framework' }, { voiceFixed: [] }), /Voice activity/)
   assert.equal(renderResult({ name: 'Framework' }, {}), '**Framework** — nothing to change.')
+})
+
+test('the role-sync roster never contains a client row; clientIdsOf is the complement', () => {
+  const rows = [{ discordId: 'a', role: 'lead' }, { discordId: 'c', role: 'client' }, { discordId: 'b', role: 'qa' }]
+  assert.deepEqual(staffOnly(rows).map((m) => m.discordId), ['a', 'b'])
+  assert.deepEqual(clientIdsOf(rows), ['c'])
+  assert.deepEqual(staffOnly(null), [])
 })

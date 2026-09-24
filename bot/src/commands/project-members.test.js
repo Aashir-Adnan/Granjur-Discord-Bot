@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { OverwriteType } from 'discord.js'
 import { renderMembers, inferredMemberIds, execute, autocomplete, data } from './project-members.js'
 
 test('inferredMemberIds: assignees of the project tasks not already explicit, deduplicated', () => {
@@ -46,11 +47,11 @@ test('renderMembers lists Backend and Frontend Developers as their own groups, i
   ].join('\n'))
 })
 
-test('the role picker offers all six roles with readable labels', () => {
+test('the role picker offers all seven roles with readable labels', () => {
   const opt = data.toJSON().options.find((o) => o.name === 'add').options.find((o) => o.name === 'role')
   assert.deepEqual(opt.choices.map((c) => [c.value, c.name]), [
     ['lead', 'Lead'], ['developer', 'Developer'], ['backend_developer', 'Backend Developer'],
-    ['frontend_developer', 'Frontend Developer'], ['qa', 'QA'], ['design', 'Design'],
+    ['frontend_developer', 'Frontend Developer'], ['qa', 'QA'], ['design', 'Design'], ['client', 'Client'],
   ])
 })
 
@@ -64,6 +65,10 @@ const PROJECT = { id: 'proj1', name: 'Framework', guildConfigId: 'g1' }
 
 function fakeDb({ project = PROJECT, members = [], tasks = [], removed = 1 } = {}) {
   const calls = []
+  // A `remove` flips this so `findByProject` reflects the delete: the "remove"
+  // sub-command reads the roster both before (for the prior role) and after
+  // (for the race guard), and those two reads must disagree once removed.
+  let removedRow = false
   return {
     calls,
     project: {
@@ -71,8 +76,8 @@ function fakeDb({ project = PROJECT, members = [], tasks = [], removed = 1 } = {
     },
     projectMember: {
       add: async ({ data }) => { calls.push(['add', data]); return data },
-      remove: async ({ where }) => { calls.push(['remove', where]); return { removed } },
-      findByProject: async () => members,
+      remove: async ({ where }) => { calls.push(['remove', where]); removedRow = true; return { removed } },
+      findByProject: async () => (removedRow ? [] : members),
     },
     task: {
       findMany: async () => tasks,
@@ -81,11 +86,11 @@ function fakeDb({ project = PROJECT, members = [], tasks = [], removed = 1 } = {
 }
 
 /** Fake slash interaction: subcommand + option values from `opts`, users from `users`. */
-function fakeInteraction({ sub, opts = {}, users = {} } = {}) {
+function fakeInteraction({ sub, opts = {}, users = {}, guild = { id: 'guild1', members: { cache: new Map() } } } = {}) {
   const replies = []
   return {
     replies,
-    guild: { id: 'guild1', members: { cache: new Map() } },
+    guild,
     user: { id: 'inviter1' },
     options: {
       getSubcommand: () => sub,
@@ -482,4 +487,49 @@ test('list without the project option lists the project it is run in, and touche
   assert.equal(it.replies[0].content, renderMembers({ project: SECTION, explicit: rows, inferredIds: [], nameFor: () => null }))
   assert.deepEqual(guild.log.roles, [])
   assert.deepEqual(guild.log.sent, [])
+})
+
+// --- clients ------------------------------------------------------------------
+
+function clientHarness({ members = [] } = {}) {
+  const edits = []
+  const deletes = []
+  const support = { id: 'sup', name: 'fw-support', permissionOverwrites: { cache: new Map(), edit: async (id, allow, opts) => { edits.push(['sup', id, opts?.type]) }, delete: async (id) => { deletes.push(['sup', id]) } } }
+  const supportVoice = { id: 'supv', name: 'fw-support-voice', permissionOverwrites: { cache: new Map(), edit: async (id, allow, opts) => { edits.push(['supv', id, opts?.type, allow.Connect]) }, delete: async (id) => { deletes.push(['supv', id]) } } }
+  const roleAdds = []
+  const roleRemoves = []
+  const guild = {
+    id: 'g1',
+    roles: { cache: new Map([['role1', { id: 'role1', name: 'Framework' }]]) },
+    channels: { cache: new Map([['sup', support], ['supv', supportVoice]]) },
+    members: { cache: new Map(), fetch: async (id) => ({ id, roles: { add: async (r) => { roleAdds.push(r) }, remove: async (r) => { roleRemoves.push(r) } } }) },
+  }
+  const project = { ...PROJECT, discordRoleId: 'role1', discordChannels: { support: 'sup', supportVoice: 'supv' } }
+  const db = fakeDb({ project, members })
+  return { guild, db, project, edits, deletes, roleAdds, roleRemoves }
+}
+
+test('adding a client grants the two support overwrites and never the project role', async () => {
+  const h = clientHarness()
+  const ix = fakeInteraction({ guild: h.guild, sub: 'add', opts: { role: 'client', project: 'proj1' }, users: { member: { id: 'u-c', bot: false } } })
+  await execute(ix, { db: h.db, getConfig })
+  assert.deepEqual(h.edits, [['sup', 'u-c', OverwriteType.Member], ['supv', 'u-c', OverwriteType.Member, true]])
+  assert.deepEqual(h.roleAdds, [])
+  assert.match(ix.replies.at(-1).content, /support channels/)
+})
+
+test('removing a client revokes the two overwrites and leaves the role alone', async () => {
+  const h = clientHarness({ members: [{ discordId: 'u-c', role: 'client' }] })
+  const ix = fakeInteraction({ guild: h.guild, sub: 'remove', opts: { project: 'proj1' }, users: { member: { id: 'u-c', bot: false } } })
+  await execute(ix, { db: h.db, getConfig })
+  assert.deepEqual(h.deletes, [['sup', 'u-c'], ['supv', 'u-c']])
+  assert.deepEqual(h.roleRemoves, [])
+})
+
+test('changing a staff row to client revokes the role and grants access; the reverse undoes it', async () => {
+  const h = clientHarness({ members: [{ discordId: 'u1', role: 'developer' }] })
+  const ix = fakeInteraction({ guild: h.guild, sub: 'add', opts: { role: 'client', project: 'proj1' }, users: { member: { id: 'u1', bot: false } } })
+  await execute(ix, { db: h.db, getConfig })
+  assert.deepEqual(h.roleRemoves, ['role1'])
+  assert.equal(h.edits.length, 2)
 })

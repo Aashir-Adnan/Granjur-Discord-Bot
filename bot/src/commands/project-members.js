@@ -1,13 +1,14 @@
-import { SlashCommandBuilder } from 'discord.js'
+import { SlashCommandBuilder, OverwriteType } from 'discord.js'
 import db, { getOrCreateGuildConfig, PROJECT_MEMBER_ROLES } from '../db/index.js'
 import { projectChoices } from './update-task.js'
 import { holdersOf } from '../utils/taskLabel.js'
-import { projectFromChannel } from '../services/projectSection.js'
+import { projectFromChannel, CLIENT_SECTION_KEYS, storedChannels } from '../services/projectSection.js'
+import { CLIENT_TEXT_ALLOW_OBJ, CLIENT_VOICE_ALLOW_OBJ } from '../services/clientAccess.js'
 import { ensureMembersPanel, postMembershipChange } from '../services/projectMembersPanel.js'
 
 const ROLE_LABEL = {
   lead: 'Lead', developer: 'Developer', backend_developer: 'Backend Developer',
-  frontend_developer: 'Frontend Developer', qa: 'QA', design: 'Design',
+  frontend_developer: 'Frontend Developer', qa: 'QA', design: 'Design', client: 'Client',
 }
 const roleChoices = PROJECT_MEMBER_ROLES.map((r) => ({ name: ROLE_LABEL[r], value: r }))
 // Optional: left out, the project is the one whose section the command is run
@@ -131,6 +132,40 @@ async function changeRole(guild, project, userId, action) {
   }
 }
 
+/**
+ * Grant or revoke ONE client's member overwrite on the project's two support
+ * channels. Never the project role: that opens all twelve channels. Returns the
+ * sentence the reply should carry.
+ */
+async function changeClientAccess(guild, project, userId, action) {
+  const stored = storedChannels(project)
+  const targets = CLIENT_SECTION_KEYS.map((key) => [key, stored[key] ? guild.channels?.cache?.get?.(stored[key]) ?? null : null])
+  if (targets.every(([, ch]) => !ch)) {
+    return 'This project has no support channels yet, so no channel access changed. Run `/project-setup` to add them.'
+  }
+  const failed = []
+  for (const [key, channel] of targets) {
+    if (!channel) continue
+    try {
+      if (action === 'grant') {
+        const allow = key === 'supportVoice' ? CLIENT_VOICE_ALLOW_OBJ : CLIENT_TEXT_ALLOW_OBJ
+        await channel.permissionOverwrites.edit(userId, allow, { type: OverwriteType.Member, reason: 'Project client' })
+      } else {
+        await channel.permissionOverwrites.delete(userId, 'Project client')
+      }
+    } catch (e) {
+      failed.push(`${channel.name} (${e?.message || e})`)
+    }
+  }
+  if (failed.length) {
+    console.warn(`[project-members] client access ${action} on "${project.name}" (${userId}) failed: ${failed.join('; ')}`)
+    return action === 'grant'
+      ? `The membership is saved, but I could not open ${failed.join(', ')} to them.`
+      : `They are off the project, but I could not close ${failed.join(', ')} to them.`
+  }
+  return action === 'grant' ? 'They can now see this project\'s support channels.' : 'Their access to this project\'s support channels was taken away.'
+}
+
 /** Refresh the pinned roster (always the FULL roster) and post one change line. */
 async function updatePanel(interaction, project, roster, change) {
   const guild = interaction.guild
@@ -169,13 +204,19 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     // on the Discord side below can undo it.
     await dbArg.projectMember.add({ data: { guildConfigId: cfg.id, projectId: project.id, discordId: user.id, role, addedBy: interaction.user.id } })
     const lines = [`Added <@${user.id}> to **${project.name}** as **${ROLE_LABEL[role]}**.`]
-    lines.push(await changeRole(guild, project, user.id, 'grant'))
+    const prior = before?.find((m) => m.discordId === user.id) ?? null
+    if (role === 'client') {
+      if (prior && prior.role !== 'client') lines.push(await changeRole(guild, project, user.id, 'revoke'))
+      lines.push(await changeClientAccess(guild, project, user.id, 'grant'))
+    } else {
+      if (prior?.role === 'client') lines.push(await changeClientAccess(guild, project, user.id, 'revoke'))
+      lines.push(await changeRole(guild, project, user.id, 'grant'))
+    }
     const roster = await readRoster(dbArg, project)
     if (roster) {
       // Post only a known, real change: re-adding someone with the role they
       // already hold says nothing, and neither does an add whose prior state
       // could not be read (`before` is null) — the panel still refreshes.
-      const prior = before?.find((m) => m.discordId === user.id)
       const changed = before !== null && !(prior && prior.role === role)
       const change = changed ? { name: displayNameOf(guild, user), role, action: 'added' } : null
       await updatePanel(interaction, project, roster, change)
@@ -184,6 +225,7 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
   }
 
   if (sub === 'remove') {
+    const before = await readRoster(dbArg, project)
     const user = interaction.options.getUser('member')
     const { removed } = await dbArg.projectMember.remove({ where: { projectId: project.id, discordId: user.id } })
     if (!removed) return interaction.editReply({ content: `<@${user.id}> was not on **${project.name}**.` })
@@ -200,6 +242,7 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     const stillOn = !!roster?.some((m) => m.discordId === user.id)
     if (!roster) lines.push('I could not re-read the project roster, so I left their channel access alone.')
     else if (stillOn) lines.push('They were added back while this ran, so their channel access stays.')
+    else if (before?.find((m) => m.discordId === user.id)?.role === 'client') lines.push(await changeClientAccess(guild, project, user.id, 'revoke'))
     else lines.push(await changeRole(guild, project, user.id, 'revoke'))
     if (roster) {
       await updatePanel(interaction, project, roster, stillOn ? null : { name: displayNameOf(guild, user), action: 'removed' })

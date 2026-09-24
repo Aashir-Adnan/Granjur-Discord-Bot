@@ -122,6 +122,11 @@ function summarise(entries, words) {
   return parts.join(', ')
 }
 
+/** The roster the ROLE sync may see: never a client row — the role opens every channel. */
+export const staffOnly = (rows) => (rows ?? []).filter((m) => m?.role !== 'client')
+/** The clients of a project, for the support-channel overwrites. */
+export const clientIdsOf = (rows) => (rows ?? []).filter((m) => m?.role === 'client').map((m) => String(m.discordId))
+
 /** 'Ada, Bob and 4 more' — never an unbounded list of names in a reply. */
 function namesList(names, max = 12) {
   const list = (names ?? []).map((n) => String(n))
@@ -202,6 +207,11 @@ export function renderPlan(project, plan = {}) {
     )
   }
 
+  const clients = plan?.clients ?? { grant: [], revoke: [] }
+  if (clients.grant.length || clients.revoke.length) {
+    lines.push(`Clients: ${clients.grant.length} support-channel access grant(s), ${clients.revoke.length} revoke(s).`)
+  }
+
   lines.push(...warningLines(plan?.warnings))
 
   if (!lines.length) return `**${name}** — nothing to do.`
@@ -256,6 +266,15 @@ export function renderResult(project, result = {}) {
 
   if (voiceFixed.length) {
     lines.push(`Voice activity and screen sharing turned on for the project role in ${voiceFixed.length} place(s).`)
+  }
+
+  // `clientGranted`/`clientRevoked` hold one channel NAME per member grant/revoke
+  // (five clients on one channel is five copies), so the count that means
+  // something to an operator is the distinct channels touched, not the raw length.
+  const cg = result?.clientGranted ?? []
+  const cr = result?.clientRevoked ?? []
+  if (cg.length || cr.length) {
+    lines.push(`Clients: ${new Set(cg).size} support channel(s) opened, ${new Set(cr).size} closed.`)
   }
 
   const sync = result?.roleSync
@@ -518,8 +537,14 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
     )
   }
 
-  const observed = observeProjectSection(guild, project, tasks, { rolesFetched, claimedIds })
-  const plan = planProjectSection(project, observed, { adoptRole })
+  // Read once, up front, so both a preview and a real run plan client access
+  // off the same roster: `observeProjectSection`'s `clientIds` defaults to
+  // `null` ("the roster was not read — plan no client access at all"), so
+  // skipping this on any call plans away every client's support access.
+  const rosterRows = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+  const revokeClients = !fetchFailure && rosterRows.length < ROSTER_LIMIT
+  const observed = observeProjectSection(guild, project, tasks, { rolesFetched, claimedIds, clientIds: clientIdsOf(rosterRows) })
+  const plan = planProjectSection(project, observed, { adoptRole, revokeClients })
 
   if (preview) {
     if (adoptRole && fetchFailure) {
@@ -536,8 +561,10 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   }
 
   // The roster is passed on purpose: `members` is a tri-state, and omitting
-  // it would leave every pinned members panel showing yesterday's list.
-  const members = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+  // it would leave every pinned members panel showing yesterday's list. Never
+  // a client row: the project role opens all twelve channels, and a client
+  // belongs only on the two support channels' overwrites.
+  const members = staffOnly(rosterRows)
   if (fetchFailure) {
     extra.push(
       `This server's member list could not be read (${fetchFailure}), so nobody was removed from the project role. Run /project-setup again once the bot can read this server's members.`
@@ -557,7 +584,7 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   let roster = members
   let rosterFailure = null
   try {
-    roster = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+    roster = staffOnly((await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? [])
   } catch (e) {
     // The first read worked, so the roster is stale rather than unknown — but
     // stale is exactly what must not drive a revoke.
@@ -576,7 +603,7 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
     }
   }
 
-  const truncatedRoster = roster.length >= ROSTER_LIMIT
+  const truncatedRoster = rosterRows.length >= ROSTER_LIMIT
   if (truncatedRoster) {
     extra.push(
       `Only the first ${ROSTER_LIMIT} members of "${project?.name}" could be read, so nobody was removed from the project role — members past that limit would have looked as though they had left the project.`
@@ -627,7 +654,7 @@ function sameRoster(a, b) {
 async function adoptionPreview(dbArg, project, role, nameFor) {
   let roster = []
   try {
-    roster = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+    roster = staffOnly((await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? [])
   } catch (e) {
     return `Adopting **${role.name}** would change who holds it, but this project's members could not be read (${e?.message ?? String(e)}), so who gains and loses it cannot be shown. Do not run this without preview until that read works.`
   }
