@@ -8,6 +8,16 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 See `.claude/knowledge/ticket-archive.md`. The items that outlived the status buckets, plus
 what this branch added. Newest first.
 
+- `dividerRoleNeedsRepair` heals a wrong deny set but never a missing ALLOW: a role
+  overwrite on the divider with `allow: 0` and the full deny set reads as healthy, so a
+  divider the project cannot see is never repaired. One-line extension: also require the
+  `DIVIDER_ROLE_ALLOW` bits.
+- The "orphan above the line stays above" half of the step-4d test in
+  `projectSection.test.js` is vacuous: the orphan and the divider share `rawPosition: 20`
+  and the id tie-break puts the orphan below. Give it `rawPosition: 19` so the
+  `i <= lineIndex` branch is actually exercised.
+- A topic-only repair of the divider is not reported in the run's result (it is neither a
+  grant nor a rename), so a successful one is invisible in the reply.
 - **Delete the three leftover bucket categories in the real guild by hand.** Nothing in
   the bot will ever do it: `/project-setup` reports each one once, in the run that empties
   it, and then drops the stored id and forgets it.
