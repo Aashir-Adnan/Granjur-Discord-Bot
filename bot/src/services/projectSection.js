@@ -50,6 +50,7 @@ import { CATEGORY_SOFT_CAP } from '../constants.js'
 import { CLIENT_TEXT_ALLOW_OBJ, CLIENT_VOICE_ALLOW_OBJ, ensureManualPinned } from './clientAccess.js'
 import { cut, storedChannels } from '../utils/projectStore.js'
 import { BUCKETS, bucketFor, bucketByKey, bucketNameFor, bucketIdsOf, isDoneBucket } from '../utils/statusBuckets.js'
+import { retireTicketChannel } from './ticketRetire.js'
 
 // The cap lives in `constants.js`, a leaf: `taskTicketChannel.js` needs it too,
 // and importing this module into that leaf helper pulled the whole database
@@ -1038,10 +1039,11 @@ async function grantClients(channel, key, memberIds, result) {
 }
 
 /**
- * Perform a plan: role, then category, then the ten section channels, then the
- * task channels, then one write of the ids, then the members panel. Every step
- * has its own try/catch, so a project missing one permission still gets
- * everything else, and a repeat run finishes what was left.
+ * Perform a plan: role, then category, then the buckets, then the section
+ * channels, then the task channels, then the retirements, then one write of
+ * the ids, then the members panel. Every step has its own try/catch, so a
+ * project missing one permission still gets everything else, and a repeat run
+ * finishes what was left.
  *
  * Nothing here deletes a channel or a role.
  *
@@ -1058,14 +1060,18 @@ async function grantClients(channel, key, memberIds, result) {
  * are permission changes and both are reported, but they are not the same
  * count, and adding them together would describe one channel as two objects.
  *
- * @param {{db: object, members?: Array<{discordId: string, role: string}>, nameFor?: (id: string) => string, botUserId?: string|null}} deps
- * @returns {Promise<{role: object|null, category: object|null, created: string[], renamed: string[], moved: string[], granted: string[], opened: string[], membersChannel: object|null, tasks: number, warnings: string[]}>}
+ * `retire` and `now` are seams for the same reason every other database touch
+ * here is one: `retireTicketChannel`'s own default `db` is the production
+ * client, so step 4c runs only when the caller handed the applier a database.
+ *
+ * @param {{db: object, members?: Array<{discordId: string, role: string}>, nameFor?: (id: string) => string, botUserId?: string|null, retire?: typeof retireTicketChannel, now?: () => Date}} deps
+ * @returns {Promise<{role: object|null, category: object|null, created: string[], renamed: string[], moved: string[], granted: string[], opened: string[], buckets: {created: string[], renamed: string[]}, retired: number, membersChannel: object|null, tasks: number, warnings: string[]}>}
  */
 export async function applyProjectSection(
   guild,
   project,
   plan,
-  { db, members, nameFor = (id) => id, botUserId = null } = {}
+  { db, members, nameFor = (id) => id, botUserId = null, retire = retireTicketChannel, now = () => new Date() } = {}
 ) {
   const result = {
     role: null,
@@ -1075,6 +1081,8 @@ export async function applyProjectSection(
     moved: [],
     granted: [],
     opened: [],
+    buckets: { created: [], renamed: [] },
+    retired: 0,
     voiceFixed: [],
     clientGranted: [],
     clientRevoked: [],
@@ -1160,6 +1168,65 @@ export async function applyProjectSection(
       `No category for "${project?.name}", so its channels were left where they are. Run /project-setup again once the bot can create channels.`
     )
   } else {
+    // 2b. The three status buckets: sibling categories directly below the
+    //     section category, same overwrites as it. Created, renamed or reused
+    //     exactly as the category is; each on its own try/catch.
+    const bucketIdByKey = {}
+    for (const entry of plan?.buckets ?? []) {
+      try {
+        let cat = null
+        if (entry.action === 'create') {
+          cat = await guild.channels.create({
+            name: entry.name,
+            type: ChannelType.GuildCategory,
+            permissionOverwrites: categoryOverwrites(guild, roleId),
+            reason: REASON,
+          })
+          result.created.push(entry.name)
+          result.buckets.created.push(entry.name)
+        } else {
+          cat = guild.channels.cache.get(entry.id) ?? null
+          if (!cat) throw new Error(`bucket ${entry.id} no longer exists`)
+          const required = categoryOverwrites(guild, roleId)
+          const needsName = entry.action === 'rename'
+          const needsPerms = missingOverwrites(cat, required)
+          if (needsName || needsPerms) {
+            const payload = { name: entry.name }
+            if (needsPerms) payload.permissionOverwrites = mergedOverwrites(cat, required)
+            await cat.edit(payload)
+            if (needsName) {
+              result.renamed.push(entry.name)
+              result.buckets.renamed.push(entry.name)
+            }
+          }
+        }
+        channelIds[entry.storeKey] = cat.id
+        bucketIdByKey[entry.key] = cat.id
+      } catch (e) {
+        note(result.warnings, `bucket "${entry.name}"`, e)
+      }
+    }
+    // Sidebar order: section, then open, in progress, done. Best-effort — a
+    // refused position edit is a warning, and a bucket already where it
+    // belongs is not edited again on every run.
+    const base = Number(result.category?.rawPosition ?? result.category?.position ?? 0)
+    for (const [i, b] of BUCKETS.entries()) {
+      const cat = bucketIdByKey[b.key] ? guild.channels.cache.get(bucketIdByKey[b.key]) : null
+      if (!cat) continue
+      const wanted = base + i + 1
+      if (Number(cat.rawPosition ?? cat.position ?? -1) === wanted) continue
+      try {
+        await cat.edit({ position: wanted })
+      } catch (e) {
+        note(result.warnings, `position of "${cat.name}"`, e)
+      }
+    }
+    // "Inside the project's space" is the section category OR any of its
+    // buckets — the planner uses the same set, and the applier's role-allow
+    // decision has to agree with it or a `rename` of a ticket already sitting
+    // in a bucket would quietly drop the allow the plan promised.
+    const projectCategoryIds = new Set([categoryId, ...Object.values(bucketIdByKey)])
+
     // 3. The ten section channels. One `edit` each, carrying name AND parent
     //    together: Discord allows two channel edits per ten minutes, so a
     //    rename followed by a move would burn the whole budget on one channel
@@ -1265,7 +1332,8 @@ export async function applyProjectSection(
     //        keeping `Feature: <title>` as its topic would name a task nothing
     //        can match it to, and /update-task would build a duplicate;
     //      * the project role's allow, when the channel ends up inside the
-    //        section. A task channel's overwrites are its own — Discord copies
+    //        project's space — its bucket, or the section category it already
+    //        sits in. A task channel's overwrites are its own — Discord copies
     //        nothing from the category — so without it the project's members
     //        cannot see their project's task channels. MERGED into what the
     //        channel already carries, never replacing it and never via
@@ -1274,18 +1342,27 @@ export async function applyProjectSection(
     //        the project.
     //    No resolvable role, or no readable overwrite list: the allow is
     //    skipped, never the rest of the edit.
+    let unplaced = 0
     for (const task of plan?.tasks ?? []) {
       if (task.action === 'none') continue
       try {
         const channel = guild.channels.cache.get(task.channelId)
         if (!channel) throw new Error(`channel ${task.channelId} no longer exists`)
+        const wantedParent = bucketIdByKey[task.bucket] ?? null
+        let action = task.action
+        // The bucket could not be made: keep the readable name, stay put.
+        if (!wantedParent && (action === 'move' || action === 'both')) {
+          unplaced += 1
+          action = action === 'both' ? 'rename' : 'none'
+          if (action === 'none') continue
+        }
         // A `rename` at the category cap means "readable name, stay put", and a
         // `grant` is already where it belongs: both keep the parent they have.
-        const stays = task.action === 'rename' || task.action === 'grant'
-        const parent = stays ? channel.parentId ?? null : categoryId
-        const overwrites = parent === categoryId ? roleAllowMerged(channel, projectRoleId) : null
+        const stays = action === 'rename' || action === 'grant'
+        const parent = stays ? channel.parentId ?? null : wantedParent
+        const overwrites = projectCategoryIds.has(parent) ? roleAllowMerged(channel, projectRoleId) : null
 
-        if (task.action === 'grant') {
+        if (action === 'grant') {
           // Nothing to add after all (the role is gone, or the channel gained
           // the allow since it was read): no edit.
           if (!overwrites) continue
@@ -1305,9 +1382,33 @@ export async function applyProjectSection(
         // a throw cannot report a permission change that never happened.
         if (overwrites) result.opened.push(task.name)
         result.tasks += 1
-        ;(task.action === 'rename' ? result.renamed : result.moved).push(task.name)
+        ;(action === 'rename' ? result.renamed : result.moved).push(task.name)
       } catch (e) {
         note(result.warnings, `task channel "${task.name}"`, e)
+      }
+    }
+
+    if (unplaced > 0) {
+      result.warnings.push(
+        `${unplaced} task channel${unplaced === 1 ? '' : 's'} for "${project?.name}" could not be filed because ${unplaced === 1 ? 'its' : 'their'} status bucket could not be created. Run /project-setup again once the bot can create categories.`
+      )
+    }
+
+    // 4c. Finished tickets filed into Done for the first time: read-only now,
+    //     gone in fourteen days — counted from THIS run, so a backfill never
+    //     deletes anything the day it runs. Only through a database the caller
+    //     passed: the default would be production.
+    const retirable = (plan?.tasks ?? []).filter((t) => t.retire)
+    if (retirable.length && !db?.task?.update) {
+      result.warnings.push(`${retirable.length} finished ticket(s) were not stamped for removal — no database was passed to the applier.`)
+    } else {
+      for (const task of retirable) {
+        try {
+          await retire({ channel: guild.channels.cache.get(task.channelId) ?? null, task: { id: task.taskId }, db, now })
+          result.retired += 1
+        } catch (e) {
+          note(result.warnings, `retiring "${task.name}"`, e)
+        }
       }
     }
   }
