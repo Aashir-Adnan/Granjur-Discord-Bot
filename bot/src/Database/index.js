@@ -1221,7 +1221,7 @@ async function guildMemberFindByConfigEmail({ where }) {
 }
 
 // ---------- projectmember (explicit project membership) ----------
-export const PROJECT_MEMBER_ROLES = ["lead", "developer", "backend_developer", "frontend_developer", "qa", "design", "client"];
+export const PROJECT_MEMBER_ROLES = ["lead", "developer", "backend_developer", "frontend_developer", "qa", "design", "client", "client_manager"];
 export function projectMemberUpsertSql(data) {
   const columns = [
     ["id", data.id],

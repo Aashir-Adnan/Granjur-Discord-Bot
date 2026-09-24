@@ -19,7 +19,7 @@ test('attachmentPlan re-uploads what fits and links what does not', () => {
   })
 })
 
-function harness({ project = null, leads = [] } = {}) {
+function harness({ project = null, leads = [], managers = [] } = {}) {
   const created = []
   const sent = { support: [], admin: [] }
   const dms = []
@@ -43,7 +43,7 @@ function harness({ project = null, leads = [] } = {}) {
       update: async () => ({}),
     },
     ticketDoc: { create: async () => ({}) },
-    projectMember: { findByProject: async () => leads.map((id) => ({ discordId: id, role: 'lead' })) },
+    projectMember: { findByProject: async () => [...leads.map((id) => ({ discordId: id, role: 'lead' })), ...managers.map((id) => ({ discordId: id, role: 'client_manager' }))] },
   }
   const createChannel = async (_guild, opts) => { createChannel.opts = opts; return { channel, fellBack: null } }
   const dmOpts = []
@@ -161,4 +161,24 @@ test('a short description is not repeated below the embed', async () => {
     attachments: [], db: h.db, createChannel: h.createChannel, dm: h.dm, client: {},
   })
   assert.equal(h.channelSends.length, 0)
+})
+
+test('every client manager on the project is in the request channel from creation, and is told', async () => {
+  const h = harness({ project: { id: 'p1', name: 'Framework', discordChannels: { support: 'sup' } }, leads: ['lead1'], managers: ['m1', 'm2'] })
+  await createClientRequest({
+    guild: h.guild, user: h.user, cfg: h.cfg, type: 'bug', title: 'Login fails', details: 'x',
+    project: h.project, attachments: [], db: h.db, createChannel: h.createChannel, dm: h.dm, client: {},
+  })
+  assert.deepEqual(h.createChannel.opts.memberIds, ['u-c', 'm1', 'm2'])
+  assert.deepEqual([...h.dms].sort(), ['lead1', 'm1', 'm2'])
+})
+
+test('a manager raising a request is not added twice', async () => {
+  const h = harness({ project: { id: 'p1', name: 'Framework', discordChannels: { support: 'sup' } }, managers: ['u-c', 'm2'] })
+  await createClientRequest({
+    guild: h.guild, user: h.user, cfg: h.cfg, type: 'feature', title: 'Export', details: 'x',
+    project: h.project, attachments: [], db: h.db, createChannel: h.createChannel, dm: h.dm, client: {},
+  })
+  assert.deepEqual(h.createChannel.opts.memberIds, ['u-c', 'm2'])
+  assert.deepEqual(h.dms, ['m2'], 'and not DMed about their own request')
 })

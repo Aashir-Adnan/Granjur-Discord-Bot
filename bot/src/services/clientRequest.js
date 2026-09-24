@@ -6,12 +6,13 @@
 import db from '../db/index.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
 import { storedChannels } from './projectSection.js'
+import { isClientRole, managerIdsOf } from '../utils/clientRoles.js'
 
 /** Discord's upload cap for a bot without boosts. Bigger files are linked, not copied. */
 export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 
 export function clientProjects(rows) {
-  return (rows ?? []).filter((r) => r?.role === 'client')
+  return (rows ?? []).filter((r) => isClientRole(r?.role))
 }
 
 /** The channel's opening line: no developer should be surprised who can read it. */
@@ -132,11 +133,18 @@ export async function createClientRequest({
     data: { guildConfigId: cfg.id, ticketType: isBug ? 'bug' : 'feature', taskId: task.id, title: task.title?.slice(0, 512) || 'Request', content: null },
   }).catch(() => {})
 
+  // The project's client managers read every request channel from the moment
+  // it exists; the requester is already in the room, so they are not doubled.
+  const roster = project
+    ? (await dbArg.projectMember.findByProject({ where: { projectId: project.id } }).catch(() => [])) ?? []
+    : []
+  const managers = managerIdsOf(roster, user.id)
+
   const { channel, fellBack } = await createChannel(guild, {
     taskId: task.id,
     title: task.title,
     description: requestDescription(name, details),
-    memberIds: [user.id],
+    memberIds: [user.id, ...managers],
     project,
     type: isBug ? 'bug' : 'feature',
     // Client-safe: no scope, modules or estimate. The project is the only field.
@@ -178,9 +186,11 @@ export async function createClientRequest({
   if (supportChannel) {
     await supportChannel.send({ content: notice }).catch(() => {})
     noticedIn = supportChannel.id
-    const roster = await dbArg.projectMember.findByProject({ where: { projectId: project.id } }).catch(() => [])
-    const leads = (roster ?? []).filter((m) => m?.role === 'lead').map((m) => String(m.discordId))
-    if (leads.length) await dm(client, leads, { title: task.title, channelId: channel.id, headline: `A client raised **${task.title}**`, note: `A client request${project ? ` on **${project.name}**` : ''}.` })
+    const leads = roster.filter((m) => m?.role === 'lead').map((m) => String(m.discordId))
+    // Leads and the client managers: the people who answer for the team and
+    // for the client side. Never the requester about their own request.
+    const told = [...new Set([...leads, ...managers])].filter((id) => id !== String(user.id))
+    if (told.length) await dm(client, told, { title: task.title, channelId: channel.id, headline: `A client raised **${task.title}**`, note: `A client request${project ? ` on **${project.name}**` : ''}.` })
   } else if (cfg.adminChannelId) {
     const admin = await guild.channels?.fetch?.(cfg.adminChannelId).catch(() => null)
     if (admin?.send) {

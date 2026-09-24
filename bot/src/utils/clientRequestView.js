@@ -39,10 +39,16 @@ function safeParse(raw) {
   try { const v = JSON.parse(raw); return Array.isArray(v) ? v : [] } catch { return [] }
 }
 
-export function myRequestsLines(tasks) {
+/**
+ * One line per request. With `me`, a request someone else raised names them —
+ * a client manager's list mixes their own and their team's.
+ */
+export function myRequestsLines(tasks, { me = null, nameFor = () => null } = {}) {
   return (tasks ?? []).map((t) => {
     const icon = t.type === 'bug' ? '🐞' : '✨'
-    const parts = [`${icon} **${t.title}**`, t.projectName || 'no project', t.status === 'pending' ? `**${requestStatusLabel(t.status)}**` : requestStatusLabel(t.status)]
+    const parts = [`${icon} **${t.title}**`]
+    if (me && t.requestedBy && String(t.requestedBy) !== String(me)) parts.push(`raised by ${nameFor(t.requestedBy) || `<@${t.requestedBy}>`}`)
+    parts.push(t.projectName || 'no project', t.status === 'pending' ? `**${requestStatusLabel(t.status)}**` : requestStatusLabel(t.status))
     if (t.discordChannelId) parts.push(`<#${t.discordChannelId}>`)
     return parts.join(' · ')
   })
