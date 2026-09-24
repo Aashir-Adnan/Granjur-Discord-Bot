@@ -1,9 +1,9 @@
 // Two small helpers that used to live in services/projectSection.js and moved
-// here unchanged. The bucket helpers (statusBuckets.js) need both, and they are
-// imported by services/taskTicketChannel.js, which must stay a leaf: importing
-// the planner drags projectMembersPanel → db/index.js → the production .env into
-// a module whose tests touch no database. projectSection.js re-exports both, so
-// every existing importer is unchanged.
+// here unchanged. The archive helpers (utils/ticketArchive.js) need them, and
+// they are imported by services/taskTicketChannel.js, which must stay a leaf:
+// importing the planner drags projectMembersPanel → db/index.js → the production
+// .env into a module whose tests touch no database. projectSection.js re-exports
+// both, so every existing importer is unchanged.
 
 /**
  * Cut to `max` UTF-16 units without leaving half of a surrogate pair behind.

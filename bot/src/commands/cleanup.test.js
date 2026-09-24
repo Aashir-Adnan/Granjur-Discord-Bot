@@ -190,9 +190,14 @@ test('the support category is protected by name too, before any id has ever been
   assert.deepEqual(listed, ['old-chat'])
 })
 
-test('a ticket channel inside a project\'s status bucket is protected, by the bucket\'s id', async () => {
-  const bucket = category('bucket-open', 'whatever it is called now')
-  const withBucket = { ...LEGACY, discordChannels: { ...(LEGACY.discordChannels ?? {}), bucketOpen: 'bucket-open' } }
-  const reply = await run([withBucket], [bucket, chan('tc1', 'feature-0145e3', { parent: bucket }), chan('junk', 'random-leftover')])
+test('the archive divider is protected by its id, like every other section channel', async () => {
+  // Its id lives in `discordChannels`, so `claimedSectionIds` covers it with no
+  // rule of its own — and the category rule protects every ticket beside it.
+  const cat = category('cat-legacy', 'whatever it is called now')
+  const withDivider = { ...LEGACY, discordChannels: JSON.stringify({ members: 'sc-members', archiveDivider: 'div' }) }
+  const reply = await run(
+    [withDivider],
+    [cat, chan('div', 'the-line'), chan('tc1', 'feature-0145e3', { parent: cat }), chan('junk', 'random-leftover')]
+  )
   assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
 })

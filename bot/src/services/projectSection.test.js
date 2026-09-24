@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
-import { BUCKETS } from '../utils/statusBuckets.js'
+import { ARCHIVE_DIVIDER_NAME, ARCHIVE_DIVIDER_TOPIC, ARCHIVE_STORE_KEY } from '../utils/ticketArchive.js'
 import {
   planProjectSection,
   projectFromChannel,
@@ -18,17 +18,8 @@ import {
 const project = { id: 'p1', name: 'Framework', docsSlug: 'framework' }
 const empty = { roleId: null, roleCandidate: null, rolesFetched: true, categoryId: null, categoryName: null, categoryChannelCount: 0, channels: {}, tasks: [], takenNames: new Set() }
 
-/**
- * The three status buckets as the observer reports them once they exist. Only
- * `id` and `channelCount` reach the task planner — a ticket is "already in
- * place" when its parent is its bucket's id, never the section category — so
- * the Framework names here are incidental to every test but the bucket planner's.
- */
-const seenBuckets = (counts = {}) => ({
-  open: { id: 'b-open', name: '📂 FRAMEWORK · OPEN', channelCount: counts.open ?? 0 },
-  inProgress: { id: 'b-prog', name: '📂 FRAMEWORK · IN PROGRESS', channelCount: counts.inProgress ?? 0 },
-  done: { id: 'b-done', name: '📂 FRAMEWORK · DONE', channelCount: counts.done ?? 0 },
-})
+/** The archive divider as the observer reports it once it exists, in the category. */
+const seenDivider = (parentId = 'c1') => ({ id: 'div', name: ARCHIVE_DIVIDER_NAME, parentId })
 
 /**
  * A same-named role the planner may look at: harmless by default, so each test
@@ -148,18 +139,17 @@ test('a task outside its project is moved and renamed in one action', () => {
       // The rename carries the topic: without it the channel keeps a topic
       // naming a task nothing can match it back to.
       topic: 'Feature: Git Sync — Task tA1b2c3d4e5f6',
-      // No status: it files as open, and the open bucket is being created this
-      // run, so the channel is not in it yet.
-      bucket: 'open',
+      // No status at all is live, so it belongs above the divider.
+      archived: false,
     },
   ])
 })
 
 test('a task already right plans none', () => {
-  // "Already right" is now "already inside its status bucket", not the section
-  // category — a ticket never lives directly under the category any more.
-  const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-git-sync', parentId: 'b-open' }]
-  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets(), tasks })
+  // "Already right" is the section category again: a ticket's parent is the
+  // project's own category, and only its ORDER says whether it is finished.
+  const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-git-sync', parentId: 'c1' }]
+  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', tasks })
   assert.equal(plan.tasks[0].action, 'none')
 })
 
@@ -177,8 +167,8 @@ test('two tasks with the same title never share a channel name', () => {
 })
 
 test('a task keeps the name it already carries, even when the snapshot lists it as taken', () => {
-  const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-git-sync', parentId: 'b-open' }]
-  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets(), tasks, takenNames: new Set(['feature-git-sync']) })
+  const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-git-sync', parentId: 'c1' }]
+  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', tasks, takenNames: new Set(['feature-git-sync']) })
   assert.deepEqual([plan.tasks[0].action, plan.tasks[0].name], ['none', 'feature-git-sync'])
 })
 
@@ -190,10 +180,10 @@ test('a task cannot take the name of a section channel this plan creates', () =>
   assert.notEqual(plan.tasks[0].name, 'feature-members')
 })
 
-test('section channels moved into the category no longer count against the tickets\' room', () => {
-  // They used to: tickets shared the section category, so the thirteen arriving
-  // channels ate thirteen ticket slots. Tickets now live in the status buckets,
-  // where no section channel ever sits, so the two never compete again.
+test('every channel this plan brings into the category takes a ticket slot, the divider included', () => {
+  // Tickets share the section category with the thirteen section channels and
+  // the divider again, so the room left for them is the cap minus everything
+  // this plan is about to put in there.
   const channels = {}
   for (const s of SECTIONS) channels[s.key] = { id: `id-${s.key}`, name: channelNameFor(project, s.suffix), parentId: 'ELSEWHERE' }
   const tasks = Array.from({ length: 40 }, (_, i) => ({
@@ -204,17 +194,19 @@ test('section channels moved into the category no longer count against the ticke
     channelName: `feature-old-${i}`,
     parentId: 'FEATURES',
   }))
-  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets(), channels, tasks })
+  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', channels, tasks })
   assert.ok(plan.channels.every((c) => c.action === 'move'))
-  // All 40 fit: the open bucket is empty, so its room is the full 49.
-  assert.equal(plan.tasks.filter((t) => t.action === 'both').length, 40)
-  assert.equal(plan.tasks.filter((t) => t.action === 'rename').length, 0)
-  assert.equal(plan.warnings.filter((w) => /cap/i.test(w)).length, 0)
+  // 13 section channels arriving plus the divider being created leaves 35 slots
+  // of the 49; the other 5 tickets keep a readable name where they stand.
+  assert.equal(plan.divider.action, 'create')
+  assert.equal(plan.tasks.filter((t) => t.action === 'both').length, 35)
+  assert.equal(plan.tasks.filter((t) => t.action === 'rename').length, 5)
+  assert.ok(plan.warnings.some((w) => /category cap/.test(w)))
 })
 
-test('past the bucket cap, task moves are dropped with a warning; sections still plan', () => {
+test('past the category cap, task moves are dropped with a warning; sections still plan', () => {
   const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-0145e3', parentId: 'FEATURES' }]
-  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets({ open: 49 }), tasks })
+  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', categoryChannelCount: 49, tasks })
   assert.equal(plan.tasks[0].action, 'rename')
   assert.ok(plan.warnings.some((w) => /full|cap/i.test(w)))
 })
@@ -246,23 +238,16 @@ test('projectFromChannel resolves a thread to the channel it lives in', () => {
   assert.equal(projectFromChannel(projects, { id: 't2', parentId: 'ch9', isThread: () => true, parent: null }), null)
 })
 
-test('projectFromChannel matches a channel parented in one of the project status buckets', () => {
-  // Ticket channels live in a bucket, never in the section category, so a
-  // command run inside one has to reach the project through the bucket id.
+test('projectFromChannel matches a ticket channel through its section category, not a leftover bucket', () => {
+  // Ticket channels are parented to the section category again, so the category
+  // id is the whole answer — and a leftover bucket id in `discordChannels` is
+  // not one of the ways in any more.
   const projects = [
-    { id: 'p1', name: 'Framework', discordCategoryId: 'c1', discordChannels: { bucketOpen: 'b-open', bucketDone: 'b-done' } },
+    { id: 'p1', name: 'Framework', discordCategoryId: 'c1', discordChannels: { bucketOpen: 'b-open' } },
     { id: 'p2', name: 'Badar', discordCategoryId: 'c2' },
   ]
-  assert.equal(projectFromChannel(projects, { id: 'tc1', parentId: 'b-done' }).id, 'p1')
-  assert.equal(projectFromChannel(projects, { id: 'b-open', parentId: null }).id, 'p1')
-})
-
-test('projectFromChannel refuses to guess when two projects claim one bucket', () => {
-  const projects = [
-    { id: 'p1', name: 'Framework', discordCategoryId: 'c1', discordChannels: { bucketDone: 'b-done' } },
-    { id: 'p2', name: 'Framework copy', discordCategoryId: 'c2', discordChannels: { bucketDone: 'b-done' } },
-  ]
-  assert.equal(projectFromChannel(projects, { id: 'tc1', parentId: 'b-done' }), null)
+  assert.equal(projectFromChannel(projects, { id: 'tc1', parentId: 'c1' }).id, 'p1')
+  assert.equal(projectFromChannel(projects, { id: 'tc2', parentId: 'b-open' }), null)
 })
 
 test('projectFromChannel refuses to guess when two projects claim one category', () => {
@@ -280,10 +265,10 @@ test('projectFromChannel refuses to guess when two projects claim one category',
 
 /** A stand-in Discord channel that records every `edit` and every `send`. */
 function fakeChannel(id, name, opts = {}) {
-  const { type = ChannelType.GuildText, parentId = null, fail = null, overwriteIds = null, overwrites = null, position = 0 } = opts
-  // `position` is discord.js's sorted index, the unit `edit({ position })`
-  // speaks; nothing in the code reads `rawPosition` any more.
-  const c = { id, name, type, parentId, position, edits: [], sent: [], messages: { fetchPinned: async () => new Map() } }
+  const { type = ChannelType.GuildText, parentId = null, fail = null, overwriteIds = null, overwrites = null, position = 0, rawPosition = 0, topic = null } = opts
+  // `position` is discord.js's sorted index; `rawPosition` is the raw gateway
+  // value `textChannelsOf` sorts a category's text channels by.
+  const c = { id, name, type, parentId, position, rawPosition, topic, edits: [], sent: [], messages: { fetchPinned: async () => new Map() } }
   c.edit = async (o) => {
     c.edits.push(o)
     if (fail) throw new Error(fail)
@@ -319,14 +304,23 @@ function fakeGuild({ channels = [], roles = [], createFails = null, everyonePerm
       },
     },
     channels: {
-      cache: new Map(channels.map((c) => [c.id, c])),
+      cache: new Map(channels.map((c, i) => [c.id, Object.assign(c, { rawPosition: c.rawPosition ?? i })])),
       calls: [],
+      // Every reorder this feature makes goes through one of these.
+      positions: [],
+      async setPositions(list) {
+        guild.channels.positions.push(list)
+        return undefined
+      },
       async create(opts) {
         guild.channels.calls.push(opts)
         if (createFails && createFails(opts)) throw new Error('Missing Permissions')
         const made = fakeChannel(`new-${guild.channels.calls.length}`, opts.name, {
           type: opts.type,
           parentId: opts.parent ?? null,
+          topic: opts.topic ?? null,
+          // Discord puts a new channel last in its category.
+          rawPosition: guild.channels.cache.size,
         })
         guild.channels.cache.set(made.id, made)
         return made
@@ -479,9 +473,9 @@ test('a fresh section creates the role, the category with its two overwrites, an
   assert.equal(guild.roles.calls.length, 1)
   assert.equal(guild.roles.calls[0].name, 'Framework')
 
-  // The category, then its three status buckets, then the thirteen channels.
+  // The category, then the thirteen channels, then the archive divider.
   const [catCall, ...rest] = guild.channels.calls
-  const chCalls = rest.slice(BUCKETS.length)
+  const chCalls = rest.slice(0, 13)
   assert.equal(catCall.name, '📂 FRAMEWORK')
   assert.equal(catCall.type, ChannelType.GuildCategory)
   assert.equal(catCall.permissionOverwrites.length, 2)
@@ -511,8 +505,9 @@ test('a fresh section creates the role, the category with its two overwrites, an
   assert.equal(chCalls[0].type, ChannelType.GuildText)
   assert.equal(chCalls[3].name, 'framework-meeting-voice')
   assert.equal(chCalls[3].type, ChannelType.GuildVoice)
-  // The category, its three buckets and the thirteen section channels.
-  assert.equal(out.created.length, 17)
+  // The category, the thirteen section channels and the archive divider.
+  assert.equal(out.created.length, 15)
+  assert.equal(guild.channels.calls.at(-1).name, ARCHIVE_DIVIDER_NAME)
   assert.equal(out.warnings.length, 0)
   assert.equal(out.category.id, 'new-1')
   assert.equal(out.role.id, 'role-1')
@@ -550,14 +545,13 @@ test('a task channel needing a rename and a move gets exactly one edit carrying 
   // `Feature: Git Sync` behind would leave the channel matching neither its old
   // name nor its task id, and /update-task would build a duplicate beside it.
   assert.equal(taskCh.edits.length, 1)
-  // Its parent is the OPEN bucket — the first category this run created — not
-  // the section category: a ticket lives in the bucket its status files it into.
+  // Into the section category itself — a ticket's parent is the project's
+  // category again, and only its order says whether it is finished.
   assert.deepEqual(taskCh.edits[0], {
     name: 'feature-git-sync',
-    parent: 'new-1',
+    parent: 'c1',
     topic: 'Feature: Git Sync — Task t1',
   })
-  assert.equal(guild.channels.calls[0].name, '📂 FRAMEWORK · OPEN')
   assert.equal(out.tasks, 1)
 })
 
@@ -641,9 +635,7 @@ test('a task channel moved into the section gains the project role, keeps its as
   assert.equal(taskCh.edits.length, 1)
   const edit = taskCh.edits[0]
   assert.equal(edit.name, 'feature-git-sync')
-  // Into its OPEN bucket, the first category this run created.
-  assert.equal(guild.channels.calls[0].name, '📂 FRAMEWORK · OPEN')
-  assert.equal(edit.parent, 'new-1')
+  assert.equal(edit.parent, 'c1')
   assert.equal(edit.topic, 'Feature: Git Sync — Task t1')
   const byId = new Map(edit.permissionOverwrites.map((o) => [o.id, o]))
   // The project's members can now see their project's task channel...
@@ -659,21 +651,20 @@ test('a task channel moved into the section gains the project role, keeps its as
 
 test('a stale role id adds no allow, and the move still happens in one edit', async () => {
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
-  const bucket = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory })
   const taskCh = ticketChannel('tc1', 'feature-0145e3', 'FEATURES')
-  const guild = fakeGuild({ channels: [cat, bucket, taskCh] })
+  const guild = fakeGuild({ channels: [cat, taskCh] })
   const plan = {
     // The role was deleted between the read and the write.
     role: { action: 'reuse', id: 'gone', name: 'Framework' },
     category: { action: 'reuse', id: 'c1', name: '📂 FRAMEWORK' },
-    buckets: [{ key: 'open', storeKey: 'bucketOpen', action: 'reuse', id: 'b-open', name: '📂 FRAMEWORK · OPEN' }],
+    divider: { action: 'reuse', id: 'div', name: ARCHIVE_DIVIDER_NAME },
     channels: [],
-    tasks: [{ taskId: 't1', channelId: 'tc1', action: 'both', bucket: 'open', name: 'feature-git-sync', topic: 'Feature: Git Sync — Task t1' }],
+    tasks: [{ taskId: 't1', channelId: 'tc1', action: 'both', archived: false, name: 'feature-git-sync', topic: 'Feature: Git Sync — Task t1' }],
     warnings: [],
   }
-  await applyProjectSection(guild, { ...project, discordCategoryId: 'c1' }, plan, { db: fakeDb() })
+  await quiet(() => applyProjectSection(guild, { ...project, discordCategoryId: 'c1' }, plan, { db: fakeDb() }))
   assert.equal(taskCh.edits.length, 1)
-  assert.deepEqual(taskCh.edits[0], { name: 'feature-git-sync', parent: 'b-open', topic: 'Feature: Git Sync — Task t1' })
+  assert.deepEqual(taskCh.edits[0], { name: 'feature-git-sync', parent: 'c1', topic: 'Feature: Git Sync — Task t1' })
 })
 
 test('a backfill move is parent-only: the name and topic it already has are not rewritten', async () => {
@@ -681,19 +672,18 @@ test('a backfill move is parent-only: the name and topic it already has are not 
   // it back re-writes what was just read. The live mover's edit is parent-only
   // for the same reason; the allow still rides along when one is due.
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
-  const bucket = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory })
   const taskCh = ticketChannel('tc1', 'feature-git-sync', 'FEATURES')
-  const guild = fakeGuild({ channels: [cat, bucket, taskCh] })
+  const guild = fakeGuild({ channels: [cat, taskCh] })
   const plan = {
     role: { action: 'reuse', id: 'gone', name: 'Framework' },
     category: { action: 'reuse', id: 'c1', name: '📂 FRAMEWORK' },
-    buckets: [{ key: 'open', storeKey: 'bucketOpen', action: 'reuse', id: 'b-open', name: '📂 FRAMEWORK · OPEN' }],
+    divider: { action: 'reuse', id: 'div', name: ARCHIVE_DIVIDER_NAME },
     channels: [],
-    tasks: [{ taskId: 't1', channelId: 'tc1', action: 'move', bucket: 'open', name: 'feature-git-sync', topic: 'Feature: Git Sync — Task t1' }],
+    tasks: [{ taskId: 't1', channelId: 'tc1', action: 'move', archived: false, name: 'feature-git-sync', topic: 'Feature: Git Sync — Task t1' }],
     warnings: [],
   }
-  await applyProjectSection(guild, { ...project, discordCategoryId: 'c1' }, plan, { db: fakeDb() })
-  assert.deepEqual(taskCh.edits, [{ parent: 'b-open' }])
+  await quiet(() => applyProjectSection(guild, { ...project, discordCategoryId: 'c1' }, plan, { db: fakeDb() }))
+  assert.deepEqual(taskCh.edits, [{ parent: 'c1' }])
 })
 
 test('a channel whose overwrites cannot be read still moves, without an allow that would replace them', async () => {
@@ -712,14 +702,13 @@ test('a channel whose overwrites cannot be read still moves, without an allow th
 
 test('a task channel already named, placed and open to the role gets no edit', async () => {
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
-  // "Placed" is inside the ticket's STATUS bucket now, not the section category.
-  const bucket = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory })
-  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'b-open', [
+  // "Placed" is the section category: a ticket's parent is the project's own.
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1', [
     { id: 'r1', type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: 0n },
   ])
   const role = { id: 'r1', name: 'Framework', members: new Map() }
-  const guild = fakeGuild({ channels: [cat, bucket, taskCh], roles: [role] })
-  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { bucketOpen: 'b-open' } }
+  const guild = fakeGuild({ channels: [cat, taskCh], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
   const observed = observeProjectSection(guild, stored, [
     { id: 't1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' },
   ])
@@ -733,23 +722,21 @@ test('a task channel already named, placed and open to the role gets no edit', a
 
 test('a task channel already named and placed but closed to the role is granted it, and only that', async () => {
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
-  // Opened while the project's role id was stale: in its bucket, no allow.
-  const bucket = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory })
-  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'b-open')
+  // Opened while the project's role id was stale: in place, but no allow.
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1')
   const role = { id: 'r1', name: 'Framework', members: new Map() }
-  const guild = fakeGuild({ channels: [cat, bucket, taskCh], roles: [role] })
-  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { bucketOpen: 'b-open' } }
+  const guild = fakeGuild({ channels: [cat, taskCh], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
   const observed = observeProjectSection(guild, stored, [
     { id: 't1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' },
   ])
   const plan = planProjectSection(stored, observed)
   assert.equal(plan.tasks[0].action, 'grant')
-  assert.equal(plan.tasks[0].bucket, 'open')
+  assert.equal(plan.tasks[0].archived, false)
 
-  // The ticket stays where it is — in its bucket, not the section category —
-  // and the applier still grants it: a bucket is the project's space too.
+  // The ticket stays where it is and the applier only opens it to the role.
   const out = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
-  assert.equal(taskCh.parentId, 'b-open')
+  assert.equal(taskCh.parentId, 'c1')
   assert.equal(taskCh.edits.length, 1)
   const edit = taskCh.edits[0]
   // Nothing but the overwrites: the name and the parent are already right.
@@ -760,9 +747,9 @@ test('a task channel already named and placed but closed to the role is granted 
 })
 
 test('the planner never plans a grant for a refused role or an unreadable channel', () => {
-  // Already named and inside its bucket, so the only question left is the role.
-  const base = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'b-open' }
-  const observed = (task) => ({ ...empty, roleId: 'r1', categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets(), tasks: [task] })
+  // Already named and inside the category, so the only question left is the role.
+  const base = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1' }
+  const observed = (task) => ({ ...empty, roleId: 'r1', categoryId: 'c1', categoryName: '📂 FRAMEWORK', tasks: [task] })
   assert.equal(planProjectSection(project, observed({ ...base, overwriteIds: null })).tasks[0].action, 'none')
   assert.equal(planProjectSection(project, observed({ ...base, overwriteIds: ['G1'] })).tasks[0].action, 'grant')
   assert.equal(planProjectSection(project, observed({ ...base, overwriteIds: ['G1', 'r1'] })).tasks[0].action, 'none')
@@ -803,10 +790,9 @@ test('a Discord error on one channel becomes a warning and the rest of the run c
   assert.ok(out.warnings.some((w) => /Missing Permissions/.test(w)), out.warnings.join(' | '))
   assert.equal(
     guild.channels.calls.filter((c) => c.type !== ChannelType.GuildCategory).length,
-    12,
-    'the other twelve section channels were still created'
+    13,
+    'the other twelve section channels, and the archive divider, were still created'
   )
-  assert.equal(guild.channels.calls.filter((c) => c.type === ChannelType.GuildCategory).length, 3, 'and the three buckets')
   assert.equal(db.calls.length, 1)
   assert.equal(db.calls[0].data.discordChannels.members, 'm1', 'the id it already had is still recorded')
 })
@@ -828,12 +814,9 @@ test('applyProjectSection persists the three columns in ONE update, keeping what
   assert.equal(data.discordCategoryId, 'c1')
   assert.equal(data.discordRoleId, 'role-1')
   assert.equal(data.discordChannels.documentation, 'd1')
-  // Thirteen section channels plus the three status buckets, one map, one write.
-  assert.equal(Object.keys(data.discordChannels).length, 16)
-  assert.deepEqual(
-    [data.discordChannels.bucketOpen, data.discordChannels.bucketInProgress, data.discordChannels.bucketDone],
-    ['new-1', 'new-2', 'new-3']
-  )
+  // Thirteen section channels plus the archive divider, one map, one write.
+  assert.equal(Object.keys(data.discordChannels).length, 14)
+  assert.equal(data.discordChannels[ARCHIVE_STORE_KEY], 'new-13')
 })
 
 // B4: this test used to assert the opposite — `permissionOverwrites: []`, a
@@ -933,8 +916,8 @@ test('the applier posts the members panel once the members channel exists', asyn
     botUserId: 'bot',
   })
 
-  // new-1 is the category, new-2..new-4 the three buckets, new-5 #…-members.
-  const membersChannel = guild.channels.cache.get('new-5')
+  // new-1 is the category, new-2 is #…-members, and the divider comes last.
+  const membersChannel = guild.channels.cache.get('new-2')
   assert.equal(membersChannel.name, 'framework-members')
   assert.equal(membersChannel.sent.length, 1)
   assert.match(membersChannel.sent[0].embeds[0].data.title, /Framework/)
@@ -955,8 +938,8 @@ test('a members panel failure is a warning at worst, never a throw', async () =>
   // roster — without it this test would pass by never reaching the panel.
   const out = await quiet(() => applyProjectSection(guild, project, plan, { db: fakeDb(), members: [] }))
 
-  // The category, its three buckets and the thirteen section channels.
-  assert.equal(out.created.length, 17)
+  // The category, the thirteen section channels and the archive divider.
+  assert.equal(out.created.length, 15)
   assert.equal(out.tasks, 0)
 })
 
@@ -1033,8 +1016,8 @@ test('omitting `members` leaves the pinned panel alone; `[]` still says "no memb
 
   await applyProjectSection(bare, project, plan, { db: fakeDb() })
 
-  // new-1 is the category, new-2..new-4 the three buckets, new-5 #…-members.
-  const untouched = bare.channels.cache.get('new-5')
+  // new-1 is the category, new-2 is #…-members, and the divider comes last.
+  const untouched = bare.channels.cache.get('new-2')
   assert.equal(untouched.name, 'framework-members')
   assert.equal(untouched.sent.length, 0, 'no roster was passed, so the panel is not rewritten')
   assert.equal(untouched.edits.length, 0)
@@ -1045,7 +1028,7 @@ test('omitting `members` leaves the pinned panel alone; `[]` still says "no memb
     members: [],
   })
 
-  const posted = withRoster.channels.cache.get('new-5')
+  const posted = withRoster.channels.cache.get('new-2')
   assert.equal(posted.sent.length, 1, 'an empty roster is a real answer, and says so')
   assert.match(posted.sent[0].embeds[0].data.description, /No members yet/)
 })
@@ -1056,7 +1039,7 @@ test('a run with no db seam warns that the ids went unsaved, and does not throw'
 
   const out = await applyProjectSection(guild, project, plan, {})
 
-  assert.equal(out.created.length, 17, 'the section and its buckets are still built')
+  assert.equal(out.created.length, 15, 'the section and its divider are still built')
   assert.ok(
     out.warnings.some((w) => /Framework/.test(w) && /not saved/i.test(w)),
     out.warnings.join(' | ')
@@ -1247,13 +1230,12 @@ test('a refused name that KEPT an old role repairs channels against THAT role', 
   // that is — before `gateRoleId` the planner said "no role, plan nothing"
   // while the applier put the kept role's allow on every moved channel.
   const renamed = { id: 'p2', name: 'Database', docsSlug: 'database', discordRoleId: 'r7' }
-  const task = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'b-open', overwriteIds: ['G1'] }
+  const task = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1', overwriteIds: ['G1'] }
   const plan = planProjectSection(renamed, {
     ...empty,
     roleId: 'r7',
     categoryId: 'c1',
     categoryName: '📂 DATABASE',
-    buckets: seenBuckets(),
     tasks: [task],
   })
   assert.equal(plan.role.action, 'refuse')
@@ -1263,13 +1245,12 @@ test('a refused name that KEPT an old role repairs channels against THAT role', 
 })
 
 test('a refused role with nothing kept plans no channel permission work at all', () => {
-  const task = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'b-open', overwriteIds: ['G1'] }
+  const task = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1', overwriteIds: ['G1'] }
   const channels = { members: { id: 'm1', name: 'framework-members', parentId: 'c1', overwriteIds: ['G1'] } }
   const plan = planProjectSection(project, {
     ...empty,
     categoryId: 'c1',
     categoryName: '📂 FRAMEWORK',
-    buckets: seenBuckets(),
     channels,
     tasks: [task],
     roleCandidate: candidate({ holderIds: ['u1'] }),
@@ -1453,12 +1434,11 @@ test('a refused same-named role builds the section shut, and a later adopt_role 
   // Discord copies the category's set onto each new channel, so the ten of them
   // now carry the deny and nothing else. Mirror that onto the fakes.
   const saved = db1.calls[0].data
-  const bucketKeys = BUCKETS.map((b) => b.storeKey)
   const sectionIds = Object.entries(saved.discordChannels)
-    .filter(([key]) => !bucketKeys.includes(key))
+    .filter(([key]) => key !== ARCHIVE_STORE_KEY)
     .map(([, id]) => id)
-  const bucketIds = bucketKeys.map((k) => saved.discordChannels[k])
-  for (const id of [...sectionIds, ...bucketIds]) {
+  const dividerId = saved.discordChannels[ARCHIVE_STORE_KEY]
+  for (const id of [...sectionIds, dividerId]) {
     guild.channels.cache.get(id).permissionOverwrites = {
       cache: new Map([['G1', { id: 'G1', type: OverwriteType.Role, allow: 0n, deny: PermissionFlagsBits.ViewChannel }]]),
     }
@@ -1484,16 +1464,16 @@ test('a refused same-named role builds the section shut, and a later adopt_role 
     assert.ok(ids.includes('r9'), `${made.name} still cannot be seen`)
     assert.ok(ids.includes('G1'), `${made.name} lost its @everyone deny`)
   }
-  // The buckets were built shut too, and the same adoption reopens them — one
-  // overwrite edit each, on top of the position edit the first run made.
-  for (const id of bucketIds) {
-    const made = guild.channels.cache.get(id)
-    const last = made.edits.at(-1)
-    const ids = last.permissionOverwrites.map((o) => o.id)
-    assert.ok(ids.includes('r9'), `${made.name} still cannot be seen`)
-    assert.ok(ids.includes('G1'), `${made.name} lost its @everyone deny`)
-    assert.equal(last.name, made.name, 'and it was not renamed on the way')
-  }
+  // The divider was built shut too, and the same adoption reopens it — one
+  // edit carrying its name, its parent and the READ-ONLY overwrite set, never
+  // `ROLE_ALLOW`: the role may see the line, not write in it.
+  const made = guild.channels.cache.get(dividerId)
+  assert.equal(made.edits.length, 1)
+  const entry = made.edits[0].permissionOverwrites.find((ow) => ow.id === 'r9')
+  assert.deepEqual(entry.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
+  assert.deepEqual(entry.deny, [PermissionFlagsBits.SendMessages])
+  assert.ok(made.edits[0].permissionOverwrites.some((ow) => ow.id === 'G1'), 'the @everyone deny is kept')
+  assert.equal(made.edits[0].name, ARCHIVE_DIVIDER_NAME)
 })
 
 // ---------------------------------------------------------------------------
@@ -1874,159 +1854,301 @@ test('a run with no project role never edits voice overwrites', async () => {
   assert.deepEqual(out.voiceFixed, [])
 })
 
-// ---- status buckets --------------------------------------------------------
-const bucketCat = (id, name) => fakeChannel(id, name, { type: ChannelType.GuildCategory })
-const withBuckets = (p, ids = {}) => ({ ...p, discordCategoryId: 'c1', discordChannels: { ...(p.discordChannels ?? {}), bucketOpen: 'b-open', bucketInProgress: 'b-prog', bucketDone: 'b-done', ...ids } })
 
-test('observe finds each bucket by stored id, else by exact name, never one another project claims', () => {
+// ---- the archive divider ---------------------------------------------------
+const staleCat = (id, name) => fakeChannel(id, name, { type: ChannelType.GuildCategory })
+const withDivider = (p, over = {}) => ({
+  ...p,
+  discordCategoryId: 'c1',
+  discordChannels: { ...(p.discordChannels ?? {}), [ARCHIVE_STORE_KEY]: 'div', ...over },
+})
+
+test('observe finds the divider by stored id, else by exact name in this category, never one another project claims', () => {
   const guild = fakeGuild({
     channels: [
       fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory }),
-      bucketCat('b-open', 'renamed by hand'),
-      bucketCat('by-name', '📂 FRAMEWORK · IN PROGRESS'),
-      bucketCat('theirs', '📂 FRAMEWORK · DONE'),
-      fakeChannel('t1', 'feature-x', { parentId: 'b-open' }),
+      fakeChannel('div', 'renamed-by-hand', { parentId: 'c1' }),
     ],
   })
-  const p = withBuckets(project, { bucketInProgress: null, bucketDone: null })
-  const observed = observeProjectSection(guild, p, [], { claimedIds: new Set(['theirs']) })
-  assert.deepEqual(observed.buckets.open, { id: 'b-open', name: 'renamed by hand', channelCount: 1 })
-  assert.deepEqual(observed.buckets.inProgress, { id: 'by-name', name: '📂 FRAMEWORK · IN PROGRESS', channelCount: 0 })
-  assert.equal(observed.buckets.done, null)
+  const observed = observeProjectSection(guild, withDivider(project), [])
+  assert.deepEqual(observed.divider, { id: 'div', name: 'renamed-by-hand', parentId: 'c1' })
+
+  // No stored id: the exact name, inside this category, unclaimed.
+  const byName = fakeGuild({
+    channels: [
+      fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory }),
+      fakeChannel('found', ARCHIVE_DIVIDER_NAME, { parentId: 'c1' }),
+      fakeChannel('elsewhere', ARCHIVE_DIVIDER_NAME, { parentId: 'OTHER' }),
+    ],
+  })
+  const bare = { ...project, discordCategoryId: 'c1' }
+  assert.equal(observeProjectSection(byName, bare, []).divider.id, 'found')
+  assert.equal(observeProjectSection(byName, bare, [], { claimedIds: new Set(['found']) }).divider, null)
 })
 
-test('observe: a stored bucket id that is a text channel is treated as missing', () => {
-  const guild = fakeGuild({ channels: [fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory }), fakeChannel('b-open', 'oops')] })
-  const observed = observeProjectSection(guild, withBuckets(project), [])
-  assert.equal(observed.buckets.open, null)
+test('observe: a stored divider id that is not a text channel is treated as missing', () => {
+  const guild = fakeGuild({ channels: [fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory }), staleCat('div', 'oops')] })
+  assert.equal(observeProjectSection(guild, withDivider(project), []).divider, null)
 })
 
-test('observe carries each ticket\'s status and stamp', () => {
+test("observe carries each ticket's status and stamp", () => {
   const guild = fakeGuild({ channels: [ticketChannel('tc1', 'feature-x', 'c1')] })
   const stamp = new Date('2026-10-01T00:00:00Z')
-  const observed = observeProjectSection(guild, withBuckets(project), [{ id: 't1', title: 'X', type: 'feature', status: 'done', discordChannelId: 'tc1', channelRetireAt: stamp }])
+  const observed = observeProjectSection(guild, withDivider(project), [
+    { id: 't1', title: 'X', type: 'feature', status: 'done', discordChannelId: 'tc1', channelRetireAt: stamp },
+  ])
   assert.equal(observed.tasks[0].status, 'done')
   assert.equal(observed.tasks[0].retireAt, stamp)
 })
 
-test('plan: the three buckets are created, reused or renamed exactly like the category', () => {
-  const plan = planProjectSection(project, {
-    categoryId: 'c1', categoryName: '📂 FRAMEWORK',
-    buckets: { open: null, inProgress: { id: 'b-prog', name: '📂 FRAMEWORK · IN PROGRESS', channelCount: 0 }, done: { id: 'b-done', name: 'old', channelCount: 3 } },
+test('observe reports a leftover status-bucket category that still resolves, and ignores one that does not', () => {
+  const guild = fakeGuild({
+    channels: [
+      fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory }),
+      staleCat('b-open', '📂 FRAMEWORK · OPEN'),
+      fakeChannel('t1', 'feature-x', { parentId: 'b-open' }),
+      // A stored bucket id that is now a text channel is not a leftover category.
+      fakeChannel('b-done', 'someone-reused-the-id'),
+    ],
   })
-  assert.deepEqual(plan.buckets, [
-    { key: 'open', storeKey: 'bucketOpen', action: 'create', name: '📂 FRAMEWORK · OPEN' },
-    { key: 'inProgress', storeKey: 'bucketInProgress', action: 'reuse', id: 'b-prog', name: '📂 FRAMEWORK · IN PROGRESS' },
-    { key: 'done', storeKey: 'bucketDone', action: 'rename', id: 'b-done', name: '📂 FRAMEWORK · DONE' },
+  const stored = { ...project, discordCategoryId: 'c1', discordChannels: { bucketOpen: 'b-open', bucketInProgress: 'gone', bucketDone: 'b-done' } }
+  assert.deepEqual(observeProjectSection(guild, stored, []).staleBuckets, [
+    { id: 'b-open', name: '📂 FRAMEWORK · OPEN', channelCount: 1 },
   ])
 })
 
-test('plan: tickets are filed by status — into their bucket, out of the section category', () => {
+test('plan: the divider is created, reused, renamed or moved exactly like a section channel', () => {
+  const base = { categoryId: 'c1', categoryName: '📂 FRAMEWORK' }
+  assert.deepEqual(planProjectSection(project, base).divider, { action: 'create', name: ARCHIVE_DIVIDER_NAME })
+  assert.deepEqual(
+    planProjectSection(project, { ...base, divider: seenDivider() }).divider,
+    { action: 'reuse', id: 'div', name: ARCHIVE_DIVIDER_NAME }
+  )
+  assert.deepEqual(
+    planProjectSection(project, { ...base, divider: { id: 'div', name: 'renamed-by-hand', parentId: 'c1' } }).divider,
+    { action: 'rename', id: 'div', name: ARCHIVE_DIVIDER_NAME }
+  )
+  assert.deepEqual(
+    planProjectSection(project, { ...base, divider: { id: 'div', name: ARCHIVE_DIVIDER_NAME, parentId: 'ELSEWHERE' } }).divider,
+    { action: 'move', id: 'div', name: ARCHIVE_DIVIDER_NAME }
+  )
+})
+
+test('plan: every ticket files into the section category, and `archived` says which side of the line it lands on', () => {
   const observed = {
-    categoryId: 'c1', categoryName: '📂 FRAMEWORK', categoryChannelCount: 15,
-    buckets: { open: { id: 'b-open', name: '📂 FRAMEWORK · OPEN', channelCount: 0 }, inProgress: null, done: { id: 'b-done', name: '📂 FRAMEWORK · DONE', channelCount: 0 } },
+    categoryId: 'c1', categoryName: '📂 FRAMEWORK', categoryChannelCount: 15, divider: seenDivider(),
     tasks: [
-      { id: 't1', title: 'Git Sync', type: 'feature', status: 'open', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1' },
+      { id: 't1', title: 'Git Sync', type: 'feature', status: 'open', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'b-open' },
       { id: 't2', title: 'Login', type: 'bug', status: 'in_progress', channelId: 'tc2', channelName: 'bug-login', parentId: 'c1' },
-      { id: 't3', title: 'Old', type: 'feature', status: 'done', channelId: 'tc3', channelName: 'feature-old', parentId: 'b-done', retireAt: null },
-      { id: 't4', title: 'Older', type: 'feature', status: 'closed', channelId: 'tc4', channelName: 'feature-older', parentId: 'b-done', retireAt: new Date() },
+      { id: 't3', title: 'Old', type: 'feature', status: 'done', channelId: 'tc3', channelName: 'feature-old', parentId: 'c1', retireAt: null },
+      { id: 't4', title: 'Older', type: 'feature', status: 'closed', channelId: 'tc4', channelName: 'feature-older', parentId: 'c1', retireAt: new Date() },
     ],
     takenNames: new Set(),
   }
   const plan = planProjectSection(project, observed)
   const byId = Object.fromEntries(plan.tasks.map((t) => [t.taskId, t]))
-  assert.equal(byId.t1.action, 'move'); assert.equal(byId.t1.bucket, 'open')
-  // A bucket being created this run has no id yet, so the channel is still "not there".
-  assert.equal(byId.t2.action, 'move'); assert.equal(byId.t2.bucket, 'inProgress')
-  assert.equal(byId.t3.action, 'none'); assert.equal(byId.t3.bucket, 'done'); assert.equal(byId.t3.retire, true)
+  // Pulled back out of a leftover bucket by an ordinary move.
+  assert.equal(byId.t1.action, 'move'); assert.equal(byId.t1.archived, false)
+  assert.equal(byId.t2.action, 'none'); assert.equal(byId.t2.archived, false)
+  assert.equal(byId.t3.action, 'none'); assert.equal(byId.t3.archived, true); assert.equal(byId.t3.retire, true)
   // Already stamped: the fourteen days must not restart on every run.
-  assert.equal(byId.t4.action, 'none'); assert.equal(byId.t4.retire, undefined)
+  assert.equal(byId.t4.action, 'none'); assert.equal(byId.t4.archived, true); assert.equal(byId.t4.retire, undefined)
 })
 
-test('plan: room is counted per bucket, and a full bucket leaves its tickets where they are with a warning naming it', () => {
-  const tasks = Array.from({ length: 50 }, (_, i) => ({ id: `t${i}`, title: `Task ${i}`, type: 'feature', status: 'open', channelId: `tc${i}`, channelName: `feature-task-${i}`, parentId: 'c1' }))
-  const observed = {
-    categoryId: 'c1', categoryName: '📂 FRAMEWORK', categoryChannelCount: 63,
-    buckets: { open: { id: 'b-open', name: '📂 FRAMEWORK · OPEN', channelCount: 0 }, inProgress: null, done: null },
-    tasks, takenNames: new Set(),
-  }
-  const plan = planProjectSection(project, observed)
-  assert.equal(plan.tasks.filter((t) => t.action === 'move').length, 49)
-  assert.equal(plan.tasks.filter((t) => t.action === 'none').length, 1)
-  assert.ok(plan.warnings.some((w) => /OPEN bucket/.test(w) && /1 task channel/.test(w)))
+test('plan: a stale bucket this run empties is named, one this run only half-empties is not', () => {
+  const observed = (channelCount) => ({
+    categoryId: 'c1', categoryName: '📂 FRAMEWORK', divider: seenDivider(),
+    staleBuckets: [{ id: 'b-open', name: '📂 FRAMEWORK · OPEN', channelCount }],
+    tasks: [{ id: 't1', title: 'Git Sync', type: 'feature', status: 'open', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'b-open' }],
+    takenNames: new Set(),
+  })
+  const emptied = planProjectSection(project, observed(1))
+  assert.ok(emptied.warnings.some((w) => /📂 FRAMEWORK · OPEN.*leftover from the old layout/.test(w)))
+  assert.ok(emptied.warnings.some((w) => /never deletes a category/.test(w)))
+  // A hand-made channel is still in there: not safe to delete, so not named.
+  assert.deepEqual(planProjectSection(project, observed(2)).warnings, [])
 })
 
-test('a ticket its full bucket left behind is never reported as opened to the role', () => {
-  // Dropped to `none` by the cap, and the applier skips a `none` outright, so
-  // "already right (and open to the project role)" in the preview would be a
-  // permission change the run never made.
-  const task = { id: 't1', title: 'Git Sync', type: 'feature', status: 'open', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1', overwriteIds: ['G1'] }
-  const plan = planProjectSection(project, { ...empty, roleId: 'r1', categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets({ open: 49 }), tasks: [task] })
-  assert.equal(plan.tasks[0].action, 'none')
+test('a ticket left behind by the category cap is never reported as opened to the role', () => {
+  // Dropped to `rename` by the cap, and a rename that lands nowhere new opens
+  // the channel to nobody — saying otherwise would be a permission change the
+  // run never made.
+  const task = { id: 't1', title: 'Git Sync', type: 'feature', status: 'open', channelId: 'tc1', channelName: 'feature-0145e3', parentId: 'FEATURES', overwriteIds: ['G1'] }
+  const plan = planProjectSection(project, { ...empty, roleId: 'r1', categoryId: 'c1', categoryName: '📂 FRAMEWORK', categoryChannelCount: 49, tasks: [task] })
+  assert.equal(plan.tasks[0].action, 'rename')
   assert.equal(plan.tasks[0].opens, undefined)
 })
 
-// --- The applier: buckets, filing and retirement ----------------------------
+// --- The applier: the divider, filing, ordering and retirement ---------------
 
-test('apply creates the three buckets after the category with its overwrites, positions them below it, and stores their ids', async () => {
+test('apply creates the divider after the section channels, read-only for the project role, and stores its id', async () => {
   const role = { id: 'r1', name: 'Framework', members: new Map() }
   const guild = fakeGuild({ roles: [role] })
   const db = fakeDb()
   const plan = planProjectSection(project, { roleId: 'r1', rolesFetched: true })
   const result = await applyProjectSection(guild, { ...project, discordRoleId: 'r1' }, plan, { db })
-  const cats = guild.channels.calls.filter((c) => c.type === ChannelType.GuildCategory)
-  assert.deepEqual(cats.map((c) => c.name), ['📂 FRAMEWORK', '📂 FRAMEWORK · OPEN', '📂 FRAMEWORK · IN PROGRESS', '📂 FRAMEWORK · DONE'])
-  for (const c of cats.slice(1)) {
-    assert.deepEqual(c.permissionOverwrites.map((o) => [o.id, o.type]), [['G1', OverwriteType.Role], ['r1', OverwriteType.Role]])
-  }
-  assert.deepEqual(result.buckets, { created: ['📂 FRAMEWORK · OPEN', '📂 FRAMEWORK · IN PROGRESS', '📂 FRAMEWORK · DONE'], renamed: [] })
-  const saved = db.calls[0].data.discordChannels
-  assert.equal(saved.bucketOpen, 'new-2'); assert.equal(saved.bucketInProgress, 'new-3'); assert.equal(saved.bucketDone, 'new-4')
-  // Positioned directly below the section category, in order.
-  const positions = [guild.channels.cache.get('new-2'), guild.channels.cache.get('new-3'), guild.channels.cache.get('new-4')].map((c) => c.position)
-  assert.deepEqual(positions, [1, 2, 3])
+
+  const call = guild.channels.calls.at(-1)
+  assert.equal(call.name, ARCHIVE_DIVIDER_NAME)
+  assert.equal(call.type, ChannelType.GuildText)
+  assert.equal(call.parent, 'new-1')
+  assert.equal(call.topic, ARCHIVE_DIVIDER_TOPIC)
+  // @everyone denied as everywhere in the section; the role may read the line
+  // and nothing else. Every entry carries an explicit type.
+  assert.deepEqual(call.permissionOverwrites, [
+    { id: 'G1', type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+    {
+      id: 'r1',
+      type: OverwriteType.Role,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+      deny: [PermissionFlagsBits.SendMessages],
+    },
+  ])
+  assert.ok(result.created.includes(ARCHIVE_DIVIDER_NAME))
+  // new-1 is the category, new-2..new-14 the thirteen channels, new-15 the line.
+  assert.equal(db.calls[0].data.discordChannels[ARCHIVE_STORE_KEY], 'new-15')
 })
 
-test('apply renames a bucket found under an old name and repairs its overwrites, without touching one that is right', async () => {
+test('apply repairs a divider found under an old name or in the wrong category in ONE edit', async () => {
   const role = { id: 'r1', name: 'Framework', members: new Map() }
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
-  const open = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
-  const done = fakeChannel('b-done', 'old done', { type: ChannelType.GuildCategory, overwriteIds: ['G1'] })
-  const guild = fakeGuild({ channels: [cat, open, done], roles: [role] })
-  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { bucketOpen: 'b-open', bucketDone: 'b-done' } }
-  const observed = observeProjectSection(guild, stored, [], { rolesFetched: true })
-  const plan = planProjectSection(stored, observed)
+  const div = fakeChannel('div', 'old-line', { parentId: 'ELSEWHERE', overwriteIds: ['G1', 'r1'] })
+  const guild = fakeGuild({ channels: [cat, div], roles: [role] })
+  const stored = { ...withDivider(project), discordRoleId: 'r1' }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
   const result = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
-  assert.deepEqual(open.edits.filter((e) => e.name), [])
-  assert.equal(done.edits[0].name, '📂 FRAMEWORK · DONE')
-  assert.ok(done.edits[0].permissionOverwrites.some((o) => o.id === 'r1'))
-  assert.deepEqual(result.buckets.renamed, ['📂 FRAMEWORK · DONE'])
+  assert.equal(div.edits.length, 1)
+  assert.deepEqual(div.edits[0], { name: ARCHIVE_DIVIDER_NAME, parent: 'c1' })
+  assert.deepEqual(result.moved, [ARCHIVE_DIVIDER_NAME])
 })
 
-test('apply files a ticket into its bucket — created this run — carrying the role allow in the same edit', async () => {
+test('a grant on the divider builds from the READ-ONLY set, never ROLE_ALLOW', async () => {
+  // The one repair that could hand the project role SendMessages on the one
+  // channel in the section that must never take a message.
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const div = fakeChannel('div', ARCHIVE_DIVIDER_NAME, { parentId: 'c1', overwriteIds: ['G1'] })
+  const guild = fakeGuild({ channels: [cat, div], roles: [role] })
+  const stored = { ...withDivider(project), discordRoleId: 'r1' }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
+  assert.equal(plan.divider.action, 'reuse')
+  const result = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+  assert.equal(div.edits.length, 1)
+  const entry = div.edits[0].permissionOverwrites.find((o) => o.id === 'r1')
+  assert.deepEqual(entry.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
+  assert.deepEqual(entry.deny, [PermissionFlagsBits.SendMessages])
+  assert.ok(result.opened.includes(ARCHIVE_DIVIDER_NAME))
+})
+
+test('a divider whose repair edit is refused is one warning; the tickets are still filed and ordered', async () => {
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const div = fakeChannel('div', 'old-line', { parentId: 'c1', overwriteIds: ['G1', 'r1'], fail: 'Missing Permissions', rawPosition: 1 })
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'FEATURES')
+  const guild = fakeGuild({ channels: [cat, div, taskCh], roles: [role] })
+  const stored = { ...withDivider(project), discordRoleId: 'r1' }
+  const observed = observeProjectSection(guild, stored, [{ id: 't1', title: 'Git Sync', type: 'feature', status: 'open', discordChannelId: 'tc1' }], { rolesFetched: true })
+  const result = await quiet(() => applyProjectSection(guild, stored, planProjectSection(stored, observed), { db: fakeDb() }))
+  assert.ok(result.warnings.some((w) => w.startsWith(`archive divider "${ARCHIVE_DIVIDER_NAME}": Missing Permissions`)))
+  assert.equal(taskCh.edits.at(-1).parent, 'c1')
+  assert.deepEqual(result.moved, ['feature-git-sync'])
+  // The line is still the line: the reorder ran around it anyway.
+  assert.equal(result.reordered, true)
+})
+
+/**
+ * The thirteen section channels already in place, so a run creates none of them
+ * and the only text channels in the category are the ones a test put there.
+ * `rawPosition` counts up from 1, leaving room for later arrivals.
+ */
+function seededSection() {
+  const channels = []
+  const ids = {}
+  SECTIONS.forEach((sec, i) => {
+    const id = `sec${i}`
+    ids[sec.key] = id
+    channels.push(
+      fakeChannel(id, channelNameFor(project, sec.suffix), {
+        parentId: 'c1',
+        type: sec.type === 'voice' ? ChannelType.GuildVoice : ChannelType.GuildText,
+        overwriteIds: ['G1', 'r1'],
+        rawPosition: i + 1,
+      })
+    )
+  })
+  return { channels, ids, textIds: SECTIONS.filter((sec) => sec.type !== 'voice').map((sec) => ids[sec.key]) }
+}
+
+test('apply orders the category once: live tickets above the line, finished ones below it', async () => {
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const section = seededSection()
+  // The line sits above both tickets today, so both are on the wrong side of it.
+  const div = fakeChannel('div', ARCHIVE_DIVIDER_NAME, { parentId: 'c1', overwriteIds: ['G1', 'r1'], rawPosition: 20 })
+  const ROLE_SEEN = [{ id: 'r1', type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: 0n }]
+  const doneCh = ticketChannel('tc1', 'feature-old', 'c1', ROLE_SEEN)
+  doneCh.rawPosition = 21
+  const liveCh = ticketChannel('tc2', 'feature-new', 'c1', ROLE_SEEN)
+  liveCh.rawPosition = 22
+  const guild = fakeGuild({ channels: [cat, ...section.channels, div, doneCh, liveCh], roles: [role] })
+  const stored = { ...withDivider(project, section.ids), discordRoleId: 'r1' }
+  const observed = observeProjectSection(guild, stored, [
+    { id: 't1', title: 'Old', type: 'feature', status: 'done', discordChannelId: 'tc1', channelRetireAt: new Date() },
+    { id: 't2', title: 'New', type: 'feature', status: 'open', discordChannelId: 'tc2' },
+  ], { rolesFetched: true })
+  const plan = planProjectSection(stored, observed)
+  const result = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+  assert.equal(guild.channels.positions.length, 1, 'exactly one setPositions')
+  // Section channels keep the top, then the live ticket, the line, the finished
+  // one. Voice channels are never in the list: Discord renders them below every
+  // text channel whatever their position says.
+  assert.deepEqual(
+    guild.channels.positions[0].map((e) => e.channel),
+    [...section.textIds, 'tc2', 'div', 'tc1']
+  )
+  assert.deepEqual(guild.channels.positions[0].map((e) => e.position), section.textIds.map((_, i) => i).concat([section.textIds.length, section.textIds.length + 1, section.textIds.length + 2]))
+  assert.equal(result.reordered, true)
+})
+
+test('apply sends no reorder at all when the order is already right, and one refusal is a warning', async () => {
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const ROLE_SEEN = [{ id: 'r1', type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: 0n }]
+
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const section = seededSection()
+  const stored = { ...withDivider(project, section.ids), discordRoleId: 'r1' }
+  const div = fakeChannel('div', ARCHIVE_DIVIDER_NAME, { parentId: 'c1', overwriteIds: ['G1', 'r1'], rawPosition: 20 })
+  const doneCh = ticketChannel('tc1', 'feature-old', 'c1', ROLE_SEEN)
+  doneCh.rawPosition = 21
+  const guild = fakeGuild({ channels: [cat, ...section.channels, div, doneCh], roles: [role] })
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, [
+    { id: 't1', title: 'Old', type: 'feature', status: 'done', discordChannelId: 'tc1', channelRetireAt: new Date() },
+  ], { rolesFetched: true }))
+  const ok = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+  assert.deepEqual(guild.channels.positions, [])
+  assert.equal(ok.reordered, false)
+
+  const cat2 = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const section2 = seededSection()
+  const div2 = fakeChannel('div', ARCHIVE_DIVIDER_NAME, { parentId: 'c1', overwriteIds: ['G1', 'r1'], rawPosition: 20 })
+  const live = ticketChannel('tc9', 'feature-live', 'c1', ROLE_SEEN)
+  live.rawPosition = 21
+  const refusing = fakeGuild({ channels: [cat2, ...section2.channels, div2, live], roles: [role] })
+  refusing.channels.setPositions = async () => { throw new Error('Missing Permissions') }
+  const plan2 = planProjectSection(stored, observeProjectSection(refusing, stored, [
+    { id: 't9', title: 'Live', type: 'feature', status: 'open', discordChannelId: 'tc9' },
+  ], { rolesFetched: true }))
+  const bad = await quiet(() => applyProjectSection(refusing, stored, plan2, { db: fakeDb() }))
+  assert.equal(bad.reordered, false)
+  assert.ok(bad.warnings.some((w) => /ordering the channels of "Framework": Missing Permissions/.test(w)))
+})
+
+test('apply retires a finished ticket that has no stamp — from THIS run, through the seam — and counts it', async () => {
   const role = { id: 'r1', name: 'Framework', members: new Map() }
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
-  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1')
+  const taskCh = ticketChannel('tc1', 'feature-old', 'c1')
   const guild = fakeGuild({ channels: [cat, taskCh], roles: [role] })
   const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
-  const observed = observeProjectSection(guild, stored, [{ id: 't1', title: 'Git Sync', type: 'feature', status: 'in_progress', discordChannelId: 'tc1' }], { rolesFetched: true })
-  const plan = planProjectSection(stored, observed)
-  const result = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
-  const progId = guild.channels.calls.findIndex((c) => c.name === '📂 FRAMEWORK · IN PROGRESS') + 1
-  assert.equal(taskCh.edits.length, 1)
-  assert.equal(taskCh.edits[0].parent, `new-${progId}`)
-  assert.ok(taskCh.edits[0].permissionOverwrites.some((o) => o.id === 'r1'))
-  assert.deepEqual(result.moved, ['feature-git-sync'])
-  assert.equal(result.tasks, 1)
-})
-
-test('apply retires a finished ticket filed into Done — stamped from this run, through the seam — and counts it', async () => {
-  const role = { id: 'r1', name: 'Framework', members: new Map() }
-  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
-  const doneCat = fakeChannel('b-done', '📂 FRAMEWORK · DONE', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
-  const taskCh = ticketChannel('tc1', 'feature-old', 'b-done')
-  const guild = fakeGuild({ channels: [cat, doneCat, taskCh], roles: [role] })
-  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { bucketDone: 'b-done' } }
   const observed = observeProjectSection(guild, stored, [
     { id: 't1', title: 'Old', type: 'feature', status: 'done', discordChannelId: 'tc1', channelRetireAt: null },
   ], { rolesFetched: true })
@@ -2045,10 +2167,9 @@ test('apply retires a finished ticket filed into Done — stamped from this run,
 
 test('apply: without a database, finished tickets are not stamped and the reply says so', async () => {
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
-  const doneCat = fakeChannel('b-done', '📂 FRAMEWORK · DONE', { type: ChannelType.GuildCategory })
-  const taskCh = ticketChannel('tc1', 'feature-old', 'b-done')
-  const guild = fakeGuild({ channels: [cat, doneCat, taskCh] })
-  const stored = { ...project, discordCategoryId: 'c1', discordChannels: { bucketDone: 'b-done' } }
+  const taskCh = ticketChannel('tc1', 'feature-old', 'c1')
+  const guild = fakeGuild({ channels: [cat, taskCh] })
+  const stored = { ...project, discordCategoryId: 'c1' }
   const observed = observeProjectSection(guild, stored, [{ id: 't1', title: 'Old', type: 'feature', status: 'done', discordChannelId: 'tc1' }])
   const plan = planProjectSection(stored, observed)
   let called = 0
@@ -2058,33 +2179,19 @@ test('apply: without a database, finished tickets are not stamped and the reply 
   assert.ok(result.warnings.some((w) => /not stamped for removal/.test(w)))
 })
 
-test('apply: a bucket whose repair edit is refused still receives its tickets', async () => {
-  // The bucket exists and resolved by its stored id; only the overwrite
-  // repair was refused. Filing must not be held hostage to that — the run is
-  // one warning about the repair, and every ticket still lands in its bucket.
+test('apply drops the three bucket* keys from the stored map without touching the categories', async () => {
   const role = { id: 'r1', name: 'Framework', members: new Map() }
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
-  const open = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory, overwriteIds: ['G1'], fail: 'Missing Permissions' })
-  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1')
-  const guild = fakeGuild({ channels: [cat, open, taskCh], roles: [role] })
-  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { bucketOpen: 'b-open' } }
-  const observed = observeProjectSection(guild, stored, [
-    { id: 't1', title: 'Git Sync', type: 'feature', status: 'open', discordChannelId: 'tc1' },
-  ], { rolesFetched: true })
-  const plan = planProjectSection(stored, observed)
-  const result = await quiet(() => applyProjectSection(guild, stored, plan, { db: fakeDb() }))
-  assert.equal(taskCh.edits.at(-1).parent, 'b-open')
-  assert.deepEqual(result.moved, ['feature-git-sync'])
-  assert.ok(result.warnings.some((w) => w.startsWith('bucket "📂 FRAMEWORK · OPEN": Missing Permissions')))
-  assert.ok(!result.warnings.some((w) => /could not be filed/.test(w)))
-})
-
-test('apply: a bucket that fails to create is one warning; the other buckets and the section still land', async () => {
-  const role = { id: 'r1', name: 'Framework', members: new Map() }
-  const guild = fakeGuild({ roles: [role], createFails: (o) => o.name === '📂 FRAMEWORK · IN PROGRESS' })
-  const plan = planProjectSection(project, { roleId: 'r1', rolesFetched: true })
-  const result = await quiet(() => applyProjectSection(guild, { ...project, discordRoleId: 'r1' }, plan, { db: fakeDb() }))
-  assert.deepEqual(result.buckets.created, ['📂 FRAMEWORK · OPEN', '📂 FRAMEWORK · DONE'])
-  assert.ok(result.warnings.some((w) => w.includes('IN PROGRESS')))
-  assert.equal(result.created.filter((n) => n.startsWith('framework-')).length, 13)
+  const openBucket = staleCat('b-open', '📂 FRAMEWORK · OPEN')
+  const guild = fakeGuild({ channels: [cat, openBucket], roles: [role] })
+  const db = fakeDb()
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { bucketOpen: 'b-open', bucketInProgress: 'b-prog', bucketDone: 'b-done' } }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
+  await applyProjectSection(guild, stored, plan, { db })
+  const saved = db.calls[0].data.discordChannels
+  assert.deepEqual(Object.keys(saved).filter((k) => k.startsWith('bucket')), [])
+  assert.ok(saved[ARCHIVE_STORE_KEY], 'the divider it just made is recorded instead')
+  // Nothing deleted the leftover category, and nothing edited it either.
+  assert.ok(guild.channels.cache.has('b-open'))
+  assert.deepEqual(openBucket.edits, [])
 })
