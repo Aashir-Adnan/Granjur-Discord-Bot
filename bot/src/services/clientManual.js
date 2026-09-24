@@ -24,6 +24,12 @@ export const CLIENT_COMMANDS = [
     example: '/request-feature title:Export bookings to CSV details:We need a monthly export for accounts.',
   },
   {
+    name: 'request-task',
+    syntax: '/request-task title:<short title> details:<what needs doing>',
+    summary: 'Ask the team to handle data at a level an admin cannot reach.',
+    example: '/request-task title:Move 12 students to section B details:They enrolled late; the list is attached.',
+  },
+  {
     name: 'my-requests',
     syntax: '/my-requests',
     summary: 'See everything you have raised and where it stands.',
@@ -47,7 +53,7 @@ export function clientManual() {
     )
     .setColor(0x00b0f4)
   for (const c of CLIENT_COMMANDS) {
-    const extra = c.name === 'report-issue' || c.name === 'request-feature'
+    const extra = ['report-issue', 'request-feature', 'request-task'].includes(c.name)
       ? ' You can attach two screenshots and a document (`screenshot`, `screenshot2`, `document`). The other fields — platform, OS, steps and so on — are optional, but filling them saves a round of questions.'
       : ''
     embed.addFields({

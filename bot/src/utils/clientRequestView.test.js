@@ -45,3 +45,8 @@ test('myRequestsLines names who raised a request that is not the caller\'s', () 
     '🐞 **Theirs** · raised by Ali · P · open',
   ])
 })
+
+test('a support task has its own icon in the list', () => {
+  const [line] = myRequestsLines([{ type: 'task', title: 'Move students', projectName: 'P', status: 'open' }])
+  assert.equal(line, '🛠️ **Move students** · P · open')
+})

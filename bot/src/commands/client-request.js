@@ -1,6 +1,6 @@
 import { SlashCommandBuilder } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
-import { createClientRequest, clientProjects, composeDetails, ISSUE_FIELDS, FEATURE_FIELDS } from '../services/clientRequest.js'
+import { createClientRequest, clientProjects, composeDetails, ISSUE_FIELDS, FEATURE_FIELDS, TASK_FIELDS } from '../services/clientRequest.js'
 import { projectChoices } from './update-task.js'
 
 // Two commands, one implementation. `data` is an array: one module can back
@@ -35,9 +35,16 @@ function builder(name, description, what, fields) {
   return b
 }
 
+// The three kinds a client can raise, by the command they typed. A support
+// task — the team handling data at a level an admin cannot — is its own kind.
+const COMMAND_KIND = { 'report-issue': 'bug', 'request-feature': 'feature', 'request-task': 'task' }
+const FIELDS_BY_KIND = { bug: ISSUE_FIELDS, feature: FEATURE_FIELDS, task: TASK_FIELDS }
+const NOUN = { bug: 'issue', feature: 'request', task: 'support task' }
+
 export const data = [
   builder('report-issue', 'Report something that is broken', 'What happens (the other fields are optional, but save a round of questions)', ISSUE_FIELDS),
   builder('request-feature', 'Ask for something new', 'What you need and why', FEATURE_FIELDS),
+  builder('request-task', 'Ask the team to handle data an admin cannot', 'What needs doing, and to which data (the other fields are optional)', TASK_FIELDS),
 ]
 
 /**
@@ -61,9 +68,9 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
   const cfg = await getConfig(guild.id)
-  const type = interaction.commandName === 'report-issue' ? 'bug' : 'feature'
+  const type = COMMAND_KIND[interaction.commandName] ?? 'feature'
   const title = interaction.options.getString('title')
-  const fields = type === 'bug' ? ISSUE_FIELDS : FEATURE_FIELDS
+  const fields = FIELDS_BY_KIND[type]
   const values = Object.fromEntries(fields.map((f) => [f.name, interaction.options.getString(f.name)]))
   const details = composeDetails(fields, values, interaction.options.getString('details'))
   const picked = interaction.options.getString('project')
@@ -78,7 +85,7 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
   const out = await create({
     guild, client: interaction.client, user: interaction.user, cfg, type, title, details, project, attachments, db: dbArg,
   })
-  const noun = type === 'bug' ? 'issue' : 'request'
+  const noun = NOUN[type]
   return interaction.editReply({
     content: `Your ${noun} **${out.task.title}** is raised. Its channel is <#${out.channel.id}> — the team will reply there, and you will be messaged when its status changes. See it any time with **/my-requests**.`,
   })

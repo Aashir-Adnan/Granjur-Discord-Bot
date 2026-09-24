@@ -17,14 +17,14 @@ export const MAX_CHANNEL_NAME = 100
  * duplicate beside it on the next update.
  */
 export function taskChannelTopic({ type, title, taskId }) {
-  const label = type === 'bug' ? 'Bug' : 'Feature'
+  const label = type === 'bug' ? 'Bug' : type === 'task' ? 'Task' : 'Feature'
   return `${label}: ${String(title || '').slice(0, 100)} — Task ${taskId}`
 }
 
 /** The bot's own signature: every ticket channel it has ever opened has this topic. */
-const TICKET_TOPIC = /^(Feature|Bug):/
+const TICKET_TOPIC = /^(Feature|Bug|Task):/
 /** Only for a channel with NO topic at all — a name is anyone's to choose. */
-const TICKET_NAME = /^(feature|bug)-/
+const TICKET_NAME = /^(feature|bug|task)-/
 
 /**
  * Whether a channel is a task ticket channel the bot opened.
@@ -56,7 +56,8 @@ export function isTicketChannel(channel) {
 }
 
 export function taskChannelName({ type, title, taskId, taken = new Set() }) {
-  const prefix = type === 'bug' ? 'bug' : 'feature'
+  // A client's support task (`type: 'task'`) is neither a bug nor a feature.
+  const prefix = type === 'bug' ? 'bug' : type === 'task' ? 'task' : 'feature'
   const id = String(taskId ?? '')
   const slug = slugify(title)
   let base = slug ? `${prefix}-${slug}` : `${prefix}-${id.slice(-6)}`

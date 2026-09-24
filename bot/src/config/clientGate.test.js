@@ -18,8 +18,8 @@ function member({ roles = [], owner = false, perms = [] } = {}) {
 const CLIENT = { id: 'r-client', name: 'Client' }
 const VERIFIED = { id: 'r-verified', name: 'Verified' }
 
-test('clientCommands is exactly the five the spec lists', () => {
-  assert.deepEqual(getClientCommands(), ['verify', 'report-issue', 'request-feature', 'my-requests', 'request-report'])
+test('clientCommands is exactly the six client commands', () => {
+  assert.deepEqual(getClientCommands(), ['verify', 'report-issue', 'request-feature', 'request-task', 'my-requests', 'request-report'])
 })
 
 test('a client may run only the client commands — an empty role list is not "anyone" for them', () => {

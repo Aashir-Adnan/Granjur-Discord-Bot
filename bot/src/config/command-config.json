@@ -1,5 +1,5 @@
 {
-  "clientCommands": ["verify", "report-issue", "request-feature", "my-requests", "request-report"],
+  "clientCommands": ["verify", "report-issue", "request-feature", "request-task", "my-requests", "request-report"],
   "commandRoles": {
     "init": [
       "CEO",
@@ -12,6 +12,7 @@
     "verify": [],
     "report-issue": ["Client"],
     "request-feature": ["Client"],
+    "request-task": ["Client"],
     "my-requests": ["Client"],
     "request-report": ["Client"],
     "invite": [
@@ -231,6 +232,11 @@
       "summary": "Ask for something new in your project.",
       "syntax": "/request-feature title:<short title> details:<what you need> [platform] [semester] [priority] [needed_by] [problem] [who] [example] [project] [screenshot] [screenshot2] [document]",
       "detail": "Opens a private channel for the request where the team can ask you for more. The extra fields are optional; attach two screenshots and a document."
+    },
+    "request-task": {
+      "summary": "Ask the team to handle data at a level an admin cannot reach.",
+      "syntax": "/request-task title:<short title> details:<what needs doing> [platform] [semester] [needed_by] [scope] [reason] [project] [screenshot] [screenshot2] [document]",
+      "detail": "Opens a private channel for the task where the team can ask you for more. The extra fields are optional; attach two screenshots and a document."
     },
     "my-requests": {
       "summary": "List the issues and requests you have raised, with their status.",
