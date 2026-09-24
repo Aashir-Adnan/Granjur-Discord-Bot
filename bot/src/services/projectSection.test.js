@@ -246,6 +246,25 @@ test('projectFromChannel resolves a thread to the channel it lives in', () => {
   assert.equal(projectFromChannel(projects, { id: 't2', parentId: 'ch9', isThread: () => true, parent: null }), null)
 })
 
+test('projectFromChannel matches a channel parented in one of the project status buckets', () => {
+  // Ticket channels live in a bucket, never in the section category, so a
+  // command run inside one has to reach the project through the bucket id.
+  const projects = [
+    { id: 'p1', name: 'Framework', discordCategoryId: 'c1', discordChannels: { bucketOpen: 'b-open', bucketDone: 'b-done' } },
+    { id: 'p2', name: 'Badar', discordCategoryId: 'c2' },
+  ]
+  assert.equal(projectFromChannel(projects, { id: 'tc1', parentId: 'b-done' }).id, 'p1')
+  assert.equal(projectFromChannel(projects, { id: 'b-open', parentId: null }).id, 'p1')
+})
+
+test('projectFromChannel refuses to guess when two projects claim one bucket', () => {
+  const projects = [
+    { id: 'p1', name: 'Framework', discordCategoryId: 'c1', discordChannels: { bucketDone: 'b-done' } },
+    { id: 'p2', name: 'Framework copy', discordCategoryId: 'c2', discordChannels: { bucketDone: 'b-done' } },
+  ]
+  assert.equal(projectFromChannel(projects, { id: 'tc1', parentId: 'b-done' }), null)
+})
+
 test('projectFromChannel refuses to guess when two projects claim one category', () => {
   const projects = [
     { id: 'p1', name: 'Framework', discordCategoryId: 'c1' },
@@ -261,14 +280,16 @@ test('projectFromChannel refuses to guess when two projects claim one category',
 
 /** A stand-in Discord channel that records every `edit` and every `send`. */
 function fakeChannel(id, name, opts = {}) {
-  const { type = ChannelType.GuildText, parentId = null, fail = null, overwriteIds = null, overwrites = null } = opts
-  const c = { id, name, type, parentId, rawPosition: 0, edits: [], sent: [], messages: { fetchPinned: async () => new Map() } }
+  const { type = ChannelType.GuildText, parentId = null, fail = null, overwriteIds = null, overwrites = null, position = 0 } = opts
+  // `position` is discord.js's sorted index, the unit `edit({ position })`
+  // speaks; nothing in the code reads `rawPosition` any more.
+  const c = { id, name, type, parentId, position, edits: [], sent: [], messages: { fetchPinned: async () => new Map() } }
   c.edit = async (o) => {
     c.edits.push(o)
     if (fail) throw new Error(fail)
     if (o.name !== undefined) c.name = o.name
     if (o.parent !== undefined) c.parentId = o.parent
-    if (o.position !== undefined) c.rawPosition = o.position
+    if (o.position !== undefined) c.position = o.position
     return c
   }
   c.send = async (payload) => {
@@ -1942,7 +1963,7 @@ test('apply creates the three buckets after the category with its overwrites, po
   const saved = db.calls[0].data.discordChannels
   assert.equal(saved.bucketOpen, 'new-2'); assert.equal(saved.bucketInProgress, 'new-3'); assert.equal(saved.bucketDone, 'new-4')
   // Positioned directly below the section category, in order.
-  const positions = [guild.channels.cache.get('new-2'), guild.channels.cache.get('new-3'), guild.channels.cache.get('new-4')].map((c) => c.rawPosition)
+  const positions = [guild.channels.cache.get('new-2'), guild.channels.cache.get('new-3'), guild.channels.cache.get('new-4')].map((c) => c.position)
   assert.deepEqual(positions, [1, 2, 3])
 })
 
@@ -2015,6 +2036,27 @@ test('apply: without a database, finished tickets are not stamped and the reply 
   assert.equal(called, 0)
   assert.equal(result.retired, 0)
   assert.ok(result.warnings.some((w) => /not stamped for removal/.test(w)))
+})
+
+test('apply: a bucket whose repair edit is refused still receives its tickets', async () => {
+  // The bucket exists and resolved by its stored id; only the overwrite
+  // repair was refused. Filing must not be held hostage to that — the run is
+  // one warning about the repair, and every ticket still lands in its bucket.
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const open = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory, overwriteIds: ['G1'], fail: 'Missing Permissions' })
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1')
+  const guild = fakeGuild({ channels: [cat, open, taskCh], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { bucketOpen: 'b-open' } }
+  const observed = observeProjectSection(guild, stored, [
+    { id: 't1', title: 'Git Sync', type: 'feature', status: 'open', discordChannelId: 'tc1' },
+  ], { rolesFetched: true })
+  const plan = planProjectSection(stored, observed)
+  const result = await quiet(() => applyProjectSection(guild, stored, plan, { db: fakeDb() }))
+  assert.equal(taskCh.edits.at(-1).parent, 'b-open')
+  assert.deepEqual(result.moved, ['feature-git-sync'])
+  assert.ok(result.warnings.some((w) => w.startsWith('bucket "📂 FRAMEWORK · OPEN": Missing Permissions')))
+  assert.ok(!result.warnings.some((w) => /could not be filed/.test(w)))
 })
 
 test('apply: a bucket that fails to create is one warning; the other buckets and the section still land', async () => {

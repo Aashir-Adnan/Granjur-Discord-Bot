@@ -28,6 +28,20 @@ note; the section-channel room note) and `README.md`. Appended a dated Correctio
 section (§15) to `docs/superpowers/specs/2026-09-24-status-buckets-design.md` recording
 five deviations ruled during the build. Updated the three state files.
 
+## Branch fix round 1 (2026-09-25, after the whole-branch review)
+Five confirmed findings on tasks 8/9, all fixed in one commit on `feat/status-buckets`:
+F1 bucket position edits mixed `rawPosition` (raw gateway value) with `edit({ position })`
+(sorted index) — both sides now use the `position` getter; F2 step 2b assigned the bucket
+ids AFTER the repair edit, so a refused repair un-filed every ticket bound for that bucket
+and called it "could not be created" — the ids are now bound before the edit; F3
+`projectFromChannel` ignored bucket ids, so no command run inside a ticket channel could
+infer its project — it now matches `bucketIdsOf(p)` too, duplicate-id rule across the whole
+set; F4 `renderResult`'s bucket line double-counted creates already in `result.created` —
+reworded to "N of those created"; F5 `intoBuckets` hardcoded the bucket keys — now
+`BUCKETS.map((b) => b.key)`. Three new tests, two existing expectations updated
+(`rawPosition` → `position`, the bucket reply wording). Full suite 1172 pass / 0 fail.
+Report: `.superpowers/sdd/2026-09-24-status-buckets/task-8-report.md` → "Branch fix round 1".
+
 ## Open items before merge
 See `backlog.md` → "Status buckets — deferred follow-ups" for every parked minor from the
 build's reviews (none blocks merge). Beyond that:

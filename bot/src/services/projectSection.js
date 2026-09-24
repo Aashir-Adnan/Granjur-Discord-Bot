@@ -126,19 +126,27 @@ export function channelNameFor(project, suffix) {
 }
 
 /**
- * The project a channel belongs to: the one whose category is the channel's
- * parent, or the category itself. A thread is resolved to the channel it lives
- * in first, since a thread's `parentId` is that channel, not the category.
- * Null-safe, and null when nothing matches.
+ * The project a channel belongs to: the one whose section category — or any of
+ * its three status buckets — is the channel's parent, or is the channel
+ * itself. A thread is resolved to the channel it lives in first, since a
+ * thread's `parentId` is that channel, not the category. Null-safe, and null
+ * when nothing matches.
  *
- * Null too when MORE than one project claims the category: nothing makes
- * `project.discordCategoryId` unique (migration 019 adds no index), and a
- * guess could hand a member the wrong project's role. The caller then falls
- * back to asking which project is meant.
+ * The buckets have to count: since [[status-buckets]] a ticket channel is
+ * parented to `bucketOpen`/`bucketInProgress`/`bucketDone`, never to the
+ * section category, so matching on `discordCategoryId` alone would stop
+ * `/project-members` and `/meeting-channel` inferring the project from inside
+ * any ticket channel at all.
+ *
+ * Null too when MORE than one project claims one of those ids: nothing makes
+ * `project.discordCategoryId` unique (migration 019 adds no index), and the
+ * bucket ids live in the free-form `discordChannels` map, so a guess could
+ * hand a member the wrong project's role. The caller then falls back to asking
+ * which project is meant.
  *
  * Shared here because several commands need the same answer.
  *
- * @param {Array<{id?: string, discordCategoryId?: string|null}>} projects
+ * @param {Array<{id?: string, discordCategoryId?: string|null, discordChannels?: object|string|null}>} projects
  * @param {{id?: string|null, parentId?: string|null, isThread?: () => boolean, parent?: object|null}|null} channel
  */
 export function projectFromChannel(projects, channel) {
@@ -148,12 +156,11 @@ export function projectFromChannel(projects, channel) {
   const list = Array.isArray(projects) ? projects : []
   const parentId = base.parentId ?? null
   const ownId = base.id ?? null
-  const matches = list.filter(
-    (p) =>
-      p &&
-      p.discordCategoryId &&
-      (p.discordCategoryId === parentId || p.discordCategoryId === ownId)
-  )
+  const matches = list.filter((p) => {
+    if (!p) return false
+    const ids = [p.discordCategoryId, ...Object.values(bucketIdsOf(p))].filter(Boolean)
+    return ids.some((id) => id === parentId || id === ownId)
+  })
   const distinct = new Set(matches.map((p) => p.id ?? p))
   return distinct.size === 1 ? matches[0] : null
 }
@@ -1187,6 +1194,14 @@ export async function applyProjectSection(
         } else {
           cat = guild.channels.cache.get(entry.id) ?? null
           if (!cat) throw new Error(`bucket ${entry.id} no longer exists`)
+          // Bind the bucket the moment it resolves, BEFORE the repair edit —
+          // exactly as the section category sets `result.category = existing`
+          // before its own repair. A refused rename or overwrite repair is
+          // then one warning; the bucket still exists, so every ticket bound
+          // for it still files into it instead of taking the `unplaced` path
+          // and being reported as "could not be created".
+          channelIds[entry.storeKey] = cat.id
+          bucketIdByKey[entry.key] = cat.id
           const required = categoryOverwrites(guild, roleId)
           const needsName = entry.action === 'rename'
           const needsPerms = missingOverwrites(cat, required)
@@ -1206,15 +1221,19 @@ export async function applyProjectSection(
         note(result.warnings, `bucket "${entry.name}"`, e)
       }
     }
-    // Sidebar order: section, then open, in progress, done. Best-effort — a
-    // refused position edit is a warning, and a bucket already where it
-    // belongs is not edited again on every run.
-    const base = Number(result.category?.rawPosition ?? result.category?.position ?? 0)
+    // Sidebar order: section, then open, in progress, done. Both sides speak
+    // the same unit — discord.js's `position` getter, the SORTED INDEX among
+    // the guild's categories, which is exactly what `edit({ position })`
+    // takes (it goes through `setPosition` and re-numbers the rest). Reading
+    // `rawPosition` (the raw, non-contiguous gateway value) and writing a
+    // sorted index would compare and set two different things. Best-effort —
+    // a refused position edit is one warning, not a stopped run.
+    const base = Number(result.category?.position ?? 0)
     for (const [i, b] of BUCKETS.entries()) {
       const cat = bucketIdByKey[b.key] ? guild.channels.cache.get(bucketIdByKey[b.key]) : null
       if (!cat) continue
       const wanted = base + i + 1
-      if (Number(cat.rawPosition ?? cat.position ?? -1) === wanted) continue
+      if (Number(cat.position ?? -1) === wanted) continue
       try {
         await cat.edit({ position: wanted })
       } catch (e) {

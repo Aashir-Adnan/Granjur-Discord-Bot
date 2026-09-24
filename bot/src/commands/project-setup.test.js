@@ -1158,6 +1158,6 @@ test('renderResult counts the buckets and the retired tickets', () => {
     moved: ['feature-a'], tasks: 1, retired: 2,
   })
   assert.match(out, /2 created, 1 moved/)
-  assert.match(out, /Status buckets: 1 created/)
+  assert.match(out, /Status buckets: 1 of those created\./)
   assert.match(out, /2 finished ticket channel\(s\) are now read-only and will be removed in 14 days/)
 })

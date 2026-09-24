@@ -30,7 +30,7 @@ import {
 } from '../services/projectSection.js'
 import { ensureMembersPanel } from '../services/projectMembersPanel.js'
 import { isClientRole } from '../utils/clientRoles.js'
-import { bucketByKey } from '../utils/statusBuckets.js'
+import { BUCKETS, bucketByKey } from '../utils/statusBuckets.js'
 
 /** Discord's hard limit on a message. */
 const REPLY_LIMIT = 2000
@@ -104,7 +104,7 @@ function intoBuckets(tasks) {
     if (t?.action !== 'move' && t?.action !== 'both') continue
     counts.set(t.bucket, (counts.get(t.bucket) ?? 0) + 1)
   }
-  const parts = ['open', 'inProgress', 'done']
+  const parts = BUCKETS.map((b) => b.key)
     .filter((k) => counts.get(k))
     .map((k) => `${bucketByKey(k)?.label ?? k}: ${counts.get(k)}`)
   return parts.length ? ` (into ${parts.join(', ')})` : ''
@@ -286,10 +286,14 @@ export function renderResult(project, result = {}) {
 
   const lines = [`**${name}** — ${summary}${breakdown}.`]
 
+  // A bucket category the applier created or renamed is already in `created`
+  // / `renamed` above — it pushes into both — so this is a breakdown of those
+  // counts, not an addition to them, and it says "of those" to stop "3
+  // created" plus "Status buckets: 1 created" reading as four categories.
   const b = result?.buckets ?? {}
   const bucketBits = []
-  if (b.created?.length) bucketBits.push(`${b.created.length} created`)
-  if (b.renamed?.length) bucketBits.push(`${b.renamed.length} renamed`)
+  if (b.created?.length) bucketBits.push(`${b.created.length} of those created`)
+  if (b.renamed?.length) bucketBits.push(`${b.renamed.length} of those renamed`)
   if (bucketBits.length) lines.push(`Status buckets: ${bucketBits.join(', ')}.`)
   const retired = Number(result?.retired ?? 0)
   if (retired) lines.push(`${retired} finished ticket channel(s) are now read-only and will be removed in 14 days.`)

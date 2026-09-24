@@ -301,8 +301,13 @@ placement. Resolves a **thread** to its parent channel first (a thread's
 `parentId` is the text channel it lives in, not the category), then matches on
 `discordCategoryId === channel.parentId` (or `=== channel.id`, for a command run
 directly on the category — not applicable to text/voice children but kept for
-symmetry). **Returns `null` when two projects claim the same category id** —
-nothing makes `discordCategoryId` unique (migration 019 has no unique index) —
+symmetry) **or on any of the project's three status-bucket ids**
+(`bucketIdsOf(p)`), the same two ways — since [[status-buckets]] a ticket channel
+is parented to a bucket, never to the section category, so the bucket half is what
+lets a command run inside a ticket channel infer its project at all.
+**Returns `null` when two projects claim the same id**, category or bucket —
+nothing makes `discordCategoryId` unique (migration 019 has no unique index), and
+the bucket ids live in the free-form `discordChannels` map —
 rather than guessing and possibly handing someone the wrong project's role. The
 caller then falls back to its normal picker. An uncached thread parent also fails
 closed to "pick a project," never a wrong guess.

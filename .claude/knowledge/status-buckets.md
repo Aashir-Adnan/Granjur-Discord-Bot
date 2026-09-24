@@ -179,10 +179,30 @@ The applier (`applyProjectSection`) performs, in order:
 
 - **Step 2b** — create/rename/reuse the three bucket categories (same
   overwrites as the section category, `categoryOverwrites(guild, roleId)`),
-  persist each id into `channelIds[entry.storeKey]`, then best-effort position
-  them directly below the section category in table order (`base + i + 1` on
-  `rawPosition`); a refused position edit is one warning, not a stopped run
-  (see "Known limitations" for why this can repeat every run).
+  persist each id into `channelIds[entry.storeKey]` and `bucketIdByKey`, then
+  best-effort position them directly below the section category in table order.
+  Two details that were bugs on the first cut of this step and are now load
+  bearing:
+  - **One unit on both sides of the position edit.** Both the read and the
+    write use discord.js's **`position`** getter — the *sorted index* among the
+    guild's categories, which is also what `edit({ position })` takes (it goes
+    through `setPosition`, which re-numbers the rest). `base =
+    Number(result.category.position ?? 0)`, `wanted = base + i + 1`, skip when
+    `Number(cat.position ?? -1) === wanted`. The first cut read `rawPosition`
+    (the raw, non-contiguous gateway value) and wrote a sorted index, so the
+    skip check almost never hit and the number written meant something else
+    than the one compared. A refused position edit is still one warning, not a
+    stopped run.
+  - **A bucket is bound before its repair edit, not after.** As soon as the
+    category resolves from the cache, `channelIds[entry.storeKey]` and
+    `bucketIdByKey[entry.key]` are assigned — the same order in which the
+    section category sets `result.category = existing` before its own repair.
+    A refused rename or overwrite repair (`Missing Permissions`) is then one
+    `note(...)` warning and **the tickets still file into that bucket**.
+    Assigning after the `await cat.edit(...)` (the first cut) meant a refused
+    repair dropped the bucket out of `bucketIdByKey`, sent every ticket bound
+    for it down the `unplaced` path, and told the operator the bucket "could
+    not be created" when it plainly existed.
 - **Step 4** — parent each task channel to its bucket's id instead of the
   section `categoryId`; a channel already correctly named but not yet visible
   to the project role gets a standalone `grant`; a rename/move that also needs
@@ -198,6 +218,42 @@ The applier (`applyProjectSection`) performs, in order:
   first runs on it. Guarded by `db?.task?.update` — no database means a
   warning instead of a silent skip. This whole step sits under `if
   (categoryId)`; see "Known limitations."
+
+### What the reply says about buckets
+
+The applier pushes a created or renamed bucket category into **both**
+`result.created`/`result.renamed` **and** `result.buckets.created`/`.renamed`.
+`renderResult` (`project-setup.js`) therefore words the bucket line as a
+*breakdown* of the first summary line, never as an addition to it — the same
+shape as its existing `(incl. N task channel(s))` and `N of those channel(s)
+were also opened…` lines:
+
+```
+**Framework** — 17 created, 1 moved (incl. 1 task channel).
+Status buckets: 3 of those created.
+Status buckets: 1 of those created, 2 of those renamed.
+```
+
+Wording it as `Status buckets: 3 created` (the first cut) read as three
+categories on top of the seventeen.
+
+`intoBuckets` (the preview's `(into OPEN: 2, DONE: 1)` suffix) iterates
+`BUCKETS.map((b) => b.key)` rather than a hardcoded key list, so adding a
+fourth bucket to the table is still a one-file change.
+
+## Project inference from inside a bucket
+
+`projectFromChannel(projects, channel)` (`projectSection.js`) — shared by
+`/project-members`, `/meeting-channel` and `/create-task` — matches a project
+when the channel's `parentId` (or the channel's own id) is the project's
+`discordCategoryId` **or any of `Object.values(bucketIdsOf(p))`**. The bucket
+half is not optional: ticket channels no longer sit in the section category at
+all, so matching on `discordCategoryId` alone left every command run inside a
+ticket channel unable to infer its project — exactly the channels an operator
+runs `/meeting-channel` from. The "two projects claim the same id → return
+`null`, make the caller pick" rule applies across the combined id set, since
+the bucket ids live in the free-form `discordChannels` JSON map and nothing
+makes them unique either.
 
 ## `/close-feature` and `/resolve-bug`
 
@@ -250,13 +306,6 @@ inside it, as before.
   identical display names from being planned in the first place; see
   [[project-sections]] ("Duplicate slugs") for the existing guard at the
   project level.
-- **Bucket position edits can repeat on every run.** `rawPosition` is
-  **guild-global**, not scoped to the project's own category, so
-  `base + i + 1` rarely lands on the bucket's actual `rawPosition` once other
-  categories exist between runs — the "already positioned, skip" check in
-  `applyProjectSection` step 2b rarely hits, and up to three cheap position
-  edits happen per `/project-setup` run. Harmless (each edit is idempotent and
-  cheap), just noisy.
 - **A run with no resolvable section category leaves finished tickets
   unstamped until the next run.** Step 4c (the retire/stamp pass) sits under
   `if (categoryId)` in `applyProjectSection`, alongside every other per-project
