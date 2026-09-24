@@ -5,7 +5,6 @@ import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
 import { updateGuildConfig } from '../db/index.js'
 import {
   ROLE_CLIENT, ROLE_COLORS, CATEGORY_SUPPORT, CHANNEL_SUPPORT, CHANNEL_SUPPORT_VOICE,
-  CATEGORY_RULES, CHANNEL_ANNOUNCEMENTS_ALL,
 } from '../constants.js'
 import { clientManual, MANUAL_TITLE } from './clientManual.js'
 
@@ -110,20 +109,44 @@ async function repairOverwrites(channel, required) {
  *
  * @returns {Promise<string[]>} the names of the channels newly denied.
  */
+/** A permission bitfield carries `bit` — a discord.js PermissionsBitField, a BigInt, or an array in tests. */
+function fieldHas(field, bit) {
+  if (field === null || field === undefined) return false
+  if (typeof field.has === 'function') return Boolean(field.has(bit))
+  if (Array.isArray(field)) return field.includes(bit)
+  try { return (BigInt(field.bitfield ?? field) & bit) === bit } catch { return false }
+}
+
+/**
+ * Whether @everyone can see this channel. Its own @everyone overwrite decides
+ * (a deny wins, then an allow); with no overwrite, or a neutral one, the
+ * guild's @everyone role does. This — not a list of channel names — is what
+ * makes a channel visible to a client, so it is what the deny pass is derived
+ * from. A name list is how #time-reports stayed visible to the first client.
+ */
+export function everyoneCanView(guild, channel) {
+  const ow = channel?.permissionOverwrites?.cache?.get?.(guild?.id)
+  if (ow) {
+    if (fieldHas(ow.deny, F.ViewChannel)) return false
+    if (fieldHas(ow.allow, F.ViewChannel)) return true
+  }
+  return fieldHas(guild?.roles?.everyone?.permissions, F.ViewChannel)
+}
+
 export async function denyClientOnPublicChannels(guild, cfg, clientRoleId) {
   if (!clientRoleId) return []
   const all = [...(guild.channels?.cache?.values?.() ?? [])]
-  const rulesCategory = all.find((ch) => ch?.type === ChannelType.GuildCategory && ch.name === CATEGORY_RULES) ?? null
+  // The support pair is @everyone-denied anyway; skipping it by id is belt and braces.
+  const skip = new Set([cfg?.supportChannelId, cfg?.supportVoiceChannelId].filter(Boolean))
 
   const targets = new Map()
-  const add = (ch) => { if (ch?.id && !targets.has(ch.id)) targets.set(ch.id, ch) }
+  const add = (ch) => { if (ch?.id && !skip.has(ch.id) && !targets.has(ch.id)) targets.set(ch.id, ch) }
 
+  // The onboarding channel by stored id, then EVERY channel or category
+  // @everyone can see, whoever made it: /init's public ones, the daily report's
+  // #time-reports, the command channels, anything made by hand.
   add(await resolveChannel(guild, cfg?.onboardingChannelId))
-  if (rulesCategory) {
-    add(rulesCategory)
-    for (const ch of all) if (ch?.parentId === rulesCategory.id) add(ch)
-  }
-  for (const ch of all) if (ch?.type === ChannelType.GuildText && ch.name === CHANNEL_ANNOUNCEMENTS_ALL) add(ch)
+  for (const ch of all) if (everyoneCanView(guild, ch)) add(ch)
 
   const denied = []
   for (const ch of targets.values()) {

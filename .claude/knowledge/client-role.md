@@ -347,6 +347,22 @@ after. A failure is one warning line. The manual also says clients may post more
 screenshots in a request's channel at any time — the request channel is the durable home for
 documents; there is no `/attach` command by design.
 
+## The public-channel deny is derived, not listed (2026-09-24, after the first client saw #time-reports)
+
+`denyClientOnPublicChannels` originally named three targets — the onboarding channel, `📜 Rules`
+and `#announcements-all` — and the first client could see `#time-reports`, which the daily report
+creates with an `@everyone` allow. What makes a channel visible to a client is exactly that allow,
+whoever made the channel, so the pass now denies the Client role on **every** channel or category
+where `everyoneCanView(guild, channel)` is true: the channel's own `@everyone` overwrite decides
+(deny wins, then allow); with none, or a neutral one, the guild's `@everyone` role does. The
+support pair is skipped by id (it is `@everyone`-denied anyway). This also closes the onboarding
+category and the `cmd-*` command channels, which `/init` makes public. Presence-only as before:
+a channel the Client role already has an overwrite on is never touched.
+
+`#time-reports` gets belt and braces: the daily report adds the Client deny at creation when
+`cfg.clientRoleId` exists, and `reconcileChannelAccess` (once per process) repairs it beside the
+`@everyone` repair — so a channel created after the last `/setup` is still closed to clients.
+
 ## Related
 
 [[project-sections]]

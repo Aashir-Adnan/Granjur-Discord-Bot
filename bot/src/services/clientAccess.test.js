@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
-import { ensureClientRole, ensureSupportChannels, supportOverwrites } from './clientAccess.js'
+import { ensureClientRole, ensureSupportChannels, supportOverwrites, everyoneCanView } from './clientAccess.js'
 import { MANUAL_TITLE } from './clientManual.js'
 
 let nextId = 100
@@ -124,17 +124,26 @@ test('a stored channel id that no longer resolves is recreated, never matched by
 // three are the only places the "sees the support pair and nothing else" rule
 // leaks — closed here, presence-only, one id per edit.
 
+// What actually makes a channel visible to a client is an `@everyone` allow —
+// whoever created it. The fakes carry the real overwrite so the deny is derived
+// from it, not from a list of names.
+const everyoneAllow = () => ({ id: 'g1', type: OverwriteType.Role, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] })
+const everyoneDeny = () => ({ id: 'g1', type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] })
+
 function publicGuild() {
-  const rules = fakeChannel('📜 Rules', { type: ChannelType.GuildCategory })
-  const rulesChild = fakeChannel('rules', { parentId: rules.id })
-  const onboarding = fakeChannel('start-here')
-  const annCat = fakeChannel('📢 Announcements', { type: ChannelType.GuildCategory })
-  const annAll = fakeChannel('announcements-all', { parentId: annCat.id })
+  const rules = fakeChannel('📜 Rules', { type: ChannelType.GuildCategory, overwrites: [everyoneAllow()] })
+  const rulesChild = fakeChannel('rules', { parentId: rules.id, overwrites: [everyoneAllow()] })
+  const onboarding = fakeChannel('start-here', { overwrites: [everyoneAllow()] })
+  const annCat = fakeChannel('📢 Announcements', { type: ChannelType.GuildCategory, overwrites: [everyoneDeny()] })
+  const annAll = fakeChannel('announcements-all', { parentId: annCat.id, overwrites: [everyoneAllow()] })
+  // Not made by /init at all — the daily report's channel — and a team channel.
+  const timeReports = fakeChannel('time-reports', { overwrites: [everyoneAllow()] })
+  const teamChat = fakeChannel('backend-chat', { overwrites: [everyoneDeny()] })
   const guild = fakeGuild({
     roles: [{ id: 'r-client', name: 'Client' }],
-    channels: [rules, rulesChild, onboarding, annCat, annAll],
+    channels: [rules, rulesChild, onboarding, annCat, annAll, timeReports, teamChat],
   })
-  return { guild, rules, rulesChild, onboarding, annAll, annCat }
+  return { guild, rules, rulesChild, onboarding, annAll, annCat, timeReports, teamChat }
 }
 
 const publicCfg = (g) => cfg({ clientRoleId: 'r-client', onboardingChannelId: g.onboarding.id })
@@ -143,23 +152,25 @@ test('ensureSupportChannels denies Client on the onboarding channel, the Rules c
   const g = publicGuild()
   const { update } = recorder()
   const out = await ensureSupportChannels(g.guild, publicCfg(g), { update, botUserId: 'bot' })
-  const denied = [g.onboarding, g.rules, g.rulesChild, g.annAll]
+  const denied = [g.onboarding, g.rules, g.rulesChild, g.annAll, g.timeReports]
   for (const ch of denied) {
     assert.deepEqual(ch.edits.map((e) => e.id), ['r-client'], `${ch.name} got exactly one Client deny`)
     assert.deepEqual(ch.edits[0].allow, { ViewChannel: false })
     assert.equal(ch.edits[0].opts.type, OverwriteType.Role, 'every overwrite carries an explicit type')
   }
   assert.equal(g.annCat.edits.length, 0, 'the Announcements category itself is not @everyone-visible')
-  assert.deepEqual(out.denied.sort(), ['announcements-all', 'rules', 'start-here', '📜 Rules'].sort())
+  assert.equal(g.teamChat.edits.length, 0, 'a channel @everyone cannot see needs no deny')
+  assert.equal(out.text.edits.filter((e) => e.allow?.ViewChannel === false).length, 0, 'the support pair is never denied to clients')
+  assert.deepEqual(out.denied.sort(), ['announcements-all', 'rules', 'start-here', 'time-reports', '📜 Rules'].sort())
 })
 
 test('the public-channel deny is presence-only: a second run edits nothing', async () => {
   const g = publicGuild()
   const { update } = recorder()
   await ensureSupportChannels(g.guild, publicCfg(g), { update, botUserId: 'bot' })
-  for (const ch of [g.onboarding, g.rules, g.rulesChild, g.annAll]) ch.edits.length = 0
+  for (const ch of [g.onboarding, g.rules, g.rulesChild, g.annAll, g.timeReports]) ch.edits.length = 0
   const out = await ensureSupportChannels(g.guild, publicCfg(g), { update, botUserId: 'bot' })
-  for (const ch of [g.onboarding, g.rules, g.rulesChild, g.annAll]) {
+  for (const ch of [g.onboarding, g.rules, g.rulesChild, g.annAll, g.timeReports]) {
     assert.equal(ch.edits.length, 0, `${ch.name} already carries an overwrite for the role`)
   }
   assert.deepEqual(out.denied, [])
@@ -200,4 +211,14 @@ test('pinned messages that cannot be read do NOT count as "no manual pinned"', a
   }
   assert.equal(text.sent.length, 0, 'the manual is not re-posted on every call')
   assert.equal(warned.length, 1, 'the failure is logged instead')
+})
+
+test('everyoneCanView: the channel overwrite decides, else the guild @everyone role', () => {
+  const g = { id: 'g1', roles: { everyone: { permissions: { has: (bit) => bit === PermissionFlagsBits.ViewChannel } } } }
+  assert.equal(everyoneCanView(g, fakeChannel('a', { overwrites: [everyoneAllow()] })), true)
+  assert.equal(everyoneCanView(g, fakeChannel('b', { overwrites: [everyoneDeny()] })), false)
+  assert.equal(everyoneCanView(g, fakeChannel('c')), true, 'no overwrite: the role allows it')
+  const noRole = { id: 'g1', roles: {} }
+  assert.equal(everyoneCanView(noRole, fakeChannel('d')), false, 'no overwrite and no readable role: not visible')
+  assert.equal(everyoneCanView(noRole, fakeChannel('e', { overwrites: [{ id: 'g1', type: OverwriteType.Role }] })), false, 'a neutral overwrite decides nothing')
 })
