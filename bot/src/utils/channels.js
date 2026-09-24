@@ -1,7 +1,5 @@
 import { PermissionFlagsBits } from 'discord.js'
 
-const DELETION_DELAY_MS = 5 * 60 * 1000 // 5 minutes
-
 /**
  * Make a ticket channel read-only: every overwrite that allows sending loses
  * it. Whoever could see the channel still can. One edit per overwrite, each
@@ -47,15 +45,4 @@ export async function unlockTicketChannel(channel) {
     }
   }
   return out
-}
-
-/**
- * @deprecated Replaced by ticketRetire.js (lock now, delete after 14 days,
- * persisted). Removed once /close-feature and /resolve-bug no longer call it.
- */
-export async function lockChannelAndScheduleDeletion(channel, delayMs = DELETION_DELAY_MS) {
-  await lockTicketChannel(channel)
-  setTimeout(() => {
-    channel.delete().catch((e) => console.error('[channels] delete error:', e?.message))
-  }, delayMs)
 }
