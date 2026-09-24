@@ -7,11 +7,13 @@ A `Client` role in the Discord bot only: invitation-only entry, approval without
 global and a per-project support pair, client-raised issues/feature requests as tasks, tracking and
 reports, and a deny-by-default command gate.
 
-## Outcome — MERGED TO `main` (4297b2e), NOT YET PUSHED OR DEPLOYED
+## Outcome — MERGED, PUSHED AND DEPLOYED (4297b2e; follow-up 3b3c130)
 Brainstorm → spec → plan → subagent-driven development (9 tasks, each with a fresh implementer
 and reviewer) → whole-branch review (opus) → one fix wave → scoped re-review. 19 commits
 `4683821..285f0bc`, merged `--no-ff` as `4297b2e`; 1079 tests green on the merged result with
-`DATABASE_URL=poisoned://no-production-access`. Branch deleted. Not pushed: the owner decides.
+`DATABASE_URL=poisoned://no-production-access`. Branch deleted, pushed, deploy run green. A follow-up pinned the client manual in every
+project support channel (`3b3c130`). The owner has the acceptance-test script and is testing
+on the live server.
 
 Knowledge in use: `.claude/knowledge/client-role.md`, `.claude/knowledge/project-sections.md`.
 Rule in force: `.claude/rules/tests-never-touch-production.md`.

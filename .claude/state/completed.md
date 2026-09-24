@@ -4,7 +4,15 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
-## 2026-09-24 — Client role in the Discord bot (MERGED to main as 4297b2e — NOT YET PUSHED/DEPLOYED)
+## 2026-09-24 — Client manual pinned in every project support channel (MERGED, PUSHED, DEPLOYED)
+
+Owner follow-up after the acceptance-test instructions. `applyProjectSection` step 3a pins the same
+manual embed `#support` carries in each project's `<slug>-support` channel via the now-exported
+`ensureManualPinned` (presence-only by title and author); the manual gains "you can post more
+documents or screenshots in that request's channel at any time". `cb6e2e3`, merged `3b3c130`.
+1082 tests.
+
+## 2026-09-24 — Client role in the Discord bot (MERGED to main as 4297b2e, PUSHED, DEPLOYED)
 
 A `Client` role: clients enter by invitation, are approved without ever receiving `Verified`,
 see only a global `🛟 Support` pair plus a per-project support pair, raise issues and feature
@@ -43,7 +51,7 @@ plus one whole-branch review fix wave. Knowledge: `.claude/knowledge/client-role
 - **Exclusions.** Daily time report skips `kind='client'`; `/cleanup` protects the support pair by
   id (and `🛟 Support` by name); `/time-report` needed nothing (entry-driven).
 
-Migration `025_client_role.sql`. 19 commits `4683821..285f0bc`, merged as `4297b2e`; 1079 tests green with
+Migration `025_client_role.sql`. 19 commits `4683821..285f0bc`, merged as `4297b2e`, pushed and deployed (deploy run green); 1079 tests green with
 `DATABASE_URL=poisoned://no-production-access`. Every ruling made during the build is in the
 final session message and, where it left work, in `backlog.md`.
 
