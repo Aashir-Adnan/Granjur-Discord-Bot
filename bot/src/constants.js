@@ -31,11 +31,21 @@ export const CATEGORY_ONBOARDING = '📥 Onboarding'
 export const CHANNEL_ONBOARDING = 'welcome-and-verify'
 export const ROLE_HOLDING = 'Holding'
 export const ROLE_VERIFIED = 'Verified'
+/** The one role a client holds. Never in MANAGED_ROLES: it is mutually exclusive with all of them. */
+export const ROLE_CLIENT = 'Client'
+export const MEMBER_KIND_STAFF = 'staff'
+export const MEMBER_KIND_CLIENT = 'client'
+
+/** The global support pair — the only channels every client can see. */
+export const CATEGORY_SUPPORT = '🛟 Support'
+export const CHANNEL_SUPPORT = 'support'
+export const CHANNEL_SUPPORT_VOICE = 'support-voice'
 
 /** Colors for roles created by /init (Discord hex 0xRRGGBB) */
 export const ROLE_COLORS = {
   [ROLE_HOLDING]: 0x808080,   // gray
   [ROLE_VERIFIED]: 0x57f287,  // green
+  [ROLE_CLIENT]: 0x00b0f4,    // sky blue — not a colour any staff role uses
   // Hierarchy
   'Intern': 0x9ae6b0,
   'Temp': 0xfbd38d,
