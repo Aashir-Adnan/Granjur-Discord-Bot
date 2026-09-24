@@ -1456,7 +1456,7 @@ test('a refused same-named role builds the section shut, and a later adopt_role 
 
   const out = await applyProjectSection(guild, stored, plan2, { db: fakeDb() })
 
-  assert.equal(out.granted.length, 13, 'every section channel was repaired')
+  assert.equal(out.granted.length, 14, 'every section channel was repaired, and the divider with them')
   for (const id of sectionIds) {
     const made = guild.channels.cache.get(id)
     assert.equal(made.edits.length, 1, `${made.name} took more than one edit`)
@@ -1465,15 +1465,15 @@ test('a refused same-named role builds the section shut, and a later adopt_role 
     assert.ok(ids.includes('G1'), `${made.name} lost its @everyone deny`)
   }
   // The divider was built shut too, and the same adoption reopens it — one
-  // edit carrying its name, its parent and the READ-ONLY overwrite set, never
-  // `ROLE_ALLOW`: the role may see the line, not write in it.
+  // overwrites-only edit built from the READ-ONLY set, never `ROLE_ALLOW`: the
+  // role may see the line, not write in it.
   const made = guild.channels.cache.get(dividerId)
   assert.equal(made.edits.length, 1)
+  assert.deepEqual(Object.keys(made.edits[0]), ['permissionOverwrites'])
   const entry = made.edits[0].permissionOverwrites.find((ow) => ow.id === 'r9')
   assert.deepEqual(entry.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
   assert.deepEqual(entry.deny, [PermissionFlagsBits.SendMessages])
   assert.ok(made.edits[0].permissionOverwrites.some((ow) => ow.id === 'G1'), 'the @everyone deny is kept')
-  assert.equal(made.edits[0].name, ARCHIVE_DIVIDER_NAME)
 })
 
 // ---------------------------------------------------------------------------
@@ -2033,11 +2033,13 @@ test('a grant on the divider builds from the READ-ONLY set, never ROLE_ALLOW', a
   const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
   assert.equal(plan.divider.action, 'reuse')
   const result = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+  // Nothing but the overwrites: the name and the parent are already right.
   assert.equal(div.edits.length, 1)
+  assert.deepEqual(Object.keys(div.edits[0]), ['permissionOverwrites'])
   const entry = div.edits[0].permissionOverwrites.find((o) => o.id === 'r1')
   assert.deepEqual(entry.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
   assert.deepEqual(entry.deny, [PermissionFlagsBits.SendMessages])
-  assert.ok(result.opened.includes(ARCHIVE_DIVIDER_NAME))
+  assert.deepEqual(result.granted, [ARCHIVE_DIVIDER_NAME])
 })
 
 test('a divider whose repair edit is refused is one warning; the tickets are still filed and ordered', async () => {

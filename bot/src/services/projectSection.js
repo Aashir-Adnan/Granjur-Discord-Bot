@@ -1406,13 +1406,24 @@ export async function applyProjectSection(
           channelIds[ARCHIVE_STORE_KEY] = channel.id
           dividerId = channel.id
           const overwrites = dividerAllowMerged(channel, projectRoleId)
-          if (dividerPlan.action !== 'reuse' || overwrites) {
+          if (dividerPlan.action === 'reuse') {
+            // Named and placed already; the only thing that can be wrong is
+            // that the role cannot see the line. One edit carrying nothing but
+            // the overwrites, exactly as a section channel's `grant` does —
+            // sending the name and parent back would rewrite what was just read.
+            // `null` means nothing to add: no role that resolves, an unreadable
+            // overwrite list, or the allow landed since the snapshot. No edit.
+            if (overwrites) {
+              await channel.edit({ permissionOverwrites: overwrites })
+              result.granted.push(channel.name ?? dividerPlan.name)
+            }
+          } else {
+            // A rename or a move is one edit, and the allow rides in it.
             const payload = { name: dividerPlan.name, parent: categoryId }
             if (overwrites) payload.permissionOverwrites = overwrites
             await channel.edit(payload)
             if (overwrites) result.opened.push(dividerPlan.name)
-            if (dividerPlan.action === 'move') result.moved.push(dividerPlan.name)
-            else if (dividerPlan.action === 'rename') result.renamed.push(dividerPlan.name)
+            ;(dividerPlan.action === 'move' ? result.moved : result.renamed).push(dividerPlan.name)
           }
         }
       } catch (e) {
