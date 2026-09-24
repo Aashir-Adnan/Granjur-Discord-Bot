@@ -4,6 +4,27 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-25 — Per-project status buckets for ticket channels (BUILT, AWAITING MERGE)
+
+Three sibling categories per project (Open/In progress/Done) that every ticket channel now
+files into by status and moves between on any status write, in place of sitting loose in the
+section category forever. Finished tickets lock and get a 14-day removal stamp
+(`task.channelRetireAt`, hourly sweep) instead of `/close-feature`/`/resolve-bug`'s old
+five-minute `setTimeout`. New: `bot/src/utils/statusBuckets.js` (the bucket table, a leaf),
+`bot/src/utils/projectStore.js` (`cut`/`storedChannels`, moved out of `projectSection.js` and
+re-exported), `bot/src/services/ticketBucketMove.js` (the mover, called from `applyTaskUpdate`),
+`bot/src/services/ticketRetire.js` (lock/unlock, stamp, hourly sweep), migration
+`026_task_channel_retire.sql`. Changed: `taskTicketChannel.js` (`resolveParentCategory` gains a
+bucket-first placement step and `placed`), `projectSection.js` (`planBuckets`/`planTasks`, apply
+steps 2b/4/4c), `project-setup.js` (bucket/retire lines in `renderPlan`/`renderResult`),
+`cleanup.js` (`categoryIds` covers bucket ids), `close-feature.js`/`resolve-bug.js` (move instead
+of schedule-delete), `bot/src/index.js` (`startTicketRetireSweep`). Nine implementation tasks
+(commits `d635188..e691909` on `feat/status-buckets`, base `56f4e56`) plus this documentation
+task. Knowledge: `.claude/knowledge/status-buckets.md` (new); `project-sections.md` and
+`README.md` updated. Spec `docs/superpowers/specs/2026-09-24-status-buckets-design.md` gained a
+dated Corrections section. Full ruling-by-ruling record:
+`.superpowers/sdd/2026-09-24-status-buckets/progress.md`. Not yet merged to `main`.
+
 ## 2026-09-24 — /request-task: support tasks as a third kind (MERGED, PUSHED)
 
 Client-requested segmentation. `type='task'` with both flags off; `task-` channel prefix, `Task:`

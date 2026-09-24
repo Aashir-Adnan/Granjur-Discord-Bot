@@ -259,3 +259,47 @@ All under `node:test` with fakes; no test touches the default `db`.
    stamps already-finished tickets to disappear 14 days later.
 3. From then on new tickets land in the right bucket and every status change
    moves them.
+
+## 15. Corrections (2026-09-25)
+
+Recorded during implementation review (`.superpowers/sdd/2026-09-24-status-buckets/progress.md`).
+The sections above are kept as the original design; this is what shipped instead,
+and why. See `.claude/knowledge/status-buckets.md` for the full code-level detail.
+
+1. **§5's `fellBack: 'noBucket'` did not ship.** `fellBack` keeps its
+   pre-existing meaning (non-null only when the channel fell all the way to
+   the *global* category); a new `placed: 'bucket'|'section'|'global'` field
+   was added instead to say which of the three the channel landed in. Why:
+   every caller keys the project-role allow, and the reply wording, on
+   whether `fellBack` is set — a channel
+   placed in the section category (not a bucket, but still inside the
+   project's space) must still get the allow, which `fellBack: 'noBucket'`
+   would have suppressed.
+2. **§6/§7's Done transition (retire/revive) runs in more cases than
+   described.** It runs whenever a status change crosses the Done boundary
+   and the task has a channel id at all — including a **project-less**
+   ticket (no bucket move is even attempted) and a ticket whose channel
+   **is not resolvable from the guild's cache** (the transition runs with
+   `channel: null`: the stamp is written, but no lock is attempted). Why:
+   otherwise a project-less ticket closed via `/close-feature`, or a ticket
+   whose channel Discord's cache hasn't warmed, would never be cleaned up —
+   a regression from the behaviour this feature exists to fix.
+3. **§7's `sweepRetiredTickets` does not loop "for each guild config."** It
+   calls `findRetirable` once, globally — the sweep is one process-wide job
+   and each returned row carries everything needed to resolve and delete its
+   own channel. No functional difference from a per-guild loop; one fewer
+   round trip.
+4. **Not specified at all:** `planTasks` (§8) never sets a task's `opens`
+   flag when a `move`/`both` entry gets dropped to `none` because its target
+   bucket was at the category cap. `opens` is computed from the entry's
+   **final** action after the cap check, so a cap-dropped entry — which gets
+   no edit at all — is never reported as opening the channel to the project
+   role.
+5. **§4 implied `cut`/`storedChannels` stay in `projectSection.js`** (where
+   they already lived before this branch). They moved to the new
+   `bot/src/utils/projectStore.js` and are re-exported from
+   `projectSection.js` unchanged. Why: the new `statusBuckets.js` needs both,
+   and it is imported by `taskTicketChannel.js`, which must stay a leaf —
+   importing the section planner there would drag `projectMembersPanel.js` →
+   `db/index.js` → the production `.env` into a module whose tests touch no
+   database.

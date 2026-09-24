@@ -4,6 +4,35 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Status buckets — deferred follow-ups (branch `feat/status-buckets`, 2026-09-25)
+See `.claude/knowledge/status-buckets.md`. Every item below was ruled a parked minor during
+implementation review — see `.superpowers/sdd/2026-09-24-status-buckets/progress.md`. Newest
+(latest task) first.
+
+- JSDoc for `plan.buckets` types only the `open` key fully; several "ten section channels"
+  strings remain in `projectSection.js` (pre-existing inconsistency, not introduced here).
+- The identical two-line comment explaining the move-into-Done call is duplicated in
+  `close-feature.js` and `resolve-bug.js`.
+- The hoisted guild lookup in `applyTaskUpdate` (`taskStatusChange.js`) now catches a
+  `guildConfig` read failure separately so `notify` still runs with `guild: null`
+  (brief-mandated behaviour change, not a defect).
+- `taskUpdateNotify` uses `??` for the placement status and `||` for the embed's Status field —
+  the same fallback as before this branch, just two different idioms for it.
+- The meeting mirror's idempotent retry reuses an existing task row but passes `status: 'open'`
+  literally (plan-mandated); a row whose status had drifted would be misplaced until the next
+  `/project-setup`.
+- `sweepRetiredTickets` treats Discord's 10003 as "already gone" only on the fetch path
+  (`channelOf`); a stale-cached channel whose `delete()` itself throws 10003 is counted `failed`
+  and retried next tick (self-corrects once the retry misses the cache).
+- `retireTicketChannel`/`reviveTicketChannel` wrap the lock/unlock call in a redundant outer
+  try/catch — `lockTicketChannel`/`unlockTicketChannel` never throw for a single refused edit,
+  they count it as `failed` instead.
+- `db.task.findRetirable` treats `take: 0` as 100 (falsy check) — matches the brief verbatim,
+  just worth knowing if a caller ever means "give me zero rows."
+- `MAX_CATEGORY_NAME = 100` is now defined in both `projectSection.js` and
+  `utils/statusBuckets.js` — the leaf cannot import the planner, so the constant is duplicated
+  rather than shared.
+
 ## Client role — deferred follow-ups (branch `feat/client-role`, 2026-09-24)
 See `.claude/knowledge/client-role.md`. Ordered by how much they matter.
 

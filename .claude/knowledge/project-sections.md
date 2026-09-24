@@ -36,13 +36,11 @@ that is null. Comparing raw `docsSlug` columns instead of the effective slug is
 exactly the bug that let `UBS-Doc` and a NULL-slugged `UBS Doc` fight over the
 same thirteen channels (fixed as final-wave A6/D4 — see "Duplicate slugs" below).
 
-**Task channels live in the same category**, not a sub-structure — Discord cannot
-nest categories. `feature-<title-slug>` / `bug-<title-slug>`
-(`bot/src/utils/taskChannelName.js`, `taskChannelName`), with the task id in the
-topic (`Feature: <title> — Task <id>`, `taskChannelTopic`) instead of the name. A
-task with no project, or whose project's category is stale/missing/full, stays in
-the global `Features`/`Bugs` category exactly as before this branch
-(`bot/src/services/taskTicketChannel.js`, `resolveParentCategory`).
+**Task channels no longer live directly in the section category** — each files
+into one of three status buckets (sibling categories under the section) and
+moves between them as its status changes. See [[status-buckets]] for the whole
+feature: the bucket table, placement order, the live mover, and the 14-day
+Done retention.
 
 `taskChannelName({ type, title, taskId, taken })`: `feature`/`bug` prefix +
 `slugify(title)`; an empty/symbol-only title falls back to `<prefix>-<last 6 of
@@ -102,7 +100,10 @@ except by hand.
   Thirteen are the section itself; task channels beyond the cap fall back to the global
   `Features`/`Bugs` category (or, for `/meeting-channel`, the global `📋 Meetings`),
   with a warning/note explaining why. Section channels are always created first so
-  they can never be crowded out by tasks.
+  they can never be crowded out by tasks — and, since [[status-buckets]], ticket
+  channels no longer sit in the section category at all, so they never compete
+  with the thirteen section channels for room; each of the three status buckets
+  gets its own full `CATEGORY_SOFT_CAP`.
 - **A category's overwrites are copied onto a channel only AT CREATION, never
   cascaded.** Discord has no server-side "sync now" for API edits — that button is
   client-only. This is *the* central gotcha of the whole feature: a section built
@@ -420,8 +421,11 @@ of those would list the *entire* section (and any moved task channels) for
 deletion behind the confirm button. Fixed to protect by id first: any category
 whose id is a project's `discordCategoryId`, its thirteen `claimedSectionIds`, and
 anything whose `parentId` is one of those categories — the same by-id principle
-the rest of this feature runs on. The name rule is kept as a fallback for
-categories that predate the recorded ids. `handleConfirm` (the actual delete) was
+the rest of this feature runs on. `categoryIds` now also includes each
+project's three status-bucket ids (`bucketIdsOf(p)`, `cleanup.js:154-157`), so a
+ticket channel sitting inside a bucket is protected the same as one sitting in
+the section category — see [[status-buckets]]. The name rule is kept as a
+fallback for categories that predate the recorded ids. `handleConfirm` (the actual delete) was
 **not** touched in this fix — it still deletes whatever `execute` listed with no
 re-check at confirm time (backlog item).
 
@@ -470,4 +474,4 @@ stays 49, so 36 task channels now fit before the global fallback.
 
 ## Related
 
-[[project-tasks-site]], [[project-docs]], [[client-role]]
+[[project-tasks-site]], [[project-docs]], [[client-role]], [[status-buckets]]
