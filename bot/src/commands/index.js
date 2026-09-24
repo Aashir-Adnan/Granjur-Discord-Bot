@@ -7,6 +7,7 @@ import {
 import { config } from '../config.js'
 import { EPHEMERAL } from '../constants.js'
 import { canUseCommand, getCommandDescription } from '../config/commands.js'
+import { getGuildConfig } from '../db/index.js'
 import * as initCmd from './init.js'
 import * as createTaskCmd from './create-task.js'
 import * as fetchMyCmd from './fetch-my.js'
@@ -209,7 +210,10 @@ export async function handleCommand(interaction, commands) {
     return interaction.reply({ content: 'Unknown command.', flags: EPHEMERAL }).catch(() => {})
   }
   const member = interaction.guild?.members?.cache?.get(interaction.user.id) ?? await interaction.guild?.members?.fetch(interaction.user.id).catch(() => null)
-  if (member && !canUseCommand(member, interaction.commandName)) {
+  // The stored id lets the gate recognise a client whose role was renamed by
+  // hand. A failed config read falls back to the role's name, never to "allow".
+  const cfg = interaction.guild ? await getGuildConfig(interaction.guild.id).catch(() => null) : null
+  if (member && !canUseCommand(member, interaction.commandName, { clientRoleId: cfg?.clientRoleId ?? null })) {
     const msg = 'You don\'t have permission to use this command. Required role(s) are in the command channel description.'
     if (interaction.deferred) return interaction.editReply({ content: msg }).catch(() => {})
     return interaction.reply({ content: msg, flags: EPHEMERAL }).catch(() => {})

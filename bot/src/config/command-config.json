@@ -1,4 +1,5 @@
 {
+  "clientCommands": ["verify", "report-issue", "request-feature", "my-requests", "request-report"],
   "commandRoles": {
     "init": [
       "CEO",
@@ -9,6 +10,10 @@
       "Server Manager"
     ],
     "verify": [],
+    "report-issue": ["Client"],
+    "request-feature": ["Client"],
+    "my-requests": ["Client"],
+    "request-report": ["Client"],
     "invite": [
       "CEO",
       "Server Manager"
@@ -216,6 +221,26 @@
       "summary": "Verify your email (OTP) and enter holding.",
       "syntax": "`/verify`",
       "detail": "Click **Request verification code**, enter your @granjur.com email, then enter the code sent to your email. Your nickname will be set from your email."
+    },
+    "report-issue": {
+      "summary": "Report something that is broken in your project.",
+      "syntax": "/report-issue title:<short title> details:<what happens> [project] [document] [document2] [document3]",
+      "detail": "Opens a private channel for the issue where the team can ask you for more. Attach up to three documents."
+    },
+    "request-feature": {
+      "summary": "Ask for something new in your project.",
+      "syntax": "/request-feature title:<short title> details:<what you need> [project] [document] [document2] [document3]",
+      "detail": "Opens a private channel for the request where the team can ask you for more. Attach up to three documents."
+    },
+    "my-requests": {
+      "summary": "List the issues and requests you have raised, with their status.",
+      "syntax": "/my-requests",
+      "detail": "Shows each request, its status and a link to its channel. \"Waiting on you\" means the team needs something from you."
+    },
+    "request-report": {
+      "summary": "A report on one of your requests: status, who is handling it, and its history.",
+      "syntax": "/request-report request:<pick one>",
+      "detail": "Start typing a title to pick the request."
     },
     "invite": {
       "summary": "Send a server invite to an @granjur.com email.",

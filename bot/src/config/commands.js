@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { ROLE_CLIENT } from '../constants.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -47,12 +48,34 @@ export function getCommandDescription(commandName) {
   return cfg.commandDescriptions?.[commandName] || { summary: '', syntax: '', detail: '' }
 }
 
-/** True if member can use the command (has one of the required roles, or no roles required). Guild owner and anyone with Manage Server can use any command. */
-export function canUseCommand(member, commandName) {
+/** The commands a client may run. Everything else is refused to them. */
+export function getClientCommands() {
+  const cfg = loadCommandConfig()
+  return Array.isArray(cfg.clientCommands) ? cfg.clientCommands : []
+}
+
+/**
+ * Whether a member is a client: by the stored role id when the caller has one
+ * (survives the role being renamed by hand), else by the role's name.
+ */
+export function memberIsClient(member, clientRoleId = null) {
+  const cache = member?.roles?.cache
+  if (!cache?.some) return false
+  if (clientRoleId && cache.has?.(clientRoleId)) return true
+  return cache.some((r) => r?.name === ROLE_CLIENT)
+}
+
+/**
+ * True if member can use the command. Guild owner and anyone with Manage
+ * Server can use any command. A CLIENT may use only `clientCommands` — an
+ * empty role list means "anyone" for staff, never for a client.
+ */
+export function canUseCommand(member, commandName, { clientRoleId = null } = {}) {
   if (!member?.guild) return false
   // Server manager: guild owner or has Manage Server (or Administrator)
   if (member.guild.ownerId === member.id) return true
   if (member.permissions.has?.('ManageGuild') || member.permissions.has?.('Administrator')) return true
+  if (memberIsClient(member, clientRoleId)) return getClientCommands().includes(commandName)
   const roles = getCommandRoles(commandName)
   if (roles.length === 0) return true
   return member.roles.cache.some((r) => roles.includes(r.name))
