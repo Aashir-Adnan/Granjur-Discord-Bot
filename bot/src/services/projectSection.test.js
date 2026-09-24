@@ -75,12 +75,12 @@ test('a long slug is truncated, the suffix never is, and no hyphen is left dangl
   assert.equal(channelNameFor(hyphen, 'members'), `${'a'.repeat(91)}-members`)
 })
 
-test('a fresh project creates the role, the category and all twelve channels', () => {
+test('a fresh project creates the role, the category and all thirteen channels', () => {
   const plan = planProjectSection(project, empty)
   assert.equal(plan.role.action, 'create')
   assert.equal(plan.role.name, 'Framework')
   assert.equal(plan.category.action, 'create')
-  assert.equal(plan.channels.length, 12)
+  assert.equal(plan.channels.length, 13)
   assert.ok(plan.channels.every((c) => c.action === 'create'))
   assert.equal(plan.warnings.length, 0)
 })
@@ -187,7 +187,7 @@ test('section channels moved into the category count against the cap, like creat
   assert.ok(plan.channels.every((c) => c.action === 'move'))
   // 49 - 0 already in the category - 13 sections arriving = 36, not 49.
   assert.equal(plan.tasks.filter((t) => t.action === 'both').length, 36)
-  assert.equal(plan.tasks.filter((t) => t.action === 'rename').length, 3)
+  assert.equal(plan.tasks.filter((t) => t.action === 'rename').length, 4)
   assert.ok(plan.warnings.some((w) => /full|cap/i.test(w)))
 })
 
@@ -424,7 +424,7 @@ test('observeProjectSection falls back to a name match only when a stored id no 
 
 // --- applyProjectSection ----------------------------------------------------
 
-test('a fresh section creates the role, the category with its two overwrites, and twelve inheriting channels', async () => {
+test('a fresh section creates the role, the category with its two overwrites, and thirteen inheriting channels', async () => {
   const guild = fakeGuild()
   const db = fakeDb()
   const plan = planProjectSection(project, empty)
@@ -457,7 +457,7 @@ test('a fresh section creates the role, the category with its two overwrites, an
     ],
   })
 
-  assert.equal(chCalls.length, 12)
+  assert.equal(chCalls.length, 13)
   assert.ok(chCalls.every((c) => c.parent === 'new-1'), 'every section channel sits in the new category')
   assert.ok(chCalls.every((c) => c.permissionOverwrites === undefined), 'section channels inherit')
   assert.equal(chCalls[0].name, 'framework-members')
@@ -740,7 +740,7 @@ test('applyProjectSection persists the three columns in ONE update, keeping what
   assert.equal(data.discordCategoryId, 'c1')
   assert.equal(data.discordRoleId, 'role-1')
   assert.equal(data.discordChannels.documentation, 'd1')
-  assert.equal(Object.keys(data.discordChannels).length, 12)
+  assert.equal(Object.keys(data.discordChannels).length, 13)
 })
 
 // B4: this test used to assert the opposite — `permissionOverwrites: []`, a
@@ -1332,7 +1332,7 @@ test('a section channel renamed, moved AND opened is still exactly one edit', as
   assert.ok(out.moved.includes('framework-members'))
 })
 
-test('a refused same-named role builds the section shut, and a later adopt_role repairs all twelve', async () => {
+test('a refused same-named role builds the section shut, and a later adopt_role repairs all thirteen', async () => {
   // The whole A1 path end to end: nine existing projects come out of the
   // backfill like this, and a run that left them permanently invisible with no
   // repair would not be a fix — nothing here may delete a channel.
@@ -1369,11 +1369,11 @@ test('a refused same-named role builds the section shut, and a later adopt_role 
     { adoptRole: true }
   )
   assert.equal(plan2.role.decision, 'adopt')
-  assert.equal(plan2.channels.filter((c) => c.action === 'grant').length, 12)
+  assert.equal(plan2.channels.filter((c) => c.action === 'grant').length, 13)
 
   const out = await applyProjectSection(guild, stored, plan2, { db: fakeDb() })
 
-  assert.equal(out.granted.length, 12, 'every section channel was repaired')
+  assert.equal(out.granted.length, 13, 'every section channel was repaired')
   for (const id of Object.values(saved.discordChannels)) {
     const made = guild.channels.cache.get(id)
     assert.equal(made.edits.length, 1, `${made.name} took more than one edit`)

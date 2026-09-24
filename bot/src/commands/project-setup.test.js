@@ -311,7 +311,7 @@ test('preview:true creates nothing, edits nothing, writes nothing, and prints th
   assert.match(content, /Preview/)
   assert.match(content, /Role: create \*\*Framework\*\*/)
   assert.match(content, /Category: create \*\*📂 FRAMEWORK\*\*/)
-  assert.match(content, /Channels: 11 to create/)
+  assert.match(content, /Channels: 12 to create/)
   assert.match(content, /1 to move/)
 })
 
@@ -349,7 +349,7 @@ test('a run with project: applies the plan, syncs the role, and replies with the
   // fifteen.
   assert.equal(
     content.split('\n')[0],
-    '**Framework** — 13 created, 1 moved (incl. 1 task channel).'
+    '**Framework** — 14 created, 1 moved (incl. 1 task channel).'
   )
   assert.match(content, /1 granted/)
 })
