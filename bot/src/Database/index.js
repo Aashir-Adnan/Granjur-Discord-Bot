@@ -412,6 +412,18 @@ async function taskFindChildren({ where }) {
   return query("SELECT * FROM `task` WHERE parentTaskId = ? ORDER BY createdAt ASC LIMIT 100", [where.parentTaskId]);
 }
 
+// Finished tickets whose channel is due for deletion: stamped, still pointing
+// at a channel, stamp in the past. Oldest stamp first so a backlog drains in
+// order. Across every guild — the sweep runs once for the whole bot.
+async function taskFindRetirable({ where, take = 100 } = {}) {
+  const before = where?.before instanceof Date ? where.before : new Date();
+  const limit = Math.max(1, Math.min(500, Number(take) || 100));
+  return query(
+    "SELECT * FROM `task` WHERE discordChannelId IS NOT NULL AND channelRetireAt IS NOT NULL AND channelRetireAt <= ? ORDER BY channelRetireAt ASC LIMIT " + limit,
+    [before],
+  );
+}
+
 async function taskUpdate({ where, data }) {
   let id = where?.id;
   if (id == null && where?.externalId != null) {
@@ -474,6 +486,11 @@ async function taskUpdate({ where, data }) {
   if (data.discordChannelId !== undefined) {
     sets.push("discordChannelId = ?");
     vals.push(data.discordChannelId);
+  }
+  // When the channel is to be deleted (status buckets); null clears it.
+  if (data.channelRetireAt !== undefined) {
+    sets.push("channelRetireAt = ?");
+    vals.push(data.channelRetireAt);
   }
   if (data.externalIssueUrl !== undefined) {
     sets.push("externalIssueUrl = ?");
@@ -2345,6 +2362,7 @@ const db = {
     update: taskUpdate,
     count: taskCount,
     findChildren: taskFindChildren,
+    findRetirable: taskFindRetirable,
   },
   ticketDoc: {
     findMany: ticketDocFindMany,
