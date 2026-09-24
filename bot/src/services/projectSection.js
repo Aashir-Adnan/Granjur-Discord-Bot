@@ -337,7 +337,10 @@ function planChannels(project, observed, role) {
  * mode — a roster that could not be read in full must not take access away.
  */
 function planClientAccess(observed, { revokeClients = true } = {}) {
-  const wanted = observed?.clientIds ?? []
+  // Not an array: the roster was never read (see `observeProjectSection`'s
+  // `clientIds` doc). Plan nothing rather than guess.
+  if (!Array.isArray(observed?.clientIds)) return { wanted: [], grant: [], revoke: [] }
+  const wanted = observed.clientIds
   const grant = []
   const revoke = []
   for (const key of CLIENT_SECTION_KEYS) {
@@ -797,14 +800,19 @@ function roleAllowMerged(channel, roleId) {
  * @param {Array<{id: string, title: string, type?: string, discordChannelId?: string|null}>} tasks
  *   the project's task rows; one without a channel, or with a channel that no
  *   longer exists, is left out of the snapshot because there is nothing to move.
- * @param {{rolesFetched?: boolean, claimedIds?: Set<string>|null}} [opts]
+ * @param {{rolesFetched?: boolean, claimedIds?: Set<string>|null, clientIds?: string[]|null}} [opts]
  *   `rolesFetched` says `guild.members.fetch()` demonstrably succeeded, so the
  *   holder counts on `roleCandidate` are real. It defaults to FALSE: a caller
  *   that forgets it gets the fail-closed answer, never a silent adoption based
- *   on an empty cache. `claimedIds` comes from `claimedSectionIds`.
+ *   on an empty cache. `claimedIds` comes from `claimedSectionIds`. `clientIds`
+ *   is the same shape of promise: it defaults to `null`, meaning "the client
+ *   roster was not read", and a caller that forgets it gets `clientAccess: {}`
+ *   — nothing planned — never every member overwrite on the support pair read
+ *   as belonging to nobody and revoked. An actual empty roster is `[]`, a real
+ *   answer that plans no grants and every stale overwrite revoked.
  */
 export function observeProjectSection(guild, project, tasks = [], opts = {}) {
-  const { rolesFetched = false, claimedIds = null, clientIds = [] } = opts
+  const { rolesFetched = false, claimedIds = null, clientIds = null } = opts
   const claimed = claimedIds instanceof Set ? claimedIds : new Set()
   const all = valuesOf(guild?.channels?.cache)
   const byId = new Map(all.map((c) => [c.id, c]))
@@ -874,18 +882,29 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
   // Per support channel: which clients lack their member overwrite, and which
   // member overwrites belong to nobody who is still a client row. Null-safe:
   // an unreadable overwrite cache plans nothing, as everywhere else here.
-  const wantedClients = [...new Set((clientIds || []).map(String).filter(Boolean))]
+  // `clientIds` not an array means the roster was never read — fail closed
+  // with no `clientAccess` entries at all, the same shape of promise as
+  // `rolesFetched` above: a caller that forgets the option gets nothing
+  // planned, never every member overwrite on the support pair mistaken for
+  // an ex-client and revoked.
+  const wantedClients = Array.isArray(clientIds) ? [...new Set(clientIds.map(String).filter(Boolean))] : null
   const clientAccess = {}
-  for (const key of CLIENT_SECTION_KEYS) {
-    const seen = channels[key]
-    if (!seen?.id || !Array.isArray(seen.overwriteIds)) continue
-    const raw = byId.get(seen.id)
-    const memberIds = valuesOf(raw?.permissionOverwrites?.cache)
-      .filter((o) => o?.type === OverwriteType.Member)
-      .map((o) => String(o.id))
-    clientAccess[key] = {
-      missing: wantedClients.filter((id) => !seen.overwriteIds.includes(id)),
-      stale: memberIds.filter((id) => !wantedClients.includes(id)),
+  if (wantedClients) {
+    for (const key of CLIENT_SECTION_KEYS) {
+      const seen = channels[key]
+      if (!seen?.id || !Array.isArray(seen.overwriteIds)) continue
+      const raw = byId.get(seen.id)
+      const memberIds = valuesOf(raw?.permissionOverwrites?.cache)
+        .filter((o) => o?.type === OverwriteType.Member)
+        .map((o) => String(o.id))
+      // A member overwrite the bot did not create is revoked too, by design,
+      // exactly as the role sync strips a role holder with no `projectmember`
+      // row — see `syncProjectRoleMembers`. This only ever runs once the
+      // caller actually read the roster (guarded above), never on a default.
+      clientAccess[key] = {
+        missing: wantedClients.filter((id) => !seen.overwriteIds.includes(id)),
+        stale: memberIds.filter((id) => !wantedClients.includes(id)),
+      }
     }
   }
 

@@ -31,6 +31,12 @@ function guildWith(channels) {
   }
 }
 
+async function quiet(fn) {
+  const real = console.warn
+  console.warn = () => {}
+  try { return await fn() } finally { console.warn = real }
+}
+
 test('CLIENT_SECTION_KEYS and storedChannels are exported for the commands', () => {
   assert.deepEqual(CLIENT_SECTION_KEYS, ['support', 'supportVoice'])
   assert.deepEqual(storedChannels({ discordChannels: '{"support":"s"}' }), { support: 's' })
@@ -75,7 +81,7 @@ test('apply: one typed member edit per grant, one delete per revoke, and a fresh
     tasks: [], voice: { category: [], channels: [] }, warnings: [],
     clients: { wanted: ['u1'], grant: [{ key: 'support', channelId: 'sup', memberId: 'u1' }], revoke: [{ key: 'support', channelId: 'sup', memberId: 'u9' }] },
   }
-  const result = await applyProjectSection(guild, project, plan, { db: { project: { update: async () => {} } } })
+  const result = await quiet(() => applyProjectSection(guild, project, plan, { db: { project: { update: async () => {} } } }))
   assert.deepEqual(sup.edits.map((e) => [e.mid, e.opts.type]), [['u1', OverwriteType.Member]])
   assert.ok(sup.edits[0].allow.ViewChannel === true && sup.edits[0].allow.Connect === undefined, 'text allow on a text channel')
   assert.deepEqual(sup.deletes, ['u9'])
@@ -84,4 +90,14 @@ test('apply: one typed member edit per grant, one delete per revoke, and a fresh
   assert.equal(created.edits[0].allow.Connect, true)
   assert.deepEqual(result.clientGranted.sort(), ['framework-support', 'framework-support-voice'].sort())
   assert.deepEqual(result.clientRevoked, ['framework-support'])
+})
+
+test('observe: omitting clientIds fails closed — no clientAccess, and the plan grants and revokes nothing', () => {
+  const sup = channel('sup', 'framework-support', { overwrites: [role('g1'), role('role'), member('u9')] })
+  const cat = channel('cat', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, parentId: null })
+  const observed = observeProjectSection(guildWith([cat, sup]), project, [], { rolesFetched: true })
+  assert.deepEqual(observed.clientAccess, {})
+  assert.equal(observed.clientIds, null)
+  const plan = planProjectSection(project, observed, {})
+  assert.deepEqual(plan.clients, { wanted: [], grant: [], revoke: [] })
 })
