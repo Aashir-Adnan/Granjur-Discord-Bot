@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { attachmentPlan, clientProjects, createClientRequest, requestDescription, MAX_UPLOAD_BYTES } from './clientRequest.js'
+import { attachmentPlan, clientProjects, createClientRequest, requestDescription, MAX_UPLOAD_BYTES, composeDetails, chunkText, ISSUE_FIELDS, FEATURE_FIELDS } from './clientRequest.js'
 
 test('clientProjects keeps only client rows', () => {
   assert.deepEqual(clientProjects([{ projectId: 'a', role: 'client' }, { projectId: 'b', role: 'lead' }]).map((r) => r.projectId), ['a'])
@@ -101,4 +101,64 @@ test('the lead DM says a client raised it, not that they were assigned it', asyn
   })
   assert.deepEqual(h.dms, ['lead1'])
   assert.equal(h.dmOpts[0].headline, 'A client raised **Login fails**')
+})
+
+// --- the structured fields ----------------------------------------------------
+
+test('composeDetails: grouped short fields share a line, long fields get their own, empties are omitted, then the free text', () => {
+  const out = composeDetails(ISSUE_FIELDS, {
+    platform: 'Android', os: '14', app_version: '2.4.1', steps: 'open bookings → tap export', expected: 'a CSV download',
+    severity: 'Major', frequency: 'Every time', account: 'ali@acme.com',
+  }, 'The spinner never ends.')
+  assert.equal(out, [
+    '**Platform:** Android · **OS:** 14 · **App/Browser:** 2.4.1',
+    '**Severity:** Major · **Frequency:** Every time · **Account:** ali@acme.com',
+    '**Steps:** open bookings → tap export',
+    '**Expected:** a CSV download',
+    '',
+    'The spinner never ends.',
+  ].join('\n'))
+})
+
+test('composeDetails with nothing filled is exactly the free text', () => {
+  assert.equal(composeDetails(ISSUE_FIELDS, {}, 'Just this'), 'Just this')
+  assert.equal(composeDetails(FEATURE_FIELDS, { platform: '', who: '   ' }, 'x'), 'x')
+})
+
+test('the field tables are well-formed and in the agreed order', () => {
+  for (const f of [...ISSUE_FIELDS, ...FEATURE_FIELDS]) {
+    assert.match(f.name, /^[a-z_]+$/)
+    assert.ok(f.label && f.description)
+    assert.ok(['text', 'choice'].includes(f.kind))
+    if (f.kind === 'choice') assert.ok(f.choices.length >= 2 && f.choices.length <= 25)
+    else assert.ok(f.max > 0 && f.max <= 6000)
+  }
+  assert.deepEqual(ISSUE_FIELDS.map((f) => f.name), ['platform', 'os', 'app_version', 'severity', 'frequency', 'when', 'account', 'steps', 'expected'])
+  assert.deepEqual(FEATURE_FIELDS.map((f) => f.name), ['platform', 'priority', 'needed_by', 'problem', 'who', 'example'])
+})
+
+test('chunkText splits on the limit and yields nothing for nothing', () => {
+  assert.deepEqual(chunkText('abcdef', 4), ['abcd', 'ef'])
+  assert.deepEqual(chunkText('', 4), [])
+})
+
+test('a description longer than the embed shows is also posted in full below it', async () => {
+  const h = harness({ project: { id: 'p1', name: 'Framework', discordChannels: { support: 'sup' } } })
+  const details = 'x'.repeat(1500)
+  await createClientRequest({
+    guild: h.guild, user: h.user, cfg: h.cfg, type: 'bug', title: 'Long', details, project: h.project,
+    attachments: [], db: h.db, createChannel: h.createChannel, dm: h.dm, client: {},
+  })
+  const full = h.channelSends.find((m) => String(m.content ?? '').startsWith('**Full details**'))
+  assert.ok(full, 'the embed is cut at 1000 characters, so the full text follows as a message')
+  assert.ok(full.content.includes('x'.repeat(100)))
+})
+
+test('a short description is not repeated below the embed', async () => {
+  const h = harness()
+  await createClientRequest({
+    guild: h.guild, user: h.user, cfg: h.cfg, type: 'feature', title: 'S', details: 'short', project: null,
+    attachments: [], db: h.db, createChannel: h.createChannel, dm: h.dm, client: {},
+  })
+  assert.equal(h.channelSends.length, 0)
 })

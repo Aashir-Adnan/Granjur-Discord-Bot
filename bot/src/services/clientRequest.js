@@ -32,6 +32,72 @@ export function attachmentPlan(attachments, limit = MAX_UPLOAD_BYTES) {
   return { files, links }
 }
 
+const PLATFORMS = ['Web', 'Android', 'iOS', 'Windows', 'macOS', 'Linux', 'Other']
+
+/**
+ * The structured fields a client can fill beside the free text — the things a
+ * developer otherwise has to go back and ask for. All optional: a client is
+ * never blocked from filing, and an empty field is simply absent. `group`
+ * fields share one line joined with ' · '; the rest each get a line of their
+ * own. The builder, the option reader and the composer all read this table.
+ */
+export const ISSUE_FIELDS = [
+  { name: 'platform', label: 'Platform', kind: 'choice', choices: PLATFORMS, group: 1, description: 'Where it happened' },
+  { name: 'os', label: 'OS', kind: 'text', max: 100, group: 1, description: 'Operating system and version, e.g. Windows 11, iOS 17.4' },
+  { name: 'app_version', label: 'App/Browser', kind: 'text', max: 100, group: 1, description: 'Browser or app version, e.g. Chrome 129, App 2.4.1' },
+  { name: 'severity', label: 'Severity', kind: 'choice', choices: ['Blocking', 'Major', 'Minor', 'Cosmetic'], group: 2, description: 'How badly it hurts' },
+  { name: 'frequency', label: 'Frequency', kind: 'choice', choices: ['Every time', 'Sometimes', 'Once'], group: 2, description: 'How often it happens' },
+  { name: 'when', label: 'When', kind: 'text', max: 100, group: 2, description: 'When it happened, e.g. today ~3pm, since Monday' },
+  { name: 'account', label: 'Account', kind: 'text', max: 100, group: 2, description: 'Which user or account it happened to' },
+  { name: 'steps', label: 'Steps', kind: 'text', max: 1000, description: 'How to make it happen, step by step' },
+  { name: 'expected', label: 'Expected', kind: 'text', max: 500, description: 'What should have happened instead' },
+]
+
+export const FEATURE_FIELDS = [
+  { name: 'platform', label: 'Platform', kind: 'choice', choices: PLATFORMS, group: 1, description: 'Where it should exist' },
+  { name: 'priority', label: 'Priority', kind: 'choice', choices: ['Must have', 'Should have', 'Nice to have'], group: 1, description: 'How much it matters to you' },
+  { name: 'needed_by', label: 'Needed by', kind: 'text', max: 100, group: 1, description: 'A date, or an event it is needed for' },
+  { name: 'problem', label: 'Problem', kind: 'text', max: 1000, description: 'What this solves, and why it is needed' },
+  { name: 'who', label: 'Who needs it', kind: 'text', max: 200, description: 'Which users or roles' },
+  { name: 'example', label: 'Example', kind: 'text', max: 300, description: 'A link, or a product that already does it' },
+]
+
+/**
+ * The task description: a header of the filled fields, then the free text.
+ * Nothing filled → exactly the free text, so a client who only types title
+ * and details produces what they always did. Pure.
+ */
+export function composeDetails(fields, values, details) {
+  const clean = (v) => String(v ?? '').trim()
+  const groups = new Map()
+  const lines = []
+  for (const f of fields ?? []) {
+    const v = clean(values?.[f.name])
+    if (!v) continue
+    const part = `**${f.label}:** ${v}`
+    if (f.group) {
+      if (!groups.has(f.group)) groups.set(f.group, [])
+      groups.get(f.group).push(part)
+    } else {
+      lines.push(part)
+    }
+  }
+  const header = [...[...groups.keys()].sort((a, b) => a - b).map((k) => groups.get(k).join(' · ')), ...lines]
+  const text = clean(details)
+  return header.length ? `${header.join('\n')}\n\n${text}` : text
+}
+
+/** Discord messages cap at 2000 characters; the full description may not. Pure. */
+export function chunkText(text, size = 1900) {
+  const s = String(text ?? '')
+  const out = []
+  for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size))
+  return out
+}
+
+/** What createTaskTicketChannel shows of a description before cutting it. */
+const EMBED_DESCRIPTION_CAP = 1000
+
 const displayName = (guild, user) =>
   guild?.members?.cache?.get?.(user.id)?.displayName ?? user.globalName ?? user.username ?? user.id
 
@@ -81,6 +147,18 @@ export async function createClientRequest({
   const first = await channel.messages?.fetch?.({ limit: 1 }).catch(() => null)
   const opening = first?.first?.() ?? (first ? [...first.values()][0] : null)
   await opening?.pin?.().catch(() => {})
+
+  // The pinned embed shows at most the first 1000 characters, and the
+  // structured fields can push a real report past that. The team must not
+  // have to open the task to read the rest, so it follows as plain messages.
+  const fullText = String(details ?? '').trim()
+  if (fullText.length > EMBED_DESCRIPTION_CAP) {
+    const chunks = chunkText(fullText)
+    for (let i = 0; i < chunks.length; i++) {
+      await channel.send({ content: `${i === 0 ? '**Full details**\n' : ''}${chunks[i]}` })
+        .catch((e) => console.warn('[clientRequest] full details post failed:', e?.message || e))
+    }
+  }
 
   const { files, links } = attachmentPlan(attachments)
   if (files.length || links.length) {

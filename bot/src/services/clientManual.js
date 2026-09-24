@@ -48,7 +48,7 @@ export function clientManual() {
     .setColor(0x00b0f4)
   for (const c of CLIENT_COMMANDS) {
     const extra = c.name === 'report-issue' || c.name === 'request-feature'
-      ? ' You can attach up to three documents (`document`, `document2`, `document3`).'
+      ? ' You can attach two screenshots and a document (`screenshot`, `screenshot2`, `document`). The other fields — platform, OS, steps and so on — are optional, but filling them saves a round of questions.'
       : ''
     embed.addFields({
       name: `/${c.name} — ${c.summary}`,
