@@ -41,11 +41,16 @@ import { CATEGORY_SOFT_CAP } from '../constants.js'
 // `clientAccess.js` imports `db/index.js`; this module already does through
 // `projectMembersPanel.js`, so this adds no new database import to a leaf.
 import { CLIENT_TEXT_ALLOW_OBJ, CLIENT_VOICE_ALLOW_OBJ, ensureManualPinned } from './clientAccess.js'
+import { cut, storedChannels } from '../utils/projectStore.js'
 
 // The cap lives in `constants.js`, a leaf: `taskTicketChannel.js` needs it too,
 // and importing this module into that leaf helper pulled the whole database
 // layer (and the production `.env`) into a test that touches no database.
 export { CATEGORY_SOFT_CAP }
+
+// `cut` and `storedChannels` moved to utils/projectStore.js (a leaf); re-exported
+// here so every existing importer of this module is unchanged.
+export { cut, storedChannels }
 
 /** Discord's cap on a category name, the same 100 as a channel name. */
 const MAX_CATEGORY_NAME = 100
@@ -77,19 +82,6 @@ export const CLIENT_SECTION_KEYS = ['support', 'supportVoice', 'casual']
 
 const fold = (s) => String(s ?? '').trim().toLowerCase()
 const MANAGED_FOLDED = new Set(MANAGED_ROLES.map(fold))
-
-/**
- * Cut to `max` UTF-16 units without leaving half of a surrogate pair behind.
- * Exported because `/project-setup` truncates replies that carry the same
- * project names, and a second copy would be a second thing to get wrong.
- */
-export function cut(text, max) {
-  if (text.length <= max) return text
-  const sliced = text.slice(0, max)
-  const last = sliced.charCodeAt(sliced.length - 1)
-  // A lone high surrogate would render as a replacement character.
-  return last >= 0xd800 && last <= 0xdbff ? sliced.slice(0, -1) : sliced
-}
 
 /**
  * The project's channel-name slug: its stored docsSlug, else one from its name.
@@ -542,22 +534,6 @@ function note(warnings, what, e) {
 
 /** A discord.js Collection or a plain Map, read the same way. */
 const valuesOf = (cache) => (cache?.values ? [...cache.values()] : [])
-
-/**
- * `project.discordChannels` is a JSON column: some drivers hand back an object,
- * some the raw string. Anything unparseable is treated as "nothing stored yet".
- */
-export function storedChannels(project) {
-  const raw = project?.discordChannels
-  if (!raw) return {}
-  if (typeof raw === 'object') return { ...raw }
-  try {
-    const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === 'object' ? { ...parsed } : {}
-  } catch {
-    return {}
-  }
-}
 
 /**
  * Every id a project other than this one has recorded as part of ITS section:
