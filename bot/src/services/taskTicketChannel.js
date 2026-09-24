@@ -21,6 +21,7 @@ import { getOrCreateCategory } from '../utils/categories.js'
 // the whole database layer and the production `.env` to touch no database.
 import { CATEGORY_BOLD_NAMES, CATEGORY_SOFT_CAP } from '../constants.js'
 import { taskChannelName, taskChannelTopic } from '../utils/taskChannelName.js'
+import { bucketFor, bucketIdsOf } from '../utils/statusBuckets.js'
 
 const MEMBER_PERMS = [
   PermissionFlagsBits.ViewChannel,
@@ -52,45 +53,52 @@ const globalCategory = (guild, categoryLabel) =>
     orNames: [CATEGORY_BOLD_NAMES[categoryLabel]].filter(Boolean),
   })
 
+/** The channel with this id, only when it is a category. A text channel cannot be a parent. */
+function categoryById(guild, id) {
+  const c = id ? guild?.channels?.cache?.get?.(id) ?? null : null
+  return c?.type === ChannelType.GuildCategory ? c : null
+}
+
 /**
- * Where a new task channel's category goes: the project's own category when
- * the project has one, it still resolves to a CATEGORY, and it is not at
- * Discord's soft cap — the global Features/Bugs category (created or reused by
- * name, as today) otherwise. A project that cannot be used is a `console.warn`,
- * never a thrown error — the channel still gets created, just not where the
- * caller hoped.
+ * Where a new task channel goes, in order:
+ *   1. the project's bucket for the task's status (`bucketFor`), when its
+ *      stored id still resolves to a category with room;
+ *   2. the project's section category, under the rules it always had;
+ *   3. the global Features/Bugs category.
+ * `fellBack` is non-null only for 3 — the channel left the project's space,
+ * so the project role's allow is not added and the reply says so. `placed`
+ * says which of the three it was.
  *
- * The reason comes back with the category, because spec §4 and §11 require the
- * command's reply to say when a task channel was diverted, and a caller that
- * compared `parentId` against `discordCategoryId` afterwards would be four
- * copies of the same guess.
- *
- * @returns {Promise<{category: object, fellBack: 'cap'|'missing'|null}>}
+ * @returns {Promise<{category: object, fellBack: 'cap'|'missing'|null, placed: 'bucket'|'section'|'global'}>}
  */
-async function resolveParentCategory(guild, project, categoryLabel) {
-  if (!project) return { category: await globalCategory(guild, categoryLabel), fellBack: null }
+async function resolveParentCategory(guild, project, categoryLabel, status) {
+  if (!project) return { category: await globalCategory(guild, categoryLabel), fellBack: null, placed: 'global' }
 
-  const stored = project.discordCategoryId
-    ? guild.channels?.cache?.get?.(project.discordCategoryId) ?? null
-    : null
-  // A stored id that now resolves to a text channel is not somewhere a channel
-  // can be parented. Without this guard it is passed to Discord as `parent` and
-  // the error surfaces after the task row is already written.
-  const projectCategory = stored?.type === ChannelType.GuildCategory ? stored : null
+  const bucketKey = bucketFor(status)
+  const bucket = categoryById(guild, bucketIdsOf(project)[bucketKey])
+  if (bucket) {
+    if (countChannelsInCategory(guild, bucket.id) < CATEGORY_SOFT_CAP) {
+      return { category: bucket, fellBack: null, placed: 'bucket' }
+    }
+    console.warn(
+      `[taskTicket] project "${project?.name}"'s ${bucketKey} bucket is at Discord's cap (${CATEGORY_SOFT_CAP} channels); the task channel was created in the section category instead.`
+    )
+  }
 
+  const projectCategory = categoryById(guild, project.discordCategoryId)
   if (!projectCategory) {
     console.warn(
       `[taskTicket] project "${project?.name}" has no usable category; the task channel was created in the global ${categoryLabel} category instead.`
     )
-    return { category: await globalCategory(guild, categoryLabel), fellBack: 'missing' }
+    return { category: await globalCategory(guild, categoryLabel), fellBack: 'missing', placed: 'global' }
   }
   if (countChannelsInCategory(guild, projectCategory.id) >= CATEGORY_SOFT_CAP) {
     console.warn(
       `[taskTicket] project "${project?.name}"'s category is at Discord's cap (${CATEGORY_SOFT_CAP} channels); the task channel was created in the global ${categoryLabel} category instead.`
     )
-    return { category: await globalCategory(guild, categoryLabel), fellBack: 'cap' }
+    return { category: await globalCategory(guild, categoryLabel), fellBack: 'cap', placed: 'global' }
   }
-  return { category: projectCategory, fellBack: null }
+  return { category: projectCategory, fellBack: null, placed: 'section' }
 }
 
 /**
@@ -111,15 +119,17 @@ async function resolveParentCategory(guild, project, categoryLabel) {
  *   behaviour: the global Features/Bugs category and `<prefix>-<last six of
  *   the task id>`.
  * @param {string} [opts.type]          - 'bug' or anything else (feature); default feature
+ * @param {string} [opts.status]        - the task's status, used to pick its bucket; default 'open'
  * @param {string} [opts.closeHint]     - appended as a "Close" field when given
  * @param {(channel: object) => Promise<void>} [opts.onCreated]
  *   run with the new channel BETWEEN the create and the opening embed, so a
  *   caller can point its row at the channel before anything can fail: a `send`
  *   that throws must not leave a channel with no row pointing at it.
- * @returns {Promise<{channel: import('discord.js').TextChannel, fellBack: 'cap'|'missing'|null}>}
- *   `fellBack` says why the channel is not in the project's section: `'cap'`
+ * @returns {Promise<{channel: import('discord.js').TextChannel, fellBack: 'cap'|'missing'|null, placed: 'bucket'|'section'|'global'}>}
+ *   `fellBack` says why the channel is not in the project's own space: `'cap'`
  *   the section is full, `'missing'` the project has no category the bot can
- *   use, `null` it is where it should be (or there was no project).
+ *   use, `null` it is where it should be (a bucket, the section, or there was
+ *   no project). `placed` says which of the three it landed in.
  */
 export async function createTaskTicketChannel(guild, opts) {
   const {
@@ -130,6 +140,7 @@ export async function createTaskTicketChannel(guild, opts) {
     fields = [],
     project = null,
     type,
+    status = 'open',
     closeHint = null,
     onCreated = null,
   } = opts
@@ -142,7 +153,7 @@ export async function createTaskTicketChannel(guild, opts) {
   const namePrefix = isBug ? 'bug' : isSupport ? 'task' : 'feature'
   const members = [...new Set(memberIds.filter(Boolean))]
 
-  const { category, fellBack } = await resolveParentCategory(guild, project, categoryLabel)
+  const { category, fellBack, placed } = await resolveParentCategory(guild, project, categoryLabel, status)
 
   const name = project
     ? taskChannelName({
@@ -203,7 +214,7 @@ export async function createTaskTicketChannel(guild, opts) {
 
   const mentions = members.map((id) => `<@${id}>`).join(' ')
   await channel.send({ content: mentions || null, embeds: [embed] })
-  return { channel, fellBack }
+  return { channel, fellBack, placed }
 }
 
 /**

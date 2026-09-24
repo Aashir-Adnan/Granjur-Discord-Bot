@@ -193,6 +193,7 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
         memberIds: [...holders, actorId],
         project,
         type: task.type,
+        status: updates?.status ?? task.status,
         fields: [
           { name: 'Status', value: String(updates?.status || task.status || 'open'), inline: true },
           { name: 'Assignees', value: holders.map((id) => `<@${id}>`).join(' ') || 'None', inline: true },

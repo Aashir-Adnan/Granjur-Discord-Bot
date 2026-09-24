@@ -167,6 +167,7 @@ export async function createClientRequest({
     memberIds: [user.id, ...managers],
     project,
     type: kind.type,
+    status: task.status,
     // Client-safe: no scope, modules or estimate. The project is the only field.
     fields: project ? [{ name: 'Project', value: project.name, inline: true }] : [],
     closeHint: null,
