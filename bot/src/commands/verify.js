@@ -13,6 +13,7 @@ import { isAllowedEmail } from '../config.js'
 import { sendEmail, otpEmailHtml } from '../Mailer/sendEmail.js'
 import * as flowStore from '../flows/store.js'
 import { EPHEMERAL } from '../constants.js'
+import { clientEmailAccess } from '../utils/clientEmail.js'
 
 const OTP_EXPIRY_MINUTES = 10
 const OTP_LENGTH = 6
@@ -148,25 +149,27 @@ export async function handleGetCode(interaction) {
   }
 }
 
-export async function handleEmailModal(interaction) {
+export async function handleEmailModal(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Invalid.' }).catch(() => {})
 
   const email = (interaction.fields.getTextInputValue('email') || '').trim().toLowerCase()
-  if (!isAllowedEmail(email)) {
+  const cfgEarly = await getConfig(guild.id).catch(() => null)
+  const access = cfgEarly ? await clientEmailAccess({ db: dbArg, cfg: cfgEarly, guildId: guild.id, discordId: interaction.user.id, email }) : { allowed: false }
+  if (!isAllowedEmail(email) && !access.allowed) {
     return interaction.editReply({
-      content: 'That email domain is not allowed. Use an allowed address (e.g. @granjur.com).',
+      content: 'That email domain is not allowed. Use an allowed address (e.g. @granjur.com), or the address you were invited with.',
     }).catch(() => {})
   }
 
   try {
-    const cfg = await getOrCreateGuildConfig(guild.id)
+    const cfg = cfgEarly
     if (!cfg) return interaction.editReply({ content: 'Server not initialized.' }).catch(() => {})
 
     const code = generateOtp()
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000)
 
-    await db.verificationOtp.create({
+    await dbArg.verificationOtp.create({
       data: {
         guildConfigId: cfg.id,
         discordId: interaction.user.id,
@@ -180,7 +183,7 @@ export async function handleEmailModal(interaction) {
     const result = await sendEmail(email, 'Your Granjur verification code', html, { guildConfigId: cfg.id })
 
     if (!result.ok) {
-      await db.verificationOtp.delete({
+      await dbArg.verificationOtp.delete({
         where: { guildId_discordId: { guildId: guild.id, discordId: interaction.user.id } },
       }).catch(() => {})
       return interaction.editReply({
@@ -236,8 +239,14 @@ export async function handleEnterOtpButton(interaction) {
  *
  * `opts.db` exists so tests can run this without a database. The production
  * callers never pass it, so they keep the real one.
+ * `opts.getConfig` is the same seam for the guild-config lookup.
+ * `opts.notify` is the seam over the dynamic `notifyBacklogUpdate` import below —
+ * it calls the real `getOrCreateGuildConfig` internally, which a test must never
+ * reach. When null (the production default), today's behaviour is unchanged:
+ * dynamic import + call inside the existing try/catch. When a function is
+ * passed, it is called instead: `notify(guild, member, email || undefined)`.
  */
-export async function handleOtpModal(interaction, { code: rawCode = null, db: dbArg = db } = {}) {
+export async function handleOtpModal(interaction, { code: rawCode = null, db: dbArg = db, getConfig = getOrCreateGuildConfig, notify = null } = {}) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Invalid.' }).catch(() => {})
 
@@ -252,7 +261,13 @@ export async function handleOtpModal(interaction, { code: rawCode = null, db: db
   const email = (row.email && row.email.trim()) || null
 
   try {
-    const cfg = await getOrCreateGuildConfig(guild.id).catch(() => {})
+    const cfg = await getConfig(guild.id).catch(() => ({}))
+
+    // An invited client's email is outside the allowed domains; the invite is
+    // what lets them in, and it out-ranks the domain rule even for an address
+    // that would have passed on its own.
+    const access = await clientEmailAccess({ db: dbArg, cfg, guildId: guild.id, discordId: interaction.user.id, email })
+    const kind = access.allowed ? 'client' : undefined
 
     await dbArg.guildMember.upsert({
       where: { guildId_discordId: { guildId: guild.id, discordId: interaction.user.id } },
@@ -262,9 +277,11 @@ export async function handleOtpModal(interaction, { code: rawCode = null, db: db
         email: email ?? undefined,
         verifiedAt: new Date(),
         status: 'holding',
+        kind,
       },
-      update: { email: email ?? undefined, verifiedAt: new Date(), status: 'holding' },
+      update: { email: email ?? undefined, verifiedAt: new Date(), status: 'holding', kind },
     })
+    if (access.claim?.inviteCode) await dbArg.pendingInvite.deleteByCode(cfg.id, access.claim.inviteCode).catch(() => {})
     await dbArg.verificationOtp.delete({ where: { guildId_discordId: { guildId: guild.id, discordId: interaction.user.id } } }).catch(() => {})
     flowStore.clear(interaction.user.id, guild.id, 'verify_otp')
 
@@ -281,8 +298,12 @@ export async function handleOtpModal(interaction, { code: rawCode = null, db: db
     } catch (_) {}
 
     try {
-      const { notifyBacklogUpdate } = await import('../services/backlogNotify.js')
-      await notifyBacklogUpdate(guild, member, email || undefined)
+      if (notify) {
+        await notify(guild, member, email || undefined)
+      } else {
+        const { notifyBacklogUpdate } = await import('../services/backlogNotify.js')
+        await notifyBacklogUpdate(guild, member, email || undefined)
+      }
     } catch (_) {}
 
     await interaction.editReply({

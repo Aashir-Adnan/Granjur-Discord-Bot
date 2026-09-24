@@ -77,3 +77,50 @@ test('nicknameFromEmail builds a display name from the local part', () => {
   assert.equal(nicknameFromEmail(''), null)
   assert.equal(nicknameFromEmail(null), null)
 })
+
+// --- client entry ------------------------------------------------------------
+
+function otpHarness({ email, me = null, invites = [] }) {
+  const upserts = []
+  const deleted = []
+  const db = {
+    verificationOtp: {
+      findValidByCode: async () => ({ email }),
+      delete: async () => {},
+    },
+    guildMember: {
+      findUnique: async () => me,
+      upsert: async (args) => { upserts.push(args); return { id: 'm1' } },
+    },
+    pendingInvite: {
+      findByEmail: async (_cfgId, e) => invites.filter((r) => r.email === e),
+      deleteByCode: async (_cfgId, code) => { deleted.push(code) },
+    },
+  }
+  const ix = recordingInteraction({ guild: { id: 'g1', members: { fetch: async () => { throw new Error('offline') } } } })
+  return { db, ix, upserts, deleted, getConfig: async () => ({ id: 'cfg1', holdingRoleId: null }), notify: async () => {} }
+}
+
+test('an invited client verifies with an outside email: the row is marked client and the invite is claimed', async () => {
+  const h = otpHarness({ email: 'ali@acme.com', invites: [{ inviteCode: 'inv1', email: 'ali@acme.com', kind: 'client' }] })
+  await handleOtpModal(h.ix, { code: '111111', db: h.db, getConfig: h.getConfig, notify: h.notify })
+  assert.equal(h.upserts.length, 1)
+  assert.equal(h.upserts[0].create.kind, 'client')
+  assert.equal(h.upserts[0].update.kind, 'client')
+  assert.equal(h.upserts[0].update.status, 'holding')
+  assert.deepEqual(h.deleted, ['inv1'])
+  assert.match(h.ix.replies.at(-1).content, /Verified/)
+})
+
+test('an allowed-domain email with a client invite still verifies as a client', async () => {
+  const h = otpHarness({ email: 'sam@granjur.com', invites: [{ inviteCode: 'inv2', email: 'sam@granjur.com', kind: 'client' }] })
+  await handleOtpModal(h.ix, { code: '111111', db: h.db, getConfig: h.getConfig, notify: h.notify })
+  assert.equal(h.upserts[0].update.kind, 'client')
+})
+
+test('a staff email leaves kind alone', async () => {
+  const h = otpHarness({ email: 'sam@granjur.com' })
+  await handleOtpModal(h.ix, { code: '111111', db: h.db, getConfig: h.getConfig, notify: h.notify })
+  assert.equal(h.upserts[0].update.kind, undefined)
+  assert.equal(h.upserts[0].create.kind, undefined)
+})

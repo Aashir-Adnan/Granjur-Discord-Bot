@@ -5,6 +5,7 @@ export async function handleMemberAdd(member) {
   const guild = member.guild
   const config = await getOrCreateGuildConfig(guild.id)
   let email = null
+  let kind = null
 
   try {
     const invites = await guild.invites.fetch()
@@ -14,6 +15,7 @@ export async function handleMemberAdd(member) {
       const prevUses = getInviteUses(guild.id, row.inviteCode)
       if (inv && inv.uses > prevUses) {
         email = row.email
+        kind = row.kind === 'client' ? 'client' : 'staff'
         await db.pendingInvite.deleteByCode(config.id, row.inviteCode)
         updateInviteUses(guild.id, row.inviteCode, inv.uses)
         break
@@ -48,9 +50,10 @@ export async function handleMemberAdd(member) {
       guildId: guild.id,
       discordId: member.id,
       email: email ?? undefined,
+      kind: kind ?? undefined,
       status: 'pending',
     },
-    update: email ? { email } : {},
+    update: email ? { email, ...(kind ? { kind } : {}) } : {},
   })
 
   const ch = await guild.channels.fetch(config.onboardingChannelId).catch(() => null)
