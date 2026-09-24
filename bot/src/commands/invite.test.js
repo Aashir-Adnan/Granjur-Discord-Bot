@@ -60,3 +60,21 @@ test('isValidEmail rejects the shapes people actually paste', () => {
   assert.equal(isValidEmail('two @spaces.com'), false)
   assert.equal(isValidEmail(''), false)
 })
+
+test('client:true writes kind=client on every pending invite and says so in the reply', async () => {
+  const created = []
+  const db = {
+    pendingInvite: { create: async ({ data }) => { created.push(data); return data } },
+  }
+  const ix = recordingInteraction()
+  ix.guild.channels = { fetch: async () => new Map([['c1', { id: 'c1', isTextBased: () => true, isThread: () => false }]]) }
+  ix.guild.invites = { create: async () => ({ code: 'code1', url: 'https://discord.gg/code1' }) }
+  ix.client = { users: { fetch: async () => null } }
+  await handleInviteModal(ix, 'ali@acme.com', {
+    client: true, db, getConfig: async () => ({ id: 'cfg1', onboardingChannelId: null }),
+    sendEmail: async () => ({ ok: true }), findMemberByEmail: async () => null,
+  })
+  assert.equal(created.length, 1)
+  assert.equal(created[0].kind, 'client')
+  assert.match(JSON.stringify(ix.replies.at(-1)), /as clients/)
+})

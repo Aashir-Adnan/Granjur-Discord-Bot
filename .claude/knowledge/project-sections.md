@@ -16,22 +16,25 @@ The build's full ruling-by-ruling record is
 
 One category per project: `📂 ` + the project name upper-cased, cut to Discord's
 100-character cap (`categoryNameFor`, `bot/src/services/projectSection.js`).
-Ten channels inside it, in creation order (`SECTIONS`):
+Twelve channels inside it, in creation order (`SECTIONS`):
 
 ```
 members, documentation, meetings, meetingVoice,
 frontendChat, frontendVoice, backendChat, backendVoice,
-databaseChat, databaseVoice
+databaseChat, databaseVoice, support, supportVoice
 ```
 
 Channel name: `<slug>-<suffix>` (`channelNameFor`), suffixes `members`,
 `documentation`, `meetings`, `meeting-voice`, `frontend-chat`, `frontend-voice`,
-`backend-chat`, `backend-voice`, `database-chat`, `database-voice`. The slug is
-truncated to make room, never the suffix. The slug is the project's **effective**
-slug (`projectSlug`): its stored `docsSlug`, or `slugify(name)` when that is null.
-Comparing raw `docsSlug` columns instead of the effective slug is exactly the bug
-that let `UBS-Doc` and a NULL-slugged `UBS Doc` fight over the same ten channels
-(fixed as final-wave A6/D4 — see "Duplicate slugs" below).
+`backend-chat`, `backend-voice`, `database-chat`, `database-voice`, `support`,
+`support-voice`. The slug is truncated to make room, never the suffix. The last
+two (`CLIENT_SECTION_KEYS`) are the pair a project's own clients can see — not to
+be confused with the *global* support pair `ensureSupportChannels` maintains
+outside any project section; see `client-role.md`. The slug is the project's
+**effective** slug (`projectSlug`): its stored `docsSlug`, or `slugify(name)` when
+that is null. Comparing raw `docsSlug` columns instead of the effective slug is
+exactly the bug that let `UBS-Doc` and a NULL-slugged `UBS Doc` fight over the
+same twelve channels (fixed as final-wave A6/D4 — see "Duplicate slugs" below).
 
 **Task channels live in the same category**, not a sub-structure — Discord cannot
 nest categories. `feature-<title-slug>` / `bug-<title-slug>`
@@ -79,7 +82,7 @@ each closing a real incident found during the build:
    named `feature-members`.
 
 Known residual gap (parked, final-wave A concern 1): `claimedSectionIds` only
-covers ids stored on **project** rows (category + ten section channels), not task
+covers ids stored on **project** rows (category + twelve section channels), not task
 channel ids, which live on `task` rows — reading every project's tasks per project
 would be a second full scan. The ticket-topic guard above closes the realistic
 case; a channel whose topic was wiped by hand AND whose name exactly matches a
@@ -96,14 +99,14 @@ except by hand.
   doubly-wrong channel stuck until the next run. Every plan entry (except `reuse`)
   therefore carries its **final** desired name regardless of *why* it's changing.
 - **50 channels per category** → `CATEGORY_SOFT_CAP = 49` (`bot/src/constants.js`).
-  Ten are the section itself; task channels beyond the cap fall back to the global
+  Twelve are the section itself; task channels beyond the cap fall back to the global
   `Features`/`Bugs` category (or, for `/meeting-channel`, the global `📋 Meetings`),
   with a warning/note explaining why. Section channels are always created first so
   they can never be crowded out by tasks.
 - **A category's overwrites are copied onto a channel only AT CREATION, never
   cascaded.** Discord has no server-side "sync now" for API edits — that button is
   client-only. This is *the* central gotcha of the whole feature: a section built
-  while its role was refused gets ten channels that copy the deny-only category and
+  while its role was refused gets twelve channels that copy the deny-only category and
   stay deny-only **forever**, even after the role is later adopted and the category
   itself is fixed. That's why section channels need their own repair pass
   (`planChannels`'s `grant`/`opens` actions, described below) — the twin of the
@@ -207,9 +210,9 @@ and who would lose the role, before anything happens (`adoptionPreview`,
 ### Section-channel repair (final-wave A1) — the twin of task-channel repair
 
 Because a category's overwrites are copied onto a channel only at creation
-(above), a section built while the role was refused has ten channels that stay
+(above), a section built while the role was refused has twelve channels that stay
 deny-only forever unless something explicitly repairs them. `planChannels` now
-checks each of the ten channels for the gate role's overwrite
+checks each of the twelve channels for the gate role's overwrite
 (`lacksRoleAllow`/`needsAllow`) and, per channel:
 - already correctly named/placed but missing the allow → standalone `grant`
   action (one `edit()`, overwrites only);
@@ -224,6 +227,16 @@ category was made.
 All of this uses **merge, never replace** — see next section — and is presence-only:
 it checks whether the overwrite id is present, not whether its allow/deny bits
 still match. See "Merge, never replace" for why that's deliberate.
+
+The same repair pass covers the section's client-facing pair
+(`CLIENT_SECTION_KEYS = ['support', 'supportVoice']`), but with a per-**member**
+overwrite instead of the role-level one every other section channel gets: each
+row in `plan.clients` (computed from the project's client roster, `clientIds`)
+grants or revokes one client's own overwrite on those two channels
+(`clientGranted`/`clientRevoked` in the applier's result). `clientIds: null` means
+the roster could not be read this run, and the planner plans no client change at
+all rather than guess — see `client-role.md` for the full read/plan/apply path
+and why a client never reaches the other ten.
 
 ## Merge, never replace; never `lockPermissions()`
 
@@ -296,7 +309,7 @@ closed to "pick a project," never a wrong guess.
 ## Duplicate slugs (spec §13, previously unimplemented)
 
 Two projects whose **effective** slugs collide (`projectSlug`) would want the same
-ten channel names forever, dragging the same channels back and forth between
+twelve channel names forever, dragging the same channels back and forth between
 categories on every run. `setupProjectSection` now checks this against a
 **fresh** per-project read of sibling rows and refuses outright — `refused: true`,
 nothing touched — with a message telling the operator to give one of them a
@@ -405,12 +418,18 @@ JS `\w` has no `u` flag), `日本 Portal`, `Straße` (case round-trip is not
 identity), names over ~97 characters, and any category renamed by hand — every one
 of those would list the *entire* section (and any moved task channels) for
 deletion behind the confirm button. Fixed to protect by id first: any category
-whose id is a project's `discordCategoryId`, its ten `claimedSectionIds`, and
+whose id is a project's `discordCategoryId`, its twelve `claimedSectionIds`, and
 anything whose `parentId` is one of those categories — the same by-id principle
 the rest of this feature runs on. The name rule is kept as a fallback for
 categories that predate the recorded ids. `handleConfirm` (the actual delete) was
 **not** touched in this fix — it still deletes whatever `execute` listed with no
 re-check at confirm time (backlog item).
+
+The *global* support pair (`ensureSupportChannels`, not part of any project
+section) gets the same by-id treatment, added separately: `cfg.supportChannelId`/
+`supportVoiceChannelId` and whatever category holds them are excluded before the
+name rule ever runs, so `/cleanup` can never offer the one channel pair every
+client depends on for deletion. See `client-role.md`.
 
 ## Push-to-talk and screen sharing in meeting voice channels (2026-09-21)
 
@@ -441,4 +460,4 @@ before the fix keep their old member allows.
 
 ## Related
 
-[[project-tasks-site]], [[project-docs]]
+[[project-tasks-site]], [[project-docs]], [[client-role]]

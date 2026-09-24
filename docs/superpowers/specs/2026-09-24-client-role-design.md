@@ -77,7 +77,7 @@ All of this is migration `025_client_role.sql`, idempotent in the `information_s
 
 `/invite` gains an optional boolean `client`. With `client:true`:
 
-- the email domain check is skipped for those addresses (it is what stops outside emails today);
+- **corrected 2026-09-24 (final review):** `/invite` runs no email-domain check at all — it never did, so there is nothing for `client:true` to skip. Acceptance of an outside email happens entirely in `/verify`, below;
 - each `pendinginvite` row is written with `kind='client'`;
 - the invite email is the same.
 
@@ -275,7 +275,7 @@ the command's own `commandRoles` entry. This is what closes the three commands w
 list (`close-feature`, `resolve-bug`; `verify` stays open) and every command absent from the map.
 The guild-owner and Manage Server bypasses stay; a client never has them.
 
-Client commands themselves are gated on `Client` in `commandRoles`, so staff do not see them.
+Client commands themselves are gated on `Client` in `commandRoles`, so staff are refused if they try them. *(Corrected 2026-09-24: Discord still offers the commands to everyone, and a Manage Server holder passes the bypass before the client check and can run them.)*
 
 ## 11. Everything that iterates "approved members"
 

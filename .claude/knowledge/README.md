@@ -24,9 +24,17 @@
   `update_discord_tasks` permission and its backfill, the board's drop/override rules,
   and the CSAAS error-body shape.
 - [project-sections.md](project-sections.md) — per-project Discord sections
-  (`feat/project-sections`, not yet merged): the ten-channel category layout,
+  (`feat/project-sections`, not yet merged): the twelve-channel category layout,
   id-based repair and its guarded name fallback, the Discord limits that shape
   the design (2 edits/10min, 50/category, no overwrite cascade), the fail-closed
   role-adoption model with `adopt_role`, merge-never-replace overwrites, project
   inference from a channel, `/project-setup`'s preview/backfill procedure, and
   the Administrator requirement.
+- [client-role.md](client-role.md) — the `Client` role and `guildmember.kind`:
+  why a client never gets `Verified`, the two `/verify` acceptance paths, the
+  shared `approveMember`, `/set-roles`' refusal, the deny-by-default command
+  gate and `clientCommands`, `ensureSupportChannels`' id-first repair, the
+  twelve-channel project section and its per-client member overwrites
+  (`CLIENT_SECTION_KEYS`, `clientIds`, `staffOnly`), requests as tasks
+  (`requestedBy`, attachments, notices), `/request-report`'s filtered
+  timeline, and the rollout steps.

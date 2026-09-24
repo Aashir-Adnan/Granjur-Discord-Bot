@@ -4,6 +4,62 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Client role — deferred follow-ups (branch `feat/client-role`, 2026-09-24)
+See `.claude/knowledge/client-role.md`. Ordered by how much they matter.
+
+**Worth doing first**
+- **Both gates fail OPEN when the member cannot be resolved.** `handleCommand` (pre-existing)
+  and the new `handleAutocomplete` gate skip the check when `members.fetch` fails. Read
+  `interaction.member` first — Discord populates it for guild interactions — so a fetch hiccup
+  cannot let a client enumerate names. (Final re-review; Ruling 15.)
+- **After deploy, run `/setup` once** so clients approved before the fix wave get the
+  public-channel denies; nothing re-runs `denyClientOnPublicChannels` for existing clients.
+- **The onboarding CATEGORY keeps its `@everyone` allow** — only its channel is denied. Add the
+  category to `denyClientOnPublicChannels`, or any channel later created under `📥 Onboarding`
+  is visible to clients. (Ruling 18.)
+- **`pendinginvite` rows never expire** — a `kind:'client'` row keeps letting that address through
+  `/verify` after the 7-day Discord invite dies. Age them out. (Ruling 12.)
+
+**Correctness, narrow**
+- `project-setup.js` passes `rosterRows = []` as `members` when BOTH roster reads fail, so the
+  pinned members panel is rewritten empty. `members: rosterReadFailure ? undefined : rosterRows`.
+  (Ruling 14.)
+- `denyClientOnPublicChannels` runs before the support-pair id persist in `ensureSupportChannels`;
+  move it below so a throw there can never skip recording a newly created channel. (Ruling 16.)
+- Denying each `📜 Rules` child desyncs it from its category; denying the category alone would do.
+  (Ruling 17.)
+- `denyClientOnPublicChannels` finds the Rules category and `#announcements-all` by NAME; a rename
+  or cold cache defers the deny to the next `/init`/`/setup`. Store their ids at `/init`.
+- `set-roles` `handleApply` does not re-check `memberIsClient` between picker and apply — a
+  two-operator race can add staff roles on top of `Client`.
+- Converting client → staff with a failed prior roster read leaves the stale support overwrites
+  (`project-members.js` add branch, non-client path) — harmless, they are staff now.
+
+**Robustness / polish**
+- `changeClientAccess` and `clientRequest.js` resolve support channels via `guild.channels.cache`
+  only; a cold cache reads as "not set up" / falls back to `#admin` and skips lead DMs.
+- `commands/index.js`: member fetch + `getGuildConfig` run sequentially per dispatch (and now per
+  autocomplete keystroke); `getGuildConfig` failure is swallowed without a log line.
+- `backlog.js` builds the `[Client, ...roles]` option array in three places — extract a helper.
+- `CLIENT_TEXT_ALLOW_OBJ`/`CLIENT_VOICE_ALLOW_OBJ` are hand-duplicates of the bit arrays.
+- Discord timestamp formatter duplicated in `clientRequestView.js` (`:d`) and
+  `client-tracking.js` (`:D`).
+- `verify.js` `getConfig(...).catch(() => ({}))` swallows into `{}` rather than `null`
+  (pre-existing shape).
+
+**Tests missing**
+- No `setup.test.js` / `init.test.js`: the `ensureSupportChannels` wiring on both rollout entry
+  points is untested.
+- No execute-level tests for the `/approve`/`/backlog` `asClient` branching (the invariant is
+  unit-tested in `approval.test.js`).
+- `project-members.test.js` "the reverse undoes it" only exercises staff → client; no test for the
+  `Clients:` render lines or `revokeClients=false` under truncation; no negative-path test for
+  the requester-DM guard.
+
+**Spec vs. code, recorded**
+- Spec §5 asked the `Client` picker option to re-prompt; the build discards ticked staff roles and
+  says so in the confirmation (Ruling 11). Spec §4 and §10 carry dated corrections.
+
 ## Project Stats — deferred follow-ups
 From the 2026-09-23 build (implemented on branches, not merged — see `completed.md` and
 `session.md`). See `.claude/knowledge/project-tasks-site.md` ("Stats tab and

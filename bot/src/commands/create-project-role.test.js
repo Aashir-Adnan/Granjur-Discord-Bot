@@ -229,7 +229,7 @@ test('through the real routine it creates the role and the whole section', async
 
   assert.equal(guild.roles.calls.length, 1)
   assert.equal(guild.roles.calls[0].name, 'Framework')
-  assert.equal(guild.channels.calls.length, 11, 'a category and its ten channels')
+  assert.equal(guild.channels.calls.length, 13, 'a category and its twelve channels')
   assert.equal(guild.fetchedAll, 1, 'the member list was fetched before the role sync')
   assert.ok(db.calls.some((c) => c[0] === 'project.update'), 'the ids were saved through the db seam')
   assert.match(it.replies.at(-1).content, /Role \*\*Framework\*\*/)

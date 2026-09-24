@@ -44,6 +44,11 @@ test('changeSummary formats an estimate change as a duration, not raw minutes', 
   assert.deepEqual(changeSummary({ estimateMinutes: 480 }, { estimateMinutes: null }), ['**estimate**: `8h` → `—`'])
 })
 
+test('changeSummary can omit a field, so a client request channel never sees the estimate', () => {
+  const lines = changeSummary({ status: 'open', estimateMinutes: null }, { status: 'pending', estimateMinutes: 90 }, { omit: ['estimateMinutes'] })
+  assert.deepEqual(lines, ['**status**: `open` → `pending`'])
+})
+
 test('ownsChannel tells a task channel from the meeting channel it was announced in', () => {
   assert.equal(ownsChannel('b62ffdcece31488c893f56be0', 'feature-f56be0'), true)
   assert.equal(ownsChannel('b62ffdcece31488c893f56be0', 'bug-f56be0'), true)
@@ -183,6 +188,30 @@ const noQueryDb = {
   taskDependency: { findByBlocker: async () => { throw new Error('test must not query') } },
   task: { findByIds: async () => { throw new Error('test must not query') } },
 }
+
+test('a status change DMs the requester in their own words, and the channel post omits the estimate', async () => {
+  const posts = []
+  const channel = {
+    id: 'c1', type: ChannelType.GuildText, name: 'bug-login-fails',
+    topic: 'Bug: Login fails — Task aaaaaabbbbbbcccccc123456',
+    guild: { id: 'g1' },
+    send: async (m) => posts.push(m),
+    permissionOverwrites: { edit: async () => {}, delete: async () => {} },
+  }
+  const h = harness({ channel })
+  const task = { id: h.taskId, title: 'Login fails', status: 'open', assigneeIds: [], discordChannelId: 'c1', requestedBy: 'u-c', estimateMinutes: null }
+  const out = await notifyTaskUpdate({
+    client: h.client, guild: h.guild, task, before: task,
+    updates: { status: 'pending', estimateMinutes: 90 }, actorId: '99', db: noQueryDb,
+  })
+  assert.equal(posts.length, 1)
+  assert.match(posts[0], /status/)
+  assert.ok(!posts[0].includes('estimate'), 'no estimate line in a client request channel')
+  const requesterDm = h.dms.find(([id]) => id === 'u-c')
+  assert.ok(requesterDm, 'requester DMed')
+  assert.match(requesterDm[1], /Waiting on you/)
+  assert.ok(out.dmed.includes('u-c'))
+})
 
 test('a newly assigned member is DMed and given a channel that did not exist', async () => {
   const h = harness()
@@ -586,4 +615,53 @@ test('actorLabel names the person when there is no Discord id to mention', async
 test('with neither an actor id nor a label the post falls back to "Someone"', async () => {
   const text = await postWith()
   assert.ok(text.startsWith('Someone updated this task'), text)
+})
+
+// --- another task's title never reaches a client's request channel ----------
+
+test('a request channel never carries the blocker warning — another task\'s title is not the client\'s to read', async () => {
+  const posts = []
+  const channel = {
+    id: 'own',
+    name: 'feature-123456',
+    type: ChannelType.GuildText,
+    guild: { id: 'g1' },
+    send: async (m) => posts.push(m),
+    permissionOverwrites: { edit: async () => {}, delete: async () => {} },
+  }
+  const h = harness({ channel })
+  const task = { id: h.taskId, title: 'T', status: 'open', assigneeIds: ['11'], discordChannelId: 'own', requestedBy: 'u-c' }
+  await notifyTaskUpdate({
+    client: h.client, guild: h.guild, task, before: task,
+    updates: { passedQaTests: 3 }, actorId: '99',
+    warning: '⛔ Still blocked by: **Router** (open)',
+    db: noQueryDb,
+  })
+  assert.equal(posts.length, 1)
+  assert.ok(!posts[0].includes('Router'), 'the blocking task\'s title stays out of the request channel')
+  assert.match(posts[0], /QA tests passed/, 'the change itself is still posted')
+})
+
+test('unblockNotices skips a blocked task that is a client request — the blocker\'s title would leak into it', async () => {
+  const blocker = { id: 'C', title: 'Error handling', status: 'done' }
+  const tasks = {
+    A: { id: 'A', title: 'Git Sync', status: 'open', discordChannelId: 'chA' },
+    R: { id: 'R', title: 'Login fails', status: 'open', discordChannelId: 'chR', requestedBy: 'u-c' },
+    C: blocker,
+  }
+  const deps = [
+    { taskId: 'A', blockedByTaskId: 'C' },
+    { taskId: 'R', blockedByTaskId: 'C' },
+  ]
+  const db = {
+    taskDependency: {
+      findByBlocker: async ({ where }) => deps.filter((d) => d.blockedByTaskId === where.blockedByTaskId),
+      findByTask: async ({ where }) => deps.filter((d) => d.taskId === where.taskId),
+    },
+    task: { findByIds: async ({ where }) => where.ids.map((i) => tasks[i]).filter(Boolean) },
+  }
+  const out = await unblockNotices({ db, guildConfigId: 'g1', blockerTask: blocker })
+  assert.deepEqual(out, [
+    { channelId: 'chA', text: '✅ Blocker **Error handling** is done. This task is no longer blocked.' },
+  ])
 })

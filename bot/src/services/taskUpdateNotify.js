@@ -15,6 +15,7 @@ import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js
 import { isTicketChannel } from '../utils/taskChannelName.js'
 import { openBlockers, TERMINAL_STATUSES, unblockNotice } from '../utils/taskDeps.js'
 import { formatDuration } from '../utils/timeTracking.js'
+import { requestStatusLabel } from '../utils/clientRequestView.js'
 import db from '../db/index.js'
 
 export { TERMINAL_STATUSES }
@@ -44,10 +45,10 @@ export function assigneeDiff(before, after) {
  * One line per changed field, for the task channel. Pure.
  * `assigneeIds` is excluded — assignment is reported as its own event.
  */
-export function changeSummary(before, updates) {
+export function changeSummary(before, updates, { omit = [] } = {}) {
   const lines = []
   for (const [key, next] of Object.entries(updates || {})) {
-    if (key === 'assigneeIds') continue
+    if (key === 'assigneeIds' || omit.includes(key)) continue
     const label = FIELD_LABELS[key]
     if (!label) continue
     const prev = before?.[key]
@@ -114,7 +115,8 @@ export function ownsChannel(taskId, channel, storedChannelId = null) {
 /**
  * When `blockerTask` reaches a terminal status, what to tell each task it was
  * holding. Only tasks with a channel of their own get a notice — nowhere else
- * to post it. Pure aside from the db reads.
+ * to post it — and never a client's own request channel, whose audience
+ * includes the client. Pure aside from the db reads.
  */
 export async function unblockNotices({ db: dbArg = db, guildConfigId, blockerTask }) {
   const holding = await dbArg.taskDependency.findByBlocker({ where: { blockedByTaskId: blockerTask.id } })
@@ -123,6 +125,9 @@ export async function unblockNotices({ db: dbArg = db, guildConfigId, blockerTas
   const out = []
   for (const t of blocked) {
     if (!t.discordChannelId) continue
+    // The notice quotes the BLOCKER's title. A client request's channel has the
+    // client in it, so that is another task's title landing in front of them.
+    if (t.requestedBy) continue
     const rows = await dbArg.taskDependency.findByTask({ where: { taskId: t.id } })
     const others = await dbArg.task.findByIds({ where: { guildConfigId, ids: rows.map((r) => r.blockedByTaskId) } })
     const byId = Object.fromEntries(others.map((o) => [o.id, o]))
@@ -227,10 +232,14 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
       }
     }
 
-    const lines = changeSummary(before, updates)
+    const lines = changeSummary(before, updates, { omit: task.requestedBy ? ['estimateMinutes'] : [] })
     if (added.length) lines.unshift(`**assigned to** ${added.map((id) => `<@${id}>`).join(' ')}`)
     if (removed.length) lines.push(`**unassigned** ${removed.map((id) => `<@${id}>`).join(' ')}`)
-    if (warning) lines.push(warning)
+    // A warning names ANOTHER task ("Still blocked by: **Router**"). In a
+    // client's request channel that is a title they have no business reading,
+    // so it is dropped from the post — it still goes back to the command's own
+    // reply, which is ephemeral to the developer who typed it.
+    if (warning && !task.requestedBy) lines.push(warning)
     lines.push(...extraLines)
     if (lines.length) {
       // No Discord id when the change came from the site; `actorLabel` then
@@ -291,6 +300,20 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
       } catch (e) {
         console.warn('[taskUpdate] unblock notices:', e?.message || e)
       }
+    }
+  }
+
+  // The client who raised this hears about every status change, in their own
+  // words: `pending` is "Waiting on you" to them.
+  const requester = task.requestedBy ? String(task.requestedBy) : null
+  if (requester && nextStatus !== undefined && String(nextStatus) !== String(before?.status ?? '')) {
+    try {
+      const user = await client?.users?.fetch?.(requester)
+      const where = out.channelId ? ` — see <#${out.channelId}>` : ''
+      await user?.send?.(`Your request **${updates?.title || task.title}** is now **${requestStatusLabel(nextStatus)}**${where}.`)
+      out.dmed.push(requester)
+    } catch (e) {
+      console.warn(`[taskUpdate] requester DM to ${requester} failed:`, e?.message || e)
     }
   }
 

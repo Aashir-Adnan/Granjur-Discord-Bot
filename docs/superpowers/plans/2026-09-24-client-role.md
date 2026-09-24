@@ -2321,9 +2321,10 @@ test('timeline keeps status and assignee changes only, newest last, capped', () 
     { createdAt: new Date('2026-09-22T10:00:00Z'), changes: [{ field: 'scope', from: 'a', to: 'b' }] },
   ]
   const lines = timelineLines(rows, { nameFor: (id) => ({ u2: 'Sam' })[id] })
+  const at = (iso) => `<t:${Math.floor(new Date(iso).getTime() / 1000)}:d>`
   assert.deepEqual(lines, [
-    '<t:1758621600:d> — assigned to Sam',
-    '<t:1758708000:d> — status: open → in progress (Sam)',
+    `${at('2026-09-23T10:00:00Z')} — assigned to Sam`,
+    `${at('2026-09-24T10:00:00Z')} — status: open → in progress (Sam)`,
   ])
   assert.ok(!lines.join('\n').includes('120'), 'estimate never renders')
   assert.equal(timelineLines(Array.from({ length: 40 }, (_, i) => ({ createdAt: new Date(2026, 0, 1 + i), changes: [{ field: 'status', from: 'a', to: 'b' }] })), {}).length, 15)

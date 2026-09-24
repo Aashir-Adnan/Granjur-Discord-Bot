@@ -16,6 +16,7 @@ import {
   CHANNEL_ONBOARDING,
   ROLE_HOLDING,
   ROLE_VERIFIED,
+  ROLE_CLIENT,
   ROLE_COLORS,
   CATEGORY_MEETINGS,
   CHANNEL_MEETINGS_TEXT,
@@ -51,6 +52,7 @@ import {
 import { EPHEMERAL } from '../constants.js'
 import { config } from '../config.js'
 import { getDedicatedChannelCommands, getCommandDescription, getCommandRoles, getChannelPinnedMessage } from '../config/commands.js'
+import { ensureSupportChannels } from '../services/clientAccess.js'
 
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true'
 function debug(...args) {
@@ -142,6 +144,9 @@ export async function runInit(guild) {
   )()
   const verifiedRole = await wrapStep('Creating Verified role', () =>
     guild.roles.create({ name: ROLE_VERIFIED, color: ROLE_COLORS[ROLE_VERIFIED] ?? 0x57f287, reason: 'Granjur init' })
+  )()
+  const clientRole = await wrapStep('Creating Client role', () =>
+    guild.roles.create({ name: ROLE_CLIENT, color: ROLE_COLORS[ROLE_CLIENT] ?? 0x00b0f4, reason: 'Granjur init' })
   )()
 
   debug('runInit: hierarchy/discipline roles', Date.now() - t0, 'ms')
@@ -321,6 +326,7 @@ export async function runInit(guild) {
       onboardingChannelId: onboardingChannel.id,
       holdingRoleId: holdingRole.id,
       verifiedRoleId: verifiedRole.id,
+      clientRoleId: clientRole.id,
       allowedDomains: config.allowedDomains,
       seniorRoleIds: [],
       dashboardRoleIds: [],
@@ -340,6 +346,11 @@ export async function runInit(guild) {
       dashboardRoleIds: [...new Set([...existingDashboard, ceoRole?.id, serverMgrRole?.id].filter(Boolean))],
     })
   )()
+
+  await wrapStep('Creating Support category', async () => {
+    const cfgNow = await getGuildConfig(guild.id)
+    await ensureSupportChannels(guild, cfgNow, { botUserId: guild.client?.user?.id ?? null })
+  })()
 
   const g2 = await getGuildConfig(guild.id)
   const dashboardRoleIds = ensureStringArray(g2?.dashboardRoleIds)

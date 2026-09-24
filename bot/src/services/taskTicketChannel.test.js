@@ -374,3 +374,15 @@ test('dmTaskAssignees delivers once per unique id and survives closed DMs', asyn
   assert.equal(dms[0][0], '11')
   assert.match(dms[0][1], /\*\*Add booking rules\*\* — discuss it in <#chan1>/)
 })
+
+test('dmTaskAssignees takes a headline, so a lead is not told they were "assigned" a client request', async () => {
+  const dms = []
+  const client = { users: { fetch: async (id) => ({ send: async (m) => dms.push([id, m]) }) } }
+  await dmTaskAssignees(client, ['lead1'], {
+    title: 'Login fails',
+    channelId: 'chan1',
+    headline: 'A client raised **Login fails**',
+  })
+  assert.match(dms[0][1], /^A client raised \*\*Login fails\*\* — discuss it in <#chan1>\./)
+  assert.ok(!dms[0][1].includes("You've been assigned"))
+})

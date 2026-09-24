@@ -208,7 +208,11 @@ export async function createTaskTicketChannel(guild, opts) {
  * DMs closed is skipped silently, because the channel above already reached them.
  * @returns {Promise<number>} how many DMs were delivered
  */
-export async function dmTaskAssignees(client, userIds, { title, channelId, note = '' } = {}) {
+/**
+ * `headline` replaces the opening clause for a DM that is not an assignment —
+ * a lead told that a client raised a request was never "assigned" it.
+ */
+export async function dmTaskAssignees(client, userIds, { title, channelId, note = '', headline = null } = {}) {
   const ids = [...new Set((userIds || []).filter(Boolean))]
   let delivered = 0
   for (const id of ids) {
@@ -216,7 +220,7 @@ export async function dmTaskAssignees(client, userIds, { title, channelId, note 
       const user = await client.users.fetch(id)
       const where = channelId ? ` — discuss it in <#${channelId}>` : ''
       await user.send(
-        `You've been assigned **${title}**${where}.${note ? `\n${note}` : ''}`,
+        `${headline || `You've been assigned **${title}**`}${where}.${note ? `\n${note}` : ''}`,
       )
       delivered += 1
     } catch (e) {

@@ -12,7 +12,7 @@ import db, { getOrCreateGuildConfig, guildMemberFindByEmail } from '../db/index.
 import { sendEmail, inviteEmailHtml } from '../Mailer/sendEmail.js'
 import { setInviteUses } from '../events/inviteUsesCache.js'
 import { EPHEMERAL } from '../constants.js'
-import { config, isAllowedEmail } from '../config.js'
+import * as flowStore from '../flows/store.js'
 
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true'
 function debug(...args) {
@@ -20,9 +20,6 @@ function debug(...args) {
 }
 
 const MAX_BATCH_INVITES = 20
-
-/** Domains allowed for invite emails (from ALLOWED_EMAIL_DOMAINS env var) */
-const allowedDomains = config.allowedDomains
 
 /** Parse raw input into trimmed, lowercased, unique emails (comma / newline / semicolon separated) */
 export function parseEmails(raw) {
@@ -46,6 +43,9 @@ export const data = new SlashCommandBuilder()
   .addStringOption((o) =>
     o.setName('emails').setDescription('Emails (comma/semicolon/newline separated)').setRequired(false).setMaxLength(2000)
   )
+  .addBooleanOption((o) =>
+    o.setName('client').setDescription('Invite as a client: any email domain; they will see only the support channels').setRequired(false)
+  )
 
 export async function execute(interaction) {
   try {
@@ -55,6 +55,7 @@ export async function execute(interaction) {
     const cfg = await getOrCreateGuildConfig(guild.id)
     if (!cfg) return interaction.editReply({ content: 'Server not initialized. Run **/init** first.' })
 
+    const asClient = interaction.options.getBoolean('client') === true
     const emailsOpt = interaction.options.getString('emails')
     if (emailsOpt && emailsOpt.trim()) {
       // Pass the addresses as a value. Spreading the interaction to fake a modal
@@ -63,14 +64,19 @@ export async function execute(interaction) {
       // path came to throw "interaction.editReply is not a function".
       // handleInviteModal owns validation for both entry points, so there is
       // nothing to pre-check here.
-      return handleInviteModal(interaction, emailsOpt)
+      return handleInviteModal(interaction, emailsOpt, { client: asClient })
     }
+
+    // The modal path has no options; remember the flag for its submit.
+    flowStore.clear(interaction.user.id, guild.id, 'invite')
+    flowStore.set(interaction.user.id, guild.id, 'invite', { client: asClient })
 
     const embed = new EmbedBuilder()
       .setTitle('Invite by email (batch)')
       .setDescription(
         'Enter one or more email addresses (comma, newline, or semicolon separated). ' +
-        'Or use **/invite emails:one@example.com,two@example.com** to skip the form.'
+        'Or use **/invite emails:one@example.com,two@example.com** to skip the form.' +
+        (asClient ? '\n\n**These invites are for clients.**' : '')
       )
       .setColor(0x5865f2)
       .setFooter({ text: `Up to ${MAX_BATCH_INVITES} per batch` })
@@ -111,9 +117,16 @@ export async function handleInviteButton(interaction) {
  *   - `/invite emails:...`, which passes them as `rawEmails`
  * A slash-command interaction has no `fields`, so read it only when it is there.
  */
-export async function handleInviteModal(interaction, rawEmails = null) {
+export async function handleInviteModal(interaction, rawEmails = null, {
+  client = null,
+  db: dbArg = db,
+  getConfig = getOrCreateGuildConfig,
+  sendEmail: send = sendEmail,
+  findMemberByEmail = guildMemberFindByEmail,
+} = {}) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Invalid.' }).catch(() => {})
+  const asClient = client ?? Boolean(flowStore.get(interaction.user?.id, guild.id, 'invite')?.client)
 
   const fromFields = interaction.fields
     ? interaction.fields.getTextInputValue('emails') || interaction.fields.getTextInputValue('email') || ''
@@ -137,7 +150,7 @@ export async function handleInviteModal(interaction, rawEmails = null) {
   }
 
   try {
-    const cfg = await getOrCreateGuildConfig(guild.id)
+    const cfg = await getConfig(guild.id)
     if (!cfg) return interaction.editReply({ content: 'Server not initialized.' }).catch(() => {})
 
     // Get a channel to create the invite (e.g. onboarding or first text channel)
@@ -147,7 +160,7 @@ export async function handleInviteModal(interaction, rawEmails = null) {
     }
     if (!inviteChannel) {
       const channels = await guild.channels.fetch()
-      inviteChannel = channels.find((c) => c.isTextBased() && !c.isThread()) || null
+      inviteChannel = [...channels.values()].find((c) => c.isTextBased() && !c.isThread()) || null
     }
     if (!inviteChannel) {
       return interaction.editReply({
@@ -166,19 +179,19 @@ export async function handleInviteModal(interaction, rawEmails = null) {
           maxUses: 1,
           reason: `Invite sent to ${email} via /invite (batch)`,
         })
-        await db.pendingInvite.create({
-          data: { guildConfigId: cfg.id, inviteCode: invite.code, email },
+        await dbArg.pendingInvite.create({
+          data: { guildConfigId: cfg.id, inviteCode: invite.code, email, kind: asClient ? 'client' : 'staff' },
         }).catch(() => {})
         setInviteUses(guild.id, invite.code, 0)
         const html = inviteEmailHtml(invite.url, serverName)
-        const result = await sendEmail(email, `You're invited to ${serverName}`, html, { guildConfigId: cfg.id })
+        const result = await send(email, `You're invited to ${serverName}`, html, { guildConfigId: cfg.id })
 
         if (!result.ok) {
           failed.push({ email, reason: result.message || 'Email send failed' })
           continue
         }
 
-        const memberRow = await guildMemberFindByEmail(guild.id, email)
+        const memberRow = await findMemberByEmail(guild.id, email)
         if (memberRow?.discordId) {
           try {
             const user = await interaction.client.users.fetch(memberRow.discordId).catch(() => null)
@@ -198,7 +211,7 @@ export async function handleInviteModal(interaction, rawEmails = null) {
 
     const lines = []
     if (sent.length) {
-      lines.push(`**Invites sent (${sent.length}):** ${sent.map((e) => `\`${e}\``).join(', ')}`)
+      lines.push(`**Invites sent (${sent.length})${asClient ? ' as clients' : ''}:** ${sent.map((e) => `\`${e}\``).join(', ')}`)
     }
     if (capped) {
       lines.push(`_Only first ${MAX_BATCH_INVITES} valid addresses were processed._`)
@@ -216,6 +229,7 @@ export async function handleInviteModal(interaction, rawEmails = null) {
       .setColor(invalid.length || failed.length ? 0xfee75c : 0x57f287)
 
     await interaction.editReply({ content: null, embeds: [resultEmbed] }).catch(() => {})
+    flowStore.clear(interaction.user?.id, guild.id, 'invite')
   } catch (e) {
     const msg = e?.message ?? String(e)
     debug('invite modal error', msg)

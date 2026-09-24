@@ -122,6 +122,11 @@ function summarise(entries, words) {
   return parts.join(', ')
 }
 
+/** The roster the ROLE sync may see: never a client row — the role opens every channel. */
+export const staffOnly = (rows) => (rows ?? []).filter((m) => m?.role !== 'client')
+/** The clients of a project, for the support-channel overwrites. */
+export const clientIdsOf = (rows) => (rows ?? []).filter((m) => m?.role === 'client').map((m) => String(m.discordId))
+
 /** 'Ada, Bob and 4 more' — never an unbounded list of names in a reply. */
 function namesList(names, max = 12) {
   const list = (names ?? []).map((n) => String(n))
@@ -202,6 +207,16 @@ export function renderPlan(project, plan = {}) {
     )
   }
 
+  const clients = plan?.clients ?? {}
+  const grants = clients.grant?.length ?? 0
+  const revokes = clients.revoke?.length ?? 0
+  if (grants || revokes) {
+    // `clients.grant` is one entry per member×channel; an operator reads
+    // "channels touched" and "grants to hand out" as two different numbers.
+    const grantChannels = new Set((clients.grant ?? []).map((g) => g.channelId)).size
+    lines.push(`Clients: ${grants} access grant(s) across ${grantChannels} support channel(s), ${revokes} revoke(s).`)
+  }
+
   lines.push(...warningLines(plan?.warnings))
 
   if (!lines.length) return `**${name}** — nothing to do.`
@@ -256,6 +271,15 @@ export function renderResult(project, result = {}) {
 
   if (voiceFixed.length) {
     lines.push(`Voice activity and screen sharing turned on for the project role in ${voiceFixed.length} place(s).`)
+  }
+
+  // `clientGranted`/`clientRevoked` hold one channel NAME per member grant/revoke
+  // (five clients on one channel is five copies), so the count that means
+  // something to an operator is the distinct channels touched, not the raw length.
+  const cg = result?.clientGranted ?? []
+  const cr = result?.clientRevoked ?? []
+  if (cg.length || cr.length) {
+    lines.push(`Clients: ${new Set(cg).size} support channel(s) opened, ${new Set(cr).size} closed.`)
   }
 
   const sync = result?.roleSync
@@ -518,8 +542,32 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
     )
   }
 
-  const observed = observeProjectSection(guild, project, tasks, { rolesFetched, claimedIds })
-  const plan = planProjectSection(project, observed, { adoptRole })
+  // Read once, up front, so both a preview and a real run plan client access
+  // off the same roster: `observeProjectSection`'s `clientIds` defaults to
+  // `null` ("the roster was not read — plan no client access at all"), so
+  // skipping this on any call plans away every client's support access.
+  //
+  // Unguarded, a failure here threw straight out of `setupProjectSection` —
+  // including out of a preview, which changes nothing and should never be able
+  // to fail on a read. A failure is the same fail-closed shape as everywhere
+  // else in this file: an empty roster, `clientIds: null` so `planClientAccess`
+  // plans NOTHING rather than guessing, and `revokeClients` false.
+  let rosterRows = []
+  let rosterReadFailure = null
+  try {
+    rosterRows = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+  } catch (e) {
+    rosterReadFailure = e?.message || String(e)
+    console.error(`[project-setup] reading the roster for ${project?.name}:`, e)
+    extra.push(
+      `The members of "${project?.name}" could not be read (${rosterReadFailure}), so no client's access to its support channels was granted or taken away — it was left exactly as it is. The rest of the section was still built.`
+    )
+  }
+  const revokeClients = !fetchFailure && !rosterReadFailure && rosterRows.length < ROSTER_LIMIT
+  const observed = observeProjectSection(guild, project, tasks, {
+    rolesFetched, claimedIds, clientIds: rosterReadFailure ? null : clientIdsOf(rosterRows),
+  })
+  const plan = planProjectSection(project, observed, { adoptRole, revokeClients })
 
   if (preview) {
     if (adoptRole && fetchFailure) {
@@ -536,8 +584,12 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   }
 
   // The roster is passed on purpose: `members` is a tri-state, and omitting
-  // it would leave every pinned members panel showing yesterday's list.
-  const members = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+  // it would leave every pinned members panel showing yesterday's list. The
+  // pinned panel shows the FULL roster — a client included, labelled `Client`
+  // — so `members` stays unfiltered here; `staffOnly` is applied only at the
+  // role-sync call below, since the project role is the one thing a client
+  // must never hold.
+  const members = rosterRows
   if (fetchFailure) {
     extra.push(
       `This server's member list could not be read (${fetchFailure}), so nobody was removed from the project role. Run /project-setup again once the bot can read this server's members.`
@@ -576,7 +628,7 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
     }
   }
 
-  const truncatedRoster = roster.length >= ROSTER_LIMIT
+  const truncatedRoster = rosterRows.length >= ROSTER_LIMIT
   if (truncatedRoster) {
     extra.push(
       `Only the first ${ROSTER_LIMIT} members of "${project?.name}" could be read, so nobody was removed from the project role — members past that limit would have looked as though they had left the project.`
@@ -594,7 +646,10 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   // find nothing to revoke from would stop meaning that the moment the
   // service changed how it reads its holders.
   const grantOnly = Boolean(fetchFailure) || truncatedRoster || Boolean(rosterFailure)
-  const roleSync = await syncProjectRoleMembers(guild, project, roster, {
+  // `staffOnly` here, and only here: the pinned panel above got the full
+  // roster, but the project role must never reach a client — it opens all
+  // twelve channels, where the client's overwrite opens only two.
+  const roleSync = await syncProjectRoleMembers(guild, project, staffOnly(roster), {
     roleId,
     revoke: !grantOnly,
   })
@@ -627,7 +682,7 @@ function sameRoster(a, b) {
 async function adoptionPreview(dbArg, project, role, nameFor) {
   let roster = []
   try {
-    roster = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
+    roster = staffOnly((await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? [])
   } catch (e) {
     return `Adopting **${role.name}** would change who holds it, but this project's members could not be read (${e?.message ?? String(e)}), so who gains and loses it cannot be shown. Do not run this without preview until that read works.`
   }

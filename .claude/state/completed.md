@@ -4,6 +4,49 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-24 — Client role in the Discord bot (ON BRANCH feat/client-role — NOT YET MERGED)
+
+A `Client` role: clients enter by invitation, are approved without ever receiving `Verified`,
+see only a global `🛟 Support` pair plus a per-project support pair, raise issues and feature
+requests that become ordinary tasks they can follow, and are shut out of every other command by
+a deny-by-default gate. Spec `docs/superpowers/specs/2026-09-24-client-role-design.md`, plan
+`docs/superpowers/plans/2026-09-24-client-role.md`, nine tasks via subagent-driven development
+plus one whole-branch review fix wave. Knowledge: `.claude/knowledge/client-role.md` (new) and
+`project-sections.md` (ten → twelve channels).
+
+- **Isolation rule.** `cfg.verifiedRoleId` is added in exactly one place — the staff branch of
+  `services/approval.js` `approveMember` — which `/approve` and `/backlog` both use. A client
+  never receives `Verified`; the deny-by-default gate in `config/commands.js` (`canUseCommand`,
+  `autocompleteAllowed`, `memberIsClient` by stored id then name) closes every command and every
+  autocomplete outside `clientCommands`. `guildmember.kind` is what the bot's own reports read.
+- **Entry.** `/invite client:true` → `pendinginvite.kind` → member join copies it → `/verify`
+  accepts the invited address through `utils/clientEmail.js` (own row, or an unclaimed client
+  invite it then claims). `handleOtpModal` gained `getConfig` and `notify` seams.
+- **Support pair.** `services/clientAccess.js` `ensureSupportChannels`: id-first, name fallback
+  only with no id stored, presence-only overwrite repair, the manual (`services/clientManual.js`)
+  pinned once by title+author, and `denyClientOnPublicChannels` for the three `@everyone`-visible
+  places `/init` makes (onboarding channel, `📜 Rules`, `#announcements-all`). Runs on `/init`,
+  `/setup` and the first client approval.
+- **Project level.** `SECTIONS` is twelve; `CLIENT_SECTION_KEYS` get one member overwrite per
+  `projectmember.role='client'` row, observed/planned/applied by `projectSection.js`
+  (`clientIds: null` = roster not read = plan nothing; `revokeClients` false on a truncated or
+  unreadable roster). `staffOnly` at the one line in `project-setup.js` that feeds
+  `syncProjectRoleMembers` is the guard against a client holding the project role;
+  `/project-members add role:client` revokes the role unconditionally.
+- **Requests.** `services/clientRequest.js` + `commands/client-request.js` (`/report-issue`,
+  `/request-feature`): a `task` row with `requestedBy`, the existing private task channel with the
+  client in it, attachments re-uploaded (CDN links expire), notice to the project's support
+  channel + lead DMs or `#admin`, never the global pair. `commands/client-tracking.js`
+  (`/my-requests`, `/request-report`) with `utils/clientRequestView.js`; `pending` reads
+  "Waiting on you". `notifyTaskUpdate` DMs the requester on status changes and keeps estimates,
+  blocker warnings and unblock notices out of a `requestedBy` channel.
+- **Exclusions.** Daily time report skips `kind='client'`; `/cleanup` protects the support pair by
+  id (and `🛟 Support` by name); `/time-report` needed nothing (entry-driven).
+
+Migration `025_client_role.sql`. 18 commits `4683821..e66e7f4`; 1079 tests green with
+`DATABASE_URL=poisoned://no-production-access`. Every ruling made during the build is in the
+final session message and, where it left work, in `backlog.md`.
+
 ## 2026-09-23 — Project Stats tab, and the Time tab under the shared filters (SHIPPED)
 
 Spec `docs/superpowers/specs/2026-09-23-project-stats-and-time-filters-design.md`, plan

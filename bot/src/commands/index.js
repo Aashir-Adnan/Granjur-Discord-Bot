@@ -6,7 +6,8 @@ import {
 } from 'discord.js'
 import { config } from '../config.js'
 import { EPHEMERAL } from '../constants.js'
-import { canUseCommand, getCommandDescription } from '../config/commands.js'
+import { autocompleteAllowed, canUseCommand, getCommandDescription } from '../config/commands.js'
+import { getGuildConfig } from '../db/index.js'
 import * as initCmd from './init.js'
 import * as createTaskCmd from './create-task.js'
 import * as fetchMyCmd from './fetch-my.js'
@@ -53,6 +54,8 @@ import * as meetingReviewCmd from './meetingReview.js'
 import * as projectsCmd from './projects.js'
 import * as recordCmd from './record.js'
 import * as explainCmd from './explain.js'
+import * as clientRequestCmd from './client-request.js'
+import * as clientTrackingCmd from './client-tracking.js'
 
 const commandModules = [
   initCmd,
@@ -101,6 +104,8 @@ const commandModules = [
   meetingReviewCmd,
   projectsCmd,
   recordCmd,
+  clientRequestCmd,
+  clientTrackingCmd,
 ]
 
 // A module's `data` may be a single SlashCommandBuilder or an array of them
@@ -192,6 +197,19 @@ export async function handleAutocomplete(interaction, commands) {
   if (!cmd?.autocomplete) {
     return interaction.respond([]).catch(() => {})
   }
+  // The client gate belongs HERE, not only on `execute`: an autocomplete
+  // handler answers from the database — project names, task titles, doc pages
+  // — before any command body runs, so a gate on `execute` alone hands a
+  // client the whole server through the option list. Resolved the same way
+  // `handleCommand` does it: cache then fetch, stored role id then name.
+  const member = interaction.guild
+    ? interaction.guild.members?.cache?.get?.(interaction.user.id)
+      ?? await interaction.guild.members?.fetch?.(interaction.user.id).catch(() => null)
+    : null
+  const cfg = interaction.guild ? await getGuildConfig(interaction.guild.id).catch(() => null) : null
+  if (!autocompleteAllowed(member, interaction.commandName, { clientRoleId: cfg?.clientRoleId ?? null })) {
+    return interaction.respond([]).catch(() => {})
+  }
   try {
     await cmd.autocomplete(interaction)
   } catch (err) {
@@ -209,7 +227,10 @@ export async function handleCommand(interaction, commands) {
     return interaction.reply({ content: 'Unknown command.', flags: EPHEMERAL }).catch(() => {})
   }
   const member = interaction.guild?.members?.cache?.get(interaction.user.id) ?? await interaction.guild?.members?.fetch(interaction.user.id).catch(() => null)
-  if (member && !canUseCommand(member, interaction.commandName)) {
+  // The stored id lets the gate recognise a client whose role was renamed by
+  // hand. A failed config read falls back to the role's name, never to "allow".
+  const cfg = interaction.guild ? await getGuildConfig(interaction.guild.id).catch(() => null) : null
+  if (member && !canUseCommand(member, interaction.commandName, { clientRoleId: cfg?.clientRoleId ?? null })) {
     const msg = 'You don\'t have permission to use this command. Required role(s) are in the command channel description.'
     if (interaction.deferred) return interaction.editReply({ content: msg }).catch(() => {})
     return interaction.reply({ content: msg, flags: EPHEMERAL }).catch(() => {})

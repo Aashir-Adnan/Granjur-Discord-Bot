@@ -160,3 +160,32 @@ test('categories themselves are never listed for deletion', async () => {
   const reply = await run([], [stray, chan('junk', 'random-leftover', { parent: stray })])
   assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
 })
+
+test('the support pair and its category are protected by id', async () => {
+  const supportCat = category('supcat', '🛟 Support')
+  const support = chan('sup', 'support', { parent: supportCat })
+  const supportVoice = chan('supv', 'support-voice', { type: ChannelType.GuildVoice, parent: supportCat })
+  const orphan = chan('orphan', 'old-chat')
+  const guild = fakeGuild([supportCat, support, supportVoice, orphan])
+  const it = fakeInteraction(guild)
+  const { db } = seams([])
+  const cfg = { ...CFG, supportChannelId: 'sup', supportVoiceChannelId: 'supv' }
+  const error = console.error
+  console.error = () => {}
+  try { await execute(it, { db, getConfig: async () => cfg }) } finally { console.error = error }
+  const listed = listedForDeletion(it.replies.at(-1))
+  assert.ok(!listed.includes('support') && !listed.includes('support-voice'), `support pair listed: ${listed}`)
+  assert.ok(listed.includes('old-chat'), 'an unrelated orphan is still listed')
+})
+
+test('the support category is protected by name too, before any id has ever been stored', async () => {
+  // Before the first /init, /setup or client approval, cfg carries no support
+  // ids at all — and a /cleanup run then would have swept the pair away.
+  const supportCat = category('supcat', '🛟 Support')
+  const support = chan('sup', 'support', { parent: supportCat })
+  const supportVoice = chan('supv', 'support-voice', { type: ChannelType.GuildVoice, parent: supportCat })
+  const reply = await run([], [supportCat, support, supportVoice, chan('orphan', 'old-chat')])
+  const listed = listedForDeletion(reply)
+  assert.ok(!listed.includes('support') && !listed.includes('support-voice'), `support pair listed: ${listed}`)
+  assert.deepEqual(listed, ['old-chat'])
+})

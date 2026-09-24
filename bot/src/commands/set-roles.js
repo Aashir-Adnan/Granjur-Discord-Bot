@@ -8,6 +8,7 @@ import {
 import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
 import { MANAGED_ROLES, roleDiff, roleSelectOptions } from '../utils/roleSync.js'
 import { EPHEMERAL } from '../constants.js'
+import { memberIsClient } from '../config/commands.js'
 
 export const data = new SlashCommandBuilder()
   .setName('set-roles')
@@ -53,6 +54,10 @@ export async function execute(interaction) {
   if (picked) {
     const member = await guild.members.fetch(picked.id).catch(() => null)
     if (!member) return interaction.editReply({ content: 'That user is not in this server.' })
+    if (memberIsClient(member, cfg?.clientRoleId)) {
+      const msg = `**${member.displayName}** is a client and holds no staff roles. To make them staff, remove the **Client** role by hand and run **/approve**.`
+      return interaction.editReply({ content: msg, embeds: [], components: [] })
+    }
     return interaction.editReply(await rolePicker(guild, member))
   }
 
@@ -80,6 +85,11 @@ export async function handleMemberSelect(interaction) {
   const member = await guild.members.fetch(userId).catch(() => null)
   if (!member) {
     return interaction.update({ content: 'That user is not in this server.', embeds: [], components: [] }).catch(() => {})
+  }
+  const cfg = await getOrCreateGuildConfig(guild.id)
+  if (memberIsClient(member, cfg?.clientRoleId)) {
+    const msg = `**${member.displayName}** is a client and holds no staff roles. To make them staff, remove the **Client** role by hand and run **/approve**.`
+    return interaction.update({ content: msg, embeds: [], components: [] }).catch(() => {})
   }
   const payload = await rolePicker(guild, member)
   await interaction.update({ ...payload, content: null }).catch(() => {})

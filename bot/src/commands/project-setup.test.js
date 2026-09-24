@@ -7,6 +7,8 @@ import {
   autocomplete,
   renderPlan,
   renderResult,
+  staffOnly,
+  clientIdsOf,
 } from './project-setup.js'
 
 // --- fakes ------------------------------------------------------------------
@@ -309,7 +311,7 @@ test('preview:true creates nothing, edits nothing, writes nothing, and prints th
   assert.match(content, /Preview/)
   assert.match(content, /Role: create \*\*Framework\*\*/)
   assert.match(content, /Category: create \*\*📂 FRAMEWORK\*\*/)
-  assert.match(content, /Channels: 9 to create/)
+  assert.match(content, /Channels: 11 to create/)
   assert.match(content, /1 to move/)
 })
 
@@ -328,8 +330,8 @@ test('a run with project: applies the plan, syncs the role, and replies with the
   await quiet(() => execute(it, { db, getConfig }))
 
   assert.equal(guild.roles.calls.length, 1, 'the project role was created')
-  // One category plus the ten section channels.
-  assert.equal(guild.channels.calls.length, 11)
+  // One category plus the twelve section channels.
+  assert.equal(guild.channels.calls.length, 13)
   assert.equal(taskChannel.edits.length, 1, 'the task channel moved in one edit')
   const category = [...guild.channels.cache.values()].find((c) => c.type === ChannelType.GuildCategory)
   assert.equal(taskChannel.edits[0].parent, category.id, 'it moved into the new category')
@@ -343,11 +345,11 @@ test('a run with project: applies the plan, syncs the role, and replies with the
 
   const content = it.replies[0].content
   // The task channel is counted in `moved` AND in `tasks`, so it is named once
-  // as a count and once as a breakdown of that count — twelve objects, not
-  // thirteen.
+  // as a count and once as a breakdown of that count — fourteen objects, not
+  // fifteen.
   assert.equal(
     content.split('\n')[0],
-    '**Framework** — 11 created, 1 moved (incl. 1 task channel).'
+    '**Framework** — 13 created, 1 moved (incl. 1 task channel).'
   )
   assert.match(content, /1 granted/)
 })
@@ -365,6 +367,29 @@ test('a run with project: refreshes the pinned members panel with the roster it 
   const embed = membersChannel.sent[0].embeds[0].toJSON()
   assert.match(embed.title, /Framework/)
   assert.equal(embed.fields[0].value, 'Aashir')
+})
+
+test('a client shows on the pinned members panel but never gets the project role', async () => {
+  const db = fakeDb({
+    projects: [PROJECT],
+    members: [
+      { projectId: 'p1', discordId: 'u1', role: 'lead' },
+      { projectId: 'p1', discordId: 'u2', role: 'client' },
+    ],
+  })
+  const guild = fakeGuild({ channels: [], members: [fakeMember('u1', 'Aashir'), fakeMember('u2', 'Baaji')] })
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const membersChannel = [...guild.channels.cache.values()].find((c) => c.name === 'framework-members')
+  const embed = membersChannel.sent[0].embeds[0].toJSON()
+  const fields = Object.fromEntries(embed.fields.map((f) => [f.name, f.value]))
+  assert.equal(fields.Lead, 'Aashir')
+  assert.equal(fields.Client, 'Baaji', 'the panel keeps the client, labelled Client')
+
+  assert.equal(guild.members.cache.get('u1').roles.cache.size, 1, 'the lead got the project role')
+  assert.equal(guild.members.cache.get('u2').roles.cache.size, 0, 'the client never got the project role')
 })
 
 test('a project named after a managed role is reported, and the rest of the section is still built', async () => {
@@ -976,7 +1001,7 @@ test('a bot without Administrator is warned that it will not see the sections it
   assert.match(content, /will not be able to see the private sections/)
   // A warning, never a refusal: the section is still built.
   assert.equal(guild.roles.calls.length, 1, 'the role was still created')
-  assert.equal(guild.channels.calls.length, 11, 'the category and its ten channels were still created')
+  assert.equal(guild.channels.calls.length, 13, 'the category and its twelve channels were still created')
 })
 
 test('a bot WITH Administrator is not warned', async () => {
@@ -1057,4 +1082,41 @@ test('a run reports how many places got the voice permissions, and says nothing 
   assert.match(renderResult({ name: 'Framework' }, { voiceFixed: ['a', 'b'] }), /Voice activity and screen sharing turned on for the project role in 2 place\(s\)/)
   assert.doesNotMatch(renderResult({ name: 'Framework' }, { voiceFixed: [] }), /Voice activity/)
   assert.equal(renderResult({ name: 'Framework' }, {}), '**Framework** — nothing to change.')
+})
+
+test('the role-sync roster never contains a client row; clientIdsOf is the complement', () => {
+  const rows = [{ discordId: 'a', role: 'lead' }, { discordId: 'c', role: 'client' }, { discordId: 'b', role: 'qa' }]
+  assert.deepEqual(staffOnly(rows).map((m) => m.discordId), ['a', 'b'])
+  assert.deepEqual(clientIdsOf(rows), ['c'])
+  assert.deepEqual(staffOnly(null), [])
+})
+
+test('the first roster read failing leaves client access alone instead of throwing out of the run', async () => {
+  const db = fakeDb({ projects: [PROJECT] })
+  let reads = 0
+  db.projectMember.findByProject = async () => {
+    reads += 1
+    if (reads === 1) throw new Error('database went away')
+    return []
+  }
+  const guild = fakeGuild({})
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const content = it.replies.at(-1).content
+  assert.match(content, /could not be read/, 'the run says the roster read failed')
+  assert.match(content, /client/i, 'and that client access was left alone')
+  assert.doesNotMatch(content, /Something went wrong/i)
+})
+
+test('a preview whose roster read fails still renders a plan', async () => {
+  const db = fakeDb({ projects: [PROJECT] })
+  db.projectMember.findByProject = async () => { throw new Error('database went away') }
+  const guild = fakeGuild({})
+  const it = fakeInteraction({ guild, opts: { project: 'p1', preview: true } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  assert.match(it.replies.at(-1).content, /could not be read/)
 })

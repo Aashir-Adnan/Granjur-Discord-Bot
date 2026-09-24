@@ -100,6 +100,18 @@ export async function updateGuildConfig(guildId, data) {
     sets.push("lastTimeReportOn = ?");
     vals.push(data.lastTimeReportOn);
   }
+  if (data.clientRoleId !== undefined) {
+    sets.push("clientRoleId = ?");
+    vals.push(data.clientRoleId);
+  }
+  if (data.supportChannelId !== undefined) {
+    sets.push("supportChannelId = ?");
+    vals.push(data.supportChannelId);
+  }
+  if (data.supportVoiceChannelId !== undefined) {
+    sets.push("supportVoiceChannelId = ?");
+    vals.push(data.supportVoiceChannelId);
+  }
   if (sets.length === 0) return getGuildConfig(guildId);
   vals.push(guildId);
   await query(
@@ -124,6 +136,10 @@ async function guildMemberFindMany({ where }) {
   if (where?.status) {
     sql += " AND status = ?";
     params.push(where.status);
+  }
+  if (where?.kind) {
+    sql += " AND kind = ?";
+    params.push(where.kind);
   }
   if (where?.verifiedAt && typeof where.verifiedAt === "object" && "not" in where.verifiedAt && where.verifiedAt.not === null) {
     sql += " AND verifiedAt IS NOT NULL";
@@ -157,6 +173,7 @@ async function guildMemberUpsert({ where, create, update }) {
       username: update.username,
       roleNames: update.roleNames,
       avatarUrl: update.avatarUrl,
+      kind: update.kind,
     });
     sets.push("verifiedAt = ?", "updatedAt = CURRENT_TIMESTAMP(3)");
     vals.push(update.verifiedAt ?? existing.verifiedAt);
@@ -195,6 +212,7 @@ export function guildMemberInsertSql(data) {
     ["username", data.username ?? null],
     ["roleNames", toJson(data.roleNames || [])],
     ["avatarUrl", data.avatarUrl ?? null],
+    ["kind", data.kind ?? "staff"],
   ];
   return {
     sql: `INSERT INTO \`guildmember\` (${columns.map(([c]) => c).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
@@ -212,6 +230,7 @@ export function guildMemberUpdateSets(data = {}) {
   if (data.username !== undefined) { sets.push("username = ?"); vals.push(data.username); }
   if (data.roleNames !== undefined) { sets.push("roleNames = ?"); vals.push(toJson(data.roleNames)); }
   if (data.avatarUrl !== undefined) { sets.push("avatarUrl = ?"); vals.push(data.avatarUrl); }
+  if (data.kind !== undefined) { sets.push("kind = ?"); vals.push(data.kind); }
   return { sets, vals };
 }
 
@@ -281,6 +300,10 @@ async function taskFindMany({ where, orderBy, take }) {
     sql += " AND createdBy = ?";
     params.push(where.createdBy);
   }
+  if (where?.requestedBy) {
+    sql += " AND requestedBy = ?";
+    params.push(where.requestedBy);
+  }
   if (where?.createdAtSince) {
     sql += " AND createdAt >= ?";
     params.push(where.createdAtSince);
@@ -347,6 +370,7 @@ export function taskInsertSql(data, pk) {
     ["description", data.description ?? null],
     ["status", data.status ?? (data.is_bug ? "pending" : "open")],
     ["createdBy", data.createdBy ?? null],
+    ["requestedBy", data.requestedBy ?? null],
     ["assigneeIds", toJson(data.assigneeIds || [])],
     ["taggedMemberIds", toJson(data.taggedMemberIds || [])],
     ["repositoryId", data.repositoryId ?? null],
@@ -1197,7 +1221,7 @@ async function guildMemberFindByConfigEmail({ where }) {
 }
 
 // ---------- projectmember (explicit project membership) ----------
-export const PROJECT_MEMBER_ROLES = ["lead", "developer", "backend_developer", "frontend_developer", "qa", "design"];
+export const PROJECT_MEMBER_ROLES = ["lead", "developer", "backend_developer", "frontend_developer", "qa", "design", "client"];
 export function projectMemberUpsertSql(data) {
   const columns = [
     ["id", data.id],
@@ -1458,10 +1482,21 @@ async function emailLogCreate({ data }) {
 async function pendingInviteCreate({ data }) {
   const pk = id();
   await query(
-    "INSERT INTO `pendinginvite` (id, guildConfigId, inviteCode, email) VALUES (?, ?, ?, ?)",
-    [pk, data.guildConfigId, data.inviteCode, data.email],
+    "INSERT INTO `pendinginvite` (id, guildConfigId, inviteCode, email, kind) VALUES (?, ?, ?, ?, ?)",
+    [pk, data.guildConfigId, data.inviteCode, data.email, data.kind ?? "staff"],
   );
   return queryOne("SELECT * FROM `pendinginvite` WHERE id = ?", [pk]);
+}
+
+// Every unclaimed invite for one address, newest first: /verify uses this to
+// let an invited client through the email domain rule.
+async function pendingInviteFindByEmail(guildConfigId, email) {
+  const e = String(email ?? "").trim().toLowerCase();
+  if (!e) return [];
+  return query(
+    "SELECT * FROM `pendinginvite` WHERE guildConfigId = ? AND LOWER(email) = ? ORDER BY createdAt DESC",
+    [guildConfigId, e],
+  );
 }
 
 async function pendingInviteFindByGuild(guildConfigId) {
@@ -2409,6 +2444,7 @@ const db = {
   pendingInvite: {
     create: pendingInviteCreate,
     findByGuild: pendingInviteFindByGuild,
+    findByEmail: pendingInviteFindByEmail,
     deleteByCode: pendingInviteDeleteByCode,
   },
   emailLog: {

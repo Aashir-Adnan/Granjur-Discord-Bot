@@ -4,6 +4,7 @@ import { isValidZone, guildZone, zoneLabel, localZone } from "../utils/timezone.
 import { parseWhen } from "../utils/parseWhen.js";
 import { discordDateTime } from "../utils/discordTime.js";
 import { syncGuildNow } from "../services/docsSync.js";
+import { ensureSupportChannels } from "../services/clientAccess.js";
 
 export const data = new SlashCommandBuilder()
   .setName("setup")
@@ -50,6 +51,18 @@ export async function execute(interaction) {
 
   const cfg = await getOrCreateGuildConfig(guild.id);
   const tzInput = interaction.options.getString("timezone");
+
+  // Before the timezone branch, which returns: `/setup timezone:x` is still a
+  // /setup, and the support pair is the one thing this command is relied on to
+  // create on a live server. Idempotent — it creates the Client role and the
+  // support pair if they are missing, repairs their overwrites, re-pins the
+  // manual — and cheap when all is well. The timezone reply does not mention it.
+  let support = null;
+  try {
+    support = await ensureSupportChannels(guild, cfg, { botUserId: interaction.client?.user?.id ?? null });
+  } catch (e) {
+    console.warn("[setup] support channels:", e?.message ?? e);
+  }
 
   if (tzInput) {
     if (!isValidZone(tzInput)) {
@@ -98,6 +111,12 @@ export async function execute(interaction) {
     value: src
       ? `${total} page(s) from \`${src.owner}/${src.repo}\`\nLast synced: ${src.lastSyncedAt ? `<t:${Math.floor(new Date(src.lastSyncedAt).getTime() / 1000)}:R>` : "_never_"}${src.lastError ? `\nLast error: \`${String(src.lastError).slice(0, 200)}\`` : ""}`
       : "_not configured — press Sync to set it up_",
+    inline: false,
+  });
+
+  embed.addFields({
+    name: "Client support",
+    value: support ? `<#${support.text.id}> and <#${support.voice.id}> · role **${support.role.name}**` : "_could not be set up — check the bot's Manage Channels / Manage Roles permissions_",
     inline: false,
   });
 

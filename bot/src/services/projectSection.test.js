@@ -37,7 +37,7 @@ function candidate(over = {}) {
 test('names follow the spec', () => {
   assert.equal(categoryNameFor(project), '📂 FRAMEWORK')
   assert.equal(channelNameFor(project, 'frontend-chat'), 'framework-frontend-chat')
-  assert.equal(SECTIONS.length, 10)
+  assert.equal(SECTIONS.length, 12)
   assert.deepEqual(SECTIONS.map((s) => s.key).slice(0, 3), ['members', 'documentation', 'meetings'])
 })
 
@@ -55,6 +55,8 @@ test('the section table matches the constraints, suffix and type', () => {
       ['backendVoice', 'backend-voice', 'voice'],
       ['databaseChat', 'database-chat', 'text'],
       ['databaseVoice', 'database-voice', 'voice'],
+      ['support', 'support', 'text'],
+      ['supportVoice', 'support-voice', 'voice'],
     ]
   )
 })
@@ -72,12 +74,12 @@ test('a long slug is truncated, the suffix never is, and no hyphen is left dangl
   assert.equal(channelNameFor(hyphen, 'members'), `${'a'.repeat(91)}-members`)
 })
 
-test('a fresh project creates the role, the category and all ten channels', () => {
+test('a fresh project creates the role, the category and all twelve channels', () => {
   const plan = planProjectSection(project, empty)
   assert.equal(plan.role.action, 'create')
   assert.equal(plan.role.name, 'Framework')
   assert.equal(plan.category.action, 'create')
-  assert.equal(plan.channels.length, 10)
+  assert.equal(plan.channels.length, 12)
   assert.ok(plan.channels.every((c) => c.action === 'create'))
   assert.equal(plan.warnings.length, 0)
 })
@@ -182,9 +184,9 @@ test('section channels moved into the category count against the cap, like creat
   }))
   const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', channels, tasks })
   assert.ok(plan.channels.every((c) => c.action === 'move'))
-  // 49 - 0 already in the category - 10 sections arriving = 39, not 49.
-  assert.equal(plan.tasks.filter((t) => t.action === 'both').length, 39)
-  assert.equal(plan.tasks.filter((t) => t.action === 'rename').length, 1)
+  // 49 - 0 already in the category - 12 sections arriving = 37, not 49.
+  assert.equal(plan.tasks.filter((t) => t.action === 'both').length, 37)
+  assert.equal(plan.tasks.filter((t) => t.action === 'rename').length, 3)
   assert.ok(plan.warnings.some((w) => /full|cap/i.test(w)))
 })
 
@@ -421,7 +423,7 @@ test('observeProjectSection falls back to a name match only when a stored id no 
 
 // --- applyProjectSection ----------------------------------------------------
 
-test('a fresh section creates the role, the category with its two overwrites, and ten inheriting channels', async () => {
+test('a fresh section creates the role, the category with its two overwrites, and twelve inheriting channels', async () => {
   const guild = fakeGuild()
   const db = fakeDb()
   const plan = planProjectSection(project, empty)
@@ -454,14 +456,14 @@ test('a fresh section creates the role, the category with its two overwrites, an
     ],
   })
 
-  assert.equal(chCalls.length, 10)
+  assert.equal(chCalls.length, 12)
   assert.ok(chCalls.every((c) => c.parent === 'new-1'), 'every section channel sits in the new category')
   assert.ok(chCalls.every((c) => c.permissionOverwrites === undefined), 'section channels inherit')
   assert.equal(chCalls[0].name, 'framework-members')
   assert.equal(chCalls[0].type, ChannelType.GuildText)
   assert.equal(chCalls[3].name, 'framework-meeting-voice')
   assert.equal(chCalls[3].type, ChannelType.GuildVoice)
-  assert.equal(out.created.length, 11)
+  assert.equal(out.created.length, 13)
   assert.equal(out.warnings.length, 0)
   assert.equal(out.category.id, 'new-1')
   assert.equal(out.role.id, 'role-1')
@@ -715,7 +717,7 @@ test('a Discord error on one channel becomes a warning and the rest of the run c
   const out = await quiet(() => applyProjectSection(guild, stored, plan, { db }))
 
   assert.ok(out.warnings.some((w) => /Missing Permissions/.test(w)), out.warnings.join(' | '))
-  assert.equal(guild.channels.calls.length, 9, 'the other nine section channels were still created')
+  assert.equal(guild.channels.calls.length, 11, 'the other eleven section channels were still created')
   assert.equal(db.calls.length, 1)
   assert.equal(db.calls[0].data.discordChannels.members, 'm1', 'the id it already had is still recorded')
 })
@@ -737,7 +739,7 @@ test('applyProjectSection persists the three columns in ONE update, keeping what
   assert.equal(data.discordCategoryId, 'c1')
   assert.equal(data.discordRoleId, 'role-1')
   assert.equal(data.discordChannels.documentation, 'd1')
-  assert.equal(Object.keys(data.discordChannels).length, 10)
+  assert.equal(Object.keys(data.discordChannels).length, 12)
 })
 
 // B4: this test used to assert the opposite — `permissionOverwrites: []`, a
@@ -858,7 +860,7 @@ test('a members panel failure is a warning at worst, never a throw', async () =>
   // roster — without it this test would pass by never reaching the panel.
   const out = await quiet(() => applyProjectSection(guild, project, plan, { db: fakeDb(), members: [] }))
 
-  assert.equal(out.created.length, 11)
+  assert.equal(out.created.length, 13)
   assert.equal(out.tasks, 0)
 })
 
@@ -957,7 +959,7 @@ test('a run with no db seam warns that the ids went unsaved, and does not throw'
 
   const out = await applyProjectSection(guild, project, plan, {})
 
-  assert.equal(out.created.length, 11, 'the section is still built')
+  assert.equal(out.created.length, 13, 'the section is still built')
   assert.ok(
     out.warnings.some((w) => /Framework/.test(w) && /not saved/i.test(w)),
     out.warnings.join(' | ')
@@ -1329,7 +1331,7 @@ test('a section channel renamed, moved AND opened is still exactly one edit', as
   assert.ok(out.moved.includes('framework-members'))
 })
 
-test('a refused same-named role builds the section shut, and a later adopt_role repairs all ten', async () => {
+test('a refused same-named role builds the section shut, and a later adopt_role repairs all twelve', async () => {
   // The whole A1 path end to end: nine existing projects come out of the
   // backfill like this, and a run that left them permanently invisible with no
   // repair would not be a fix — nothing here may delete a channel.
@@ -1366,11 +1368,11 @@ test('a refused same-named role builds the section shut, and a later adopt_role 
     { adoptRole: true }
   )
   assert.equal(plan2.role.decision, 'adopt')
-  assert.equal(plan2.channels.filter((c) => c.action === 'grant').length, 10)
+  assert.equal(plan2.channels.filter((c) => c.action === 'grant').length, 12)
 
   const out = await applyProjectSection(guild, stored, plan2, { db: fakeDb() })
 
-  assert.equal(out.granted.length, 10, 'every section channel was repaired')
+  assert.equal(out.granted.length, 12, 'every section channel was repaired')
   for (const id of Object.values(saved.discordChannels)) {
     const made = guild.channels.cache.get(id)
     assert.equal(made.edits.length, 1, `${made.name} took more than one edit`)
