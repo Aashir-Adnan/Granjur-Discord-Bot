@@ -206,7 +206,14 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     const lines = [`Added <@${user.id}> to **${project.name}** as **${ROLE_LABEL[role]}**.`]
     const prior = before?.find((m) => m.discordId === user.id) ?? null
     if (role === 'client') {
-      if (prior && prior.role !== 'client') lines.push(await changeRole(guild, project, user.id, 'revoke'))
+      // Revoke the project role whenever the prior role is known NOT to be
+      // `client`, and also when it is unknown at all (`before` came back
+      // null): a member who never held the role has nothing to lose by an
+      // idempotent `roles.remove`, but a converted client silently keeping
+      // the role — all twelve channels — because a roster read blipped is
+      // the one outcome this must never risk. Only skip it, and its sentence,
+      // when re-adding someone already a client, which never held it either.
+      if (prior?.role !== 'client') lines.push(await changeRole(guild, project, user.id, 'revoke'))
       lines.push(await changeClientAccess(guild, project, user.id, 'grant'))
     } else {
       if (prior?.role === 'client') lines.push(await changeClientAccess(guild, project, user.id, 'revoke'))
@@ -242,6 +249,14 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     const stillOn = !!roster?.some((m) => m.discordId === user.id)
     if (!roster) lines.push('I could not re-read the project roster, so I left their channel access alone.')
     else if (stillOn) lines.push('They were added back while this ran, so their channel access stays.')
+    else if (before === null) {
+      // The prior read failed, so which mechanism they held — the role or a
+      // client's channel overwrites — is unknown. Both revokes are
+      // idempotent, so run both rather than guess and leave one behind.
+      await changeRole(guild, project, user.id, 'revoke')
+      await changeClientAccess(guild, project, user.id, 'revoke')
+      lines.push('Their prior role could not be read, so both the project role and support-channel access were taken away.')
+    }
     else if (before?.find((m) => m.discordId === user.id)?.role === 'client') lines.push(await changeClientAccess(guild, project, user.id, 'revoke'))
     else lines.push(await changeRole(guild, project, user.id, 'revoke'))
     if (roster) {

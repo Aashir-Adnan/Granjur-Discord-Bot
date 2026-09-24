@@ -207,9 +207,14 @@ export function renderPlan(project, plan = {}) {
     )
   }
 
-  const clients = plan?.clients ?? { grant: [], revoke: [] }
-  if (clients.grant.length || clients.revoke.length) {
-    lines.push(`Clients: ${clients.grant.length} support-channel access grant(s), ${clients.revoke.length} revoke(s).`)
+  const clients = plan?.clients ?? {}
+  const grants = clients.grant?.length ?? 0
+  const revokes = clients.revoke?.length ?? 0
+  if (grants || revokes) {
+    // `clients.grant` is one entry per member×channel; an operator reads
+    // "channels touched" and "grants to hand out" as two different numbers.
+    const grantChannels = new Set((clients.grant ?? []).map((g) => g.channelId)).size
+    lines.push(`Clients: ${grants} access grant(s) across ${grantChannels} support channel(s), ${revokes} revoke(s).`)
   }
 
   lines.push(...warningLines(plan?.warnings))
