@@ -197,9 +197,9 @@ reads), and by `/setup`'s no-options branch (idempotent — cheap when everythin
 exists; a failure there is caught and reported on the embed rather than aborting the
 whole command).
 
-## The twelve-channel project section
+## The thirteen-channel project section
 
-`projectSection.js`'s `SECTIONS` grew from ten entries to **twelve**: `support` and
+`projectSection.js`'s `SECTIONS` grew from ten entries to **thirteen**: `support` and
 `supportVoice` (suffixes `support`, `support-voice`) join `members`, `documentation`,
 `meetings`, `meetingVoice`, the frontend/backend/database chat+voice pairs. They are
 created like the other ten and so copy the category's overwrites at creation time —
@@ -207,7 +207,7 @@ created like the other ten and so copy the category's overwrites at creation tim
 creation, never cascaded" gotcha `project-sections.md` documents for the rest of the
 section.
 
-`CLIENT_SECTION_KEYS = ['support', 'supportVoice']` names the two channels a project's
+`CLIENT_SECTION_KEYS = ['support', 'supportVoice', 'casual']` names the two channels a project's
 own clients can see. Access to them is **not** the project role — it is one
 `OverwriteType.Member` overwrite per client row, granted/revoked by
 `planClientAccess(observed, { revokeClients })` in `projectSection.js`:
@@ -227,7 +227,7 @@ own clients can see. Access to them is **not** the project role — it is one
 - The applier reports `clientGranted`/`clientRevoked` (channel names) in its result,
   the same shape as the role-overwrite `grant`/`opens` repair.
 
-**A client row fed to the role sync opens all twelve channels** — the project role's
+**A client row fed to the role sync opens all thirteen channels** — the project role's
 overwrite is on every section channel, where a client's own overwrite opens only the
 two support channels. `staffOnly` — at the one line in `project-setup.js` that feeds
 `syncProjectRoleMembers` (`staffOnly(roster)`, filtering out `role === 'client'` rows)
@@ -248,7 +248,7 @@ overwrites exactly as for the project role.
 known to be `'client'`** — including when the prior roster read itself failed (`before`
 came back `null`). `roles.remove` is idempotent, so a member who never held the project
 role loses nothing by an extra, unneeded revoke call; the one outcome this must never
-risk is a converted client **silently keeping** the project role — all twelve channels —
+risk is a converted client **silently keeping** the project role — all thirteen channels —
 because a roster read blipped. The revoke is skipped only when re-adding someone already
 a client, who never held the role either. `/project-members remove`, symmetrically, runs
 **both** the role revoke and the client-overwrite revoke when the prior role could not be
@@ -375,6 +375,12 @@ description. Attachments are `screenshot`, `screenshot2`, `document`. Because
 `createTaskTicketChannel` shows only the first 1000 characters of a description, a longer one is
 also posted in full as `**Full details**` messages (`chunkText`, 1900 per message) right after
 the pinned embed.
+
+## The casual chat (2026-09-24)
+
+Each project section also has `<slug>-casual-chat`, visible to the project role and to the
+project's clients by the same per-client member overwrite as the support pair — it is simply the
+third entry in `CLIENT_SECTION_KEYS`. The manual is pinned only in `<slug>-support`.
 
 ## Related
 

@@ -41,7 +41,7 @@ async function quiet(fn) {
 }
 
 test('CLIENT_SECTION_KEYS and storedChannels are exported for the commands', () => {
-  assert.deepEqual(CLIENT_SECTION_KEYS, ['support', 'supportVoice'])
+  assert.deepEqual(CLIENT_SECTION_KEYS, ['support', 'supportVoice', 'casual'])
   assert.deepEqual(storedChannels({ discordChannels: '{"support":"s"}' }), { support: 's' })
 })
 
