@@ -287,6 +287,58 @@ test('a task carrying a projectId gets a channel inside that project, looked up 
   assert.equal(created[0].parent, 'projcat')
 })
 
+test('the channel opened for a newly assigned task lands in the bucket for its new status', async () => {
+  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null, type: ChannelType.GuildCategory }
+  const bucketCategory = { id: 'b-prog', name: '📂 FRAMEWORK · IN PROGRESS', parentId: null, type: ChannelType.GuildCategory }
+  const catMap = new Map([[projectCategory.id, projectCategory], [bucketCategory.id, bucketCategory]])
+  const created = []
+  const dms = []
+  const client = {
+    channels: { fetch: async () => null },
+    users: { fetch: async (id) => ({ send: async (m) => dms.push([id, m]) }) },
+  }
+  const guild = {
+    id: 'g1',
+    channels: {
+      cache: {
+        get: (id) => catMap.get(id) ?? null,
+        find: () => null,
+        values: () => catMap.values(),
+      },
+      create: async (o) => {
+        created.push(o)
+        return { id: 'newchan', type: ChannelType.GuildText, name: o.name, parentId: o.parent, guild: { id: 'g1' }, send: async () => ({ id: 'm' }) }
+      },
+    },
+  }
+  let lookedUpId = null
+  const dbFake = {
+    project: {
+      findFirst: async ({ where }) => {
+        lookedUpId = where.id
+        return { id: 'p1', name: 'Framework', discordCategoryId: 'projcat', discordChannels: { bucketInProgress: 'b-prog' } }
+      },
+    },
+  }
+  const task = {
+    id: 'aaaaaabbbbbbcccccc123456',
+    title: 'Add booking rules',
+    type: 'feature',
+    status: 'open',
+    assigneeIds: [],
+    discordChannelId: null,
+    projectId: 'p1',
+  }
+  const out = await notifyTaskUpdate({
+    client, guild, task, before: task,
+    updates: { assigneeIds: ['11'], status: 'in_progress' }, actorId: '99', db: dbFake,
+  })
+  assert.equal(lookedUpId, 'p1')
+  assert.equal(out.created, true)
+  // The fresh channel lands in the bucket for the NEW status, not the section.
+  assert.equal(created[0].parent, 'b-prog')
+})
+
 test('a field edit posts in the task channel and DMs nobody', async () => {
   const posts = []
   const grants = []

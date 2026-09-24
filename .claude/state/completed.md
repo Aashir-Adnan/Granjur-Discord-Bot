@@ -4,6 +4,42 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-25 — Per-project status buckets for ticket channels (BUILT, AWAITING MERGE)
+
+Three sibling categories per project (Open/In progress/Done) that every ticket channel now
+files into by status and moves between on any status write, in place of sitting loose in the
+section category forever. Finished tickets lock and get a 14-day removal stamp
+(`task.channelRetireAt`, hourly sweep) instead of `/close-feature`/`/resolve-bug`'s old
+five-minute `setTimeout`. New: `bot/src/utils/statusBuckets.js` (the bucket table, a leaf),
+`bot/src/utils/projectStore.js` (`cut`/`storedChannels`, moved out of `projectSection.js` and
+re-exported), `bot/src/services/ticketBucketMove.js` (the mover, called from `applyTaskUpdate`),
+`bot/src/services/ticketRetire.js` (lock/unlock, stamp, hourly sweep), migration
+`026_task_channel_retire.sql`. Changed: `taskTicketChannel.js` (`resolveParentCategory` gains a
+bucket-first placement step and `placed`), `projectSection.js` (`planBuckets`/`planTasks`, apply
+steps 2b/4/4c), `project-setup.js` (bucket/retire lines in `renderPlan`/`renderResult`),
+`cleanup.js` (`categoryIds` covers bucket ids), `close-feature.js`/`resolve-bug.js` (move instead
+of schedule-delete), `bot/src/index.js` (`startTicketRetireSweep`). Nine implementation tasks
+(commits `d635188..e691909` on `feat/status-buckets`, base `56f4e56`) plus this documentation
+task. Knowledge: `.claude/knowledge/status-buckets.md` (new); `project-sections.md` and
+`README.md` updated. Spec `docs/superpowers/specs/2026-09-24-status-buckets-design.md` gained a
+dated Corrections section. Full ruling-by-ruling record:
+`.superpowers/sdd/2026-09-24-status-buckets/progress.md`. Not yet merged to `main`.
+
+Two whole-branch review fix waves followed the build. **Round 1, `dd810f6`**: bucket position
+units (`rawPosition` vs the `position` getter), binding a bucket before its repair edit, bucket-
+aware `projectFromChannel`, and the result wording. **Round 2** (final review), the single commit
+`fix(buckets): never touch a non-ticket channel, sweep backoff, read-only notice` — the tip of
+`feat/status-buckets` as of this entry: the
+mover and the sweep now both refuse a channel `isTicketChannel` does not recognise — an
+unassigned meeting task carries the meeting's shared review channel id, and finishing it used to
+move, lock, stamp and eventually delete that channel; a failed sweep delete pushes its stamp
+`RETRY_AFTER_MS` (6h) forward instead of shadowing every newer row forever, and 10003 from
+`delete()` now counts as gone; `/update-task`, the task hub and the site board post the
+read-only / writable-again sentence the two commands already posted; a backfill `move` is
+parent-only; `schema.sql` carries `channelRetireAt`. Reports:
+`.superpowers/sdd/2026-09-24-status-buckets/task-8-report.md` and `final-fix-report.md`.
+1178 tests pass.
+
 ## 2026-09-24 — /request-task: support tasks as a third kind (MERGED, PUSHED)
 
 Client-requested segmentation. `type='task'` with both flags off; `task-` channel prefix, `Task:`

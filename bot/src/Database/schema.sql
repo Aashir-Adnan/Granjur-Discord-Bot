@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS task (
   meetingId VARCHAR(36) DEFAULT NULL,
   parentTaskId VARCHAR(36) DEFAULT NULL,
   estimateMinutes INT DEFAULT NULL,
+  channelRetireAt DATETIME DEFAULT NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   KEY (guildConfigId),
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS task (
   UNIQUE KEY uq_task_externalId (externalId),
   KEY idx_task_meetingId (meetingId),
   KEY idx_task_parent (parentTaskId),
+  KEY idx_task_channelRetireAt (channelRetireAt),
   FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE,
   FOREIGN KEY (repositoryId) REFERENCES repository(id) ON DELETE SET NULL
 );

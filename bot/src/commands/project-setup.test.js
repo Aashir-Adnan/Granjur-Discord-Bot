@@ -330,11 +330,15 @@ test('a run with project: applies the plan, syncs the role, and replies with the
   await quiet(() => execute(it, { db, getConfig }))
 
   assert.equal(guild.roles.calls.length, 1, 'the project role was created')
-  // One category plus the twelve section channels.
-  assert.equal(guild.channels.calls.length, 14)
+  // One category, its three status buckets and the thirteen section channels.
+  assert.equal(guild.channels.calls.length, 17)
   assert.equal(taskChannel.edits.length, 1, 'the task channel moved in one edit')
-  const category = [...guild.channels.cache.values()].find((c) => c.type === ChannelType.GuildCategory)
-  assert.equal(taskChannel.edits[0].parent, category.id, 'it moved into the new category')
+  // A ticket lands in the bucket its status files it into, not the section
+  // category — this one has no status, so it files as open.
+  const openBucket = [...guild.channels.cache.values()].find(
+    (c) => c.type === ChannelType.GuildCategory && / OPEN$/.test(c.name)
+  )
+  assert.equal(taskChannel.edits[0].parent, openBucket.id, 'it moved into its OPEN bucket')
   const saved = db.calls.find((c) => c[0] === 'project.update')
   assert.ok(saved, 'the ids were saved')
   assert.equal(saved[1].where.id, 'p1')
@@ -345,11 +349,11 @@ test('a run with project: applies the plan, syncs the role, and replies with the
 
   const content = it.replies[0].content
   // The task channel is counted in `moved` AND in `tasks`, so it is named once
-  // as a count and once as a breakdown of that count — fourteen objects, not
-  // fifteen.
+  // as a count and once as a breakdown of that count — seventeen objects (the
+  // category, its three status buckets and the thirteen channels), not eighteen.
   assert.equal(
     content.split('\n')[0],
-    '**Framework** — 14 created, 1 moved (incl. 1 task channel).'
+    '**Framework** — 17 created, 1 moved (incl. 1 task channel).'
   )
   assert.match(content, /1 granted/)
 })
@@ -408,18 +412,21 @@ test('a project named after a managed role is reported, and the rest of the sect
 })
 
 test('the reply carries the planner\'s warnings, not only the applier\'s', async () => {
-  // A category already holding enough channels that a task channel cannot move
-  // in: that warning is the PLANNER's, and only a merged list shows it.
+  // A ticket's status BUCKET already holding enough channels that the ticket
+  // cannot move in — tickets no longer share the section category, so the room
+  // that runs out is the bucket's. That warning is the PLANNER's, and only a
+  // merged list shows it.
   const category = fakeChannel('cat1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
-  const filler = Array.from({ length: 45 }, (_, i) =>
-    fakeChannel(`f${i}`, `filler-${i}`, { parentId: 'cat1' })
+  const bucket = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory })
+  const filler = Array.from({ length: 49 }, (_, i) =>
+    fakeChannel(`f${i}`, `filler-${i}`, { parentId: 'b-open' })
   )
   const taskChannel = fakeChannel('tc1', 'feature-0145e3', { parentId: 'OUTSIDE' })
   const db = fakeDb({
-    projects: [{ ...PROJECT, discordCategoryId: 'cat1' }],
+    projects: [{ ...PROJECT, discordCategoryId: 'cat1', discordChannels: { bucketOpen: 'b-open' } }],
     tasks: [{ id: 't1', projectId: 'p1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' }],
   })
-  const guild = fakeGuild({ channels: [category, ...filler, taskChannel] })
+  const guild = fakeGuild({ channels: [category, bucket, ...filler, taskChannel] })
   const it = fakeInteraction({ guild, opts: { project: 'p1' } })
 
   await quiet(() => execute(it, { db, getConfig }))
@@ -1001,7 +1008,7 @@ test('a bot without Administrator is warned that it will not see the sections it
   assert.match(content, /will not be able to see the private sections/)
   // A warning, never a refusal: the section is still built.
   assert.equal(guild.roles.calls.length, 1, 'the role was still created')
-  assert.equal(guild.channels.calls.length, 14, 'the category and its thirteen channels were still created')
+  assert.equal(guild.channels.calls.length, 17, 'the category, its three status buckets and its thirteen channels were still created')
 })
 
 test('a bot WITH Administrator is not warned', async () => {
@@ -1119,4 +1126,38 @@ test('a preview whose roster read fails still renders a plan', async () => {
   await quiet(() => execute(it, { db, getConfig }))
 
   assert.match(it.replies.at(-1).content, /could not be read/)
+})
+
+test('renderPlan lists the buckets, says which bucket each move goes into, and how many tickets will be retired', () => {
+  const out = renderPlan(
+    { name: 'Framework' },
+    {
+      category: { action: 'reuse', id: 'c1', name: '📂 FRAMEWORK' },
+      buckets: [
+        { key: 'open', storeKey: 'bucketOpen', action: 'create', name: '📂 FRAMEWORK · OPEN' },
+        { key: 'inProgress', storeKey: 'bucketInProgress', action: 'reuse', id: 'b', name: '📂 FRAMEWORK · IN PROGRESS' },
+        { key: 'done', storeKey: 'bucketDone', action: 'rename', id: 'd', name: '📂 FRAMEWORK · DONE' },
+      ],
+      tasks: [
+        { taskId: 't1', action: 'move', name: 'feature-a', bucket: 'open' },
+        { taskId: 't2', action: 'both', name: 'bug-b', bucket: 'open' },
+        { taskId: 't3', action: 'move', name: 'feature-c', bucket: 'done', retire: true },
+        { taskId: 't4', action: 'none', name: 'feature-d', bucket: 'done' },
+      ],
+    }
+  )
+  assert.match(out, /Status buckets: 1 to create, 1 to rename, 1 already right/)
+  assert.match(out, /Task channels: 1 to rename and move, 2 to move, 1 already right \(into OPEN: 2, DONE: 1\)/)
+  assert.match(out, /1 finished ticket\(s\) will become read-only and be removed in 14 days/)
+})
+
+test('renderResult counts the buckets and the retired tickets', () => {
+  const out = renderResult({ name: 'Framework' }, {
+    created: ['📂 FRAMEWORK · OPEN', 'framework-members'],
+    buckets: { created: ['📂 FRAMEWORK · OPEN'], renamed: [] },
+    moved: ['feature-a'], tasks: 1, retired: 2,
+  })
+  assert.match(out, /2 created, 1 moved/)
+  assert.match(out, /Status buckets: 1 of those created\./)
+  assert.match(out, /2 finished ticket channel\(s\) are now read-only and will be removed in 14 days/)
 })

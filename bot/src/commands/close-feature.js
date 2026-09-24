@@ -1,7 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js'
 import db from '../db/index.js'
-import { lockChannelAndScheduleDeletion } from '../utils/channels.js'
-import { EPHEMERAL } from '../constants.js'
+import { moveTicketToBucket } from '../services/ticketBucketMove.js'
 
 export const data = new SlashCommandBuilder()
   .setName('close-feature')
@@ -10,12 +9,16 @@ export const data = new SlashCommandBuilder()
     o.setName('doc').setDescription('Optional Markdown write-up of what was built — browsable under /docs → Ticket docs').setRequired(false)
   )
 
-export async function execute(interaction) {
+/**
+ * @param {import('discord.js').ChatInputCommandInteraction} interaction already deferred
+ * @param {{db?: object, move?: typeof moveTicketToBucket}} [deps]
+ */
+export async function execute(interaction, { db: dbArg = db, move = moveTicketToBucket } = {}) {
   const channel = interaction.channel
   const guild = interaction.guild
   if (!guild || !channel) return interaction.editReply({ content: 'Use this in a server channel.' })
 
-  const feature = await db.feature.findFirst({ where: { discordChannelId: channel.id } })
+  const feature = await dbArg.feature.findFirst({ where: { discordChannelId: channel.id } })
   if (!feature) {
     return interaction.editReply({
       content: 'This command can only be used inside a **feature ticket** channel. Open one with **/create-task** (choose Feature) first.',
@@ -44,19 +47,19 @@ export async function execute(interaction) {
   // held hostage to a write-up nobody has yet.
 
   if (content) {
-    const doc = await db.ticketDoc.findFirst({ where: { taskId: feature.id } })
+    const doc = await dbArg.ticketDoc.findFirst({ where: { taskId: feature.id } })
     if (doc) {
-      await db.ticketDoc.update({ where: { id: doc.id }, data: { content } })
+      await dbArg.ticketDoc.update({ where: { id: doc.id }, data: { content } })
     } else {
       // Meeting-generated tasks never got a ticketdoc row at creation; make one
       // so the write-up is browsable under /docs → Ticket docs like any other.
-      await db.ticketDoc.create({
+      await dbArg.ticketDoc.create({
         data: { guildConfigId: feature.guildConfigId, ticketType: 'feature', taskId: feature.id, title: feature.title?.slice(0, 512) || 'Feature', content },
       })
     }
   }
 
-  await db.feature.update({ where: { id: feature.id }, data: { status: 'closed', implementationStatus: 'done' } })
+  await dbArg.feature.update({ where: { id: feature.id }, data: { status: 'closed', implementationStatus: 'done' } })
 
   const embed = new EmbedBuilder()
     .setTitle('Feature ticket closed')
@@ -69,6 +72,12 @@ export async function execute(interaction) {
     .setColor(0x57f287)
 
   await interaction.editReply({ embeds: [embed] }).catch(() => {})
-  await channel.send({ content: 'This feature ticket has been closed. This channel will be locked and deleted in 5 minutes.', embeds: [embed] }).catch(() => {})
-  await lockChannelAndScheduleDeletion(channel)
+  await channel.send({ content: 'This feature ticket has been closed. This channel is now read-only and will be removed in 14 days.', embeds: [embed] }).catch(() => {})
+  // Into the project's Done bucket, locked, stamped for deletion in 14 days.
+  // The same mover every other status writer uses.
+  try {
+    await move({ guild, task: feature, before: feature, updates: { status: 'closed' }, db: dbArg })
+  } catch (e) {
+    console.warn('[close-feature] bucket move:', e?.message || e)
+  }
 }

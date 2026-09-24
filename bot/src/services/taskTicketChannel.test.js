@@ -386,3 +386,64 @@ test('dmTaskAssignees takes a headline, so a lead is not told they were "assigne
   assert.match(dms[0][1], /^A client raised \*\*Login fails\*\* — discuss it in <#chan1>\./)
   assert.ok(!dms[0][1].includes("You've been assigned"))
 })
+
+// ---- status buckets ---------------------------------------------------------
+const bucketCat = (id, name) => ({ id, name, parentId: null, type: ChannelType.GuildCategory })
+const bucketed = () => ({
+  id: 'p1', name: 'Framework', discordCategoryId: 'projcat', discordRoleId: 'r1',
+  discordChannels: { bucketOpen: 'b-open', bucketInProgress: 'b-prog', bucketDone: 'b-done' },
+})
+
+test('a project task is parented to the bucket for its status and carries the project role', async () => {
+  const guild = fakeGuildWithChannels([bucketCat('projcat', '📂 FRAMEWORK'), bucketCat('b-open', '📂 FRAMEWORK · OPEN'), bucketCat('b-done', '📂 FRAMEWORK · DONE')])
+  guild.roles = { cache: new Map([['r1', { id: 'r1' }]]) }
+  const out = await createTaskTicketChannel(guild, { taskId: 'abcdef1234567890', title: 'Add rules', memberIds: ['11'], project: bucketed(), type: 'feature', status: 'done' })
+  assert.equal(guild._created[0].parent, 'b-done')
+  assert.equal(out.placed, 'bucket')
+  assert.equal(out.fellBack, null)
+  assert.ok(guild._created[0].permissionOverwrites.some((o) => o.id === 'r1' && o.type === OverwriteType.Role))
+})
+
+test('no status means open; pending is open too', async () => {
+  const guild = fakeGuildWithChannels([bucketCat('projcat', '📂 FRAMEWORK'), bucketCat('b-open', '📂 FRAMEWORK · OPEN')])
+  await createTaskTicketChannel(guild, { taskId: 'a1', title: 'One', memberIds: [], project: bucketed(), type: 'feature' })
+  await createTaskTicketChannel(guild, { taskId: 'a2', title: 'Two', memberIds: [], project: bucketed(), type: 'bug', status: 'pending' })
+  assert.deepEqual(guild._created.map((c) => c.parent), ['b-open', 'b-open'])
+})
+
+test('a bucket that is missing falls back to the section category, still inside the project', async () => {
+  const guild = fakeGuildWithChannels([bucketCat('projcat', '📂 FRAMEWORK')])
+  const out = await createTaskTicketChannel(guild, { taskId: 'a1', title: 'One', memberIds: [], project: bucketed(), type: 'feature', status: 'in_progress' })
+  assert.equal(guild._created[0].parent, 'projcat')
+  assert.equal(out.placed, 'section')
+  assert.equal(out.fellBack, null)
+})
+
+test('a stored bucket id that resolves to a text channel is treated as missing', async () => {
+  const guild = fakeGuildWithChannels([bucketCat('projcat', '📂 FRAMEWORK'), { id: 'b-open', name: 'not-a-category', parentId: null, type: ChannelType.GuildText }])
+  const out = await createTaskTicketChannel(guild, { taskId: 'a1', title: 'One', memberIds: [], project: bucketed(), type: 'feature' })
+  assert.equal(guild._created[0].parent, 'projcat')
+  assert.equal(out.placed, 'section')
+})
+
+test('a full bucket falls back to the section category and warns', async () => {
+  const packed = Array.from({ length: 49 }, (_, i) => ({ id: `c${i}`, name: `chan-${i}`, parentId: 'b-open' }))
+  const guild = fakeGuildWithChannels([bucketCat('projcat', '📂 FRAMEWORK'), bucketCat('b-open', '📂 FRAMEWORK · OPEN'), ...packed])
+  const warnings = []
+  const real = console.warn
+  console.warn = (...a) => warnings.push(a.join(' '))
+  let out
+  try {
+    out = await createTaskTicketChannel(guild, { taskId: 'a1', title: 'One', memberIds: [], project: bucketed(), type: 'feature' })
+  } finally { console.warn = real }
+  assert.equal(guild._created[0].parent, 'projcat')
+  assert.equal(out.placed, 'section')
+  assert.ok(warnings.some((w) => w.includes('open bucket') && w.includes('cap')))
+})
+
+test('with no bucket and no section category the global category is used, as before', async () => {
+  const guild = fakeGuildWithChannels([])
+  const out = await createTaskTicketChannel(guild, { taskId: 'a1', title: 'One', memberIds: [], project: bucketed(), type: 'feature' })
+  assert.equal(out.placed, 'global')
+  assert.equal(out.fellBack, 'missing')
+})

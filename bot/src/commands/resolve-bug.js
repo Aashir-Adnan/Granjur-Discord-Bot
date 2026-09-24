@@ -1,7 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js'
 import db from '../db/index.js'
-import { lockChannelAndScheduleDeletion } from '../utils/channels.js'
-import { EPHEMERAL } from '../constants.js'
+import { moveTicketToBucket } from '../services/ticketBucketMove.js'
 
 export const data = new SlashCommandBuilder()
   .setName('resolve-bug')
@@ -10,12 +9,16 @@ export const data = new SlashCommandBuilder()
     o.setName('doc').setDescription('MD file describing the fix').setRequired(false)
   )
 
-export async function execute(interaction) {
+/**
+ * @param {import('discord.js').ChatInputCommandInteraction} interaction already deferred
+ * @param {{db?: object, move?: typeof moveTicketToBucket}} [deps]
+ */
+export async function execute(interaction, { db: dbArg = db, move = moveTicketToBucket } = {}) {
   const channel = interaction.channel
   const guild = interaction.guild
   if (!guild || !channel) return interaction.editReply({ content: 'Use this in a server channel.' })
 
-  const ticket = await db.bugTicket.findFirst({ where: { discordChannelId: channel.id } })
+  const ticket = await dbArg.bugTicket.findFirst({ where: { discordChannelId: channel.id } })
   if (!ticket) {
     return interaction.editReply({
       content: 'This command can only be used inside a **bug ticket** channel. Open one with **/create-task** (choose Bug) first.',
@@ -45,10 +48,10 @@ export async function execute(interaction) {
     })
   }
 
-  const doc = await db.ticketDoc.findFirst({ where: { taskId: ticket.id } })
-  if (doc) await db.ticketDoc.update({ where: { id: doc.id }, data: { content } })
+  const doc = await dbArg.ticketDoc.findFirst({ where: { taskId: ticket.id } })
+  if (doc) await dbArg.ticketDoc.update({ where: { id: doc.id }, data: { content } })
 
-  await db.bugTicket.update({ where: { id: ticket.id }, data: { status: 'resolved', implementationStatus: 'done' } })
+  await dbArg.bugTicket.update({ where: { id: ticket.id }, data: { status: 'resolved', implementationStatus: 'done' } })
 
   const embed = new EmbedBuilder()
     .setTitle('Bug ticket resolved')
@@ -56,6 +59,12 @@ export async function execute(interaction) {
     .setColor(0x57f287)
 
   await interaction.editReply({ embeds: [embed] }).catch(() => {})
-  await channel.send({ content: 'This bug ticket has been resolved. This channel will be locked and deleted in 5 minutes.', embeds: [embed] }).catch(() => {})
-  await lockChannelAndScheduleDeletion(channel)
+  await channel.send({ content: 'This bug ticket has been resolved. This channel is now read-only and will be removed in 14 days.', embeds: [embed] }).catch(() => {})
+  // Into the project's Done bucket, locked, stamped for deletion in 14 days.
+  // The same mover every other status writer uses.
+  try {
+    await move({ guild, task: ticket, before: ticket, updates: { status: 'resolved' }, db: dbArg })
+  } catch (e) {
+    console.warn('[resolve-bug] bucket move:', e?.message || e)
+  }
 }

@@ -837,6 +837,7 @@ export async function handleCreate(
         memberIds: uniqueSet,
         project: firstProject,
         type: 'feature',
+        status: 'open',
         fields: [
           { name: 'Status', value: 'open', inline: true },
           { name: 'Assignees', value: (assigneeIds.map((id) => `<@${id}>`).join(' ') || 'None'), inline: true },

@@ -398,6 +398,7 @@ async function mirroredStage({ job, db, client, csaasClient }) {
           memberIds: [reviewTask.assigneeRef, approverId],
           project,
           type: row.type,
+          status: 'open',
           fields: [
             { name: 'Status', value: 'open', inline: true },
             { name: 'Assignees', value: `<@${reviewTask.assigneeRef}>`, inline: true },
