@@ -6,12 +6,12 @@ test('two builders: title and details required, the structured fields optional, 
   assert.deepEqual(data.map((b) => b.name), ['report-issue', 'request-feature'])
   const issue = data[0].toJSON().options
   assert.deepEqual(issue.map((o) => o.name), [
-    'title', 'details', 'platform', 'os', 'app_version', 'severity', 'frequency', 'when', 'account', 'steps', 'expected',
+    'title', 'details', 'platform', 'semester', 'os', 'app_version', 'severity', 'frequency', 'when', 'account', 'steps', 'expected',
     'project', 'screenshot', 'screenshot2', 'document',
   ])
   const feature = data[1].toJSON().options
   assert.deepEqual(feature.map((o) => o.name), [
-    'title', 'details', 'platform', 'priority', 'needed_by', 'problem', 'who', 'example',
+    'title', 'details', 'platform', 'semester', 'priority', 'needed_by', 'problem', 'who', 'example',
     'project', 'screenshot', 'screenshot2', 'document',
   ])
   for (const opts of [issue, feature]) {
@@ -27,7 +27,7 @@ test('two builders: title and details required, the structured fields optional, 
 
 test('execute composes the structured fields into the details it hands to create, and collects the screenshots', async () => {
   let got = null
-  const values = { title: 'T', details: 'D', platform: 'Web', os: 'Windows 11', steps: 'click it' }
+  const values = { title: 'T', details: 'D', platform: 'Web', semester: 'Spring 2027', os: 'Windows 11', steps: 'click it' }
   const ix = {
     guild: { id: 'g1' }, user: { id: 'u-c' }, commandName: 'report-issue', replies: [],
     options: {
@@ -41,7 +41,7 @@ test('execute composes the structured fields into the details it hands to create
     getConfig: async () => ({ id: 'cfg1' }),
     create: async (args) => { got = args; return { task: { title: 'T' }, channel: { id: 'c' } } },
   })
-  assert.equal(got.details, '**Platform:** Web · **OS:** Windows 11\n**Steps:** click it\n\nD')
+  assert.equal(got.details, '**Platform:** Web · **Semester:** Spring 2027 · **OS:** Windows 11\n**Steps:** click it\n\nD')
   assert.deepEqual(got.attachments.map((a) => a.name), ['s.png'])
 })
 

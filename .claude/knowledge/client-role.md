@@ -366,8 +366,8 @@ a channel the Client role already has an overwrite on is never touched.
 ## Structured fields on /report-issue and /request-feature (2026-09-24)
 
 Only `title` and `details` are required. The rest come from two tables in `services/clientRequest.js`
-— `ISSUE_FIELDS` (platform, os, app_version, severity, frequency, when, account, steps, expected)
-and `FEATURE_FIELDS` (platform, priority, needed_by, problem, who, example) — which the builder,
+— `ISSUE_FIELDS` (platform, semester, os, app_version, severity, frequency, when, account, steps, expected)
+and `FEATURE_FIELDS` (platform, semester, priority, needed_by, problem, who, example) — which the builder,
 the option reader and `composeDetails()` all read, so a field is added in one place. `group`
 fields share one line joined with ` · `; the rest get a line each; empties are omitted, so a
 client who fills nothing produces exactly the free text. The composed string IS the task

@@ -43,6 +43,7 @@ const PLATFORMS = ['Web', 'Android', 'iOS', 'Windows', 'macOS', 'Linux', 'Other'
  */
 export const ISSUE_FIELDS = [
   { name: 'platform', label: 'Platform', kind: 'choice', choices: PLATFORMS, group: 1, description: 'Where it happened' },
+  { name: 'semester', label: 'Semester', kind: 'text', max: 100, group: 1, description: 'The semester this concerns, e.g. Fall 2026' },
   { name: 'os', label: 'OS', kind: 'text', max: 100, group: 1, description: 'Operating system and version, e.g. Windows 11, iOS 17.4' },
   { name: 'app_version', label: 'App/Browser', kind: 'text', max: 100, group: 1, description: 'Browser or app version, e.g. Chrome 129, App 2.4.1' },
   { name: 'severity', label: 'Severity', kind: 'choice', choices: ['Blocking', 'Major', 'Minor', 'Cosmetic'], group: 2, description: 'How badly it hurts' },
@@ -55,6 +56,7 @@ export const ISSUE_FIELDS = [
 
 export const FEATURE_FIELDS = [
   { name: 'platform', label: 'Platform', kind: 'choice', choices: PLATFORMS, group: 1, description: 'Where it should exist' },
+  { name: 'semester', label: 'Semester', kind: 'text', max: 100, group: 1, description: 'The semester this is for, e.g. Spring 2027' },
   { name: 'priority', label: 'Priority', kind: 'choice', choices: ['Must have', 'Should have', 'Nice to have'], group: 1, description: 'How much it matters to you' },
   { name: 'needed_by', label: 'Needed by', kind: 'text', max: 100, group: 1, description: 'A date, or an event it is needed for' },
   { name: 'problem', label: 'Problem', kind: 'text', max: 1000, description: 'What this solves, and why it is needed' },
