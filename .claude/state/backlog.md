@@ -4,6 +4,20 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Client role — deferred after the 2026-09-24 fix wave
+See `.claude/knowledge/client-role.md` and
+`.superpowers/sdd/2026-09-24-client-role/final-fix-report.md` (Concerns).
+
+- **`pendinginvite` rows never expire** (review Issue 12) — a client invite stays
+  claimable indefinitely.
+- **`denyClientOnPublicChannels` finds the Rules category and `#announcements-all` by
+  name** from the channel cache; a rename or a cold cache means that run does not deny
+  them. Storing their ids at `/init` would make it id-first like everything else.
+- **After deploy, `/setup` must be run once** so a client approved before this wave gets
+  the public-channel denies — nothing re-runs it for existing clients.
+- **No `/setup` test harness** — MINOR 7 (the ensure moved above the timezone branch) is
+  the one fix in that wave with no test of its own.
+
 ## Project Stats — deferred follow-ups
 From the 2026-09-23 build (implemented on branches, not merged — see `completed.md` and
 `session.md`). See `.claude/knowledge/project-tasks-site.md` ("Stats tab and

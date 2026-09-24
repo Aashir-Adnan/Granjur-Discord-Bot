@@ -4,6 +4,30 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-24 — Client role: whole-branch review fix wave
+
+Branch `feat/client-role`, one pass over the final review's findings. Report:
+`.superpowers/sdd/2026-09-24-client-role/final-fix-report.md`. Knowledge:
+`.claude/knowledge/client-role.md` (updated with all of it).
+
+- `d615687` autocomplete was ungated — `autocompleteAllowed` in `config/commands.js`,
+  wired into `handleAutocomplete`; `memberProjectIdsOf` drops `role:'client'` rows.
+- `322cc70` `denyClientOnPublicChannels` in `services/clientAccess.js`: the onboarding
+  channel, the `📜 Rules` category and its children, and `#announcements-all` are the
+  three places /init grants `@everyone: ViewChannel`, so `Verified` never covered them.
+- `e97d1f4` a blocker warning and an unblock notice both put ANOTHER task's title into a
+  client's request channel — both now key off `task.requestedBy`.
+- `d1b05e7` minors: guarded roster read in `/project-setup`; `byStoredId` fetches on a
+  cold cache; a `fetchPinned` rejection is not "no pins"; `/setup timezone:x` runs the
+  ensure; `dmTaskAssignees` takes a `headline`; `/cleanup` protects `🛟 Support` by name;
+  dead `isAllowedEmail`/`allowedDomains` imports out of `invite.js`; knowledge + spec §4
+  corrected (there is no domain check in `/invite`).
+
+Full suite `DATABASE_URL=poisoned://no-production-access npm test` → 1079/1079.
+
+Out of scope, ruled: Issue 10 (picker discards ticked roles, accepted as built),
+Issue 12 (pendinginvite expiry — in the backlog).
+
 ## 2026-09-23 — Project Stats tab, and the Time tab under the shared filters (SHIPPED)
 
 Spec `docs/superpowers/specs/2026-09-23-project-stats-and-time-filters-design.md`, plan

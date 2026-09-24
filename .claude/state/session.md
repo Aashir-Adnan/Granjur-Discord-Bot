@@ -1,52 +1,17 @@
-# Current Session
+# Session
 
-**Date:** 2026-09-23
+## Current
 
-## Goal
-Project Stats tab, and the Time tab under the shared filters — spec
-`docs/superpowers/specs/2026-09-23-project-stats-and-time-filters-design.md`, plan
-`docs/superpowers/plans/2026-09-23-project-stats-and-time-filters.md`.
+Idle. Last work: the single fix wave over the whole-branch review of the **Client role**
+feature, branch `feat/client-role` (`443d6f3..d1b05e7`, four commits). All findings in
+scope are fixed, tested and committed; the full suite is 1079/1079 green.
 
-## Outcome — COMPLETE, SHIPPED
-8 code tasks via subagent-driven development, every task reviewed, 1–2 fix rounds each, a
-final whole-branch review clean after one fix wave. See `completed.md` for the commits
-and files per repo — CSAAS `feat/project-stats` (6 commits `2e8d503..28a6830`), UBS-Doc
-`feat/project-stats` (11 commits `ecfc40f..00ae80c`). Both merged `--no-ff` into `main`
-(CSAAS `9f779d0`, UBS-Doc `c2ad4a4`), suites green on the merged result, branches deleted,
-both pushed and deployed (CSAAS Azure run 35832910941 success; Vercel Production success).
+Report: `.superpowers/sdd/2026-09-24-client-role/final-fix-report.md`
+Knowledge in use: `.claude/knowledge/client-role.md`, `.claude/knowledge/project-sections.md`
+Rules in force: `.claude/rules/tests-never-touch-production.md` — every run was
+`DATABASE_URL=poisoned://no-production-access`.
 
-## Decisions worth not re-litigating
-- Time series come from the new `/api/discord/projects/stats` endpoint; snapshot numbers
-  come from the tasks payload (activity capped at 15/task there).
-- Completions are bucketed by DB-local day via `toMysqlUtc(...).slice(0,10)` so all
-  series share one frame.
-- Assignee options are the roster on every tab; `timeSelfScoped` hides the Assignee
-  select on Time only.
-- Under self scope the Time person is always the caller, and no entries request fires
-  before the first report lands.
-- The "Logged vs estimate" tile is hidden under self scope because `timeLogged` on the
-  tasks payload is NOT permission-gated (pre-existing exposure — see `backlog.md`).
-- Sparkline draws a flat line for all-zero.
-- Charts are hand-rolled SVG, with all math in `statsLogic.ts` (tested). No chart
-  library.
-- A zero-task project has no overview card (`applyFilters` drops it — consistent with
-  People/Tasks).
+## Next
 
-## Still unverified
-A manual browser walkthrough of the Time and Stats tabs was NOT performed — the devtools
-tooling could not attach to the owner's running Chrome. What the owner should check:
-overview cards/rings/sparklines, a card click setting the Project filter, the "View
-tasks" deep link, the KPI row, member bars, all four chart tooltips, Monday labels under
-90d/All, Assignee narrowing, the 30/90/All refetch, both themes, and that the Time and
-Stats tabs show only Project + Assignee in the filter bar.
-
-The UBS-Doc working tree also carries unrelated uncommitted changes from other work
-(`src/components/meetingWorkflow/LiveTranscribeStage.jsx`, `src/styles/portal-compat.css`,
-`audioCapture*.js`) that were deliberately left untouched throughout this build.
-
-## Next step
-The owner walked through the Time and Stats tabs on production on 2026-09-23 and confirmed
-both work. Nothing pending on this feature except the backlog decisions (notably the ungated
-`timeLogged` on `/api/discord/tasks`).
-Nothing else is pending on this feature; see `backlog.md`'s "Project Stats — deferred
-follow-ups" for what was consciously left for later.
+A scoped re-review of this wave follows from the controller. Deferred items are in
+`.claude/state/backlog.md` under "Client role — deferred after the 2026-09-24 fix wave".
