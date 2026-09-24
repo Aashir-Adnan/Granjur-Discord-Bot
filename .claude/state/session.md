@@ -47,6 +47,9 @@ Rule in force: `.claude/rules/tests-never-touch-production.md`.
   The owner must run `/setup` once more to apply it to the other public channels for the
   existing client; `#time-reports` itself self-heals on the bot's first tick after the deploy.
 
+- Owner asked for structured fields on the two raising commands → shipped (optional fields,
+  screenshots, full-details follow-up when the embed would cut the text).
+
 ## Open items
 See `backlog.md` → "Client role — deferred follow-ups". The one worth raising first: both gates
 fail open when the member cannot be resolved (read `interaction.member`).

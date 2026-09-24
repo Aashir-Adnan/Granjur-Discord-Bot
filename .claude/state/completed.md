@@ -4,6 +4,15 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-24 — Structured fields + screenshots on client requests (MERGED, PUSHED)
+
+Owner asked for the fields a developer always goes back for. `/report-issue` gains platform, os,
+app_version, severity, frequency, when, account, steps, expected; `/request-feature` gains
+platform, priority, needed_by, problem, who, example — all optional, composed by
+`composeDetails()` into a header above the free text (one table per command drives builder,
+reader and composer). Attachments are now `screenshot`, `screenshot2`, `document`. A description
+over the embed's 1000-character cut is also posted in full below it. 1092 tests.
+
 ## 2026-09-24 — Clients could see #time-reports: the public-channel deny is now derived (MERGED, PUSHED)
 
 Owner found the first client could see `#time-reports`. Root cause: `denyClientOnPublicChannels`
