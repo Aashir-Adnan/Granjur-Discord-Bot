@@ -115,7 +115,8 @@ export function ownsChannel(taskId, channel, storedChannelId = null) {
 /**
  * When `blockerTask` reaches a terminal status, what to tell each task it was
  * holding. Only tasks with a channel of their own get a notice — nowhere else
- * to post it. Pure aside from the db reads.
+ * to post it — and never a client's own request channel, whose audience
+ * includes the client. Pure aside from the db reads.
  */
 export async function unblockNotices({ db: dbArg = db, guildConfigId, blockerTask }) {
   const holding = await dbArg.taskDependency.findByBlocker({ where: { blockedByTaskId: blockerTask.id } })
@@ -124,6 +125,9 @@ export async function unblockNotices({ db: dbArg = db, guildConfigId, blockerTas
   const out = []
   for (const t of blocked) {
     if (!t.discordChannelId) continue
+    // The notice quotes the BLOCKER's title. A client request's channel has the
+    // client in it, so that is another task's title landing in front of them.
+    if (t.requestedBy) continue
     const rows = await dbArg.taskDependency.findByTask({ where: { taskId: t.id } })
     const others = await dbArg.task.findByIds({ where: { guildConfigId, ids: rows.map((r) => r.blockedByTaskId) } })
     const byId = Object.fromEntries(others.map((o) => [o.id, o]))
@@ -231,7 +235,11 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
     const lines = changeSummary(before, updates, { omit: task.requestedBy ? ['estimateMinutes'] : [] })
     if (added.length) lines.unshift(`**assigned to** ${added.map((id) => `<@${id}>`).join(' ')}`)
     if (removed.length) lines.push(`**unassigned** ${removed.map((id) => `<@${id}>`).join(' ')}`)
-    if (warning) lines.push(warning)
+    // A warning names ANOTHER task ("Still blocked by: **Router**"). In a
+    // client's request channel that is a title they have no business reading,
+    // so it is dropped from the post — it still goes back to the command's own
+    // reply, which is ephemeral to the developer who typed it.
+    if (warning && !task.requestedBy) lines.push(warning)
     lines.push(...extraLines)
     if (lines.length) {
       // No Discord id when the change came from the site; `actorLabel` then
