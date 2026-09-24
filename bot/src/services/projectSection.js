@@ -38,6 +38,9 @@ import { taskChannelName, taskChannelTopic, isTicketChannel, MAX_CHANNEL_NAME } 
 import { MANAGED_ROLES } from '../utils/roleSync.js'
 import { ensureMembersPanel } from './projectMembersPanel.js'
 import { CATEGORY_SOFT_CAP } from '../constants.js'
+// `clientAccess.js` imports `db/index.js`; this module already does through
+// `projectMembersPanel.js`, so this adds no new database import to a leaf.
+import { CLIENT_TEXT_ALLOW_OBJ, CLIENT_VOICE_ALLOW_OBJ } from './clientAccess.js'
 
 // The cap lives in `constants.js`, a leaf: `taskTicketChannel.js` needs it too,
 // and importing this module into that leaf helper pulled the whole database
@@ -47,7 +50,7 @@ export { CATEGORY_SOFT_CAP }
 /** Discord's cap on a category name, the same 100 as a channel name. */
 const MAX_CATEGORY_NAME = 100
 
-/** The ten section channels, in creation order. */
+/** The twelve section channels, in creation order. */
 export const SECTIONS = [
   { key: 'members', suffix: 'members', type: 'text' },
   { key: 'documentation', suffix: 'documentation', type: 'text' },
@@ -59,7 +62,12 @@ export const SECTIONS = [
   { key: 'backendVoice', suffix: 'backend-voice', type: 'voice' },
   { key: 'databaseChat', suffix: 'database-chat', type: 'text' },
   { key: 'databaseVoice', suffix: 'database-voice', type: 'voice' },
+  { key: 'support', suffix: 'support', type: 'text' },
+  { key: 'supportVoice', suffix: 'support-voice', type: 'voice' },
 ]
+
+/** The two channels a project's clients can see. Access is a member overwrite per client row. */
+export const CLIENT_SECTION_KEYS = ['support', 'supportVoice']
 
 const fold = (s) => String(s ?? '').trim().toLowerCase()
 const MANAGED_FOLDED = new Set(MANAGED_ROLES.map(fold))
@@ -324,6 +332,25 @@ function planChannels(project, observed, role) {
 }
 
 /**
+ * Per-client access on the two support channels: a member overwrite per
+ * client row. `revokeClients:false` is the twin of the role sync's grant-only
+ * mode — a roster that could not be read in full must not take access away.
+ */
+function planClientAccess(observed, { revokeClients = true } = {}) {
+  const wanted = observed?.clientIds ?? []
+  const grant = []
+  const revoke = []
+  for (const key of CLIENT_SECTION_KEYS) {
+    const channelId = observed?.channels?.[key]?.id
+    const access = observed?.clientAccess?.[key]
+    if (!channelId || !access) continue
+    for (const memberId of access.missing ?? []) grant.push({ key, channelId, memberId })
+    if (revokeClients) for (const memberId of access.stale ?? []) revoke.push({ key, channelId, memberId })
+  }
+  return { wanted, grant, revoke }
+}
+
+/**
  * True when a channel inside the section is known to lack the project role's
  * overwrite. A role about to be created is on no channel yet; an unreadable
  * overwrite list is never guessed at; and a section with no gate role — a
@@ -469,7 +496,8 @@ export function planProjectSection(project, observed = {}, opts = {}) {
   // Passed through as observed: what the applier will edit is exactly what a
   // preview lists.
   const voice = observed.voiceActivity ?? { category: [], channels: [] }
-  return { role, category, channels, tasks, voice, warnings }
+  const clients = planClientAccess(observed, opts)
+  return { role, category, channels, tasks, voice, clients, warnings }
 }
 
 // ---------------------------------------------------------------------------
@@ -510,7 +538,7 @@ const valuesOf = (cache) => (cache?.values ? [...cache.values()] : [])
  * `project.discordChannels` is a JSON column: some drivers hand back an object,
  * some the raw string. Anything unparseable is treated as "nothing stored yet".
  */
-function storedChannels(project) {
+export function storedChannels(project) {
   const raw = project?.discordChannels
   if (!raw) return {}
   if (typeof raw === 'object') return { ...raw }
@@ -776,7 +804,7 @@ function roleAllowMerged(channel, roleId) {
  *   on an empty cache. `claimedIds` comes from `claimedSectionIds`.
  */
 export function observeProjectSection(guild, project, tasks = [], opts = {}) {
-  const { rolesFetched = false, claimedIds = null } = opts
+  const { rolesFetched = false, claimedIds = null, clientIds = [] } = opts
   const claimed = claimedIds instanceof Set ? claimedIds : new Set()
   const all = valuesOf(guild?.channels?.cache)
   const byId = new Map(all.map((c) => [c.id, c]))
@@ -840,6 +868,24 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
         // plans a permissions edit on what it can see.
         overwriteIds: overwriteIdsOf(channel),
       }
+    }
+  }
+
+  // Per support channel: which clients lack their member overwrite, and which
+  // member overwrites belong to nobody who is still a client row. Null-safe:
+  // an unreadable overwrite cache plans nothing, as everywhere else here.
+  const wantedClients = [...new Set((clientIds || []).map(String).filter(Boolean))]
+  const clientAccess = {}
+  for (const key of CLIENT_SECTION_KEYS) {
+    const seen = channels[key]
+    if (!seen?.id || !Array.isArray(seen.overwriteIds)) continue
+    const raw = byId.get(seen.id)
+    const memberIds = valuesOf(raw?.permissionOverwrites?.cache)
+      .filter((o) => o?.type === OverwriteType.Member)
+      .map((o) => String(o.id))
+    clientAccess[key] = {
+      missing: wantedClients.filter((id) => !seen.overwriteIds.includes(id)),
+      stale: memberIds.filter((id) => !wantedClients.includes(id)),
     }
   }
 
@@ -916,6 +962,22 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
     // channels the rows point at were left alone and why.
     sharedTaskChannels: sharedChannelIds.size,
     takenNames: new Set(all.map((c) => c.name)),
+    clientAccess,
+    clientIds: wantedClients,
+  }
+}
+
+const clientAllowFor = (key) => (key === 'supportVoice' ? CLIENT_VOICE_ALLOW_OBJ : CLIENT_TEXT_ALLOW_OBJ)
+
+/** One typed edit per client; a failure is one warning, not a stopped run. */
+async function grantClients(channel, key, memberIds, result) {
+  for (const memberId of memberIds) {
+    try {
+      await channel.permissionOverwrites.edit(memberId, clientAllowFor(key), { type: OverwriteType.Member, reason: REASON })
+      result.clientGranted.push(channel.name)
+    } catch (e) {
+      note(result.warnings, `client access on ${channel.name} for ${memberId}`, e)
+    }
   }
 }
 
@@ -958,6 +1020,8 @@ export async function applyProjectSection(
     granted: [],
     opened: [],
     voiceFixed: [],
+    clientGranted: [],
+    clientRevoked: [],
     membersChannel: null,
     tasks: 0,
     warnings: [],
@@ -1061,6 +1125,9 @@ export async function applyProjectSection(
           channelIds[entry.key] = channel.id
           resolved.set(entry.key, channel)
           result.created.push(entry.name)
+          if (CLIENT_SECTION_KEYS.includes(entry.key) && plan?.clients?.wanted?.length) {
+            await grantClients(channel, entry.key, plan.clients.wanted, result)
+          }
           continue
         }
         const channel = guild.channels.cache.get(entry.id)
@@ -1099,6 +1166,25 @@ export async function applyProjectSection(
         ;(entry.action === 'move' ? result.moved : result.renamed).push(entry.name)
       } catch (e) {
         note(result.warnings, `channel "${entry.name}"`, e)
+      }
+    }
+
+    // 3b. Per-client access on the support pair. Presence-only, one member at
+    //     a time — never a whole-array replace that would drop hand-set entries.
+    for (const g of plan?.clients?.grant ?? []) {
+      const channel = resolved.get(g.key) ?? guild.channels.cache.get(g.channelId) ?? null
+      if (!channel) continue
+      await grantClients(channel, g.key, [g.memberId], result)
+    }
+    for (const r of plan?.clients?.revoke ?? []) {
+      const channel = resolved.get(r.key) ?? guild.channels.cache.get(r.channelId) ?? null
+      if (!channel) continue
+      try {
+        await channel.permissionOverwrites.delete(r.memberId, REASON)
+        result.clientRevoked.push(channel.name)
+        console.warn(`[projectSection] client access on "${channel.name}" removed from ${r.memberId}`)
+      } catch (e) {
+        note(result.warnings, `client access on ${channel.name} for ${r.memberId}`, e)
       }
     }
 

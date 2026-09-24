@@ -309,7 +309,7 @@ test('preview:true creates nothing, edits nothing, writes nothing, and prints th
   assert.match(content, /Preview/)
   assert.match(content, /Role: create \*\*Framework\*\*/)
   assert.match(content, /Category: create \*\*📂 FRAMEWORK\*\*/)
-  assert.match(content, /Channels: 9 to create/)
+  assert.match(content, /Channels: 11 to create/)
   assert.match(content, /1 to move/)
 })
 
@@ -328,8 +328,8 @@ test('a run with project: applies the plan, syncs the role, and replies with the
   await quiet(() => execute(it, { db, getConfig }))
 
   assert.equal(guild.roles.calls.length, 1, 'the project role was created')
-  // One category plus the ten section channels.
-  assert.equal(guild.channels.calls.length, 11)
+  // One category plus the twelve section channels.
+  assert.equal(guild.channels.calls.length, 13)
   assert.equal(taskChannel.edits.length, 1, 'the task channel moved in one edit')
   const category = [...guild.channels.cache.values()].find((c) => c.type === ChannelType.GuildCategory)
   assert.equal(taskChannel.edits[0].parent, category.id, 'it moved into the new category')
@@ -343,11 +343,11 @@ test('a run with project: applies the plan, syncs the role, and replies with the
 
   const content = it.replies[0].content
   // The task channel is counted in `moved` AND in `tasks`, so it is named once
-  // as a count and once as a breakdown of that count — twelve objects, not
-  // thirteen.
+  // as a count and once as a breakdown of that count — fourteen objects, not
+  // fifteen.
   assert.equal(
     content.split('\n')[0],
-    '**Framework** — 11 created, 1 moved (incl. 1 task channel).'
+    '**Framework** — 13 created, 1 moved (incl. 1 task channel).'
   )
   assert.match(content, /1 granted/)
 })
@@ -976,7 +976,7 @@ test('a bot without Administrator is warned that it will not see the sections it
   assert.match(content, /will not be able to see the private sections/)
   // A warning, never a refusal: the section is still built.
   assert.equal(guild.roles.calls.length, 1, 'the role was still created')
-  assert.equal(guild.channels.calls.length, 11, 'the category and its ten channels were still created')
+  assert.equal(guild.channels.calls.length, 13, 'the category and its twelve channels were still created')
 })
 
 test('a bot WITH Administrator is not warned', async () => {

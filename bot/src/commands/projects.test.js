@@ -252,7 +252,7 @@ test('through the real routine, a new project gets its role, category, channels 
   await quiet(() => handleAddModal(it, { db, getConfig, reattribute }))
 
   assert.equal(guild.roles.calls.length, 1, 'the project role was created')
-  assert.equal(guild.channels.calls.length, 11, 'a category and its ten channels')
+  assert.equal(guild.channels.calls.length, 13, 'a category and its twelve channels')
   assert.equal(guild.fetchedAll, 1, 'the member list was fetched before the role sync')
   assert.ok(
     db.calls.some((c) => c[0] === 'projectMember.findByProject'),
