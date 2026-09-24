@@ -15,6 +15,7 @@ import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js
 import { isTicketChannel } from '../utils/taskChannelName.js'
 import { openBlockers, TERMINAL_STATUSES, unblockNotice } from '../utils/taskDeps.js'
 import { formatDuration } from '../utils/timeTracking.js'
+import { requestStatusLabel } from '../utils/clientRequestView.js'
 import db from '../db/index.js'
 
 export { TERMINAL_STATUSES }
@@ -44,10 +45,10 @@ export function assigneeDiff(before, after) {
  * One line per changed field, for the task channel. Pure.
  * `assigneeIds` is excluded — assignment is reported as its own event.
  */
-export function changeSummary(before, updates) {
+export function changeSummary(before, updates, { omit = [] } = {}) {
   const lines = []
   for (const [key, next] of Object.entries(updates || {})) {
-    if (key === 'assigneeIds') continue
+    if (key === 'assigneeIds' || omit.includes(key)) continue
     const label = FIELD_LABELS[key]
     if (!label) continue
     const prev = before?.[key]
@@ -227,7 +228,7 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
       }
     }
 
-    const lines = changeSummary(before, updates)
+    const lines = changeSummary(before, updates, { omit: task.requestedBy ? ['estimateMinutes'] : [] })
     if (added.length) lines.unshift(`**assigned to** ${added.map((id) => `<@${id}>`).join(' ')}`)
     if (removed.length) lines.push(`**unassigned** ${removed.map((id) => `<@${id}>`).join(' ')}`)
     if (warning) lines.push(warning)
@@ -291,6 +292,20 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
       } catch (e) {
         console.warn('[taskUpdate] unblock notices:', e?.message || e)
       }
+    }
+  }
+
+  // The client who raised this hears about every status change, in their own
+  // words: `pending` is "Waiting on you" to them.
+  const requester = task.requestedBy ? String(task.requestedBy) : null
+  if (requester && nextStatus !== undefined && String(nextStatus) !== String(before?.status ?? '')) {
+    try {
+      const user = await client?.users?.fetch?.(requester)
+      const where = out.channelId ? ` — see <#${out.channelId}>` : ''
+      await user?.send?.(`Your request **${updates?.title || task.title}** is now **${requestStatusLabel(nextStatus)}**${where}.`)
+      out.dmed.push(requester)
+    } catch (e) {
+      console.warn(`[taskUpdate] requester DM to ${requester} failed:`, e?.message || e)
     }
   }
 
