@@ -1127,3 +1127,37 @@ test('a preview whose roster read fails still renders a plan', async () => {
 
   assert.match(it.replies.at(-1).content, /could not be read/)
 })
+
+test('renderPlan lists the buckets, says which bucket each move goes into, and how many tickets will be retired', () => {
+  const out = renderPlan(
+    { name: 'Framework' },
+    {
+      category: { action: 'reuse', id: 'c1', name: '📂 FRAMEWORK' },
+      buckets: [
+        { key: 'open', storeKey: 'bucketOpen', action: 'create', name: '📂 FRAMEWORK · OPEN' },
+        { key: 'inProgress', storeKey: 'bucketInProgress', action: 'reuse', id: 'b', name: '📂 FRAMEWORK · IN PROGRESS' },
+        { key: 'done', storeKey: 'bucketDone', action: 'rename', id: 'd', name: '📂 FRAMEWORK · DONE' },
+      ],
+      tasks: [
+        { taskId: 't1', action: 'move', name: 'feature-a', bucket: 'open' },
+        { taskId: 't2', action: 'both', name: 'bug-b', bucket: 'open' },
+        { taskId: 't3', action: 'move', name: 'feature-c', bucket: 'done', retire: true },
+        { taskId: 't4', action: 'none', name: 'feature-d', bucket: 'done' },
+      ],
+    }
+  )
+  assert.match(out, /Status buckets: 1 to create, 1 to rename, 1 already right/)
+  assert.match(out, /Task channels: 1 to rename and move, 2 to move, 1 already right \(into OPEN: 2, DONE: 1\)/)
+  assert.match(out, /1 finished ticket\(s\) will become read-only and be removed in 14 days/)
+})
+
+test('renderResult counts the buckets and the retired tickets', () => {
+  const out = renderResult({ name: 'Framework' }, {
+    created: ['📂 FRAMEWORK · OPEN', 'framework-members'],
+    buckets: { created: ['📂 FRAMEWORK · OPEN'], renamed: [] },
+    moved: ['feature-a'], tasks: 1, retired: 2,
+  })
+  assert.match(out, /2 created, 1 moved/)
+  assert.match(out, /Status buckets: 1 created/)
+  assert.match(out, /2 finished ticket channel\(s\) are now read-only and will be removed in 14 days/)
+})

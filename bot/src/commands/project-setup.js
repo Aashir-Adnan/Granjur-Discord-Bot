@@ -30,6 +30,7 @@ import {
 } from '../services/projectSection.js'
 import { ensureMembersPanel } from '../services/projectMembersPanel.js'
 import { isClientRole } from '../utils/clientRoles.js'
+import { bucketByKey } from '../utils/statusBuckets.js'
 
 /** Discord's hard limit on a message. */
 const REPLY_LIMIT = 2000
@@ -89,6 +90,25 @@ const TASK_WORDS = [
   ['grant', 'to open to the project role'],
   ['none', 'already right'],
 ]
+
+const BUCKET_WORDS = [
+  ['create', 'to create'],
+  ['rename', 'to rename'],
+  ['reuse', 'already right'],
+]
+
+/** '(into OPEN: 2, DONE: 1)' — where the moves go, zeros dropped, table order. */
+function intoBuckets(tasks) {
+  const counts = new Map()
+  for (const t of Array.isArray(tasks) ? tasks : []) {
+    if (t?.action !== 'move' && t?.action !== 'both') continue
+    counts.set(t.bucket, (counts.get(t.bucket) ?? 0) + 1)
+  }
+  const parts = ['open', 'inProgress', 'done']
+    .filter((k) => counts.get(k))
+    .map((k) => `${bucketByKey(k)?.label ?? k}: ${counts.get(k)}`)
+  return parts.length ? ` (into ${parts.join(', ')})` : ''
+}
 
 /**
  * '9 to create, 1 to move' — counts per action, in the given order, zeros
@@ -194,10 +214,15 @@ export function renderPlan(project, plan = {}) {
   if (role) lines.push(roleLine(role))
   if (plan?.category) lines.push(`Category: ${plan.category.action} **${plan.category.name}**`)
 
+  const buckets = summarise(plan?.buckets, BUCKET_WORDS)
+  if (buckets) lines.push(`Status buckets: ${buckets}`)
+
   const channels = summarise(plan?.channels, CHANNEL_WORDS)
   if (channels) lines.push(`Channels: ${channels}`)
   const tasks = summarise(plan?.tasks, TASK_WORDS)
-  if (tasks) lines.push(`Task channels: ${tasks}`)
+  if (tasks) lines.push(`Task channels: ${tasks}${intoBuckets(plan?.tasks)}`)
+  const retiring = (plan?.tasks ?? []).filter((t) => t?.retire).length
+  if (retiring) lines.push(`${retiring} finished ticket(s) will become read-only and be removed in 14 days.`)
   const voiceCategory = plan?.voice?.category ?? []
   const voiceCount = (plan?.voice?.channels?.length ?? 0) + (voiceCategory.length ? 1 : 0)
   if (voiceCount) {
@@ -260,6 +285,14 @@ export function renderResult(project, result = {}) {
     done.length && taskCount ? ` (incl. ${taskCount} task channel${taskCount === 1 ? '' : 's'})` : ''
 
   const lines = [`**${name}** — ${summary}${breakdown}.`]
+
+  const b = result?.buckets ?? {}
+  const bucketBits = []
+  if (b.created?.length) bucketBits.push(`${b.created.length} created`)
+  if (b.renamed?.length) bucketBits.push(`${b.renamed.length} renamed`)
+  if (bucketBits.length) lines.push(`Status buckets: ${bucketBits.join(', ')}.`)
+  const retired = Number(result?.retired ?? 0)
+  if (retired) lines.push(`${retired} finished ticket channel(s) are now read-only and will be removed in 14 days.`)
 
   // A rename or a move that also carried the role's allow is already counted
   // above as a rename or a move, so it is said here instead of added there:

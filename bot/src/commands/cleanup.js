@@ -50,6 +50,7 @@ import {
 } from "../constants.js";
 import { getDedicatedChannelCommands } from "../config/commands.js";
 import { claimedSectionIds } from "../services/projectSection.js";
+import { bucketIdsOf } from "../utils/statusBuckets.js";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
 
 // All channel names that /init creates (lowercased for matching)
@@ -149,9 +150,12 @@ function projectSectionGuards(projects) {
   return {
     // The category itself and its ten channels, wherever they currently sit.
     sectionIds: claimedSectionIds(rows, null),
-    // Everything living in a project category: its task channels, and the
-    // meeting pairs `/meeting-channel` creates inside a section.
-    categoryIds: new Set(rows.map((p) => p?.discordCategoryId).filter(Boolean)),
+    // Everything living in a project category — the section AND its three
+    // status buckets: task channels, and the meeting pairs /meeting-channel
+    // creates inside a section.
+    categoryIds: new Set(
+      rows.flatMap((p) => [p?.discordCategoryId, ...Object.values(bucketIdsOf(p))]).filter(Boolean),
+    ),
     names: new Set(rows.map((p) => (p?.name || "").toLowerCase())),
   };
 }

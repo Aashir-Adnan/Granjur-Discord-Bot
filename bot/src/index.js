@@ -16,6 +16,7 @@ import handleInteractions from "./handlers/interactions.js";
 import { startMeetingReminder } from "./services/meetingReminder.js";
 import { startMeetingAutoChannels } from "./services/meetingAutoChannel.js";
 import { startTicketReminder } from "./services/ticketReminder.js";
+import { startTicketRetireSweep } from "./services/ticketRetire.js";
 import { startMeetingPipelineWorker } from "./services/meetingPipelineWorker.js";
 import { startDocsSync } from "./services/docsSync.js";
 import { startMemberNameSync, syncOneMember } from "./services/memberNameSync.js";
@@ -52,6 +53,7 @@ client.once(Events.ClientReady, async () => {
   startMeetingReminder(client);
   startMeetingAutoChannels(client);
   startTicketReminder(client);
+  startTicketRetireSweep(client);
   startMeetingPipelineWorker(client);
   startDocsSync(client);
   startMemberNameSync(client);

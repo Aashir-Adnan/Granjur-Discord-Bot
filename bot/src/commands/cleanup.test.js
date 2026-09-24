@@ -189,3 +189,10 @@ test('the support category is protected by name too, before any id has ever been
   assert.ok(!listed.includes('support') && !listed.includes('support-voice'), `support pair listed: ${listed}`)
   assert.deepEqual(listed, ['old-chat'])
 })
+
+test('a ticket channel inside a project\'s status bucket is protected, by the bucket\'s id', async () => {
+  const bucket = category('bucket-open', 'whatever it is called now')
+  const withBucket = { ...LEGACY, discordChannels: { ...(LEGACY.discordChannels ?? {}), bucketOpen: 'bucket-open' } }
+  const reply = await run([withBucket], [bucket, chan('tc1', 'feature-0145e3', { parent: bucket }), chan('junk', 'random-leftover')])
+  assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
+})
