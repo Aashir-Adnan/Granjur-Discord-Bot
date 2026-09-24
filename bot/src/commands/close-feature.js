@@ -1,6 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js'
 import db from '../db/index.js'
-import { moveTicketToBucket } from '../services/ticketBucketMove.js'
+import { placeTicketForStatus } from '../services/ticketArchive.js'
 
 export const data = new SlashCommandBuilder()
   .setName('close-feature')
@@ -11,9 +11,9 @@ export const data = new SlashCommandBuilder()
 
 /**
  * @param {import('discord.js').ChatInputCommandInteraction} interaction already deferred
- * @param {{db?: object, move?: typeof moveTicketToBucket}} [deps]
+ * @param {{db?: object, move?: typeof placeTicketForStatus}} [deps]
  */
-export async function execute(interaction, { db: dbArg = db, move = moveTicketToBucket } = {}) {
+export async function execute(interaction, { db: dbArg = db, move = placeTicketForStatus } = {}) {
   const channel = interaction.channel
   const guild = interaction.guild
   if (!guild || !channel) return interaction.editReply({ content: 'Use this in a server channel.' })
@@ -73,11 +73,11 @@ export async function execute(interaction, { db: dbArg = db, move = moveTicketTo
 
   await interaction.editReply({ embeds: [embed] }).catch(() => {})
   await channel.send({ content: 'This feature ticket has been closed. This channel is now read-only and will be removed in 14 days.', embeds: [embed] }).catch(() => {})
-  // Into the project's Done bucket, locked, stamped for deletion in 14 days.
-  // The same mover every other status writer uses.
+  // Below the project's archive divider, locked, stamped for deletion in 14
+  // days. The same placement every other status writer uses.
   try {
     await move({ guild, task: feature, before: feature, updates: { status: 'closed' }, db: dbArg })
   } catch (e) {
-    console.warn('[close-feature] bucket move:', e?.message || e)
+    console.warn('[close-feature] archive placement:', e?.message || e)
   }
 }
