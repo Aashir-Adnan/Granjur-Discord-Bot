@@ -113,3 +113,17 @@ test('a retire that throws is a warning; the move still counts', async () => {
   const out = await quiet(() => moveTicketToBucket({ guild: g, task: { id: 'T', projectId: 'p1', discordChannelId: 'c1', status: 'open' }, updates: { status: 'done' }, ...d }))
   assert.equal(out.moved, true)
 })
+
+test('a channel that cannot be resolved still crosses the Done boundary, with no project read and no move', async () => {
+  const d = deps()
+  const g = guildWith([cat('b-open'), cat('b-done')]) // no 'ghost' channel cached
+  const out = await moveTicketToBucket({ guild: g, task: { id: 'T', projectId: 'p1', discordChannelId: 'ghost', status: 'open' }, updates: { status: 'done' }, ...d })
+  assert.deepEqual(out, { moved: false, bucket: 'done', reason: 'no-channel' })
+  assert.deepEqual(d.log, [['retire', 'T', null]])
+
+  const d2 = deps()
+  const g2 = guildWith([cat('b-open'), cat('b-done')])
+  const out2 = await moveTicketToBucket({ guild: g2, task: { id: 'T', projectId: 'p1', discordChannelId: 'ghost', status: 'done' }, updates: { status: 'open' }, ...d2 })
+  assert.deepEqual(out2, { moved: false, bucket: 'open', reason: 'no-channel' })
+  assert.deepEqual(d2.log, [['revive', 'T', null]])
+})

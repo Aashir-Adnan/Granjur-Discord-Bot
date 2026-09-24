@@ -12,6 +12,21 @@ const valuesOf = (cache) => (cache?.values ? [...cache.values()] : [])
 const countIn = (guild, id) => valuesOf(guild?.channels?.cache).filter((c) => c?.parentId === id).length
 
 /**
+ * Retire on entering Done, revive on leaving it — regardless of whether the
+ * channel could be resolved live. `retireTicketChannel`/`reviveTicketChannel`
+ * both accept `channel: null` and still write the stamp, which is what lets a
+ * task whose channel Discord doesn't have cached still get locked and retired.
+ */
+async function runDoneTransition({ to, from, channel, task, dbArg, now, retire, revive }) {
+  try {
+    if (isDoneBucket(to)) await retire({ channel, task, db: dbArg, now })
+    else if (isDoneBucket(from)) await revive({ channel, task, db: dbArg })
+  } catch (e) {
+    console.warn(`[ticketBucketMove] ${isDoneBucket(to) ? 'retire' : 'revive'} ${task.id}:`, e?.message || e)
+  }
+}
+
+/**
  * @returns {Promise<{moved: boolean, bucket: string|null, reason: string|null}>}
  *   `reason` is why the channel was NOT moved (null when it was). The Done
  *   transition runs whenever the status crosses that boundary and the task has
@@ -30,7 +45,13 @@ export async function moveTicketToBucket({
   if (from === to) return { moved: false, bucket: to, reason: 'same-bucket' }
 
   const channel = guild?.channels?.cache?.get?.(channelId) ?? null
-  if (!channel) return { moved: false, bucket: to, reason: 'no-channel' }
+  if (!channel) {
+    // The task still crosses the Done boundary even though its channel isn't
+    // resolvable right now — no project read, no move attempt, but the stamp
+    // still lands (or clears) so a channel that reappears later is honored.
+    await runDoneTransition({ to, from, channel: null, task, dbArg, now, retire, revive })
+    return { moved: false, bucket: to, reason: 'no-channel' }
+  }
 
   let moved = false
   let reason = null
@@ -67,11 +88,6 @@ export async function moveTicketToBucket({
     }
   }
 
-  try {
-    if (isDoneBucket(to)) await retire({ channel, task, db: dbArg, now })
-    else if (isDoneBucket(from)) await revive({ channel, task, db: dbArg })
-  } catch (e) {
-    console.warn(`[ticketBucketMove] ${isDoneBucket(to) ? 'retire' : 'revive'} ${task.id}:`, e?.message || e)
-  }
+  await runDoneTransition({ to, from, channel, task, dbArg, now, retire, revive })
   return { moved, bucket: to, reason }
 }
