@@ -9,6 +9,7 @@ import { notifyTaskUpdate } from './taskUpdateNotify.js'
 import { blockerWarning, openBlockers } from '../utils/taskDeps.js'
 import { activityChanges, recordTaskActivity } from './taskActivity.js'
 import { assertCanFinish, syncParent } from './taskHierarchy.js'
+import { moveTicketToBucket } from './ticketBucketMove.js'
 
 /** Discord embed fields cap at 1024; the reply description has room for more. */
 export const WARNING_MAX = 1500
@@ -22,9 +23,9 @@ export const WARNING_MAX = 1500
  * change did not come from Discord. Pass `guild` when the caller already has
  * it — otherwise the guild is looked up from the task's config.
  *
- * @returns {Promise<{ warning: string, notified: { channelId: string|null, created: boolean, dmed: string[] } }>}
+ * @returns {Promise<{ warning: string, notified: { channelId: string|null, created: boolean, dmed: string[] }, placement: { moved: boolean, bucket: string|null, reason: string|null } }>}
  */
-export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, actor = {}, notify = notifyTaskUpdate, guild = null, record = recordTaskActivity }) {
+export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, actor = {}, notify = notifyTaskUpdate, guild = null, record = recordTaskActivity, move = moveTicketToBucket }) {
   // A task with an open subtask cannot be finished: refuse before anything is written.
   await assertCanFinish({ db: dbArg, task, updates })
   await dbArg.task.update({ where: { id: task.id }, data: updates })
@@ -56,13 +57,31 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
     }
   }
 
-  let notified = { channelId: task.discordChannelId || null, created: false, dmed: [] }
-  try {
-    let g = guild
-    if (!g) {
+  // The guild, once, for the mover and the notifier alike.
+  let g = guild
+  if (!g) {
+    try {
       const cfg = await dbArg.guildConfig.findById(task.guildConfigId)
       g = cfg ? client?.guilds?.cache?.get(cfg.guildId) ?? null : null
+    } catch (e) {
+      console.error('[taskStatusChange] guild lookup:', e?.message ?? e)
     }
+  }
+
+  // The channel follows the status — into its bucket, locked on entering Done,
+  // unlocked on leaving. After the write, before the post. Best-effort.
+  let placement = { moved: false, bucket: null, reason: null }
+  if (updates.status !== undefined) {
+    try {
+      placement = await move({ guild: g, task, before: task, updates, db: dbArg })
+    } catch (e) {
+      console.error('[taskStatusChange] bucket move:', e?.message ?? e)
+      placement = { moved: false, bucket: null, reason: 'error' }
+    }
+  }
+
+  let notified = { channelId: task.discordChannelId || null, created: false, dmed: [] }
+  try {
     notified = await notify({
       client,
       guild: g,
@@ -97,5 +116,5 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
     await syncParent({ db: dbArg, client, guild, parentId: task.parentTaskId, apply: applyTaskUpdate, notify })
   }
 
-  return { warning, notified }
+  return { warning, notified, placement }
 }
