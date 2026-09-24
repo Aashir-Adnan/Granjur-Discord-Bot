@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { PermissionFlagsBits } from 'discord.js'
+import { OverwriteType, PermissionFlagsBits } from 'discord.js'
 import { reportLines, runDailyReportPass } from './dailyTimeReport.js'
 
 async function quietly(fn) {
@@ -465,7 +465,7 @@ function overwrite(bits) {
   return { allow: { has: (bit) => bits.includes(bit) } }
 }
 
-function readableHarness({ bits, edits }) {
+function readableHarness({ bits, edits, clientRoleId = null }) {
   const sent = []
   const channel = {
     id: 'chan1',
@@ -486,7 +486,7 @@ function readableHarness({ bits, edits }) {
     clockEntry: { sumByPersonRange: async () => [] },
     guildMember: { findMany: async () => [{ discordId: '1', displayName: 'Ali', status: 'approved' }] },
   }
-  const state = { id: 'cfg1', timezone: 'UTC', lastTimeReportOn: '2026-09-21', timeReportChannelId: 'chan1' }
+  const state = { id: 'cfg1', timezone: 'UTC', lastTimeReportOn: '2026-09-21', timeReportChannelId: 'chan1', clientRoleId }
   const getConfig = async () => ({ ...state })
   const update = async (guildId, data) => { Object.assign(state, data) }
   return { client, db, getConfig, update, sent, state }
@@ -590,4 +590,49 @@ test('clients are never listed in the daily report, even though they are approve
   // member" above), so the staff row surfaces as `User 1`, not `Ali`.
   assert.match(text, /User 1/)
   assert.ok(!text.includes('Client Co'))
+})
+
+// --- clients must never see #time-reports -----------------------------------
+// The channel is public to @everyone by design, so the Client role needs its own
+// deny — at creation, and repaired on the per-process reconcile, so a channel
+// made after the last /setup is still closed to clients.
+
+test('a configured Client role is denied on #time-reports by the reconcile, once', async () => {
+  const edits = []
+  const h = readableHarness({ bits: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], edits, clientRoleId: 'r-client' })
+  await runDailyReportPass(h.client, {
+    db: h.db, getConfig: h.getConfig, update: h.update, now: new Date('2026-09-22T23:59:00Z'),
+  })
+  assert.deepEqual(edits, [{ id: 'r-client', perms: { ViewChannel: false } }], '@everyone already reads it; only the client deny is missing')
+  h.state.lastTimeReportOn = '2026-09-22'
+  await runDailyReportPass(h.client, {
+    db: h.db, getConfig: h.getConfig, update: h.update, now: new Date('2026-09-23T23:59:00Z'),
+  })
+  assert.equal(edits.length, 1, 'once per process run')
+})
+
+test('a fresh #time-reports carries the Client deny from creation when the role exists', async () => {
+  const created = []
+  const sent = []
+  const guild = {
+    id: 'g1',
+    roles: { everyone: { id: 'everyone' } },
+    members: { fetch: async ({ user }) => new Map(user.map((id) => [id, { id, displayName: `User ${id}` }])) },
+    channels: {
+      fetch: async () => null,
+      create: async (opts) => { created.push(opts); return { id: 'chan2', send: async (p) => { sent.push(p); return { id: 'm' } } } },
+    },
+  }
+  const client = { guilds: { cache: new Map([['g1', guild]]) } }
+  const db = {
+    clockEntry: { sumByPersonRange: async () => [] },
+    guildMember: { findMany: async () => [{ discordId: '1', displayName: 'Ali', status: 'approved' }] },
+  }
+  const state = { id: 'cfg1', timezone: 'UTC', lastTimeReportOn: '2026-09-21', timeReportChannelId: null, clientRoleId: 'r-client' }
+  await runDailyReportPass(client, { db, getConfig: async () => ({ ...state }), update: async (_g, data) => { Object.assign(state, data) }, now: new Date('2026-09-22T23:59:00Z') })
+  assert.equal(created.length, 1)
+  const clientOw = created[0].permissionOverwrites.find((o) => o.id === 'r-client')
+  assert.ok(clientOw, 'the Client role has its own overwrite at creation')
+  assert.equal(clientOw.type, OverwriteType.Role)
+  assert.deepEqual(clientOw.deny, [PermissionFlagsBits.ViewChannel])
 })

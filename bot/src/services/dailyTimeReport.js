@@ -1,4 +1,4 @@
-import { ChannelType, EmbedBuilder, PermissionFlagsBits } from 'discord.js'
+import { ChannelType, EmbedBuilder, OverwriteType, PermissionFlagsBits } from 'discord.js'
 import db, { getOrCreateGuildConfig, updateGuildConfig } from '../db/index.js'
 import { isValidZone } from '../utils/timezone.js'
 import { dayWindow, dueReportDay, formatDuration, rankDailyTotals } from '../utils/timeTracking.js'
@@ -117,6 +117,25 @@ async function ensureEveryoneCanRead(guild, channel) {
 }
 
 /**
+ * A client must never read the team's time. The channel is public to
+ * @everyone by design, so the Client role needs its own deny — presence-only,
+ * one id, like every other overwrite repair in this bot. Runs on the same
+ * once-per-process reconcile as the @everyone repair, so a channel created
+ * after the last /setup is still closed to clients.
+ */
+async function ensureClientDenied(channel, clientRoleId) {
+  if (!clientRoleId) return
+  const cache = channel?.permissionOverwrites?.cache
+  if (!cache?.has || cache.has(clientRoleId)) return
+  if (typeof channel?.permissionOverwrites?.edit !== 'function') return
+  try {
+    await channel.permissionOverwrites.edit(clientRoleId, { ViewChannel: false }, { type: OverwriteType.Role })
+  } catch (e) {
+    console.warn('[dailyTimeReport] could not deny the Client role on the channel:', errText(e))
+  }
+}
+
+/**
  * Repairs a configured channel that @everyone cannot actually read.
  *
  * The first #time-reports was created with ViewChannel only, so it exists in
@@ -142,7 +161,9 @@ async function reconcileChannelAccess(guild, cfg, dbArg) {
     // Whatever went wrong here, the post path below reports it properly.
     return
   }
-  if (channel) await ensureEveryoneCanRead(guild, channel)
+  if (!channel) return
+  await ensureEveryoneCanRead(guild, channel)
+  await ensureClientDenied(channel, cfg.clientRoleId)
 }
 
 /**
@@ -186,17 +207,25 @@ async function resolveChannel(guild, cfg, update, dbArg) {
     name: CHANNEL_NAME,
     type: ChannelType.GuildText,
     topic: 'Daily time totals, posted automatically at 23:59.',
-    permissionOverwrites: [{
-      id: guild.roles.everyone.id,
-      // ViewChannel alone is not enough to make a channel readable. This
-      // guild's @everyone role does not carry ReadMessageHistory, so a
-      // channel that only allows ViewChannel shows up in the sidebar and
-      // then refuses to render a single message — which is exactly what the
-      // first #time-reports did. Every other public channel this bot makes
-      // pairs the two (see init.js); so does this one.
-      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
-      deny: [PermissionFlagsBits.SendMessages],
-    }],
+    permissionOverwrites: [
+      {
+        id: guild.roles.everyone.id,
+        type: OverwriteType.Role,
+        // ViewChannel alone is not enough to make a channel readable. This
+        // guild's @everyone role does not carry ReadMessageHistory, so a
+        // channel that only allows ViewChannel shows up in the sidebar and
+        // then refuses to render a single message — which is exactly what the
+        // first #time-reports did. Every other public channel this bot makes
+        // pairs the two (see init.js); so does this one.
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+        deny: [PermissionFlagsBits.SendMessages],
+      },
+      // Public to the team, never to a client — the role's deny travels with
+      // the channel from the moment it exists.
+      ...(cfg.clientRoleId
+        ? [{ id: cfg.clientRoleId, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] }]
+        : []),
+    ],
   }).catch((e) => {
     console.warn('[dailyTimeReport] could not create the channel:', errText(e))
     return null
