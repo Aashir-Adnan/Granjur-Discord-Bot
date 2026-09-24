@@ -139,7 +139,13 @@ export async function denyClientOnPublicChannels(guild, cfg, clientRoleId) {
   return denied
 }
 
-async function ensureManualPinned(text, botUserId) {
+/**
+ * Post and pin the client manual unless a pinned bot message with its title is
+ * already there. Shared with projectSection.js, which pins the same embed in
+ * every project's support channel: a client on a project is told the rules in
+ * the place they will actually be talking, not only in the global #support.
+ */
+export async function ensureManualPinned(text, botUserId) {
   let pinned = null
   if (typeof text?.messages?.fetchPinned === 'function') {
     try {

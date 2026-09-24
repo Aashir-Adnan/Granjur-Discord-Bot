@@ -337,6 +337,16 @@ idempotent in the `information_schema` style of 023/024. Then, by hand, once:
 Existing task channels are untouched by any of this, and nothing changes for staff
 until step 3 brings in the first client.
 
+## The manual is pinned in every project support channel too (2026-09-24)
+
+`applyProjectSection` step 3a calls `ensureManualPinned` (exported from `clientAccess.js`) on
+the resolved `support` channel after the section-channel loop — the same embed `#support`
+carries, presence-only by title and bot author, so a created channel gets it at once, the
+existing sections get it on their next `/project-setup`, and a deleted pin comes back on the run
+after. A failure is one warning line. The manual also says clients may post more documents or
+screenshots in a request's channel at any time — the request channel is the durable home for
+documents; there is no `/attach` command by design.
+
 ## Related
 
 [[project-sections]]
