@@ -81,6 +81,21 @@ export function canUseCommand(member, commandName, { clientRoleId = null } = {})
   return member.roles.cache.some((r) => roles.includes(r.name))
 }
 
+/**
+ * Whether a member may reach a command's AUTOCOMPLETE handler.
+ *
+ * Autocomplete answers from the database before `execute` is ever called, so a
+ * gate on `execute` alone leaves every project name, task title and doc page
+ * open to anyone Discord offers the option to. A client is held to exactly the
+ * same list as `canUseCommand` does — the client commands and nothing else.
+ * Staff are not narrowed here: their own `commandRoles` gate still runs on
+ * `execute`, and an autocomplete list is not a permission.
+ */
+export function autocompleteAllowed(member, commandName, { clientRoleId = null } = {}) {
+  if (!memberIsClient(member, clientRoleId)) return true
+  return getClientCommands().includes(commandName)
+}
+
 /** Default pinned message for a channel (by channel name). */
 export function getChannelPinnedMessage(channelName) {
   const def = loadChannelDefaults()

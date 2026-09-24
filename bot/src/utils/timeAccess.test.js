@@ -38,3 +38,16 @@ test('memberProjectIdsOf is empty when the read returns nothing', async () => {
   const db = { projectMember: { findByMember: async () => null } }
   assert.deepEqual(await memberProjectIdsOf(db, { id: 'g1' }, 'u1'), [])
 })
+
+test('memberProjectIdsOf drops a client membership — a client has no time to track', async () => {
+  const db = {
+    projectMember: {
+      findByMember: async () => [
+        { projectId: 'p1', role: 'dev' },
+        { projectId: 'p2', role: 'client' },
+        { projectId: 'p3', role: 'lead' },
+      ],
+    },
+  }
+  assert.deepEqual(await memberProjectIdsOf(db, { id: 'g1' }, 'u1'), ['p1', 'p3'])
+})

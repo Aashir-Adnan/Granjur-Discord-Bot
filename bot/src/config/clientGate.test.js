@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { canUseCommand, getClientCommands, memberIsClient } from './commands.js'
+import { autocompleteAllowed, canUseCommand, getClientCommands, memberIsClient } from './commands.js'
 
 // A member as canUseCommand sees one: roles as a Collection-like Map with
 // `.some` and `.has`, permissions with `.has`, and a guild with an owner.
@@ -49,4 +49,33 @@ test('client by stored id, renamed role, still denied', () => {
 test('the guild owner and Manage Server keep their bypass', () => {
   assert.equal(canUseCommand(member({ owner: true, roles: [CLIENT] }), 'init'), true)
   assert.equal(canUseCommand(member({ perms: ['ManageGuild'], roles: [CLIENT] }), 'init'), true)
+})
+
+// --- autocomplete ------------------------------------------------------------
+// Autocomplete runs before `execute` and answers from the database. Ungated, a
+// client could enumerate every project, task title and doc page through it, so
+// it is refused by the same rule as the command itself.
+
+test('autocompleteAllowed: a client may only autocomplete the client commands', () => {
+  const m = member({ roles: [CLIENT] })
+  assert.equal(autocompleteAllowed(m, 'request-report'), true, 'a client command they can run')
+  assert.equal(autocompleteAllowed(m, 'update-task'), false, 'task titles of every project')
+  assert.equal(autocompleteAllowed(m, 'clock-in'), false)
+  assert.equal(autocompleteAllowed(m, 'docs'), false)
+  assert.equal(autocompleteAllowed(m, 'project-setup'), false)
+})
+
+test('autocompleteAllowed: a client held by stored id whose role was renamed is still refused', () => {
+  const renamed = { id: 'r-client', name: 'Customer' }
+  const m = member({ roles: [renamed, VERIFIED] })
+  assert.equal(autocompleteAllowed(m, 'update-task', { clientRoleId: 'r-client' }), false)
+  assert.equal(autocompleteAllowed(m, 'my-requests', { clientRoleId: 'r-client' }), true)
+})
+
+test('autocompleteAllowed: staff are unaffected — the command\'s own gate still applies to execute', () => {
+  const m = member({ roles: [VERIFIED] })
+  assert.equal(autocompleteAllowed(m, 'update-task'), true)
+  assert.equal(autocompleteAllowed(m, 'clock-in'), true)
+  // No member resolved at all is not treated as a client.
+  assert.equal(autocompleteAllowed(null, 'update-task'), true)
 })

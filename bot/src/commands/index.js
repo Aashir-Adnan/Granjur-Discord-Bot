@@ -6,7 +6,7 @@ import {
 } from 'discord.js'
 import { config } from '../config.js'
 import { EPHEMERAL } from '../constants.js'
-import { canUseCommand, getCommandDescription } from '../config/commands.js'
+import { autocompleteAllowed, canUseCommand, getCommandDescription } from '../config/commands.js'
 import { getGuildConfig } from '../db/index.js'
 import * as initCmd from './init.js'
 import * as createTaskCmd from './create-task.js'
@@ -195,6 +195,19 @@ export function isPublicReplyCommand(name) {
 export async function handleAutocomplete(interaction, commands) {
   const cmd = commands?.get(interaction.commandName)
   if (!cmd?.autocomplete) {
+    return interaction.respond([]).catch(() => {})
+  }
+  // The client gate belongs HERE, not only on `execute`: an autocomplete
+  // handler answers from the database — project names, task titles, doc pages
+  // — before any command body runs, so a gate on `execute` alone hands a
+  // client the whole server through the option list. Resolved the same way
+  // `handleCommand` does it: cache then fetch, stored role id then name.
+  const member = interaction.guild
+    ? interaction.guild.members?.cache?.get?.(interaction.user.id)
+      ?? await interaction.guild.members?.fetch?.(interaction.user.id).catch(() => null)
+    : null
+  const cfg = interaction.guild ? await getGuildConfig(interaction.guild.id).catch(() => null) : null
+  if (!autocompleteAllowed(member, interaction.commandName, { clientRoleId: cfg?.clientRoleId ?? null })) {
     return interaction.respond([]).catch(() => {})
   }
   try {

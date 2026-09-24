@@ -14,8 +14,13 @@ export function isLeadershipFor(guild, member, cfg) {
   )
 }
 
-/** The ids of the projects `discordId` belongs to in this server. */
+/**
+ * The ids of the projects `discordId` belongs to in this server, as a STAFF
+ * member. A `role: 'client'` membership is dropped: it exists to open that
+ * project's two support channels, never to put the project's task list into a
+ * time-tracking picker.
+ */
 export async function memberProjectIdsOf(dbArg, cfg, discordId) {
   const rows = await dbArg.projectMember.findByMember({ where: { guildConfigId: cfg.id, discordId } })
-  return (rows || []).map((r) => r.projectId)
+  return (rows || []).filter((r) => r?.role !== 'client').map((r) => r.projectId)
 }
