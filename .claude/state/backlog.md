@@ -4,25 +4,28 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
-## Status buckets — deferred follow-ups (branch `feat/status-buckets`, 2026-09-25)
-See `.claude/knowledge/status-buckets.md`. Every item below was ruled a parked minor during
-implementation review — see `.superpowers/sdd/2026-09-24-status-buckets/progress.md`. Newest
-(latest task) first.
+## Archive divider — deferred follow-ups (branch `feat/archive-divider`, 2026-09-25)
+See `.claude/knowledge/ticket-archive.md`. The items that outlived the status buckets, plus
+what this branch added. Newest first.
 
-- A task assigned and marked done in the same edit gets a fresh channel in Done that is
-  unlocked and unstamped: `applyTaskUpdate` runs the mover before `notify`, and it is
-  `notifyTaskUpdate` that opens the channel for the new assignee — so the mover saw no
+- **Delete the three leftover bucket categories in the real guild by hand.** Nothing in
+  the bot will ever do it: `/project-setup` reports each one once, in the run that empties
+  it, and then drops the stored id and forgets it.
+- A task assigned and marked done in the same edit gets an unlocked, unstamped archived
+  channel: `applyTaskUpdate` runs the placement before `notify`, and it is
+  `notifyTaskUpdate` that opens the channel for the new assignee — so the placement saw no
   channel to lock, and the channel that appears a moment later never enters the Done
-  transition. It is created straight into the Done bucket (the placement step reads the
-  new status), just writable and with no 14-day stamp, until the next status write.
-- A Done ticket its bucket had no room for is locked and stamped while sitting in another
-  bucket (brief-mandated: the Done transition runs regardless of whether the move
-  happened). It reads as a live ticket in Open or In progress that silently refuses
-  messages and disappears in a fortnight — consider a warning line on the reply, or the
-  channel, when `reason` is `'full'` or `'no-bucket'` on the way into Done.
-- JSDoc for `plan.buckets` types only the `open` key fully; several "ten section channels"
-  strings remain in `projectSection.js` (pre-existing inconsistency, not introduced here).
-- The identical two-line comment explaining the move-into-Done call is duplicated in
+  transition. It is created below the line (the creation step reads the new status), just
+  writable and with no 14-day stamp, until the next status write.
+- A ticket a human drags to the wrong side of the divider stays there until either its own
+  status changes or `/project-setup` runs: the live placement reads which side each other
+  ticket is on off the divider's position, never off the database.
+- Two reorders racing (two status writes, or a status write during a `/project-setup`)
+  both send the whole category list; the later one wins with no read-modify-write lock.
+  Harmless while the order is derived from the divider each time, worth knowing.
+- Several "ten section channels" strings remain in `projectSection.js` (pre-existing
+  inconsistency, not introduced here) — there are thirteen, plus the divider.
+- The identical two-line comment explaining the placement call is duplicated in
   `close-feature.js` and `resolve-bug.js`.
 - The hoisted guild lookup in `applyTaskUpdate` (`taskStatusChange.js`) now catches a
   `guildConfig` read failure separately so `notify` still runs with `guild: null`
@@ -37,9 +40,6 @@ implementation review — see `.superpowers/sdd/2026-09-24-status-buckets/progre
   they count it as `failed` instead.
 - `db.task.findRetirable` treats `take: 0` as 100 (falsy check) — matches the brief verbatim,
   just worth knowing if a caller ever means "give me zero rows."
-- `MAX_CATEGORY_NAME = 100` is now defined in both `projectSection.js` and
-  `utils/statusBuckets.js` — the leaf cannot import the planner, so the constant is duplicated
-  rather than shared.
 
 ## Client role — deferred follow-ups (branch `feat/client-role`, 2026-09-24)
 See `.claude/knowledge/client-role.md`. Ordered by how much they matter.

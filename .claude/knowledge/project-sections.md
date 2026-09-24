@@ -16,7 +16,8 @@ The build's full ruling-by-ruling record is
 
 One category per project: `📂 ` + the project name upper-cased, cut to Discord's
 100-character cap (`categoryNameFor`, `bot/src/services/projectSection.js`).
-Thirteen channels inside it, in creation order (`SECTIONS`):
+Thirteen channels inside it, in creation order (`SECTIONS`), plus the archive
+divider that `/project-setup` creates after them:
 
 ```
 members, documentation, meetings, meetingVoice,
@@ -36,11 +37,15 @@ that is null. Comparing raw `docsSlug` columns instead of the effective slug is
 exactly the bug that let `UBS-Doc` and a NULL-slugged `UBS Doc` fight over the
 same thirteen channels (fixed as final-wave A6/D4 — see "Duplicate slugs" below).
 
-**Task channels no longer live directly in the section category** — each files
-into one of three status buckets (sibling categories under the section) and
-moves between them as its status changes. See [[status-buckets]] for the whole
-feature: the bucket table, placement order, the live mover, and the 14-day
-Done retention.
+**Task channels live in the section category, ordered around a read-only divider
+channel** (`────archive────`): live tickets above it, finished ones below it.
+A ticket's parent is always this category; only its position says whether it is
+finished. See [[ticket-archive]] for the whole feature: the divider, the one
+reorder primitive (`guild.channels.setPositions`), placement at creation, the
+live placement call, and the 14-day Done retention. (Between 2026-09-24 and
+2026-09-25 the same grouping was three sibling *categories* per project; that
+layout is gone, and `/project-setup` reports the leftovers rather than deleting
+them.)
 
 `taskChannelName({ type, title, taskId, taken })`: `feature`/`bug` prefix +
 `slugify(title)`; an empty/symbol-only title falls back to `<prefix>-<last 6 of
@@ -97,13 +102,13 @@ except by hand.
   doubly-wrong channel stuck until the next run. Every plan entry (except `reuse`)
   therefore carries its **final** desired name regardless of *why* it's changing.
 - **50 channels per category** → `CATEGORY_SOFT_CAP = 49` (`bot/src/constants.js`).
-  Thirteen are the section itself; task channels beyond the cap fall back to the global
-  `Features`/`Bugs` category (or, for `/meeting-channel`, the global `📋 Meetings`),
-  with a warning/note explaining why. Section channels are always created first so
-  they can never be crowded out by tasks — and, since [[status-buckets]], ticket
-  channels no longer sit in the section category at all, so they never compete
-  with the thirteen section channels for room; each of the three status buckets
-  gets its own full `CATEGORY_SOFT_CAP`.
+  Thirteen are the section itself and one is the archive divider; task channels
+  beyond the cap fall back to the global `Features`/`Bugs` category (or, for
+  `/meeting-channel`, the global `📋 Meetings`), with a warning/note explaining
+  why. Section channels are always created first so they can never be crowded
+  out by tasks, and `planTasks` counts every channel this run brings into the
+  category — the divider included — against the cap before it plans a single
+  ticket move. Thirty-five ticket slots are left.
 - **A category's overwrites are copied onto a channel only AT CREATION, never
   cascaded.** Discord has no server-side "sync now" for API edits — that button is
   client-only. This is *the* central gotcha of the whole feature: a section built
@@ -301,13 +306,12 @@ placement. Resolves a **thread** to its parent channel first (a thread's
 `parentId` is the text channel it lives in, not the category), then matches on
 `discordCategoryId === channel.parentId` (or `=== channel.id`, for a command run
 directly on the category — not applicable to text/voice children but kept for
-symmetry) **or on any of the project's three status-bucket ids**
-(`bucketIdsOf(p)`), the same two ways — since [[status-buckets]] a ticket channel
-is parented to a bucket, never to the section category, so the bucket half is what
-lets a command run inside a ticket channel infer its project at all.
-**Returns `null` when two projects claim the same id**, category or bucket —
-nothing makes `discordCategoryId` unique (migration 019 has no unique index), and
-the bucket ids live in the free-form `discordChannels` map —
+symmetry). That is the whole rule again: since [[ticket-archive]] a ticket
+channel is parented to the section category, so a command run inside one reaches
+its project through the category id. (It briefly also matched the three
+status-bucket ids, for the one day tickets lived in those categories.)
+**Returns `null` when two projects claim the same id** — nothing makes
+`discordCategoryId` unique (migration 019 has no unique index) —
 rather than guessing and possibly handing someone the wrong project's role. The
 caller then falls back to its normal picker. An uncached thread parent also fails
 closed to "pick a project," never a wrong guess.
@@ -426,10 +430,10 @@ of those would list the *entire* section (and any moved task channels) for
 deletion behind the confirm button. Fixed to protect by id first: any category
 whose id is a project's `discordCategoryId`, its thirteen `claimedSectionIds`, and
 anything whose `parentId` is one of those categories — the same by-id principle
-the rest of this feature runs on. `categoryIds` now also includes each
-project's three status-bucket ids (`bucketIdsOf(p)`, `cleanup.js:154-157`), so a
-ticket channel sitting inside a bucket is protected the same as one sitting in
-the section category — see [[status-buckets]]. The name rule is kept as a
+the rest of this feature runs on. The archive divider needs no rule of its own:
+its id is in `discordChannels`, so `claimedSectionIds` covers it exactly as it
+covers a section channel, and every ticket beside it is covered by the category
+rule — see [[ticket-archive]]. The name rule is kept as a
 fallback for categories that predate the recorded ids. `handleConfirm` (the actual delete) was
 **not** touched in this fix — it still deletes whatever `execute` listed with no
 re-check at confirm time (backlog item).
@@ -479,4 +483,4 @@ stays 49, so 36 task channels now fit before the global fallback.
 
 ## Related
 
-[[project-tasks-site]], [[project-docs]], [[client-role]], [[status-buckets]]
+[[project-tasks-site]], [[project-docs]], [[client-role]], [[ticket-archive]]

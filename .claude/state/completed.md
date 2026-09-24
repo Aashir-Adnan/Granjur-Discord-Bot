@@ -4,7 +4,45 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
-## 2026-09-25 — Per-project status buckets for ticket channels (BUILT, AWAITING MERGE)
+## 2026-09-25 — The archive divider: finished tickets below a line, inside the project category (BUILT, AWAITING MERGE)
+
+Replaces the status buckets below — built, merged and seen live the same day — after the
+owner's call: *"open should've been inside TEST."* Discord cannot nest categories, so the
+grouping moved **inside** the project's own category: live tickets, then a read-only
+`────archive────` divider channel, then the finished ones. A ticket's parent is the
+section category again; only its order says whether it is finished. Everything about the
+Done transition is unchanged — the lock, the 14-day `channelRetireAt` stamp, the hourly
+sweep, the read-only/writable notice, `/close-feature` and `/resolve-bug`.
+
+New: `bot/src/utils/ticketArchive.js` (`FINISHED_STATUSES`, `isFinished`, the divider's
+name/topic/store key, `archiveDividerIdOf` — a leaf), `bot/src/utils/channelOrder.js`
+(`textChannelsOf`/`desiredOrder`/`applyOrder`, one `guild.channels.setPositions` per
+reorder and none when the order already matches), `bot/src/services/ticketArchive.js`
+(`placeTicketForStatus`, called from `applyTaskUpdate`). Deleted:
+`bot/src/utils/statusBuckets.js` and `bot/src/services/ticketBucketMove.js` with their
+tests. Changed: `taskTicketChannel.js` (section → global placement again, plus one reorder
+that slides a live ticket above the line), `taskStatusChange.js` (`placement.archived`;
+the notice keys on `isFinished(updates.status)` vs `isFinished(task.status)`),
+`projectSection.js` (`planDivider`, `warnStaleBuckets`, `planTasks` back to one parent and
+the original room accounting, apply step 2b removed, new 3c divider and 4d reorder, step 5
+drops the three `bucket*` keys), `project-setup.js` (`Archive divider: <action>`,
+` (N archived)`, `Ticket order refreshed.`), `cleanup.js` and `projectFromChannel`
+(`discordCategoryId` only again), `close-feature.js`/`resolve-bug.js`.
+
+Two decisions worth remembering: the divider must never satisfy `isTicketChannel` (its
+topic is not a ticket signature and its name has no ticket prefix), or `/project-setup`
+would rename it into a task's channel and the sweep would delete it; and a `grant` on the
+divider builds from the read-only set (`ViewChannel + ReadMessageHistory`, deny
+`SendMessages`), never from `ROLE_ALLOW`, which carries `SendMessages`.
+
+Four commits on `feat/archive-divider` (base `c6e97e0`): `8e4c893` the leaves, `907c9ed`
+creation and the status change, `902b46d` `/project-setup`, plus this documentation
+commit. 1185 tests pass / 0 fail. Knowledge: `.claude/knowledge/ticket-archive.md` (new,
+replaces `status-buckets.md`); `project-sections.md` and the knowledge README updated; the
+2026-09-24 spec carries a dated superseded note at the top. Report:
+`.superpowers/sdd/archive-divider-report.md`. Not yet merged to `main`.
+
+## 2026-09-25 — Per-project status buckets for ticket channels (BUILT, MERGED, SUPERSEDED THE SAME DAY)
 
 Three sibling categories per project (Open/In progress/Done) that every ticket channel now
 files into by status and moves between on any status write, in place of sitting loose in the
@@ -39,6 +77,13 @@ read-only / writable-again sentence the two commands already posted; a backfill 
 parent-only; `schema.sql` carries `channelRetireAt`. Reports:
 `.superpowers/sdd/2026-09-24-status-buckets/task-8-report.md` and `final-fix-report.md`.
 1178 tests pass.
+
+Merged to `main` as `e845d17`, then **superseded on 2026-09-25** by the archive divider
+entry above: the bucket categories, `utils/statusBuckets.js` and
+`services/ticketBucketMove.js` are gone. `.claude/knowledge/status-buckets.md` was
+replaced by `ticket-archive.md`; the spec is kept as history with a superseded note. What
+survived unchanged: `ticketRetire.js`, migration `026_task_channel_retire.sql`, the
+`schema.sql` column, the read-only/writable notice and the `isTicketChannel` gate.
 
 ## 2026-09-24 — /request-task: support tasks as a third kind (MERGED, PUSHED)
 

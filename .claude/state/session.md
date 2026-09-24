@@ -3,76 +3,66 @@
 **Date:** 2026-09-25
 
 ## Goal
-Per-project status buckets for ticket channels: every project's ticket channels group by
-status (Open / In progress / Done) into three sibling categories under the project's
-section, moving between them on any status write, with a 14-day locked retention for
-Done instead of `/close-feature`/`/resolve-bug`'s old five-minute delete.
+Replace the three sibling status-bucket categories — built and merged the same day — with
+ordering **inside** the project's own category around a read-only `────archive────`
+divider channel. The owner's call after seeing the buckets live: *"open should've been
+inside TEST."* Discord cannot nest categories, so the grouping moves inside the one the
+project already has: live tickets above the line, finished ones below it, everything else
+about the Done transition unchanged.
 
-## Outcome — BUILT, AWAITING MERGE
-Brainstorm → spec → plan → 9 implementation tasks (each with a fresh implementer and
-reviewer) → this documentation task (Task 10). Commits `d635188..e691909` on
-`feat/status-buckets` (base `56f4e56`), plus this task's docs commit. Not yet merged to
-`main`, not yet deployed.
+## Outcome — BUILT on `feat/archive-divider`, not yet merged
+Design → implementation in four commits on `feat/archive-divider` (base `c6e97e0`, the
+design commit), plus this documentation commit. Full suite 1185 pass / 0 fail. Not merged
+to `main`, not deployed.
 
-Knowledge in use: `.claude/knowledge/status-buckets.md` (new this session),
-`.claude/knowledge/project-sections.md` (updated — the bucket feature sits inside the
-section it describes). Rule in force: `.claude/rules/tests-never-touch-production.md`.
+- `8e4c893` feat(archive): the archive vocabulary and the one reorder primitive
+- `907c9ed` feat(archive): tickets are ordered across the divider instead of moved
+  between categories
+- `902b46d` feat(archive): /project-setup builds the divider, files every ticket, orders
+  the category once
+- this commit: the docs
 
-## What Task 10 did
-Wrote `.claude/knowledge/status-buckets.md` (bucket table and leaf placement, where ids
-are stored and what that buys, creation placement order and `fellBack`/`placed`, the
-mover, the Done transition, `/project-setup`'s bucket steps, `/close-feature`/
-`/resolve-bug`, what clients see, known limitations, rollout). Updated
-`project-sections.md` (task channels now point at the new file; `/cleanup`'s `categoryIds`
-note; the section-channel room note) and `README.md`. Appended a dated Corrections
-section (§15) to `docs/superpowers/specs/2026-09-24-status-buckets-design.md` recording
-five deviations ruled during the build. Updated the three state files.
+Knowledge in use: `.claude/knowledge/ticket-archive.md` (new this session, replaces
+`status-buckets.md`), `.claude/knowledge/project-sections.md` (updated — the divider sits
+inside the section it describes). Rule in force:
+`.claude/rules/tests-never-touch-production.md` — every run was
+`DATABASE_URL=poisoned://no-production-access`.
 
-## Branch fix round 1 (2026-09-25, after the whole-branch review)
-Five confirmed findings on tasks 8/9, all fixed in one commit on `feat/status-buckets`:
-F1 bucket position edits mixed `rawPosition` (raw gateway value) with `edit({ position })`
-(sorted index) — both sides now use the `position` getter; F2 step 2b assigned the bucket
-ids AFTER the repair edit, so a refused repair un-filed every ticket bound for that bucket
-and called it "could not be created" — the ids are now bound before the edit; F3
-`projectFromChannel` ignored bucket ids, so no command run inside a ticket channel could
-infer its project — it now matches `bucketIdsOf(p)` too, duplicate-id rule across the whole
-set; F4 `renderResult`'s bucket line double-counted creates already in `result.created` —
-reworded to "N of those created"; F5 `intoBuckets` hardcoded the bucket keys — now
-`BUCKETS.map((b) => b.key)`. Three new tests, two existing expectations updated
-(`rawPosition` → `position`, the bucket reply wording). Full suite 1172 pass / 0 fail.
-Report: `.superpowers/sdd/2026-09-24-status-buckets/task-8-report.md` → "Branch fix round 1".
+## What changed
+**New leaves.** `bot/src/utils/ticketArchive.js` (`FINISHED_STATUSES`, `isFinished`, the
+divider's name/topic/store key, `archiveDividerIdOf`) and `bot/src/utils/channelOrder.js`
+(`textChannelsOf`, `desiredOrder`, `applyOrder` — one `guild.channels.setPositions` per
+reorder, and none when the order already matches).
 
-## Branch fix round 2 (2026-09-25, final whole-branch review)
-Six findings in one commit on `feat/status-buckets`, on top of `dd810f6`:
-`fix(buckets): never touch a non-ticket channel, sweep backoff, read-only notice`.
-**C1** the mover trusted `task.discordChannelId`, but `meetingPipelineStages` writes the
-meeting's REVIEW channel id onto every task a meeting produced — finishing an unassigned
-meeting task moved the shared channel into Done, locked it, stamped it and let the sweep
-delete it. Two layers: the mover now returns `reason: 'not-ticket'` (no move, no Done
-transition) when `isTicketChannel` says no, and `sweepRetiredTickets` refuses to delete a
-non-ticket channel (clears the stamp, keeps the id, new `skipped` counter).
-**I2** a permanently failing delete kept its stamp and, since `findRetirable` returns the
-oldest hundred, shadowed every newer row forever — a failed delete now pushes the stamp to
-`now + RETRY_AFTER_MS` (6h); 10003 from `delete()` itself now counts as "already gone".
-**I3** `/update-task`, the hub and the site board posted nothing when a channel went
-read-only — `applyTaskUpdate` now passes `extraLines` for both directions across the Done
-boundary, suppressed on `not-ticket`.
-**M4** a backfill `move` sent `{ name, parent, topic }`; now parent-only.
-**M6** the dead duplicate bucket bind in step 2b removed.
-**M8** `schema.sql` gained `channelRetireAt` and its index.
-Six new tests; four existing expectations updated (the sweep's return shape gained
-`skipped` in three assertions, and "a delete that throws keeps the stamp" became "is
-retried six hours later"); two test fixtures made ticket-shaped. Full suite 1178 pass / 0
-fail. Report: `.superpowers/sdd/2026-09-24-status-buckets/final-fix-report.md`.
+**New service.** `bot/src/services/ticketArchive.js` — `placeTicketForStatus` replaces
+`moveTicketToBucket`. Same Done transition, same `not-ticket` gate, same cache-miss
+behaviour; `same-bucket` becomes `same-zone`, `no-bucket`/`full` become `no-divider`, and
+the result field `bucket` becomes `archived: boolean|null`.
+
+**Creation.** `resolveParentCategory` is back to section → global (`placed:
+'section'|'global'`); a live ticket is then slid above the divider with one reorder, a
+finished one costs none because Discord already put it last.
+
+**`/project-setup`.** Observes `divider` and `staleBuckets`; plans a divider with
+`planChannels`'s rules; `planTasks` back to one parent and the original room accounting
+(the divider counts as arriving); apply step 2b gone, new 3c (create/repair the divider
+with the READ-ONLY overwrite set — a `grant` on it never builds from `ROLE_ALLOW`) and 4d
+(one `desiredOrder` + `applyOrder`, `result.reordered`); step 5 deletes the three
+`bucket*` keys. A leftover bucket the run empties is named in a warning that says
+`/project-setup` never deletes a category.
+
+**Deleted.** `utils/statusBuckets.js`, `services/ticketBucketMove.js` and both tests.
+`projectFromChannel` and `/cleanup`'s `categoryIds` are back to `discordCategoryId` only.
 
 ## Open items before merge
-See `backlog.md` → "Status buckets — deferred follow-ups" for every parked minor from the
-build's reviews (none blocks merge). Beyond that:
-- No live acceptance run yet — the rollout procedure (`/project-setup project:<X>
-  preview:true` then for real, per project) has not been exercised against the real guild.
-- Decide when to merge and deploy; migration `026_task_channel_retire.sql` runs on the VM
-  at deploy time.
+See `backlog.md` → "Archive divider — deferred follow-ups". Beyond that:
+- No live acceptance run yet. Rollout: deploy (no migration), then
+  `/project-setup project:TEST preview:true`, then for real; it creates the divider, pulls
+  the four TEST tickets back into `📂 TEST`, orders them, and reports that
+  `📂 TEST · OPEN`, `· IN PROGRESS` and `· DONE` are empty leftovers to delete by hand.
+- The three leftover bucket categories in the real guild have to be deleted manually —
+  nothing in the bot will ever do it.
 
 ## Next session
-If nothing else is queued, either merge `feat/status-buckets` to `main` and run the
-rollout per project, or pick up the next item at the top of `backlog.md`.
+Merge `feat/archive-divider` to `main`, deploy, run the rollout per project, delete the
+leftover bucket categories by hand — or pick up the next item at the top of `backlog.md`.
