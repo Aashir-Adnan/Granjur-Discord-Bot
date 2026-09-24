@@ -137,7 +137,29 @@ name-fallback only when no id is stored, one `edit()` per channel at most — is
 client approval and by `/setup` (so an operator can also just run `/setup`). Ids are stored in
 `guildconfig`. `/cleanup` protects them by id like the section channels.
 
-`channel-defaults.json` gets a pinned message for `support` explaining the four client commands.
+### 6.1 The client manual
+
+The `support` channel holds a **pinned manual** for clients — the only place they will ever be told
+how the bot works, since they see no other channel. It is a single embed, posted and pinned by
+`ensureSupportChannels`, and re-posted if the pinned message is ever missing (deleted by hand, or
+the channel recreated), so it is always there.
+
+Its content, built by `clientManual()` in `services/clientRequest.js` from the command definitions
+themselves rather than typed out twice:
+
+- what a client can and cannot see, in two sentences;
+- each client command with its syntax and one example — `/report-issue`, `/request-feature`,
+  `/my-requests`, `/request-report` — and, for the raising commands, that up to three documents
+  can be attached;
+- what happens after a request is raised: a private channel opens for it, the team is told, and
+  status changes are posted there and DMed;
+- what **"Waiting on you"** means and what to do about it (answer in the request's channel).
+
+A test asserts the manual names every command in `clientCommands` except `verify`, so adding a
+client command without documenting it fails the suite. The pinned message is also what
+`channel-defaults.json` points at for `support`, so `/init` and the lazy path post the same text.
+
+The project support channels (§7.1) get a one-line pinned pointer to the global manual, not a copy.
 
 **This pair is shared by every client of every company.** Nothing about an individual request is
 ever posted there, and the bot never @-mentions a client there.
@@ -283,6 +305,7 @@ sets `DATABASE_URL=poisoned://no-production-access` — see
 - report scoping: another client's request id is refused; the timeline omits estimate and time
   changes.
 - daily report and `/time-report` skip client rows.
+- manual: `clientManual()` names every command in `clientCommands` except `verify`.
 
 ## 13. Rollout
 
