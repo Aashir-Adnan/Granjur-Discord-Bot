@@ -5,10 +5,12 @@ import { holdersOf } from '../utils/taskLabel.js'
 import { projectFromChannel, CLIENT_SECTION_KEYS, storedChannels } from '../services/projectSection.js'
 import { CLIENT_TEXT_ALLOW_OBJ, CLIENT_VOICE_ALLOW_OBJ } from '../services/clientAccess.js'
 import { ensureMembersPanel, postMembershipChange } from '../services/projectMembersPanel.js'
+import { isClientRole } from '../utils/clientRoles.js'
 
 const ROLE_LABEL = {
   lead: 'Lead', developer: 'Developer', backend_developer: 'Backend Developer',
   frontend_developer: 'Frontend Developer', qa: 'QA', design: 'Design', client: 'Client',
+  client_manager: 'Client Manager',
 }
 const roleChoices = PROJECT_MEMBER_ROLES.map((r) => ({ name: ROLE_LABEL[r], value: r }))
 // Optional: left out, the project is the one whose section the command is run
@@ -137,6 +139,39 @@ async function changeRole(guild, project, userId, action) {
  * channels. Never the project role: that opens all twelve channels. Returns the
  * sentence the reply should carry.
  */
+/**
+ * A client manager reads every REQUEST channel on the project — the channels
+ * of tasks with `requestedBy` set — and never a team task's. One member
+ * overwrite per channel, opened on add and closed on remove; a channel that
+ * no longer resolves is skipped. Returns a sentence, or null when there was
+ * nothing to change.
+ */
+async function changeRequestChannelAccess(guild, cfgId, project, userId, action, dbArg) {
+  let tasks = []
+  try {
+    tasks = (await dbArg.task.findMany({ where: { guildConfigId: cfgId, projectId: project.id }, take: 500 })) ?? []
+  } catch (e) {
+    return `I could not read the project's requests (${e?.message || e}), so their access to existing request channels was not ${action === 'grant' ? 'opened' : 'closed'}. Run this again.`
+  }
+  const requests = tasks.filter((t) => t?.requestedBy && t.discordChannelId)
+  if (!requests.length) return null
+  let touched = 0
+  const failed = []
+  for (const t of requests) {
+    const channel = guild.channels?.cache?.get?.(t.discordChannelId) ?? null
+    if (!channel?.permissionOverwrites) continue
+    try {
+      if (action === 'grant') await channel.permissionOverwrites.edit(userId, CLIENT_TEXT_ALLOW_OBJ, { type: OverwriteType.Member, reason: 'Project client manager' })
+      else await channel.permissionOverwrites.delete(userId, 'Project client manager')
+      touched += 1
+    } catch (e) {
+      failed.push(`${channel.name} (${e?.message || e})`)
+    }
+  }
+  const base = `${touched} existing request channel(s) ${action === 'grant' ? 'opened' : 'closed'} to them.`
+  return failed.length ? `${base} Could not change ${failed.join(', ')}.` : base
+}
+
 async function changeClientAccess(guild, project, userId, action) {
   const stored = storedChannels(project)
   const targets = CLIENT_SECTION_KEYS.map((key) => [key, stored[key] ? guild.channels?.cache?.get?.(stored[key]) ?? null : null])
@@ -205,18 +240,25 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
     await dbArg.projectMember.add({ data: { guildConfigId: cfg.id, projectId: project.id, discordId: user.id, role, addedBy: interaction.user.id } })
     const lines = [`Added <@${user.id}> to **${project.name}** as **${ROLE_LABEL[role]}**.`]
     const prior = before?.find((m) => m.discordId === user.id) ?? null
-    if (role === 'client') {
-      // Revoke the project role whenever the prior role is known NOT to be
-      // `client`, and also when it is unknown at all (`before` came back
+    const push = (line) => { if (line) lines.push(line) }
+    if (isClientRole(role)) {
+      // Revoke the project role whenever the prior role is known NOT to be a
+      // client role, and also when it is unknown at all (`before` came back
       // null): a member who never held the role has nothing to lose by an
       // idempotent `roles.remove`, but a converted client silently keeping
-      // the role — all twelve channels — because a roster read blipped is
-      // the one outcome this must never risk. Only skip it, and its sentence,
-      // when re-adding someone already a client, which never held it either.
-      if (prior?.role !== 'client') lines.push(await changeRole(guild, project, user.id, 'revoke'))
+      // the role — every team channel — because a roster read blipped is the
+      // one outcome this must never risk. Only skip it, and its sentence, when
+      // re-adding someone already a client, who never held it either.
+      if (!isClientRole(prior?.role)) lines.push(await changeRole(guild, project, user.id, 'revoke'))
       lines.push(await changeClientAccess(guild, project, user.id, 'grant'))
+      // A manager reads the project's request channels; a demoted manager stops.
+      if (role === 'client_manager') push(await changeRequestChannelAccess(guild, cfg.id, project, user.id, 'grant', dbArg))
+      else if (prior?.role === 'client_manager') push(await changeRequestChannelAccess(guild, cfg.id, project, user.id, 'revoke', dbArg))
     } else {
-      if (prior?.role === 'client') lines.push(await changeClientAccess(guild, project, user.id, 'revoke'))
+      if (isClientRole(prior?.role)) {
+        lines.push(await changeClientAccess(guild, project, user.id, 'revoke'))
+        if (prior?.role === 'client_manager') push(await changeRequestChannelAccess(guild, cfg.id, project, user.id, 'revoke', dbArg))
+      }
       lines.push(await changeRole(guild, project, user.id, 'grant'))
     }
     const roster = await readRoster(dbArg, project)
@@ -255,9 +297,17 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
       // idempotent, so run both rather than guess and leave one behind.
       await changeRole(guild, project, user.id, 'revoke')
       await changeClientAccess(guild, project, user.id, 'revoke')
+      await changeRequestChannelAccess(guild, cfg.id, project, user.id, 'revoke', dbArg)
       lines.push('Their prior role could not be read, so both the project role and support-channel access were taken away.')
     }
-    else if (before?.find((m) => m.discordId === user.id)?.role === 'client') lines.push(await changeClientAccess(guild, project, user.id, 'revoke'))
+    else if (isClientRole(before?.find((m) => m.discordId === user.id)?.role)) {
+      const priorRole = before.find((m) => m.discordId === user.id).role
+      lines.push(await changeClientAccess(guild, project, user.id, 'revoke'))
+      if (priorRole === 'client_manager') {
+        const line = await changeRequestChannelAccess(guild, cfg.id, project, user.id, 'revoke', dbArg)
+        if (line) lines.push(line)
+      }
+    }
     else lines.push(await changeRole(guild, project, user.id, 'revoke'))
     if (roster) {
       await updatePanel(interaction, project, roster, stillOn ? null : { name: displayNameOf(guild, user), action: 'removed' })

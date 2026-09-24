@@ -1085,9 +1085,9 @@ test('a run reports how many places got the voice permissions, and says nothing 
 })
 
 test('the role-sync roster never contains a client row; clientIdsOf is the complement', () => {
-  const rows = [{ discordId: 'a', role: 'lead' }, { discordId: 'c', role: 'client' }, { discordId: 'b', role: 'qa' }]
-  assert.deepEqual(staffOnly(rows).map((m) => m.discordId), ['a', 'b'])
-  assert.deepEqual(clientIdsOf(rows), ['c'])
+  const rows = [{ discordId: 'a', role: 'lead' }, { discordId: 'c', role: 'client' }, { discordId: 'b', role: 'qa' }, { discordId: 'm', role: 'client_manager' }]
+  assert.deepEqual(staffOnly(rows).map((m) => m.discordId), ['a', 'b'], 'a client manager is a client: never the role')
+  assert.deepEqual(clientIdsOf(rows), ['c', 'm'], 'and gets the client channels')
   assert.deepEqual(staffOnly(null), [])
 })
 

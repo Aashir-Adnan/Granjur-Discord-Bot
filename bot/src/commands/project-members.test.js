@@ -48,11 +48,12 @@ test('renderMembers lists Backend and Frontend Developers as their own groups, i
   ].join('\n'))
 })
 
-test('the role picker offers all seven roles with readable labels', () => {
+test('the role picker offers all eight roles with readable labels', () => {
   const opt = data.toJSON().options.find((o) => o.name === 'add').options.find((o) => o.name === 'role')
   assert.deepEqual(opt.choices.map((c) => [c.value, c.name]), [
     ['lead', 'Lead'], ['developer', 'Developer'], ['backend_developer', 'Backend Developer'],
     ['frontend_developer', 'Frontend Developer'], ['qa', 'QA'], ['design', 'Design'], ['client', 'Client'],
+    ['client_manager', 'Client Manager'],
   ])
 })
 
@@ -556,4 +557,57 @@ test('add role:client when the prior roster read fails still revokes the role ra
   // twelve channels.
   assert.deepEqual(h.roleRemoves, ['role1'])
   assert.deepEqual(h.edits, [['sup', 'u-c', OverwriteType.Member], ['supv', 'u-c', OverwriteType.Member, true]])
+})
+
+// --- client managers ---------------------------------------------------------------
+// A client manager is a client who also reads every REQUEST channel on the
+// project — the channels of tasks with `requestedBy` set — and never a team
+// task's channel, and never the project role.
+
+function managerHarness({ members = [] } = {}) {
+  const h = clientHarness({ members })
+  const reqEdits = []
+  const reqDeletes = []
+  const chan = (id, name) => ({ id, name, permissionOverwrites: { cache: new Map(), edit: async (uid, allow, opts) => { reqEdits.push([id, uid, opts?.type]) }, delete: async (uid) => { reqDeletes.push([id, uid]) } } })
+  const req1 = chan('req1', 'bug-login-fails')
+  const req2 = chan('req2', 'feature-export')
+  const teamTask = chan('team1', 'feature-refactor')
+  h.guild.channels.cache.set('req1', req1); h.guild.channels.cache.set('req2', req2); h.guild.channels.cache.set('team1', teamTask)
+  h.db.task.findMany = async () => [
+    { id: 't1', projectId: 'proj1', requestedBy: 'u-c', discordChannelId: 'req1' },
+    { id: 't2', projectId: 'proj1', requestedBy: 'u-c2', discordChannelId: 'req2' },
+    { id: 't3', projectId: 'proj1', requestedBy: null, discordChannelId: 'team1' },
+    { id: 't4', projectId: 'proj1', requestedBy: 'u-c', discordChannelId: null },
+  ]
+  return { ...h, reqEdits, reqDeletes }
+}
+
+test('adding a client manager grants the support pair, every request channel, no team task channel, and never the project role', async () => {
+  const h = managerHarness()
+  const ix = fakeInteraction({ guild: h.guild, sub: 'add', opts: { role: 'client_manager', project: 'proj1' }, users: { member: { id: 'u-m', bot: false } } })
+  await execute(ix, { db: h.db, getConfig })
+  assert.deepEqual(h.edits.map((e) => e[0]), ['sup', 'supv'], 'the support pair, like any client')
+  assert.deepEqual(h.reqEdits, [['req1', 'u-m', OverwriteType.Member], ['req2', 'u-m', OverwriteType.Member]], 'both request channels, typed Member')
+  assert.ok(!h.reqEdits.some((e) => e[0] === 'team1'), 'a team task channel is never opened to a client manager')
+  assert.deepEqual(h.roleAdds, [], 'never the project role')
+  assert.deepEqual(h.roleRemoves, ['role1'], 'the role is revoked unconditionally, as for a client')
+  assert.match(ix.replies.at(-1).content, /2 existing request channel\(s\) opened/)
+})
+
+test('removing a client manager closes the request channels and the support pair, and leaves the role alone', async () => {
+  const h = managerHarness({ members: [{ discordId: 'u-m', role: 'client_manager' }] })
+  const ix = fakeInteraction({ guild: h.guild, sub: 'remove', opts: { project: 'proj1' }, users: { member: { id: 'u-m', bot: false } } })
+  await execute(ix, { db: h.db, getConfig })
+  assert.deepEqual(h.deletes, [['sup', 'u-m'], ['supv', 'u-m']])
+  assert.deepEqual(h.reqDeletes, [['req1', 'u-m'], ['req2', 'u-m']])
+  assert.deepEqual(h.roleRemoves, [])
+})
+
+test('demoting a client manager to a plain client closes the request channels but keeps the support pair', async () => {
+  const h = managerHarness({ members: [{ discordId: 'u-m', role: 'client_manager' }] })
+  const ix = fakeInteraction({ guild: h.guild, sub: 'add', opts: { role: 'client', project: 'proj1' }, users: { member: { id: 'u-m', bot: false } } })
+  await execute(ix, { db: h.db, getConfig })
+  assert.deepEqual(h.reqDeletes, [['req1', 'u-m'], ['req2', 'u-m']])
+  assert.deepEqual(h.deletes, [], 'still a client: the support pair stays')
+  assert.deepEqual(h.roleRemoves, [], 'was never a role holder — prior role is a client role, so no revoke')
 })

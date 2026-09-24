@@ -29,6 +29,7 @@ import {
   cut,
 } from '../services/projectSection.js'
 import { ensureMembersPanel } from '../services/projectMembersPanel.js'
+import { isClientRole } from '../utils/clientRoles.js'
 
 /** Discord's hard limit on a message. */
 const REPLY_LIMIT = 2000
@@ -123,9 +124,9 @@ function summarise(entries, words) {
 }
 
 /** The roster the ROLE sync may see: never a client row — the role opens every channel. */
-export const staffOnly = (rows) => (rows ?? []).filter((m) => m?.role !== 'client')
+export const staffOnly = (rows) => (rows ?? []).filter((m) => !isClientRole(m?.role))
 /** The clients of a project, for the support-channel overwrites. */
-export const clientIdsOf = (rows) => (rows ?? []).filter((m) => m?.role === 'client').map((m) => String(m.discordId))
+export const clientIdsOf = (rows) => (rows ?? []).filter((m) => isClientRole(m?.role)).map((m) => String(m.discordId))
 
 /** 'Ada, Bob and 4 more' — never an unbounded list of names in a reply. */
 function namesList(names, max = 12) {

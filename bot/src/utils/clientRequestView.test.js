@@ -34,3 +34,14 @@ test('myRequestsLines shows type, title, project, status and channel', () => {
     '✨ **Export** · no project · open',
   ])
 })
+
+test('myRequestsLines names who raised a request that is not the caller\'s', () => {
+  const lines = myRequestsLines([
+    { type: 'bug', title: 'Mine', projectName: 'P', status: 'open', requestedBy: 'me' },
+    { type: 'bug', title: 'Theirs', projectName: 'P', status: 'open', requestedBy: 'u2' },
+  ], { me: 'me', nameFor: (id) => ({ u2: 'Ali' })[id] })
+  assert.deepEqual(lines, [
+    '🐞 **Mine** · P · open',
+    '🐞 **Theirs** · raised by Ali · P · open',
+  ])
+})

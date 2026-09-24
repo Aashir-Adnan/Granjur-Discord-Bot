@@ -51,3 +51,53 @@ test('request-report renders status, handler, dates and a filtered timeline', as
   assert.match(text, /in progress/)
   assert.ok(!text.includes('60'), 'estimate never renders')
 })
+
+// --- client managers ------------------------------------------------------------------
+
+const T_MINE = { id: 't-mine', type: 'bug', title: 'Mine', status: 'open', projectId: 'p1', projectName: 'P', requestedBy: 'u-c', createdAt: new Date('2026-09-20T00:00:00Z') }
+const T_TEAM = { id: 't-team', type: 'feature', title: 'Theirs', status: 'pending', projectId: 'p1', projectName: 'P', requestedBy: 'u-c2', createdAt: new Date('2026-09-21T00:00:00Z') }
+const T_STAFF = { id: 't-staff', type: 'feature', title: 'Refactor', status: 'open', projectId: 'p1', projectName: 'P', requestedBy: null, createdAt: new Date('2026-09-22T00:00:00Z') }
+const T_OTHER = { id: 't-other', type: 'bug', title: 'Elsewhere', status: 'open', projectId: 'p9', projectName: 'Q', requestedBy: 'u-c3', createdAt: new Date('2026-09-23T00:00:00Z') }
+
+function managerDb({ manages = ['p1'] } = {}) {
+  const all = [T_MINE, T_TEAM, T_STAFF, T_OTHER]
+  return {
+    projectMember: { findByMember: async () => manages.map((projectId) => ({ projectId, role: 'client_manager' })) },
+    task: {
+      findMany: async ({ where }) => all.filter((t) => (where.requestedBy ? t.requestedBy === where.requestedBy : true) && (where.projectId ? t.projectId === where.projectId : true)),
+      findFirst: async ({ where }) => all.find((t) => t.id === where.id) ?? null,
+    },
+    taskActivity: { findByTask: async () => [] },
+  }
+}
+
+test('a client manager sees their team\'s requests on the managed project — never a team task, never another project', async () => {
+  const i = ix('my-requests')
+  i.guild.members.cache.set('u-c2', { displayName: 'Ali' })
+  await execute(i, { db: managerDb(), getConfig: async () => ({ id: 'cfg1' }) })
+  const text = i.replies[0].embeds[0].toJSON().description
+  assert.match(text, /\*\*Theirs\*\* · raised by Ali/)
+  assert.match(text, /\*\*Mine\*\*/)
+  assert.ok(!text.includes('Refactor'), 'a task the team created is not a request')
+  assert.ok(!text.includes('Elsewhere'), 'a request on a project they do not manage')
+  assert.ok(text.indexOf('Theirs') < text.indexOf('Mine'), 'newest first across own and team')
+})
+
+test('a plain client on the same project still sees only their own', async () => {
+  const i = ix('my-requests')
+  await execute(i, { db: managerDb({ manages: [] }), getConfig: async () => ({ id: 'cfg1' }) })
+  const text = i.replies[0].embeds[0].toJSON().description
+  assert.ok(text.includes('Mine') && !text.includes('Theirs'))
+})
+
+test('request-report opens a managed project\'s request to the manager, and still refuses the rest identically', async () => {
+  const ok = ix('request-report', { request: 't-team' })
+  await execute(ok, { db: managerDb(), getConfig: async () => ({ id: 'cfg1' }) })
+  assert.match(JSON.stringify(ok.replies[0]), /Theirs/)
+  const staff = ix('request-report', { request: 't-staff' })
+  const other = ix('request-report', { request: 't-other' })
+  const missing = ix('request-report', { request: 'nope' })
+  for (const i of [staff, other, missing]) await execute(i, { db: managerDb(), getConfig: async () => ({ id: 'cfg1' }) })
+  assert.equal(staff.replies[0].content, missing.replies[0].content, 'a team task is refused like a missing id')
+  assert.equal(other.replies[0].content, missing.replies[0].content, 'another project\'s request is refused like a missing id')
+})

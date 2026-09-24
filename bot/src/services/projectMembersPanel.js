@@ -26,7 +26,7 @@ const ROLE_LABEL = {
   frontend_developer: 'Frontend Developer',
   qa: 'QA',
   design: 'Design',
-  client: 'Client',
+  client: 'Client', client_manager: 'Client Manager',
 }
 
 const FIELD_VALUE_LIMIT = 1024
