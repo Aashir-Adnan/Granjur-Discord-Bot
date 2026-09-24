@@ -402,6 +402,19 @@ which has `requestedBy` null); a DM with the leads when a request is raised; and
 plain client on the same project still sees only their own. Not repaired by `/project-setup`
 (backlog): if a manager's overwrite on an old request channel goes missing, remove and re-add them.
 
+## /request-task — support tasks are a third kind (2026-09-24)
+
+The client segmented requests: `/report-issue` (bugs), `/request-task` (support tasks — handling
+student or other data at a level an admin cannot reach), `/request-feature` (new features). A
+support task is a `task` row with `type='task'`, `is_bug=0`, `is_feature=0` — neither, on
+purpose, so nothing mistakes it for either. `taskChannelName` gives it the `task-` prefix,
+`taskChannelTopic` the `Task:` label, and `isTicketChannel`'s topic/name signatures accept the
+third kind; `createTaskTicketChannel` titles and colours it as a Task (a project-less one still
+lands in the global Features category — no fourth bucket). Fields: `TASK_FIELDS` (platform,
+semester, needed_by, scope, reason). `COMMAND_KIND`/`FIELDS_BY_KIND`/`NOUN` in
+`client-request.js` map the command to the kind. The gate list `clientCommands` and its pinning
+test include it. The site shows `type` verbatim; it has no special rendering for `task`.
+
 ## Related
 
 [[project-sections]]

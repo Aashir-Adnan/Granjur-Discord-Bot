@@ -57,6 +57,8 @@ Rule in force: `.claude/rules/tests-never-touch-production.md`.
 - Client Manager role → shipped (`62669e9`). Assign with `/project-members add … role:Client
   Manager` to someone already approved as a client.
 
+- `/request-task` for support tasks → shipped (`16b5528`).
+
 ## Open items
 See `backlog.md` → "Client role — deferred follow-ups". The one worth raising first: both gates
 fail open when the member cannot be resolved (read `interaction.member`).

@@ -4,6 +4,12 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-24 — /request-task: support tasks as a third kind (MERGED, PUSHED)
+
+Client-requested segmentation. `type='task'` with both flags off; `task-` channel prefix, `Task:`
+topic, own fields (platform, semester, needed_by, scope, reason), icon and title; gate list and
+its pinning test updated. `ec3c9e9`, merged `16b5528`; 1108 tests.
+
 ## 2026-09-24 — Client Manager project role (MERGED, PUSHED)
 
 `projectmember.role='client_manager'`: a client who is in every request channel on their project
