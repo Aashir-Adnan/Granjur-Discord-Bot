@@ -16,9 +16,16 @@
  *               decision?: 'create' | 'stored' | 'empty' | 'adopt',
  *               kind?: 'managed-name' | 'role', gateRoleId, holderIds? }
  *   category: { action: 'create' | 'reuse' | 'rename', id?, name }
+ *   buckets:  [{ key, storeKey, action: 'create' | 'reuse' | 'rename', id?, name }]  (table order)
  *   channels: [{ key, action: 'create' | 'reuse' | 'rename' | 'move' | 'grant', id?, name, type, opens? }]
- *   tasks:    [{ taskId, channelId, action: 'rename' | 'move' | 'both' | 'grant' | 'none', name, topic, opens? }]
+ *   tasks:    [{ taskId, channelId, action: 'rename' | 'move' | 'both' | 'grant' | 'none', name, topic, bucket, opens?, retire? }]
  *   warnings: string[]
+ *
+ * A ticket lives in its STATUS bucket, not in the section category: `bucket` is
+ * the key of the one its status files it into, and an action of `move`/`both`
+ * means "not in that bucket yet" — a bucket being created this run has no id,
+ * so nothing can already be inside it. `retire: true` marks a ticket arriving
+ * in Done without a `channelRetireAt` stamp; a stamped one is never re-stamped.
  *
  * `gateRoleId` is the one answer to "which role will this section be gated on";
  * the channel planner and the applier both read it, so they cannot disagree
@@ -42,6 +49,7 @@ import { CATEGORY_SOFT_CAP } from '../constants.js'
 // `projectMembersPanel.js`, so this adds no new database import to a leaf.
 import { CLIENT_TEXT_ALLOW_OBJ, CLIENT_VOICE_ALLOW_OBJ, ensureManualPinned } from './clientAccess.js'
 import { cut, storedChannels } from '../utils/projectStore.js'
+import { BUCKETS, bucketFor, bucketByKey, bucketNameFor, bucketIdsOf, isDoneBucket } from '../utils/statusBuckets.js'
 
 // The cap lives in `constants.js`, a leaf: `taskTicketChannel.js` needs it too,
 // and importing this module into that leaf helper pulled the whole database
@@ -288,6 +296,18 @@ function planCategory(project, observed) {
   return { action: 'rename', id, name }
 }
 
+/** One entry per bucket, `planCategory`'s rules applied to each. */
+function planBuckets(project, observed) {
+  const seen = observed?.buckets ?? {}
+  return BUCKETS.map((b) => {
+    const name = bucketNameFor(project, b)
+    const found = seen[b.key]
+    if (!found?.id) return { key: b.key, storeKey: b.storeKey, action: 'create', name }
+    if (found.name === name) return { key: b.key, storeKey: b.storeKey, action: 'reuse', id: found.id, name }
+    return { key: b.key, storeKey: b.storeKey, action: 'rename', id: found.id, name }
+  })
+}
+
 /**
  * The ten section channels.
  *
@@ -373,27 +393,25 @@ function lacksRoleAllow(overwriteIds, role) {
 }
 
 function planTasks(project, observed, channels, role, warnings) {
-  const parentId = observed?.categoryId ?? null
-  const tasks = Array.isArray(observed?.tasks) ? observed.tasks : []
-  // Every section channel this plan puts INTO the category takes a slot: the
-  // ones created there, and the ones moved in from somewhere else. A renamed or
-  // reused one is already inside, so `categoryChannelCount` has it already.
-  const arriving = channels.filter((c) => c.action === 'create' || c.action === 'move').length
-  // What is left of the category once this plan's own channels are in it.
-  let room = Math.max(
-    0,
-    CATEGORY_SOFT_CAP - Number(observed?.categoryChannelCount ?? 0) - arriving
-  )
+  const sectionId = observed?.categoryId ?? null
+  const seen = observed?.buckets ?? {}
+  const bucketIdOf = (key) => seen[key]?.id ?? null
+  const projectCategoryIds = new Set([sectionId, ...BUCKETS.map((b) => bucketIdOf(b.key))].filter(Boolean))
+  // Room per bucket. A bucket being created this run starts empty. Section
+  // channels never sit in a bucket, so they no longer compete with tickets.
+  const room = {}
+  for (const b of BUCKETS) room[b.key] = Math.max(0, CATEGORY_SOFT_CAP - Number(seen[b.key]?.channelCount ?? 0))
+  const leftBehind = {}
 
+  const tasks = Array.isArray(observed?.tasks) ? observed.tasks : []
   const taken = new Set(observed?.takenNames ?? [])
-  // The ten section names are spoken for, so a project slugged `feature` with a
-  // task titled "Members" cannot land on `feature-members` in the same run.
+  // The thirteen section names are spoken for, so a project slugged `feature`
+  // with a task titled "Members" cannot land on `feature-members` in the same run.
   for (const channel of channels) taken.add(channel.name)
   // Names this run has handed out. Separate from `taken` because a task may
   // free the name it already carries, but never one promised to another task.
   const assigned = new Set()
   const planned = []
-  let leftBehind = 0
 
   for (const task of tasks) {
     if (!task?.channelId) continue
@@ -410,8 +428,11 @@ function planTasks(project, observed, channels, role, warnings) {
     assigned.add(name)
     taken.add(name)
 
+    const bucket = bucketFor(task.status)
+    const wantedParent = bucketIdOf(bucket)
     const nameOk = task.channelName === name
-    const parentOk = Boolean(parentId) && task.parentId === parentId
+    // A bucket being created has no id yet, so nothing can already be in it.
+    const parentOk = Boolean(wantedParent) && task.parentId === wantedParent
     let action = nameOk ? (parentOk ? 'none' : 'move') : parentOk ? 'rename' : 'both'
 
     // Already named and placed, but the project role cannot see it: a channel
@@ -423,11 +444,11 @@ function planTasks(project, observed, channels, role, warnings) {
     if (action === 'none' && needsAllow) action = 'grant'
 
     if (action === 'move' || action === 'both') {
-      if (room > 0) room -= 1
+      if (room[bucket] > 0) room[bucket] -= 1
       else {
         // No room: leave it where it is, but still give it a readable name.
         action = action === 'both' ? 'rename' : 'none'
-        leftBehind += 1
+        leftBehind[bucket] = (leftBehind[bucket] ?? 0) + 1
       }
     }
     // The topic rides along with the rename. A channel renamed from
@@ -435,20 +456,31 @@ function planTasks(project, observed, channels, role, warnings) {
     // would match neither the old name nor the new `Task <id>` marker, and
     // /update-task would open a duplicate beside it on every update.
     // A rename/move edit ALSO carries the role's allow when the channel ends up
-    // inside the category — the applier folds it into the same single edit. The
-    // preview has to say so: "22 to rename and move" reads as a tidy-up, while
-    // what it means is that 22 channels visible only to their assignees become
-    // visible to everyone holding the project role. A `rename` left outside by
-    // the category cap lands nowhere new, so it opens to nobody.
-    const landsInside = action === 'move' || action === 'both' || (action === 'rename' && parentOk)
-    planned.push({
+    // inside the project's space — the applier folds it into the same single
+    // edit. The preview has to say so: "22 to rename and move" reads as a
+    // tidy-up, while what it means is that 22 channels visible only to their
+    // assignees become visible to everyone holding the project role.
+    //
+    // Inside the project's space after this plan: moved into a bucket, or
+    // staying in a bucket or the section category it is already in. A ticket
+    // its bucket had no room for is dropped to `none`, and the applier skips a
+    // `none` outright — claiming it was opened would be a preview line that
+    // never happened — while the `grant` word already says it on its own.
+    const edited = action !== 'none' && action !== 'grant'
+    const landsInside = action === 'move' || action === 'both' || projectCategoryIds.has(task.parentId)
+    const entry = {
       taskId: task.id,
       channelId: task.channelId,
       action,
       name,
       topic: taskChannelTopic({ type: task.type, title: task.title, taskId: task.id }),
-      ...(needsAllow && landsInside ? { opens: true } : {}),
-    })
+      bucket,
+    }
+    if (needsAllow && landsInside && edited) entry.opens = true
+    // Filed into Done for the first time: read-only now, gone in fourteen days.
+    // Never re-stamped — the fortnight would restart on every run.
+    if (isDoneBucket(bucket) && !task.retireAt) entry.retire = true
+    planned.push(entry)
   }
 
   const shared = Number(observed?.sharedTaskChannels ?? 0)
@@ -458,9 +490,10 @@ function planTasks(project, observed, channels, role, warnings) {
     )
   }
 
-  if (leftBehind > 0) {
+  for (const [key, n] of Object.entries(leftBehind)) {
+    const label = bucketByKey(key)?.label ?? key
     warnings.push(
-      `Project "${project?.name}" is at Discord's category cap (${CATEGORY_SOFT_CAP} channels), so ${leftBehind} task channel${leftBehind === 1 ? '' : 's'} stayed where ${leftBehind === 1 ? 'it is' : 'they are'} — the category is full.`
+      `Project "${project?.name}"'s ${label} bucket is at Discord's category cap (${CATEGORY_SOFT_CAP} channels), so ${n} task channel${n === 1 ? '' : 's'} stayed where ${n === 1 ? 'it is' : 'they are'}.`
     )
   }
   return planned
@@ -477,8 +510,9 @@ function planTasks(project, observed, channels, role, warnings) {
  *   categoryId?: string|null,
  *   categoryName?: string|null,
  *   categoryChannelCount?: number,
+ *   buckets?: {open: {id: string, name: string, channelCount: number}|null, inProgress: object|null, done: object|null},
  *   channels?: Object<string, {id: string, name: string, parentId: string|null, overwriteIds?: string[]|null}>,
- *   tasks?: Array<{id: string, title: string, type: string, channelId: string, channelName: string, parentId: string|null, overwriteIds?: string[]|null}>,
+ *   tasks?: Array<{id: string, title: string, type: string, status?: string|null, retireAt?: Date|null, channelId: string, channelName: string, parentId: string|null, overwriteIds?: string[]|null}>,
  *   sharedTaskChannels?: number,
  *   takenNames?: Set<string>,
  * }} observed a plain snapshot the caller gathers — no Discord objects
@@ -490,6 +524,7 @@ export function planProjectSection(project, observed = {}, opts = {}) {
   const warnings = []
   const role = planRole(project, observed, warnings, opts)
   const category = planCategory(project, observed)
+  const buckets = planBuckets(project, observed)
   // After the role: every channel decision depends on which role gates the
   // section, and on a refusal there may be none.
   const channels = planChannels(project, observed, role)
@@ -498,7 +533,7 @@ export function planProjectSection(project, observed = {}, opts = {}) {
   // preview lists.
   const voice = observed.voiceActivity ?? { category: [], channels: [] }
   const clients = planClientAccess(observed, opts)
-  return { role, category, channels, tasks, voice, clients, warnings }
+  return { role, category, buckets, channels, tasks, voice, clients, warnings }
 }
 
 // ---------------------------------------------------------------------------
@@ -816,6 +851,21 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
   }
   const categoryId = category?.id ?? null
 
+  // The three status buckets: by stored id (a category renamed by hand is
+  // still ours), else by exact name among categories no other project claims
+  // — the same two rules the section category follows.
+  const bucketIds = bucketIdsOf(project)
+  const buckets = {}
+  for (const b of BUCKETS) {
+    let cat = bucketIds[b.key] ? byId.get(bucketIds[b.key]) ?? null : null
+    if (cat && cat.type !== ChannelType.GuildCategory) cat = null
+    if (!cat) {
+      const wanted = bucketNameFor(project, b)
+      cat = all.find((c) => c.type === ChannelType.GuildCategory && c.name === wanted && !claimed.has(c.id)) ?? null
+    }
+    buckets[b.key] = cat ? { id: cat.id, name: cat.name, channelCount: all.filter((c) => c.parentId === cat.id).length } : null
+  }
+
   // After the category, because a candidate's "does it open channels elsewhere"
   // test has to know where this project's own category is.
   const roleCandidate = sameNamed ? describeRoleCandidate(guild, sameNamed, categoryId, all) : null
@@ -929,6 +979,10 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
       channelId: channel.id,
       channelName: channel.name,
       parentId: channel.parentId ?? null,
+      // Which bucket the ticket belongs in, and whether its fortnight has
+      // already been stamped — the planner never re-stamps one.
+      status: task.status ?? null,
+      retireAt: task.channelRetireAt ?? null,
       // The ids of the overwrites the channel carries, or null when they cannot
       // be read — the planner only plans a permissions edit on what it can see.
       overwriteIds: overwriteIdsOf(channel),
@@ -956,6 +1010,7 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
     categoryId,
     categoryName: category?.name ?? null,
     categoryChannelCount: categoryId ? all.filter((c) => c.parentId === categoryId).length : 0,
+    buckets,
     channels,
     tasks: observedTasks,
     voiceActivity,

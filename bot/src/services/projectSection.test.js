@@ -18,6 +18,18 @@ const project = { id: 'p1', name: 'Framework', docsSlug: 'framework' }
 const empty = { roleId: null, roleCandidate: null, rolesFetched: true, categoryId: null, categoryName: null, categoryChannelCount: 0, channels: {}, tasks: [], takenNames: new Set() }
 
 /**
+ * The three status buckets as the observer reports them once they exist. Only
+ * `id` and `channelCount` reach the task planner — a ticket is "already in
+ * place" when its parent is its bucket's id, never the section category — so
+ * the Framework names here are incidental to every test but the bucket planner's.
+ */
+const seenBuckets = (counts = {}) => ({
+  open: { id: 'b-open', name: '📂 FRAMEWORK · OPEN', channelCount: counts.open ?? 0 },
+  inProgress: { id: 'b-prog', name: '📂 FRAMEWORK · IN PROGRESS', channelCount: counts.inProgress ?? 0 },
+  done: { id: 'b-done', name: '📂 FRAMEWORK · DONE', channelCount: counts.done ?? 0 },
+})
+
+/**
  * A same-named role the planner may look at: harmless by default, so each test
  * spells out only the one thing it is about.
  */
@@ -135,13 +147,18 @@ test('a task outside its project is moved and renamed in one action', () => {
       // The rename carries the topic: without it the channel keeps a topic
       // naming a task nothing can match it back to.
       topic: 'Feature: Git Sync — Task tA1b2c3d4e5f6',
+      // No status: it files as open, and the open bucket is being created this
+      // run, so the channel is not in it yet.
+      bucket: 'open',
     },
   ])
 })
 
 test('a task already right plans none', () => {
-  const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-git-sync', parentId: 'c1' }]
-  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', tasks })
+  // "Already right" is now "already inside its status bucket", not the section
+  // category — a ticket never lives directly under the category any more.
+  const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-git-sync', parentId: 'b-open' }]
+  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets(), tasks })
   assert.equal(plan.tasks[0].action, 'none')
 })
 
@@ -159,8 +176,8 @@ test('two tasks with the same title never share a channel name', () => {
 })
 
 test('a task keeps the name it already carries, even when the snapshot lists it as taken', () => {
-  const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-git-sync', parentId: 'c1' }]
-  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', tasks, takenNames: new Set(['feature-git-sync']) })
+  const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-git-sync', parentId: 'b-open' }]
+  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets(), tasks, takenNames: new Set(['feature-git-sync']) })
   assert.deepEqual([plan.tasks[0].action, plan.tasks[0].name], ['none', 'feature-git-sync'])
 })
 
@@ -172,7 +189,10 @@ test('a task cannot take the name of a section channel this plan creates', () =>
   assert.notEqual(plan.tasks[0].name, 'feature-members')
 })
 
-test('section channels moved into the category count against the cap, like created ones', () => {
+test('section channels moved into the category no longer count against the tickets\' room', () => {
+  // They used to: tickets shared the section category, so the thirteen arriving
+  // channels ate thirteen ticket slots. Tickets now live in the status buckets,
+  // where no section channel ever sits, so the two never compete again.
   const channels = {}
   for (const s of SECTIONS) channels[s.key] = { id: `id-${s.key}`, name: channelNameFor(project, s.suffix), parentId: 'ELSEWHERE' }
   const tasks = Array.from({ length: 40 }, (_, i) => ({
@@ -183,17 +203,17 @@ test('section channels moved into the category count against the cap, like creat
     channelName: `feature-old-${i}`,
     parentId: 'FEATURES',
   }))
-  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', channels, tasks })
+  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets(), channels, tasks })
   assert.ok(plan.channels.every((c) => c.action === 'move'))
-  // 49 - 0 already in the category - 13 sections arriving = 36, not 49.
-  assert.equal(plan.tasks.filter((t) => t.action === 'both').length, 36)
-  assert.equal(plan.tasks.filter((t) => t.action === 'rename').length, 4)
-  assert.ok(plan.warnings.some((w) => /full|cap/i.test(w)))
+  // All 40 fit: the open bucket is empty, so its room is the full 49.
+  assert.equal(plan.tasks.filter((t) => t.action === 'both').length, 40)
+  assert.equal(plan.tasks.filter((t) => t.action === 'rename').length, 0)
+  assert.equal(plan.warnings.filter((w) => /cap/i.test(w)).length, 0)
 })
 
-test('past the category cap, task moves are dropped with a warning; sections still plan', () => {
+test('past the bucket cap, task moves are dropped with a warning; sections still plan', () => {
   const tasks = [{ id: 't1', title: 'Git Sync', type: 'feature', channelId: 'ch1', channelName: 'feature-0145e3', parentId: 'FEATURES' }]
-  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', categoryChannelCount: 49, tasks })
+  const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets({ open: 49 }), tasks })
   assert.equal(plan.tasks[0].action, 'rename')
   assert.ok(plan.warnings.some((w) => /full|cap/i.test(w)))
 })
@@ -334,7 +354,9 @@ test('observeProjectSection resolves the stored ids and takes names from the who
   })
   assert.equal(observed.channels.documentation, undefined)
   assert.deepEqual(observed.tasks, [
-    { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-0145e3', parentId: 'FEATURES', overwriteIds: null },
+    // A row with no status and no stamp reads as nulls: it files as open, and
+    // the planner is free to stamp it if its status ever puts it in Done.
+    { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-0145e3', parentId: 'FEATURES', status: null, retireAt: null, overwriteIds: null },
   ])
   assert.ok(observed.takenNames.has('general'))
   assert.ok(observed.takenNames.has('framework-members'))
@@ -637,12 +659,14 @@ test('a channel whose overwrites cannot be read still moves, without an allow th
 
 test('a task channel already named, placed and open to the role gets no edit', async () => {
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
-  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1', [
+  // "Placed" is inside the ticket's STATUS bucket now, not the section category.
+  const bucket = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory })
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'b-open', [
     { id: 'r1', type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: 0n },
   ])
   const role = { id: 'r1', name: 'Framework', members: new Map() }
-  const guild = fakeGuild({ channels: [cat, taskCh], roles: [role] })
-  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const guild = fakeGuild({ channels: [cat, bucket, taskCh], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { bucketOpen: 'b-open' } }
   const observed = observeProjectSection(guild, stored, [
     { id: 't1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' },
   ])
@@ -656,17 +680,25 @@ test('a task channel already named, placed and open to the role gets no edit', a
 
 test('a task channel already named and placed but closed to the role is granted it, and only that', async () => {
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
-  // Opened while the project's role id was stale: in the section, no allow.
-  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1')
+  // Opened while the project's role id was stale: in its bucket, no allow.
+  const bucket = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory })
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'b-open')
   const role = { id: 'r1', name: 'Framework', members: new Map() }
-  const guild = fakeGuild({ channels: [cat, taskCh], roles: [role] })
-  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  const guild = fakeGuild({ channels: [cat, bucket, taskCh], roles: [role] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1', discordChannels: { bucketOpen: 'b-open' } }
   const observed = observeProjectSection(guild, stored, [
     { id: 't1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' },
   ])
   const plan = planProjectSection(stored, observed)
   assert.equal(plan.tasks[0].action, 'grant')
+  assert.equal(plan.tasks[0].bucket, 'open')
 
+  // The applier still only merges the allow into a channel parented to the
+  // SECTION category — Task 8 is what teaches it the buckets — so its half of
+  // this runs against the ticket sitting there. What it must send is the same
+  // either way: the overwrites, merged, and nothing else. Drop this line once
+  // the applier knows a bucket is the project's space too.
+  taskCh.parentId = 'c1'
   const out = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
   assert.equal(taskCh.edits.length, 1)
   const edit = taskCh.edits[0]
@@ -678,8 +710,9 @@ test('a task channel already named and placed but closed to the role is granted 
 })
 
 test('the planner never plans a grant for a refused role or an unreadable channel', () => {
-  const base = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1' }
-  const observed = (task) => ({ ...empty, roleId: 'r1', categoryId: 'c1', categoryName: '📂 FRAMEWORK', tasks: [task] })
+  // Already named and inside its bucket, so the only question left is the role.
+  const base = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'b-open' }
+  const observed = (task) => ({ ...empty, roleId: 'r1', categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets(), tasks: [task] })
   assert.equal(planProjectSection(project, observed({ ...base, overwriteIds: null })).tasks[0].action, 'none')
   assert.equal(planProjectSection(project, observed({ ...base, overwriteIds: ['G1'] })).tasks[0].action, 'grant')
   assert.equal(planProjectSection(project, observed({ ...base, overwriteIds: ['G1', 'r1'] })).tasks[0].action, 'none')
@@ -1151,12 +1184,13 @@ test('a refused name that KEPT an old role repairs channels against THAT role', 
   // that is — before `gateRoleId` the planner said "no role, plan nothing"
   // while the applier put the kept role's allow on every moved channel.
   const renamed = { id: 'p2', name: 'Database', docsSlug: 'database', discordRoleId: 'r7' }
-  const task = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1', overwriteIds: ['G1'] }
+  const task = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'b-open', overwriteIds: ['G1'] }
   const plan = planProjectSection(renamed, {
     ...empty,
     roleId: 'r7',
     categoryId: 'c1',
     categoryName: '📂 DATABASE',
+    buckets: seenBuckets(),
     tasks: [task],
   })
   assert.equal(plan.role.action, 'refuse')
@@ -1166,12 +1200,13 @@ test('a refused name that KEPT an old role repairs channels against THAT role', 
 })
 
 test('a refused role with nothing kept plans no channel permission work at all', () => {
-  const task = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1', overwriteIds: ['G1'] }
+  const task = { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'b-open', overwriteIds: ['G1'] }
   const channels = { members: { id: 'm1', name: 'framework-members', parentId: 'c1', overwriteIds: ['G1'] } }
   const plan = planProjectSection(project, {
     ...empty,
     categoryId: 'c1',
     categoryName: '📂 FRAMEWORK',
+    buckets: seenBuckets(),
     channels,
     tasks: [task],
     roleCandidate: candidate({ holderIds: ['u1'] }),
@@ -1759,4 +1794,96 @@ test('a run with no project role never edits voice overwrites', async () => {
   const out = await applyProjectSection(guild, { ...project, discordCategoryId: 'c1' }, plan, { db: fakeDb() })
   assert.equal(v1.vadEdits.length + cat.vadEdits.length, 0)
   assert.deepEqual(out.voiceFixed, [])
+})
+
+// ---- status buckets --------------------------------------------------------
+const bucketCat = (id, name) => fakeChannel(id, name, { type: ChannelType.GuildCategory })
+const withBuckets = (p, ids = {}) => ({ ...p, discordCategoryId: 'c1', discordChannels: { ...(p.discordChannels ?? {}), bucketOpen: 'b-open', bucketInProgress: 'b-prog', bucketDone: 'b-done', ...ids } })
+
+test('observe finds each bucket by stored id, else by exact name, never one another project claims', () => {
+  const guild = fakeGuild({
+    channels: [
+      fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory }),
+      bucketCat('b-open', 'renamed by hand'),
+      bucketCat('by-name', '📂 FRAMEWORK · IN PROGRESS'),
+      bucketCat('theirs', '📂 FRAMEWORK · DONE'),
+      fakeChannel('t1', 'feature-x', { parentId: 'b-open' }),
+    ],
+  })
+  const p = withBuckets(project, { bucketInProgress: null, bucketDone: null })
+  const observed = observeProjectSection(guild, p, [], { claimedIds: new Set(['theirs']) })
+  assert.deepEqual(observed.buckets.open, { id: 'b-open', name: 'renamed by hand', channelCount: 1 })
+  assert.deepEqual(observed.buckets.inProgress, { id: 'by-name', name: '📂 FRAMEWORK · IN PROGRESS', channelCount: 0 })
+  assert.equal(observed.buckets.done, null)
+})
+
+test('observe: a stored bucket id that is a text channel is treated as missing', () => {
+  const guild = fakeGuild({ channels: [fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory }), fakeChannel('b-open', 'oops')] })
+  const observed = observeProjectSection(guild, withBuckets(project), [])
+  assert.equal(observed.buckets.open, null)
+})
+
+test('observe carries each ticket\'s status and stamp', () => {
+  const guild = fakeGuild({ channels: [ticketChannel('tc1', 'feature-x', 'c1')] })
+  const stamp = new Date('2026-10-01T00:00:00Z')
+  const observed = observeProjectSection(guild, withBuckets(project), [{ id: 't1', title: 'X', type: 'feature', status: 'done', discordChannelId: 'tc1', channelRetireAt: stamp }])
+  assert.equal(observed.tasks[0].status, 'done')
+  assert.equal(observed.tasks[0].retireAt, stamp)
+})
+
+test('plan: the three buckets are created, reused or renamed exactly like the category', () => {
+  const plan = planProjectSection(project, {
+    categoryId: 'c1', categoryName: '📂 FRAMEWORK',
+    buckets: { open: null, inProgress: { id: 'b-prog', name: '📂 FRAMEWORK · IN PROGRESS', channelCount: 0 }, done: { id: 'b-done', name: 'old', channelCount: 3 } },
+  })
+  assert.deepEqual(plan.buckets, [
+    { key: 'open', storeKey: 'bucketOpen', action: 'create', name: '📂 FRAMEWORK · OPEN' },
+    { key: 'inProgress', storeKey: 'bucketInProgress', action: 'reuse', id: 'b-prog', name: '📂 FRAMEWORK · IN PROGRESS' },
+    { key: 'done', storeKey: 'bucketDone', action: 'rename', id: 'b-done', name: '📂 FRAMEWORK · DONE' },
+  ])
+})
+
+test('plan: tickets are filed by status — into their bucket, out of the section category', () => {
+  const observed = {
+    categoryId: 'c1', categoryName: '📂 FRAMEWORK', categoryChannelCount: 15,
+    buckets: { open: { id: 'b-open', name: '📂 FRAMEWORK · OPEN', channelCount: 0 }, inProgress: null, done: { id: 'b-done', name: '📂 FRAMEWORK · DONE', channelCount: 0 } },
+    tasks: [
+      { id: 't1', title: 'Git Sync', type: 'feature', status: 'open', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1' },
+      { id: 't2', title: 'Login', type: 'bug', status: 'in_progress', channelId: 'tc2', channelName: 'bug-login', parentId: 'c1' },
+      { id: 't3', title: 'Old', type: 'feature', status: 'done', channelId: 'tc3', channelName: 'feature-old', parentId: 'b-done', retireAt: null },
+      { id: 't4', title: 'Older', type: 'feature', status: 'closed', channelId: 'tc4', channelName: 'feature-older', parentId: 'b-done', retireAt: new Date() },
+    ],
+    takenNames: new Set(),
+  }
+  const plan = planProjectSection(project, observed)
+  const byId = Object.fromEntries(plan.tasks.map((t) => [t.taskId, t]))
+  assert.equal(byId.t1.action, 'move'); assert.equal(byId.t1.bucket, 'open')
+  // A bucket being created this run has no id yet, so the channel is still "not there".
+  assert.equal(byId.t2.action, 'move'); assert.equal(byId.t2.bucket, 'inProgress')
+  assert.equal(byId.t3.action, 'none'); assert.equal(byId.t3.bucket, 'done'); assert.equal(byId.t3.retire, true)
+  // Already stamped: the fourteen days must not restart on every run.
+  assert.equal(byId.t4.action, 'none'); assert.equal(byId.t4.retire, undefined)
+})
+
+test('plan: room is counted per bucket, and a full bucket leaves its tickets where they are with a warning naming it', () => {
+  const tasks = Array.from({ length: 50 }, (_, i) => ({ id: `t${i}`, title: `Task ${i}`, type: 'feature', status: 'open', channelId: `tc${i}`, channelName: `feature-task-${i}`, parentId: 'c1' }))
+  const observed = {
+    categoryId: 'c1', categoryName: '📂 FRAMEWORK', categoryChannelCount: 63,
+    buckets: { open: { id: 'b-open', name: '📂 FRAMEWORK · OPEN', channelCount: 0 }, inProgress: null, done: null },
+    tasks, takenNames: new Set(),
+  }
+  const plan = planProjectSection(project, observed)
+  assert.equal(plan.tasks.filter((t) => t.action === 'move').length, 49)
+  assert.equal(plan.tasks.filter((t) => t.action === 'none').length, 1)
+  assert.ok(plan.warnings.some((w) => /OPEN bucket/.test(w) && /1 task channel/.test(w)))
+})
+
+test('a ticket its full bucket left behind is never reported as opened to the role', () => {
+  // Dropped to `none` by the cap, and the applier skips a `none` outright, so
+  // "already right (and open to the project role)" in the preview would be a
+  // permission change the run never made.
+  const task = { id: 't1', title: 'Git Sync', type: 'feature', status: 'open', channelId: 'tc1', channelName: 'feature-git-sync', parentId: 'c1', overwriteIds: ['G1'] }
+  const plan = planProjectSection(project, { ...empty, roleId: 'r1', categoryId: 'c1', categoryName: '📂 FRAMEWORK', buckets: seenBuckets({ open: 49 }), tasks: [task] })
+  assert.equal(plan.tasks[0].action, 'none')
+  assert.equal(plan.tasks[0].opens, undefined)
 })

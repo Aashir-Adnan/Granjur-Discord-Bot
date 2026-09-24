@@ -408,18 +408,21 @@ test('a project named after a managed role is reported, and the rest of the sect
 })
 
 test('the reply carries the planner\'s warnings, not only the applier\'s', async () => {
-  // A category already holding enough channels that a task channel cannot move
-  // in: that warning is the PLANNER's, and only a merged list shows it.
+  // A ticket's status BUCKET already holding enough channels that the ticket
+  // cannot move in — tickets no longer share the section category, so the room
+  // that runs out is the bucket's. That warning is the PLANNER's, and only a
+  // merged list shows it.
   const category = fakeChannel('cat1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
-  const filler = Array.from({ length: 45 }, (_, i) =>
-    fakeChannel(`f${i}`, `filler-${i}`, { parentId: 'cat1' })
+  const bucket = fakeChannel('b-open', '📂 FRAMEWORK · OPEN', { type: ChannelType.GuildCategory })
+  const filler = Array.from({ length: 49 }, (_, i) =>
+    fakeChannel(`f${i}`, `filler-${i}`, { parentId: 'b-open' })
   )
   const taskChannel = fakeChannel('tc1', 'feature-0145e3', { parentId: 'OUTSIDE' })
   const db = fakeDb({
-    projects: [{ ...PROJECT, discordCategoryId: 'cat1' }],
+    projects: [{ ...PROJECT, discordCategoryId: 'cat1', discordChannels: { bucketOpen: 'b-open' } }],
     tasks: [{ id: 't1', projectId: 'p1', title: 'Git Sync', type: 'feature', discordChannelId: 'tc1' }],
   })
-  const guild = fakeGuild({ channels: [category, ...filler, taskChannel] })
+  const guild = fakeGuild({ channels: [category, bucket, ...filler, taskChannel] })
   const it = fakeInteraction({ guild, opts: { project: 'p1' } })
 
   await quiet(() => execute(it, { db, getConfig }))
