@@ -13,6 +13,8 @@ import db, { getOrCreateGuildConfig, ensureStringArray } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { memberPassesRoleGate, roleIdsAreStale, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
 import { MANAGED_ROLES } from '../utils/roleSync.js'
+import { approveMember, CLIENT_VALUE } from '../services/approval.js'
+import { ROLE_CLIENT } from '../constants.js'
 
 // The single list, shared with /set-roles so the two cannot drift apart.
 const ROLE_OPTIONS = MANAGED_ROLES
@@ -54,7 +56,7 @@ export async function execute(interaction) {
       const name = mem?.user?.username ?? m.discordId
       const email = m.email || '—'
       const at = m.verifiedAt ? new Date(m.verifiedAt).toLocaleDateString() : '—'
-      return `**${i + 1}.** ${name} · ${email} · verified ${at}`
+      return `**${i + 1}.** ${name}${m.kind === 'client' ? ' (client)' : ''} · ${email} · verified ${at}`
     })
 
     const embed = new EmbedBuilder()
@@ -112,6 +114,17 @@ export async function handleBacklogUserSelect(interaction) {
 
   flowStore.set(interaction.user.id, guild.id, 'backlog_approve', { userId, displayName })
 
+  if (dbMember.kind === 'client') {
+    flowStore.set(interaction.user.id, guild.id, 'backlog_approve', { userId, displayName, selectedRoles: [], asClient: true })
+    const embed = new EmbedBuilder()
+      .setTitle(`Approve as client · ${displayName}`)
+      .setDescription('This person was invited as a **client**. They get no staff roles and will see only the support channels. Click **Approve** to confirm.')
+      .setColor(0x00b0f4)
+      .setFooter({ text: 'Step 2 of 2' })
+    const approveBtn = new ButtonBuilder().setCustomId(`backlog_approve_btn:${userId}`).setLabel('Approve as client').setStyle(ButtonStyle.Success)
+    return interaction.update({ embeds: [embed], components: [new ActionRowBuilder().addComponents(approveBtn)] }).catch(() => {})
+  }
+
   let roles = await db.guildAssignableRole.findMany({ where: { guildConfigId: cfg.id } })
   if (roles.length === 0) {
     for (const name of ROLE_OPTIONS) {
@@ -120,7 +133,10 @@ export async function handleBacklogUserSelect(interaction) {
     roles = await db.guildAssignableRole.findMany({ where: { guildConfigId: cfg.id } })
   }
 
-  const options = roles.slice(0, 24).map((r) => ({ label: r.name.slice(0, 100), value: r.name }))
+  const options = [
+    { label: ROLE_CLIENT, value: CLIENT_VALUE, description: 'A client: no staff roles, sees only the support channels' },
+    ...roles.slice(0, 23).map((r) => ({ label: r.name.slice(0, 100), value: r.name })),
+  ]
   options.push({ label: '+ Add new role', value: ADD_ROLE_VALUE, description: 'Add a role to the list' })
 
   const embed = new EmbedBuilder()
@@ -181,12 +197,13 @@ export async function handleBacklogRoleSelect(interaction) {
   }
 
   const selectedRoles = values.filter((v) => v !== ADD_ROLE_VALUE)
-  flowStore.set(interaction.user.id, guild.id, 'backlog_approve', { ...state, selectedRoles })
+  const asClient = selectedRoles.includes(CLIENT_VALUE)
+  flowStore.set(interaction.user.id, guild.id, 'backlog_approve', { ...state, selectedRoles: asClient ? [] : selectedRoles, asClient })
 
   const embed = new EmbedBuilder()
     .setTitle(`Assign roles · ${state.displayName || 'User'}`)
     .setDescription(
-      (selectedRoles.length ? `**Selected:** ${selectedRoles.join(', ')}\n\n` : '') +
+      (asClient ? '**Selected:** Client\n\n' : (selectedRoles.length ? `**Selected:** ${selectedRoles.join(', ')}\n\n` : '')) +
         'Click **Approve** to assign these roles and approve the user, or change your selection above.'
     )
     .setColor(0xfee75c)
@@ -198,7 +215,10 @@ export async function handleBacklogRoleSelect(interaction) {
     .setStyle(ButtonStyle.Success)
 
   let roles = await db.guildAssignableRole.findMany({ where: { guildConfigId: cfg.id } })
-  const options = roles.slice(0, 24).map((r) => ({ label: r.name.slice(0, 100), value: r.name }))
+  const options = [
+    { label: ROLE_CLIENT, value: CLIENT_VALUE, description: 'A client: no staff roles, sees only the support channels' },
+    ...roles.slice(0, 23).map((r) => ({ label: r.name.slice(0, 100), value: r.name })),
+  ]
   options.push({ label: '+ Add new role', value: ADD_ROLE_VALUE, description: 'Add a role to the list' })
 
   const select = new StringSelectMenuBuilder()
@@ -238,7 +258,10 @@ export async function handleBacklogAddRoleModal(interaction) {
   if (!state?.userId) return interaction.editReply({ content: 'Session expired. Run **/backlog** again.', components: [] }).catch(() => {})
 
   const roles = await db.guildAssignableRole.findMany({ where: { guildConfigId: cfg.id } })
-  const options = roles.slice(0, 24).map((r) => ({ label: r.name.slice(0, 100), value: r.name }))
+  const options = [
+    { label: ROLE_CLIENT, value: CLIENT_VALUE, description: 'A client: no staff roles, sees only the support channels' },
+    ...roles.slice(0, 23).map((r) => ({ label: r.name.slice(0, 100), value: r.name })),
+  ]
   options.push({ label: '+ Add new role', value: ADD_ROLE_VALUE, description: 'Add a role to the list' })
 
   const embed = new EmbedBuilder()
@@ -321,28 +344,8 @@ export async function handleBacklogApproveModal(interaction) {
     const member = await guild.members.fetch(userId).catch(() => null)
     if (!member) return interaction.editReply({ content: 'Member not found in server.' }).catch(() => {})
 
-    const assigned = []
-    for (const name of roleNames) {
-      const role = guild.roles.cache.find((r) => r.name.toLowerCase() === name.toLowerCase())
-      if (role) {
-        try {
-          await member.roles.add(role)
-          assigned.push(role.name)
-        } catch (_) {}
-      }
-    }
-
-    if (cfg.holdingRoleId) await member.roles.remove(cfg.holdingRoleId).catch((e) => console.warn('[backlog] Could not remove holding role:', e.message))
-    if (cfg.verifiedRoleId) {
-      await member.roles.add(cfg.verifiedRoleId).catch((e) => console.error('[backlog] Could not add verified role:', e.message))
-    } else {
-      console.warn('[backlog] No verifiedRoleId configured — user will not see channels')
-    }
-
-    const existingRoleIds = ensureStringArray(dbMember.roleIds)
-    await db.guildMember.update({
-      where: { id: dbMember.id },
-      data: { status: 'approved', roleIds: [...new Set([...existingRoleIds, ...assigned])] },
+    const { asClient, assigned, supportChannelId } = await approveMember({
+      guild, member, dbMember, cfg, roleNames, asClient: Boolean(state?.asClient),
     })
 
     flowStore.clear(interaction.user.id, guild.id, 'backlog_approve')
@@ -351,11 +354,14 @@ export async function handleBacklogApproveModal(interaction) {
       .setTitle('User approved')
       .setDescription(
         `**${member.user.tag}** is now approved.\n\n` +
-          `**Roles assigned:** ${assigned.length ? assigned.join(', ') : 'none'}\n` +
+          (asClient
+            ? `**Approved as a client.** They can see ${supportChannelId ? `<#${supportChannelId}>` : 'the support channel'}.`
+            : `**Roles assigned:** ${assigned.length ? assigned.join(', ') : 'none'}`) +
+          '\n' +
           (notes ? `**Notes:** ${notes.slice(0, 200)}` : '')
       )
       .setColor(0x57f287)
-      .setFooter({ text: 'They now have server access.' })
+      .setFooter({ text: asClient ? 'They see only the support channels.' : 'They now have server access.' })
 
     await interaction.editReply({ embeds: [embed], components: [] }).catch(() => {})
   } catch (e) {
