@@ -37,7 +37,7 @@ function candidate(over = {}) {
 test('names follow the spec', () => {
   assert.equal(categoryNameFor(project), '📂 FRAMEWORK')
   assert.equal(channelNameFor(project, 'frontend-chat'), 'framework-frontend-chat')
-  assert.equal(SECTIONS.length, 12)
+  assert.equal(SECTIONS.length, 13)
   assert.deepEqual(SECTIONS.map((s) => s.key).slice(0, 3), ['members', 'documentation', 'meetings'])
 })
 
@@ -57,6 +57,7 @@ test('the section table matches the constraints, suffix and type', () => {
       ['databaseVoice', 'database-voice', 'voice'],
       ['support', 'support', 'text'],
       ['supportVoice', 'support-voice', 'voice'],
+      ['casual', 'casual-chat', 'text'],
     ]
   )
 })
@@ -184,8 +185,8 @@ test('section channels moved into the category count against the cap, like creat
   }))
   const plan = planProjectSection(project, { ...empty, categoryId: 'c1', categoryName: '📂 FRAMEWORK', channels, tasks })
   assert.ok(plan.channels.every((c) => c.action === 'move'))
-  // 49 - 0 already in the category - 12 sections arriving = 37, not 49.
-  assert.equal(plan.tasks.filter((t) => t.action === 'both').length, 37)
+  // 49 - 0 already in the category - 13 sections arriving = 36, not 49.
+  assert.equal(plan.tasks.filter((t) => t.action === 'both').length, 36)
   assert.equal(plan.tasks.filter((t) => t.action === 'rename').length, 3)
   assert.ok(plan.warnings.some((w) => /full|cap/i.test(w)))
 })
@@ -463,7 +464,7 @@ test('a fresh section creates the role, the category with its two overwrites, an
   assert.equal(chCalls[0].type, ChannelType.GuildText)
   assert.equal(chCalls[3].name, 'framework-meeting-voice')
   assert.equal(chCalls[3].type, ChannelType.GuildVoice)
-  assert.equal(out.created.length, 13)
+  assert.equal(out.created.length, 14)
   assert.equal(out.warnings.length, 0)
   assert.equal(out.category.id, 'new-1')
   assert.equal(out.role.id, 'role-1')
@@ -717,7 +718,7 @@ test('a Discord error on one channel becomes a warning and the rest of the run c
   const out = await quiet(() => applyProjectSection(guild, stored, plan, { db }))
 
   assert.ok(out.warnings.some((w) => /Missing Permissions/.test(w)), out.warnings.join(' | '))
-  assert.equal(guild.channels.calls.length, 11, 'the other eleven section channels were still created')
+  assert.equal(guild.channels.calls.length, 12, 'the other twelve section channels were still created')
   assert.equal(db.calls.length, 1)
   assert.equal(db.calls[0].data.discordChannels.members, 'm1', 'the id it already had is still recorded')
 })
@@ -860,7 +861,7 @@ test('a members panel failure is a warning at worst, never a throw', async () =>
   // roster — without it this test would pass by never reaching the panel.
   const out = await quiet(() => applyProjectSection(guild, project, plan, { db: fakeDb(), members: [] }))
 
-  assert.equal(out.created.length, 13)
+  assert.equal(out.created.length, 14)
   assert.equal(out.tasks, 0)
 })
 
@@ -959,7 +960,7 @@ test('a run with no db seam warns that the ids went unsaved, and does not throw'
 
   const out = await applyProjectSection(guild, project, plan, {})
 
-  assert.equal(out.created.length, 13, 'the section is still built')
+  assert.equal(out.created.length, 14, 'the section is still built')
   assert.ok(
     out.warnings.some((w) => /Framework/.test(w) && /not saved/i.test(w)),
     out.warnings.join(' | ')

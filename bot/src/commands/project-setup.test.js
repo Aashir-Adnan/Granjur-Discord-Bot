@@ -331,7 +331,7 @@ test('a run with project: applies the plan, syncs the role, and replies with the
 
   assert.equal(guild.roles.calls.length, 1, 'the project role was created')
   // One category plus the twelve section channels.
-  assert.equal(guild.channels.calls.length, 13)
+  assert.equal(guild.channels.calls.length, 14)
   assert.equal(taskChannel.edits.length, 1, 'the task channel moved in one edit')
   const category = [...guild.channels.cache.values()].find((c) => c.type === ChannelType.GuildCategory)
   assert.equal(taskChannel.edits[0].parent, category.id, 'it moved into the new category')
@@ -1001,7 +1001,7 @@ test('a bot without Administrator is warned that it will not see the sections it
   assert.match(content, /will not be able to see the private sections/)
   // A warning, never a refusal: the section is still built.
   assert.equal(guild.roles.calls.length, 1, 'the role was still created')
-  assert.equal(guild.channels.calls.length, 13, 'the category and its twelve channels were still created')
+  assert.equal(guild.channels.calls.length, 14, 'the category and its thirteen channels were still created')
 })
 
 test('a bot WITH Administrator is not warned', async () => {

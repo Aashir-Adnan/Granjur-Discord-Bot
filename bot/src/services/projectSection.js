@@ -50,7 +50,7 @@ export { CATEGORY_SOFT_CAP }
 /** Discord's cap on a category name, the same 100 as a channel name. */
 const MAX_CATEGORY_NAME = 100
 
-/** The twelve section channels, in creation order. */
+/** The thirteen section channels, in creation order. */
 export const SECTIONS = [
   { key: 'members', suffix: 'members', type: 'text' },
   { key: 'documentation', suffix: 'documentation', type: 'text' },
@@ -64,10 +64,16 @@ export const SECTIONS = [
   { key: 'databaseVoice', suffix: 'database-voice', type: 'voice' },
   { key: 'support', suffix: 'support', type: 'text' },
   { key: 'supportVoice', suffix: 'support-voice', type: 'voice' },
+  { key: 'casual', suffix: 'casual-chat', type: 'text' },
 ]
 
-/** The two channels a project's clients can see. Access is a member overwrite per client row. */
-export const CLIENT_SECTION_KEYS = ['support', 'supportVoice']
+/**
+ * The channels a project's clients can see — the support pair and the casual
+ * chat. Access is a member overwrite per client row; everything that grants,
+ * revokes or repairs client access iterates this list, so a channel is made
+ * client-visible by adding its key here and nowhere else.
+ */
+export const CLIENT_SECTION_KEYS = ['support', 'supportVoice', 'casual']
 
 const fold = (s) => String(s ?? '').trim().toLowerCase()
 const MANAGED_FOLDED = new Set(MANAGED_ROLES.map(fold))
