@@ -40,7 +40,7 @@ import { ensureMembersPanel } from './projectMembersPanel.js'
 import { CATEGORY_SOFT_CAP } from '../constants.js'
 // `clientAccess.js` imports `db/index.js`; this module already does through
 // `projectMembersPanel.js`, so this adds no new database import to a leaf.
-import { CLIENT_TEXT_ALLOW_OBJ, CLIENT_VOICE_ALLOW_OBJ } from './clientAccess.js'
+import { CLIENT_TEXT_ALLOW_OBJ, CLIENT_VOICE_ALLOW_OBJ, ensureManualPinned } from './clientAccess.js'
 
 // The cap lives in `constants.js`, a leaf: `taskTicketChannel.js` needs it too,
 // and importing this module into that leaf helper pulled the whole database
@@ -1185,6 +1185,20 @@ export async function applyProjectSection(
         ;(entry.action === 'move' ? result.moved : result.renamed).push(entry.name)
       } catch (e) {
         note(result.warnings, `channel "${entry.name}"`, e)
+      }
+    }
+
+    // 3a. The client manual, pinned in the project's support channel — the same
+    //     embed #support carries, so a client on this project reads the rules
+    //     where they will actually be talking. Presence-only by title and author,
+    //     so a run after the pin exists posts nothing and a deleted pin comes
+    //     back on the next run. A failure is one warning, never a stopped run.
+    const supportChannel = resolved.get('support') ?? null
+    if (supportChannel) {
+      try {
+        await ensureManualPinned(supportChannel, botUserId)
+      } catch (e) {
+        note(result.warnings, `client manual in ${supportChannel.name ?? 'the support channel'}`, e)
       }
     }
 

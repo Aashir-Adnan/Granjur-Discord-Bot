@@ -58,7 +58,7 @@ export function clientManual() {
   embed.addFields(
     {
       name: 'What happens after you raise a request',
-      value: 'A private channel opens for it — only you and the team can see it. The team is told, and every status change is posted there and sent to you as a message.',
+      value: 'A private channel opens for it — only you and the team can see it. The team is told, and every status change is posted there and sent to you as a message. You can post more documents or screenshots in that request\'s channel at any time.',
     },
     {
       name: '"Waiting on you"',

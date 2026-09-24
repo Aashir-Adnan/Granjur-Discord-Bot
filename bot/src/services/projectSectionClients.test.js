@@ -2,13 +2,16 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType, OverwriteType } from 'discord.js'
 import { observeProjectSection, planProjectSection, applyProjectSection, CLIENT_SECTION_KEYS, storedChannels } from './projectSection.js'
+import { MANUAL_TITLE } from './clientManual.js'
 
 const project = { id: 'p1', name: 'Framework', docsSlug: 'framework', discordCategoryId: 'cat', discordRoleId: 'role', discordChannels: { support: 'sup', supportVoice: 'supv' } }
 
 function channel(id, name, { type = ChannelType.GuildText, parentId = 'cat', overwrites = [] } = {}) {
   const cache = new Map(overwrites.map((o) => [o.id, o]))
   const ch = {
-    id, name, type, parentId, topic: null, edits: [], deletes: [],
+    id, name, type, parentId, topic: null, edits: [], deletes: [], sent: [], pinned: [],
+    messages: { fetchPinned: async () => new Map(ch.pinned.map((m, i) => [String(i), m])) },
+    send: async (payload) => { const msg = { ...payload, isPinned: false, pin: async () => { msg.isPinned = true } }; ch.sent.push(msg); return msg },
     permissionOverwrites: {
       cache,
       edit: async (mid, allow, opts) => { ch.edits.push({ mid, allow, opts }); cache.set(mid, { id: mid, type: opts?.type }) },
@@ -100,4 +103,37 @@ test('observe: omitting clientIds fails closed — no clientAccess, and the plan
   assert.equal(observed.clientIds, null)
   const plan = planProjectSection(project, observed, {})
   assert.deepEqual(plan.clients, { wanted: [], grant: [], revoke: [] })
+})
+
+test('apply: a freshly created project support channel gets the client manual pinned', async () => {
+  const cat = channel('cat', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, parentId: null })
+  const guild = guildWith([cat])
+  const plan = {
+    role: { action: 'reuse', id: 'role', name: 'Framework', gateRoleId: 'role' },
+    category: { action: 'reuse', id: 'cat', name: '📂 FRAMEWORK' },
+    channels: [{ key: 'support', action: 'create', name: 'framework-support', type: 'text' }],
+    tasks: [], voice: { category: [], channels: [] }, warnings: [],
+    clients: { wanted: [], grant: [], revoke: [] },
+  }
+  await quiet(() => applyProjectSection(guild, project, plan, { db: { project: { update: async () => {} } }, botUserId: 'bot' }))
+  const created = guild.channels.cache.get('new-framework-support')
+  assert.equal(created.sent.length, 1)
+  assert.equal(created.sent[0].embeds[0].toJSON().title, MANUAL_TITLE)
+  assert.equal(created.sent[0].isPinned, true)
+})
+
+test('apply: a reused project support channel that already has the manual pinned posts nothing', async () => {
+  const sup = channel('sup', 'framework-support', { overwrites: [role('g1'), role('role')] })
+  sup.pinned.push({ author: { id: 'bot' }, embeds: [{ title: MANUAL_TITLE }] })
+  const cat = channel('cat', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, parentId: null })
+  const guild = guildWith([cat, sup])
+  const plan = {
+    role: { action: 'reuse', id: 'role', name: 'Framework', gateRoleId: 'role' },
+    category: { action: 'reuse', id: 'cat', name: '📂 FRAMEWORK' },
+    channels: [{ key: 'support', action: 'reuse', id: 'sup', name: 'framework-support', type: 'text' }],
+    tasks: [], voice: { category: [], channels: [] }, warnings: [],
+    clients: { wanted: [], grant: [], revoke: [] },
+  }
+  await quiet(() => applyProjectSection(guild, project, plan, { db: { project: { update: async () => {} } }, botUserId: 'bot' }))
+  assert.equal(sup.sent.length, 0, 'manual already pinned')
 })

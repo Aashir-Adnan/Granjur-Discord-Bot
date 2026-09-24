@@ -27,3 +27,9 @@ test('the manual explains "Waiting on you" and that documents can be attached', 
   assert.match(text, /Waiting on you/)
   assert.match(text, /three documents/i)
 })
+
+test('the manual says more documents can be posted in the request channel later', () => {
+  const json = clientManual().toJSON()
+  const text = (json.fields ?? []).map((f) => f.value).join('\n')
+  assert.match(text, /post more documents or screenshots in that request's channel at any time/i)
+})
