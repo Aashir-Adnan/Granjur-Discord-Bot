@@ -23,6 +23,15 @@ what this branch added. Newest first.
 - Two reorders racing (two status writes, or a status write during a `/project-setup`)
   both send the whole category list; the later one wins with no read-modify-write lock.
   Harmless while the order is derived from the divider each time, worth knowing.
+- A voice channel can share a position number with a text channel: `applyOrder` is only
+  ever handed the category's *text* channels, so voice ones keep whatever positions they
+  had. Harmless while Discord sorts voice as a separate list below every text channel in a
+  category — an assumption about Discord's rendering that no test here can prove. If it
+  ever stops holding, `textChannelsOf` has to become "every child, text first".
+- Discord's normalisation of U+2500 in the divider name `────archive────` is unverified
+  (the name has no spaces, which would become hyphens). Costs nothing if it normalises:
+  the observer looks the divider up by stored id first and only falls back to the exact
+  name. First live check after deploy.
 - Several "ten section channels" strings remain in `projectSection.js` (pre-existing
   inconsistency, not introduced here) — there are thirteen, plus the divider.
 - The identical two-line comment explaining the placement call is duplicated in

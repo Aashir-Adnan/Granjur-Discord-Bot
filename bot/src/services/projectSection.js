@@ -795,8 +795,22 @@ function categoryOverwrites(guild, roleId) {
  * nothing else. Explicitly NOT `ROLE_ALLOW` — that carries `SendMessages`, and
  * a divider anyone can post in stops being a divider.
  */
-const DIVIDER_ROLE_ALLOW = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory]
-const DIVIDER_ROLE_DENY = [PermissionFlagsBits.SendMessages]
+export const DIVIDER_ROLE_ALLOW = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory]
+
+/**
+ * Everything that would let somebody put content on the line. `SendMessages`
+ * alone is not "read-only": a reaction or a thread started on the divider is
+ * just as much a post, and a thread under it would sit in the sidebar between
+ * the live tickets and the archived ones. One list, used by the create, by the
+ * repair, and by the check that decides a repair is due.
+ */
+export const DIVIDER_ROLE_DENY = [
+  PermissionFlagsBits.SendMessages,
+  PermissionFlagsBits.SendMessagesInThreads,
+  PermissionFlagsBits.CreatePublicThreads,
+  PermissionFlagsBits.CreatePrivateThreads,
+  PermissionFlagsBits.AddReactions,
+]
 
 /**
  * The divider's overwrites: `@everyone` denied as everywhere else in the
@@ -876,18 +890,46 @@ function roleAllowMerged(channel, roleId) {
 }
 
 /**
+ * Whether the project role's overwrite on the divider has to be repaired.
+ *
+ * This is the ONE place in this file that looks at overwrite BITS rather than
+ * mere presence, and it is deliberate. Everywhere else, presence-only is what
+ * stops the bot re-closing a category an admin deliberately reopened by hand.
+ * Here the property being defended is the opposite one: the divider is
+ * read-only, and presence-only cannot heal it. One click of the client's
+ * "Sync Now" on the category copies the category's own overwrite — `ROLE_ALLOW`,
+ * `SendMessages` included — onto every child, the divider with them; the role's
+ * overwrite is then still *present*, so a presence check sees nothing wrong and
+ * no run ever restores the deny. The line silently becomes a chat channel.
+ *
+ * Repair is due when the overwrite is absent, when its `deny` is missing any
+ * bit of `DIVIDER_ROLE_DENY`, or when its `allow` carries one of them.
+ * Unreadable bits are never guessed at, as everywhere else here: an overwrite
+ * that cannot be inspected is left alone rather than rewritten on every run.
+ */
+function dividerRoleNeedsRepair(channel, roleId) {
+  const overwrite = channel?.permissionOverwrites?.cache?.get?.(roleId)
+  if (!overwrite) return true
+  const allow = bitsOf(overwrite.allow)
+  const deny = bitsOf(overwrite.deny)
+  if (allow === null || deny === null) return false
+  return DIVIDER_ROLE_DENY.some((bit) => (deny & bit) === 0n || (allow & bit) !== 0n)
+}
+
+/**
  * The overwrite set to send so the project role can SEE the divider without
  * writing in it. The twin of `roleAllowMerged`, and deliberately not a call to
  * it: building the divider's repair from `ROLE_ALLOW` would hand the role
  * `SendMessages` on the one channel in the section that must never take a
- * message.
+ * message. Merged, so a hand-added overwrite on the divider survives; the
+ * role's own entry is the one this replaces.
  */
 function dividerAllowMerged(channel, roleId) {
   if (!roleId) return null
   const cache = channel?.permissionOverwrites?.cache
   if (!cache?.has || !cache?.values) return null
+  if (!dividerRoleNeedsRepair(channel, roleId)) return null
   const required = [{ id: roleId, type: OverwriteType.Role, allow: DIVIDER_ROLE_ALLOW, deny: DIVIDER_ROLE_DENY }]
-  if (!missingOverwrites(channel, required)) return null
   return mergedOverwrites(channel, required)
 }
 
@@ -1406,20 +1448,29 @@ export async function applyProjectSection(
           channelIds[ARCHIVE_STORE_KEY] = channel.id
           dividerId = channel.id
           const overwrites = dividerAllowMerged(channel, projectRoleId)
+          // The topic is what tells a reader what the line means, and what
+          // keeps `isTicketChannel` from mistaking it for a ticket. A divider
+          // whose topic was cleared or edited by hand is repaired in whichever
+          // single edit this run was already going to make.
+          const needsTopic = String(channel.topic ?? '') !== ARCHIVE_DIVIDER_TOPIC
           if (dividerPlan.action === 'reuse') {
-            // Named and placed already; the only thing that can be wrong is
-            // that the role cannot see the line. One edit carrying nothing but
-            // the overwrites, exactly as a section channel's `grant` does —
+            // Named and placed already; what can still be wrong is the topic
+            // and whether the role can see the line without writing in it. One
+            // edit carrying nothing else, as a section channel's `grant` does —
             // sending the name and parent back would rewrite what was just read.
+            const payload = {}
+            if (needsTopic) payload.topic = ARCHIVE_DIVIDER_TOPIC
             // `null` means nothing to add: no role that resolves, an unreadable
-            // overwrite list, or the allow landed since the snapshot. No edit.
-            if (overwrites) {
-              await channel.edit({ permissionOverwrites: overwrites })
-              result.granted.push(channel.name ?? dividerPlan.name)
+            // overwrite list, or the overwrite is already right.
+            if (overwrites) payload.permissionOverwrites = overwrites
+            if (Object.keys(payload).length) {
+              await channel.edit(payload)
+              if (overwrites) result.granted.push(channel.name ?? dividerPlan.name)
             }
           } else {
-            // A rename or a move is one edit, and the allow rides in it.
+            // A rename or a move is one edit, and the topic and the allow ride in it.
             const payload = { name: dividerPlan.name, parent: categoryId }
+            if (needsTopic) payload.topic = ARCHIVE_DIVIDER_TOPIC
             if (overwrites) payload.permissionOverwrites = overwrites
             await channel.edit(payload)
             if (overwrites) result.opened.push(dividerPlan.name)
@@ -1512,19 +1563,35 @@ export async function applyProjectSection(
     // 4d. One reorder for the whole category: live tickets above the divider,
     //     finished ones below it, everything else untouched at the top. ONE
     //     `setPositions` however many channels moved, and none at all when the
-    //     order is already right. Which side each ticket belongs on comes from
-    //     the plan (`archived`), so a preview and a run agree. Best-effort: a
-    //     refused reorder is one warning, never a stopped run.
+    //     order is already right. Which side a PLANNED ticket belongs on comes
+    //     from the plan (`archived`), so a preview and a run agree.
+    //
+    //     A ticket channel with NO plan entry keeps whichever side of the line
+    //     it is on today. Several real channels have no entry: one past
+    //     `TASK_LIMIT`, one two task rows point at, one whose row was deleted.
+    //     Defaulting those to the live side sorted a locked, retired channel up
+    //     above the divider on every run — it reads as open, refuses messages,
+    //     and vanishes a fortnight later. The order on screen is the only thing
+    //     this run knows about them, so it is what it preserves.
+    //     Best-effort: a refused reorder is one warning, never a stopped run.
     try {
       const current = textChannelsOf(guild, categoryId)
       const divider = dividerId ? guild.channels.cache.get(dividerId) ?? null : null
+      const lineId = divider?.parentId === categoryId ? divider.id : null
+      const lineIndex = lineId ? current.findIndex((c) => c.id === lineId) : -1
       const ticketIds = new Set(current.filter((c) => isTicketChannel(c)).map((c) => c.id))
-      const archivedIds = new Set((plan?.tasks ?? []).filter((t) => t.archived).map((t) => t.channelId))
-      const order = desiredOrder(current, {
-        dividerId: divider?.parentId === categoryId ? divider.id : null,
-        archivedIds,
-        ticketIds,
+      const plannedSide = new Map((plan?.tasks ?? []).map((t) => [t.channelId, Boolean(t.archived)]))
+      const archivedIds = new Set()
+      current.forEach((channel, i) => {
+        if (!ticketIds.has(channel.id)) return
+        const planned = plannedSide.get(channel.id)
+        if (planned !== undefined) {
+          if (planned) archivedIds.add(channel.id)
+        } else if (lineIndex >= 0 && i > lineIndex) {
+          archivedIds.add(channel.id)
+        }
       })
+      const order = desiredOrder(current, { dividerId: lineId, archivedIds, ticketIds })
       const { changed } = await applyOrder(guild, current, order)
       result.reordered = changed
     } catch (e) {

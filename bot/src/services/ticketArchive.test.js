@@ -179,3 +179,19 @@ test('a retire that throws is a warning; the reorder still counts', async () => 
   assert.equal(out.moved, true)
   assert.deepEqual(orderOf(g), ['t2', 'div', 't1'])
 })
+
+test('a ticket in no category at all is never ordered against a parentless divider', async () => {
+  // `null === null`: a ticket at the root of the server and a divider that also
+  // has no parent would otherwise look like they shared a category, and the two
+  // would be "ordered" together outside any category. The Done transition still
+  // has to run — the channel is real and has to be locked and stamped.
+  const d = deps({ project: { id: 'p1', name: 'Framework', discordChannels: { archiveDivider: 'rootdiv' } } })
+  const rootTicket = { ...ticket('t1', 1), parentId: null }
+  const rootDivider = { ...divider('rootdiv', 2), parentId: null }
+  const g = guildWith([rootTicket, rootDivider])
+  const out = await quiet(() => placeTicketForStatus({ guild: g, task: { id: 'T', projectId: 'p1', discordChannelId: 't1', status: 'open' }, updates: { status: 'done' }, ...d }))
+  assert.deepEqual(out, { moved: false, archived: true, reason: 'no-divider' })
+  assert.deepEqual(g._sent, [])
+  // No project read either: there is nothing a project row could tell us.
+  assert.deepEqual(d.log, [['retire', 'T', 't1']])
+})

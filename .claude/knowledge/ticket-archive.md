@@ -310,6 +310,19 @@ project's one category, with the archived ones at the bottom.
   and reorder passes** — they sit under `if (categoryId)` with every other
   per-project step, and the reply says only "No category for '<project>'…". A
   repeat run once the category exists fixes it.
+- **A voice channel can end up sharing a position number with a text channel.**
+  `applyOrder` is only ever handed the category's *text* channels, so the voice
+  ones keep whatever positions they had. Harmless in practice: Discord sorts and
+  renders voice channels as a separate list below every text channel in a
+  category, whatever their position says. Nothing here can prove that, so it is
+  an assumption worth knowing about; if it ever stops holding, `textChannelsOf`
+  has to become "every child, text first".
+- **Discord's normalisation of U+2500 in `────archive────` is unverified.** The
+  name has no spaces (a space becomes a hyphen), but nothing in this repo can
+  say whether Discord rewrites or strips the box-drawing characters. It does not
+  matter for correctness: the observer looks the divider up by **stored id**
+  first and only falls back to the exact name, so a normalised name costs the
+  name fallback and nothing else. First live check after deploy.
 
 ## Rollout
 

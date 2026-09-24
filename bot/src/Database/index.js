@@ -487,7 +487,8 @@ async function taskUpdate({ where, data }) {
     sets.push("discordChannelId = ?");
     vals.push(data.discordChannelId);
   }
-  // When the channel is to be deleted (status buckets); null clears it.
+  // When the channel is to be deleted, 14 days after the ticket finished and
+  // moved below the archive divider; null clears it (the ticket reopened).
   if (data.channelRetireAt !== undefined) {
     sets.push("channelRetireAt = ?");
     vals.push(data.channelRetireAt);

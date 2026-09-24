@@ -75,6 +75,14 @@ export async function placeTicketForStatus({
   let reason = null
   if (!task?.projectId) {
     reason = 'no-project'
+  } else if (!channel.parentId) {
+    // A ticket sitting at the top of the server, in no category at all, has no
+    // line to be ordered around — and `null === null` would otherwise make a
+    // parentless divider look like it lived in the same (non-)category, so the
+    // pair would be "ordered" together at the guild's root. No project read,
+    // no reorder; the Done transition below still runs.
+    reason = 'no-divider'
+    console.warn(`[ticketArchive] ${channelId} is in no category, so there is no archive divider to order it around.`)
   } else {
     let project = null
     try {

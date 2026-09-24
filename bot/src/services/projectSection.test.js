@@ -13,6 +13,8 @@ import {
   syncProjectRoleMembers,
   claimedSectionIds,
   projectSlug,
+  DIVIDER_ROLE_ALLOW,
+  DIVIDER_ROLE_DENY,
 } from './projectSection.js'
 
 const project = { id: 'p1', name: 'Framework', docsSlug: 'framework' }
@@ -1471,8 +1473,8 @@ test('a refused same-named role builds the section shut, and a later adopt_role 
   assert.equal(made.edits.length, 1)
   assert.deepEqual(Object.keys(made.edits[0]), ['permissionOverwrites'])
   const entry = made.edits[0].permissionOverwrites.find((ow) => ow.id === 'r9')
-  assert.deepEqual(entry.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
-  assert.deepEqual(entry.deny, [PermissionFlagsBits.SendMessages])
+  assert.deepEqual(entry.allow, DIVIDER_ROLE_ALLOW)
+  assert.deepEqual(entry.deny, DIVIDER_ROLE_DENY)
   assert.ok(made.edits[0].permissionOverwrites.some((ow) => ow.id === 'G1'), 'the @everyone deny is kept')
 })
 
@@ -1997,12 +1999,18 @@ test('apply creates the divider after the section channels, read-only for the pr
   // and nothing else. Every entry carries an explicit type.
   assert.deepEqual(call.permissionOverwrites, [
     { id: 'G1', type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
-    {
-      id: 'r1',
-      type: OverwriteType.Role,
-      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
-      deny: [PermissionFlagsBits.SendMessages],
-    },
+    { id: 'r1', type: OverwriteType.Role, allow: DIVIDER_ROLE_ALLOW, deny: DIVIDER_ROLE_DENY },
+  ])
+  // "Read-only" is the whole posting surface, not just SendMessages: a reaction
+  // or a thread started on the line is a post too, and a thread under it would
+  // sit in the sidebar between the live tickets and the archived ones.
+  assert.deepEqual(DIVIDER_ROLE_ALLOW, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
+  assert.deepEqual(DIVIDER_ROLE_DENY, [
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.SendMessagesInThreads,
+    PermissionFlagsBits.CreatePublicThreads,
+    PermissionFlagsBits.CreatePrivateThreads,
+    PermissionFlagsBits.AddReactions,
   ])
   assert.ok(result.created.includes(ARCHIVE_DIVIDER_NAME))
   // new-1 is the category, new-2..new-14 the thirteen channels, new-15 the line.
@@ -2018,7 +2026,9 @@ test('apply repairs a divider found under an old name or in the wrong category i
   const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
   const result = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
   assert.equal(div.edits.length, 1)
-  assert.deepEqual(div.edits[0], { name: ARCHIVE_DIVIDER_NAME, parent: 'c1' })
+  // The topic rides in the same edit: a divider with the wrong topic tells a
+  // reader nothing, and is one step away from looking like a ticket.
+  assert.deepEqual(div.edits[0], { name: ARCHIVE_DIVIDER_NAME, parent: 'c1', topic: ARCHIVE_DIVIDER_TOPIC })
   assert.deepEqual(result.moved, [ARCHIVE_DIVIDER_NAME])
 })
 
@@ -2027,18 +2037,18 @@ test('a grant on the divider builds from the READ-ONLY set, never ROLE_ALLOW', a
   // channel in the section that must never take a message.
   const role = { id: 'r1', name: 'Framework', members: new Map() }
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
-  const div = fakeChannel('div', ARCHIVE_DIVIDER_NAME, { parentId: 'c1', overwriteIds: ['G1'] })
+  const div = fakeChannel('div', ARCHIVE_DIVIDER_NAME, { parentId: 'c1', topic: ARCHIVE_DIVIDER_TOPIC, overwriteIds: ['G1'] })
   const guild = fakeGuild({ channels: [cat, div], roles: [role] })
   const stored = { ...withDivider(project), discordRoleId: 'r1' }
   const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
   assert.equal(plan.divider.action, 'reuse')
   const result = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
-  // Nothing but the overwrites: the name and the parent are already right.
+  // Nothing but the overwrites: the name, the parent and the topic are right.
   assert.equal(div.edits.length, 1)
   assert.deepEqual(Object.keys(div.edits[0]), ['permissionOverwrites'])
   const entry = div.edits[0].permissionOverwrites.find((o) => o.id === 'r1')
-  assert.deepEqual(entry.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
-  assert.deepEqual(entry.deny, [PermissionFlagsBits.SendMessages])
+  assert.deepEqual(entry.allow, DIVIDER_ROLE_ALLOW)
+  assert.deepEqual(entry.deny, DIVIDER_ROLE_DENY)
   assert.deepEqual(result.granted, [ARCHIVE_DIVIDER_NAME])
 })
 
@@ -2196,4 +2206,142 @@ test('apply drops the three bucket* keys from the stored map without touching th
   // Nothing deleted the leftover category, and nothing edited it either.
   assert.ok(guild.channels.cache.has('b-open'))
   assert.deepEqual(openBucket.edits, [])
+})
+
+const DENY_BITS = DIVIDER_ROLE_DENY.reduce((a, b) => a | b, 0n)
+const ALLOW_BITS = DIVIDER_ROLE_ALLOW.reduce((a, b) => a | b, 0n)
+
+/** A divider already in place, with whatever the project role currently holds on it. */
+function dividerWith(roleOverwrite, { topic = ARCHIVE_DIVIDER_TOPIC } = {}) {
+  return fakeChannel('div', ARCHIVE_DIVIDER_NAME, {
+    parentId: 'c1',
+    topic,
+    rawPosition: 20,
+    overwrites: [
+      { id: 'G1', type: OverwriteType.Role, allow: 0n, deny: PermissionFlagsBits.ViewChannel },
+      ...(roleOverwrite ? [{ id: 'r1', type: OverwriteType.Role, ...roleOverwrite }] : []),
+    ],
+  })
+}
+
+async function runDividerRepair(div) {
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const section = seededSection()
+  const guild = fakeGuild({ channels: [cat, ...section.channels, div], roles: [role] })
+  const stored = { ...withDivider(project, section.ids), discordRoleId: 'r1' }
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
+  assert.equal(plan.divider.action, 'reuse')
+  return applyProjectSection(guild, stored, plan, { db: fakeDb() })
+}
+
+test('a divider the project role can post in is repaired: the deny comes back, merged, in one edit', async () => {
+  // How it happens in practice: somebody clicks "Sync Now" on the category in
+  // the Discord client, which copies the category's own overwrite — ROLE_ALLOW,
+  // SendMessages included — onto every child. The role's overwrite is then
+  // still PRESENT, so a presence-only check sees nothing wrong and the line
+  // silently becomes a chat channel forever.
+  const div = dividerWith({ allow: ALLOW_BITS | PermissionFlagsBits.SendMessages, deny: 0n })
+  const result = await runDividerRepair(div)
+  assert.equal(div.edits.length, 1)
+  assert.deepEqual(Object.keys(div.edits[0]), ['permissionOverwrites'])
+  const entry = div.edits[0].permissionOverwrites.find((o) => o.id === 'r1')
+  assert.deepEqual(entry.allow, DIVIDER_ROLE_ALLOW)
+  assert.deepEqual(entry.deny, DIVIDER_ROLE_DENY)
+  // Merged, never replaced: the @everyone deny the section depends on is kept.
+  assert.ok(div.edits[0].permissionOverwrites.some((o) => o.id === 'G1'))
+  assert.deepEqual(result.granted, [ARCHIVE_DIVIDER_NAME])
+})
+
+test('a divider missing only one bit of the deny set is still repaired', async () => {
+  // AddReactions alone left open is enough: a row of reactions on the line is
+  // content on a channel that is supposed to carry none.
+  const div = dividerWith({ allow: ALLOW_BITS, deny: DENY_BITS & ~PermissionFlagsBits.AddReactions })
+  const result = await runDividerRepair(div)
+  assert.equal(div.edits.length, 1)
+  assert.deepEqual(result.granted, [ARCHIVE_DIVIDER_NAME])
+})
+
+test('a divider that is already read-only gets no edit at all', async () => {
+  const div = dividerWith({ allow: ALLOW_BITS, deny: DENY_BITS })
+  const result = await runDividerRepair(div)
+  assert.deepEqual(div.edits, [])
+  assert.deepEqual(result.granted, [])
+})
+
+test('a divider whose overwrite bits cannot be read is left alone, never rewritten every run', async () => {
+  // The same rule the rest of this file follows: an overwrite that cannot be
+  // inspected is not guessed at. `overwriteIds` builds entries with no bits.
+  const div = fakeChannel('div', ARCHIVE_DIVIDER_NAME, {
+    parentId: 'c1', topic: ARCHIVE_DIVIDER_TOPIC, rawPosition: 20, overwriteIds: ['G1', 'r1'],
+  })
+  const result = await runDividerRepair(div)
+  assert.deepEqual(div.edits, [])
+  assert.deepEqual(result.granted, [])
+})
+
+test('a reused divider whose topic was cleared by hand gets the topic back in its one edit', async () => {
+  const div = dividerWith({ allow: ALLOW_BITS, deny: DENY_BITS }, { topic: null })
+  const result = await runDividerRepair(div)
+  assert.equal(div.edits.length, 1)
+  assert.deepEqual(div.edits[0], { topic: ARCHIVE_DIVIDER_TOPIC })
+  // Only the topic changed, so it is neither a grant nor a rename.
+  assert.deepEqual(result.granted, [])
+  assert.deepEqual(result.renamed, [])
+})
+
+test('a reused divider needing both the topic and the deny gets ONE edit carrying both', async () => {
+  const div = dividerWith({ allow: ALLOW_BITS | PermissionFlagsBits.SendMessages, deny: 0n }, { topic: 'something else' })
+  await runDividerRepair(div)
+  assert.equal(div.edits.length, 1)
+  assert.deepEqual(Object.keys(div.edits[0]).sort(), ['permissionOverwrites', 'topic'])
+  assert.equal(div.edits[0].topic, ARCHIVE_DIVIDER_TOPIC)
+})
+
+test('a ticket channel with no plan entry keeps whichever side of the line it is on', async () => {
+  // Several real channels have no plan entry: one past TASK_LIMIT, one two task
+  // rows point at, one whose row was deleted. Sorting those to the live side
+  // put a locked, retired channel back above the divider on every run.
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const section = seededSection()
+  const above = ticketChannel('orphan-live', 'feature-orphan-live', 'c1')
+  above.rawPosition = 20
+  const div = dividerWith({ allow: ALLOW_BITS, deny: DENY_BITS })
+  const below = ticketChannel('orphan-done', 'feature-orphan-done', 'c1')
+  below.rawPosition = 21
+  const guild = fakeGuild({ channels: [cat, ...section.channels, above, div, below], roles: [role] })
+  const stored = { ...withDivider(project, section.ids), discordRoleId: 'r1' }
+  // No tasks at all: neither ticket has a plan entry.
+  const plan = planProjectSection(stored, observeProjectSection(guild, stored, [], { rolesFetched: true }))
+  assert.deepEqual(plan.tasks, [])
+  const result = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+  assert.equal(result.reordered, false, 'nothing to change, so no request is spent')
+  assert.deepEqual(guild.channels.positions, [])
+})
+
+test('an unplanned ticket below the line stays below even when the order has to change', async () => {
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const section = seededSection()
+  const div = dividerWith({ allow: ALLOW_BITS, deny: DENY_BITS })
+  const orphan = ticketChannel('orphan-done', 'feature-orphan-done', 'c1')
+  orphan.rawPosition = 21
+  // A planned, live ticket sitting below the line is what forces the reorder.
+  const planned = ticketChannel('tc1', 'feature-live', 'c1', [
+    { id: 'r1', type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: 0n },
+  ])
+  planned.rawPosition = 22
+  const guild = fakeGuild({ channels: [cat, ...section.channels, div, orphan, planned], roles: [role] })
+  const stored = { ...withDivider(project, section.ids), discordRoleId: 'r1' }
+  const plan = planProjectSection(
+    stored,
+    observeProjectSection(guild, stored, [{ id: 't1', title: 'Live', type: 'feature', status: 'open', discordChannelId: 'tc1' }], { rolesFetched: true })
+  )
+  const result = await applyProjectSection(guild, stored, plan, { db: fakeDb() })
+  assert.equal(result.reordered, true)
+  assert.deepEqual(
+    guild.channels.positions[0].map((e) => e.channel),
+    [...section.textIds, 'tc1', 'div', 'orphan-done']
+  )
 })
