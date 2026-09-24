@@ -201,6 +201,11 @@ export async function execute(
   const section = projectSectionGuards(projects);
 
   const channels = await guild.channels.fetch();
+  // The global support pair, by id, and whatever category holds it.
+  const supportIds = new Set([cfg?.supportChannelId, cfg?.supportVoiceChannelId].filter(Boolean));
+  const supportCategoryIds = new Set(
+    [...supportIds].map((id) => channels.get(id)?.parentId ?? channels.get(id)?.parent?.id).filter(Boolean),
+  );
   const toDelete = [];
 
   for (const [, ch] of channels) {
@@ -209,6 +214,8 @@ export async function execute(
     // By id, before any name is looked at.
     if (section.sectionIds.has(ch.id)) continue;
     const parentId = ch.parentId ?? ch.parent?.id ?? null;
+    if (supportIds.has(ch.id) || supportCategoryIds.has(ch.id)) continue;
+    if (parentId && supportCategoryIds.has(parentId)) continue;
     const inProjectSection = Boolean(parentId) && section.categoryIds.has(parentId);
     if (inProjectSection) continue;
 

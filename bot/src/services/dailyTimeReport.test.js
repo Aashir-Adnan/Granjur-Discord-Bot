@@ -574,3 +574,20 @@ test('a failed permission repair warns but still posts', async () => {
   assert.equal(sent.length, 1, 'an unreadable report still beats no report')
   assert.equal(state.lastTimeReportOn, '2026-09-22')
 })
+
+test('clients are never listed in the daily report, even though they are approved members', async () => {
+  const h = harness({
+    members: [
+      { discordId: '1', displayName: 'Ali', status: 'approved', kind: 'staff' },
+      { discordId: '9', displayName: 'Client Co', status: 'approved', kind: 'client' },
+    ],
+    totals: [{ discordId: '1', minutes: 30 }],
+  })
+  await runDailyReportPass(h.client, { db: h.db, getConfig: h.getConfig, update: h.update, now: new Date('2026-09-22T23:59:00Z') })
+  const text = JSON.stringify(h.sent[0])
+  // harness()'s fakeGuild always returns a live `User <id>` displayName from
+  // a successful bulk fetch (it wins over the stored 'Ali' — see "a departed
+  // member" above), so the staff row surfaces as `User 1`, not `Ali`.
+  assert.match(text, /User 1/)
+  assert.ok(!text.includes('Client Co'))
+})

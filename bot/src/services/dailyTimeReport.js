@@ -307,7 +307,11 @@ export async function runDailyReportPass(client, {
           where: { guildConfigId: cfg.id, status: 'approved', all: true },
         })
 
-        const members = await hydrateRoster(guild, rows || [])
+        // Approved, but not staff: a client has no time to report and must not
+        // appear as a permanent 0m line. `kind` defaults to 'staff' for every
+        // row that predates migration 025.
+        const staffRows = (rows || []).filter((r) => r?.kind !== 'client')
+        const members = await hydrateRoster(guild, staffRows)
         const ranked = rankDailyTotals(members, totals)
 
         const label = new Intl.DateTimeFormat('en-GB', {
