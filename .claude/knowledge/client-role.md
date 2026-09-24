@@ -382,6 +382,26 @@ Each project section also has `<slug>-casual-chat`, visible to the project role 
 project's clients by the same per-client member overwrite as the support pair — it is simply the
 third entry in `CLIENT_SECTION_KEYS`. The manual is pinned only in `<slug>-support`.
 
+## Client managers (2026-09-24)
+
+`projectmember.role='client_manager'` — a CLIENT (approved as one, holds the Discord `Client` role)
+who also reads every REQUEST channel on the project. Both client roles live in
+`utils/clientRoles.js` (`CLIENT_PROJECT_ROLES`, `isClientRole`, `managerIdsOf`,
+`managedProjectIds`), and that leaf is what `staffOnly`/`clientIdsOf` in `project-setup.js`,
+`/project-members`, `clientRequest.js` and `client-tracking.js` all read — a client manager can
+never reach the project role, and gets the support pair and casual chat like any client.
+
+What the manager gets on top, and where: in each request channel from creation
+(`createClientRequest` reads the roster before the channel is made and adds `managerIdsOf(roster,
+requester)` to `memberIds`); the project's existing request channels on `/project-members add
+role:client_manager` and off again on `remove` or demotion to `client`
+(`changeRequestChannelAccess`: the channels of tasks with `requestedBy` set — never a team task's,
+which has `requestedBy` null); a DM with the leads when a request is raised; and, in
+`/my-requests` and `/request-report`, every request on the projects they manage with "raised by
+<name>" on the ones that are not theirs (`visibleRequests`/`canSee` in `client-tracking.js`). A
+plain client on the same project still sees only their own. Not repaired by `/project-setup`
+(backlog): if a manager's overwrite on an old request channel goes missing, remove and re-add them.
+
 ## Related
 
 [[project-sections]]

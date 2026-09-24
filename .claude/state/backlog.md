@@ -19,6 +19,9 @@ See `.claude/knowledge/client-role.md`. Ordered by how much they matter.
   `/verify` after the 7-day Discord invite dies. Age them out. (Ruling 12.)
 
 **Correctness, narrow**
+- `/project-setup` does not repair a client manager's overwrites on existing request channels
+  (only `/project-members add/remove` writes them). If one goes missing, remove and re-add the
+  manager. A `planClientAccess`-style pass over request channels would close it.
 - `project-setup.js` passes `rosterRows = []` as `members` when BOTH roster reads fail, so the
   pinned members panel is rewritten empty. `members: rosterReadFailure ? undefined : rosterRows`.
   (Ruling 14.)

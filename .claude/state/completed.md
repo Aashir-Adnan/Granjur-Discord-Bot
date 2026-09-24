@@ -4,6 +4,14 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 
 
+## 2026-09-24 — Client Manager project role (MERGED, PUSHED)
+
+`projectmember.role='client_manager'`: a client who is in every request channel on their project
+(from creation, and existing ones on add; closed on remove/demotion), is DMed with the leads on a
+new request, and sees the team's requests in `/my-requests`/`/request-report` with who raised each.
+Never the project role; never a team task's channel (`requestedBy` null). Both client roles in
+`utils/clientRoles.js`. `edafbcf`, merged `62669e9`; 1104 tests.
+
 ## 2026-09-24 — Casual chat channel per project, open to its clients (MERGED, PUSHED)
 
 `<slug>-casual-chat` is the thirteenth section channel and the third entry in

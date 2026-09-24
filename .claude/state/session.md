@@ -54,6 +54,9 @@ Rule in force: `.claude/rules/tests-never-touch-production.md`.
   sections need one `/project-setup` run each to get the channel; their clients are granted in
   the same run.
 
+- Client Manager role → shipped (`62669e9`). Assign with `/project-members add … role:Client
+  Manager` to someone already approved as a client.
+
 ## Open items
 See `backlog.md` → "Client role — deferred follow-ups". The one worth raising first: both gates
 fail open when the member cannot be resolved (read `interaction.member`).
