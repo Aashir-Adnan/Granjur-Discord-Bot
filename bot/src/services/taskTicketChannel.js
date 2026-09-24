@@ -135,8 +135,11 @@ export async function createTaskTicketChannel(guild, opts) {
   } = opts
 
   const isBug = type === 'bug'
+  // A client's support task: its own prefix and title, but a project-less one
+  // shares the global Features category rather than adding a fourth bucket.
+  const isSupport = type === 'task'
   const categoryLabel = isBug ? 'Bugs' : 'Features'
-  const namePrefix = isBug ? 'bug' : 'feature'
+  const namePrefix = isBug ? 'bug' : isSupport ? 'task' : 'feature'
   const members = [...new Set(memberIds.filter(Boolean))]
 
   const { category, fellBack } = await resolveParentCategory(guild, project, categoryLabel)
@@ -192,10 +195,10 @@ export async function createTaskTicketChannel(guild, opts) {
   if (onCreated) await onCreated(channel)
 
   const embed = new EmbedBuilder()
-    .setTitle(`${isBug ? 'Bug' : 'Feature'}: ${String(title || 'Task').slice(0, 200)}`)
+    .setTitle(`${isBug ? 'Bug' : isSupport ? 'Task' : 'Feature'}: ${String(title || 'Task').slice(0, 200)}`)
     .setDescription((description || 'No description.').slice(0, 1000))
     .addFields(...fields.slice(0, 20), { name: 'Task ID', value: String(taskId), inline: false })
-    .setColor(isBug ? 0xed4245 : 0x5865f2)
+    .setColor(isBug ? 0xed4245 : isSupport ? 0xfee75c : 0x5865f2)
   if (closeHint) embed.addFields({ name: 'Close', value: closeHint, inline: false })
 
   const mentions = members.map((id) => `<@${id}>`).join(' ')

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { attachmentPlan, clientProjects, createClientRequest, requestDescription, MAX_UPLOAD_BYTES, composeDetails, chunkText, ISSUE_FIELDS, FEATURE_FIELDS } from './clientRequest.js'
+import { attachmentPlan, clientProjects, createClientRequest, requestDescription, MAX_UPLOAD_BYTES, composeDetails, chunkText, ISSUE_FIELDS, FEATURE_FIELDS, TASK_FIELDS } from './clientRequest.js'
 
 test('clientProjects keeps only client rows', () => {
   assert.deepEqual(clientProjects([{ projectId: 'a', role: 'client' }, { projectId: 'b', role: 'lead' }]).map((r) => r.projectId), ['a'])
@@ -126,7 +126,7 @@ test('composeDetails with nothing filled is exactly the free text', () => {
 })
 
 test('the field tables are well-formed and in the agreed order', () => {
-  for (const f of [...ISSUE_FIELDS, ...FEATURE_FIELDS]) {
+  for (const f of [...ISSUE_FIELDS, ...FEATURE_FIELDS, ...TASK_FIELDS]) {
     assert.match(f.name, /^[a-z_]+$/)
     assert.ok(f.label && f.description)
     assert.ok(['text', 'choice'].includes(f.kind))
@@ -135,6 +135,7 @@ test('the field tables are well-formed and in the agreed order', () => {
   }
   assert.deepEqual(ISSUE_FIELDS.map((f) => f.name), ['platform', 'semester', 'os', 'app_version', 'severity', 'frequency', 'when', 'account', 'steps', 'expected'])
   assert.deepEqual(FEATURE_FIELDS.map((f) => f.name), ['platform', 'semester', 'priority', 'needed_by', 'problem', 'who', 'example'])
+  assert.deepEqual(TASK_FIELDS.map((f) => f.name), ['platform', 'semester', 'needed_by', 'scope', 'reason'])
 })
 
 test('chunkText splits on the limit and yields nothing for nothing', () => {
@@ -181,4 +182,16 @@ test('a manager raising a request is not added twice', async () => {
   })
   assert.deepEqual(h.createChannel.opts.memberIds, ['u-c', 'm2'])
   assert.deepEqual(h.dms, ['m2'], 'and not DMed about their own request')
+})
+
+test('a support task is its own kind: type task, neither bug nor feature, and its channel is made as one', async () => {
+  const h = harness()
+  await createClientRequest({
+    guild: h.guild, user: h.user, cfg: h.cfg, type: 'task', title: 'Move students', details: 'x', project: null,
+    attachments: [], db: h.db, createChannel: h.createChannel, dm: h.dm, client: {},
+  })
+  const row = h.created[0]
+  assert.equal(row.type, 'task'); assert.equal(row.is_bug, 0); assert.equal(row.is_feature, 0)
+  assert.equal(row.requestedBy, 'u-c')
+  assert.equal(h.createChannel.opts.type, 'task')
 })

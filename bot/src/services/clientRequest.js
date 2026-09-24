@@ -65,6 +65,26 @@ export const FEATURE_FIELDS = [
   { name: 'example', label: 'Example', kind: 'text', max: 300, description: 'A link, or a product that already does it' },
 ]
 
+/** A support task: the team handling data at a level an admin cannot reach. */
+export const TASK_FIELDS = [
+  { name: 'platform', label: 'Platform', kind: 'choice', choices: PLATFORMS, group: 1, description: 'Where the data lives' },
+  { name: 'semester', label: 'Semester', kind: 'text', max: 100, group: 1, description: 'The semester the data belongs to, e.g. Fall 2026' },
+  { name: 'needed_by', label: 'Needed by', kind: 'text', max: 100, group: 1, description: 'A date, or an event it is needed for' },
+  { name: 'scope', label: 'Scope', kind: 'text', max: 1000, description: 'Which students, records or data, exactly' },
+  { name: 'reason', label: 'Why the team', kind: 'text', max: 500, description: 'What stops an admin from doing this in the app' },
+]
+
+/**
+ * The three kinds a client can raise, as the task row records them. A support
+ * task is neither a bug nor a feature — its own `type`, both flags off — so
+ * nothing downstream mistakes it for either.
+ */
+const KIND = {
+  bug: { type: 'bug', is_bug: 1, is_feature: 0 },
+  feature: { type: 'feature', is_bug: 0, is_feature: 1 },
+  task: { type: 'task', is_bug: 0, is_feature: 0 },
+}
+
 /**
  * The task description: a header of the filled fields, then the free text.
  * Nothing filled → exactly the free text, so a client who only types title
@@ -108,15 +128,15 @@ export async function createClientRequest({
   guild, client, user, cfg, type, title, details, project = null, attachments = [],
   db: dbArg = db, createChannel = createTaskTicketChannel, dm = dmTaskAssignees,
 }) {
-  const isBug = type === 'bug'
+  const kind = KIND[type] ?? KIND.feature
   const name = displayName(guild, user)
 
   const task = await dbArg.task.create({
     data: {
       guildConfigId: cfg.id,
-      type: isBug ? 'bug' : 'feature',
-      is_bug: isBug ? 1 : 0,
-      is_feature: isBug ? 0 : 1,
+      type: kind.type,
+      is_bug: kind.is_bug,
+      is_feature: kind.is_feature,
       title: String(title).trim().slice(0, 200),
       description: String(details).trim(),
       status: 'open',
@@ -130,7 +150,7 @@ export async function createClientRequest({
     },
   })
   await dbArg.ticketDoc.create({
-    data: { guildConfigId: cfg.id, ticketType: isBug ? 'bug' : 'feature', taskId: task.id, title: task.title?.slice(0, 512) || 'Request', content: null },
+    data: { guildConfigId: cfg.id, ticketType: kind.type, taskId: task.id, title: task.title?.slice(0, 512) || 'Request', content: null },
   }).catch(() => {})
 
   // The project's client managers read every request channel from the moment
@@ -146,7 +166,7 @@ export async function createClientRequest({
     description: requestDescription(name, details),
     memberIds: [user.id, ...managers],
     project,
-    type: isBug ? 'bug' : 'feature',
+    type: kind.type,
     // Client-safe: no scope, modules or estimate. The project is the only field.
     fields: project ? [{ name: 'Project', value: project.name, inline: true }] : [],
     closeHint: null,

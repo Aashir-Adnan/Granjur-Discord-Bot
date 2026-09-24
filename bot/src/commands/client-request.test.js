@@ -2,8 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { data, execute, autocomplete, resolveProject } from './client-request.js'
 
-test('two builders: title and details required, the structured fields optional, then project and the three attachments', () => {
-  assert.deepEqual(data.map((b) => b.name), ['report-issue', 'request-feature'])
+test('three builders: title and details required, the structured fields optional, then project and the three attachments', () => {
+  assert.deepEqual(data.map((b) => b.name), ['report-issue', 'request-feature', 'request-task'])
   const issue = data[0].toJSON().options
   assert.deepEqual(issue.map((o) => o.name), [
     'title', 'details', 'platform', 'semester', 'os', 'app_version', 'severity', 'frequency', 'when', 'account', 'steps', 'expected',
@@ -14,7 +14,12 @@ test('two builders: title and details required, the structured fields optional, 
     'title', 'details', 'platform', 'semester', 'priority', 'needed_by', 'problem', 'who', 'example',
     'project', 'screenshot', 'screenshot2', 'document',
   ])
-  for (const opts of [issue, feature]) {
+  const task = data[2].toJSON().options
+  assert.deepEqual(task.map((o) => o.name), [
+    'title', 'details', 'platform', 'semester', 'needed_by', 'scope', 'reason',
+    'project', 'screenshot', 'screenshot2', 'document',
+  ])
+  for (const opts of [issue, feature, task]) {
     assert.deepEqual(opts.filter((o) => o.required).map((o) => o.name), ['title', 'details'], 'only title and details are required')
     assert.equal(opts.find((o) => o.name === 'project').autocomplete, true)
     assert.deepEqual(opts.find((o) => o.name === 'platform').choices.map((c) => c.value), ['Web', 'Android', 'iOS', 'Windows', 'macOS', 'Linux', 'Other'])
@@ -72,4 +77,21 @@ test('execute refuses a project the caller is not a client on, without creating 
   })
   assert.equal(created, false)
   assert.match(ix.replies[0].content, /not a client on that project/i)
+})
+
+test('/request-task raises a support task', async () => {
+  let got = null
+  const ix = {
+    guild: { id: 'g1' }, user: { id: 'u-c' }, commandName: 'request-task', replies: [],
+    options: { getString: (n) => ({ title: 'Move students', details: 'D', scope: '12 late enrolments' })[n] ?? null, getAttachment: () => null },
+    editReply: async (p) => { ix.replies.push(p) },
+  }
+  await execute(ix, {
+    db: { projectMember: { findByMember: async () => [] }, project: { findMany: async () => [] } },
+    getConfig: async () => ({ id: 'cfg1' }),
+    create: async (args) => { got = args; return { task: { title: 'Move students' }, channel: { id: 'c' } } },
+  })
+  assert.equal(got.type, 'task')
+  assert.equal(got.details, '**Scope:** 12 late enrolments\n\nD')
+  assert.match(ix.replies[0].content, /Your support task \*\*Move students\*\* is raised/)
 })

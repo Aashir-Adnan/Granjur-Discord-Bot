@@ -45,7 +45,7 @@ function safeParse(raw) {
  */
 export function myRequestsLines(tasks, { me = null, nameFor = () => null } = {}) {
   return (tasks ?? []).map((t) => {
-    const icon = t.type === 'bug' ? '🐞' : '✨'
+    const icon = t.type === 'bug' ? '🐞' : t.type === 'task' ? '🛠️' : '✨'
     const parts = [`${icon} **${t.title}**`]
     if (me && t.requestedBy && String(t.requestedBy) !== String(me)) parts.push(`raised by ${nameFor(t.requestedBy) || `<@${t.requestedBy}>`}`)
     parts.push(t.projectName || 'no project', t.status === 'pending' ? `**${requestStatusLabel(t.status)}**` : requestStatusLabel(t.status))

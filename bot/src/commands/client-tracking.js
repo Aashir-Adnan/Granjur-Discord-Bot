@@ -71,7 +71,7 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
   const handlers = holdersOf(task).map((h) => nameFor(h) || `<@${h}>`)
   const timeline = timelineLines(rows, { nameFor })
   const embed = new EmbedBuilder()
-    .setTitle(`${task.type === 'bug' ? 'Issue' : 'Request'}: ${task.title}`)
+    .setTitle(`${task.type === 'bug' ? 'Issue' : task.type === 'task' ? 'Support task' : 'Request'}: ${task.title}`)
     .setColor(task.status === 'pending' ? 0xfee75c : 0x00b0f4)
     .addFields(
       { name: 'Status', value: requestStatusLabel(task.status), inline: true },
