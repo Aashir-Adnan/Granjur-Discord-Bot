@@ -369,6 +369,29 @@ test('a run with project: refreshes the pinned members panel with the roster it 
   assert.equal(embed.fields[0].value, 'Aashir')
 })
 
+test('a client shows on the pinned members panel but never gets the project role', async () => {
+  const db = fakeDb({
+    projects: [PROJECT],
+    members: [
+      { projectId: 'p1', discordId: 'u1', role: 'lead' },
+      { projectId: 'p1', discordId: 'u2', role: 'client' },
+    ],
+  })
+  const guild = fakeGuild({ channels: [], members: [fakeMember('u1', 'Aashir'), fakeMember('u2', 'Baaji')] })
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+
+  await quiet(() => execute(it, { db, getConfig }))
+
+  const membersChannel = [...guild.channels.cache.values()].find((c) => c.name === 'framework-members')
+  const embed = membersChannel.sent[0].embeds[0].toJSON()
+  const fields = Object.fromEntries(embed.fields.map((f) => [f.name, f.value]))
+  assert.equal(fields.Lead, 'Aashir')
+  assert.equal(fields.Client, 'Baaji', 'the panel keeps the client, labelled Client')
+
+  assert.equal(guild.members.cache.get('u1').roles.cache.size, 1, 'the lead got the project role')
+  assert.equal(guild.members.cache.get('u2').roles.cache.size, 0, 'the client never got the project role')
+})
+
 test('a project named after a managed role is reported, and the rest of the section is still built', async () => {
   const project = { id: 'p2', name: 'Project Manager', docsSlug: 'project-manager', guildConfigId: 'g1' }
   const db = fakeDb({ projects: [project] })

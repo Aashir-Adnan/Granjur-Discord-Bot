@@ -561,10 +561,12 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   }
 
   // The roster is passed on purpose: `members` is a tri-state, and omitting
-  // it would leave every pinned members panel showing yesterday's list. Never
-  // a client row: the project role opens all twelve channels, and a client
-  // belongs only on the two support channels' overwrites.
-  const members = staffOnly(rosterRows)
+  // it would leave every pinned members panel showing yesterday's list. The
+  // pinned panel shows the FULL roster — a client included, labelled `Client`
+  // — so `members` stays unfiltered here; `staffOnly` is applied only at the
+  // role-sync call below, since the project role is the one thing a client
+  // must never hold.
+  const members = rosterRows
   if (fetchFailure) {
     extra.push(
       `This server's member list could not be read (${fetchFailure}), so nobody was removed from the project role. Run /project-setup again once the bot can read this server's members.`
@@ -584,7 +586,7 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   let roster = members
   let rosterFailure = null
   try {
-    roster = staffOnly((await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? [])
+    roster = (await dbArg.projectMember.findByProject({ where: { projectId: project.id } })) ?? []
   } catch (e) {
     // The first read worked, so the roster is stale rather than unknown — but
     // stale is exactly what must not drive a revoke.
@@ -621,7 +623,10 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   // find nothing to revoke from would stop meaning that the moment the
   // service changed how it reads its holders.
   const grantOnly = Boolean(fetchFailure) || truncatedRoster || Boolean(rosterFailure)
-  const roleSync = await syncProjectRoleMembers(guild, project, roster, {
+  // `staffOnly` here, and only here: the pinned panel above got the full
+  // roster, but the project role must never reach a client — it opens all
+  // twelve channels, where the client's overwrite opens only two.
+  const roleSync = await syncProjectRoleMembers(guild, project, staffOnly(roster), {
     roleId,
     revoke: !grantOnly,
   })
