@@ -113,3 +113,50 @@ test('a stored channel id that no longer resolves is recreated, never matched by
   assert.notEqual(out.text.id, stray.id)
   assert.equal(calls.at(-1).supportChannelId, out.text.id)
 })
+
+// --- the @everyone-visible channels -----------------------------------------
+// /init grants `@everyone: ViewChannel` on the onboarding channel, the whole
+// Rules category and #announcements-all. A client is in the guild, so those
+// three are the only places the "sees the support pair and nothing else" rule
+// leaks — closed here, presence-only, one id per edit.
+
+function publicGuild() {
+  const rules = fakeChannel('📜 Rules', { type: ChannelType.GuildCategory })
+  const rulesChild = fakeChannel('rules', { parentId: rules.id })
+  const onboarding = fakeChannel('start-here')
+  const annCat = fakeChannel('📢 Announcements', { type: ChannelType.GuildCategory })
+  const annAll = fakeChannel('announcements-all', { parentId: annCat.id })
+  const guild = fakeGuild({
+    roles: [{ id: 'r-client', name: 'Client' }],
+    channels: [rules, rulesChild, onboarding, annCat, annAll],
+  })
+  return { guild, rules, rulesChild, onboarding, annAll, annCat }
+}
+
+const publicCfg = (g) => cfg({ clientRoleId: 'r-client', onboardingChannelId: g.onboarding.id })
+
+test('ensureSupportChannels denies Client on the onboarding channel, the Rules category and its children, and #announcements-all', async () => {
+  const g = publicGuild()
+  const { update } = recorder()
+  const out = await ensureSupportChannels(g.guild, publicCfg(g), { update, botUserId: 'bot' })
+  const denied = [g.onboarding, g.rules, g.rulesChild, g.annAll]
+  for (const ch of denied) {
+    assert.deepEqual(ch.edits.map((e) => e.id), ['r-client'], `${ch.name} got exactly one Client deny`)
+    assert.deepEqual(ch.edits[0].allow, { ViewChannel: false })
+    assert.equal(ch.edits[0].opts.type, OverwriteType.Role, 'every overwrite carries an explicit type')
+  }
+  assert.equal(g.annCat.edits.length, 0, 'the Announcements category itself is not @everyone-visible')
+  assert.deepEqual(out.denied.sort(), ['announcements-all', 'rules', 'start-here', '📜 Rules'].sort())
+})
+
+test('the public-channel deny is presence-only: a second run edits nothing', async () => {
+  const g = publicGuild()
+  const { update } = recorder()
+  await ensureSupportChannels(g.guild, publicCfg(g), { update, botUserId: 'bot' })
+  for (const ch of [g.onboarding, g.rules, g.rulesChild, g.annAll]) ch.edits.length = 0
+  const out = await ensureSupportChannels(g.guild, publicCfg(g), { update, botUserId: 'bot' })
+  for (const ch of [g.onboarding, g.rules, g.rulesChild, g.annAll]) {
+    assert.equal(ch.edits.length, 0, `${ch.name} already carries an overwrite for the role`)
+  }
+  assert.deepEqual(out.denied, [])
+})

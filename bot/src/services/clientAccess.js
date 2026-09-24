@@ -5,6 +5,7 @@ import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
 import { updateGuildConfig } from '../db/index.js'
 import {
   ROLE_CLIENT, ROLE_COLORS, CATEGORY_SUPPORT, CHANNEL_SUPPORT, CHANNEL_SUPPORT_VOICE,
+  CATEGORY_RULES, CHANNEL_ANNOUNCEMENTS_ALL,
 } from '../constants.js'
 import { clientManual, MANUAL_TITLE } from './clientManual.js'
 
@@ -49,6 +50,12 @@ export function supportOverwrites(guild, { clientRoleId, verifiedRoleId, voice }
   return out
 }
 
+/** A stored id, cache first then a fetch: a cold cache must not read as "gone". */
+async function resolveChannel(guild, id) {
+  if (!id) return null
+  return guild.channels?.cache?.get?.(id) ?? await guild.channels?.fetch?.(id).catch(() => null) ?? null
+}
+
 /** A channel by stored id only. A stored id that no longer resolves is "missing", not "find it by name". */
 function byStoredId(guild, id, type) {
   if (!id) return null
@@ -86,6 +93,48 @@ async function repairOverwrites(channel, required) {
   }
 }
 
+/**
+ * The three places /init grants `@everyone: ViewChannel` — the onboarding
+ * channel, the whole Rules category and #announcements-all. A client is an
+ * ordinary guild member, so `@everyone` reaches them: without this the "you
+ * see the support pair and nothing else" rule is not true. Denied on the
+ * `Client` role, PRESENCE-ONLY (one id per edit, never a whole-array replace)
+ * so a hand-made overwrite on any of them is left exactly as it is.
+ *
+ * A member still in Holding is unaffected — they do not hold `Client` yet, and
+ * the onboarding channel is the one place they need.
+ *
+ * @returns {Promise<string[]>} the names of the channels newly denied.
+ */
+export async function denyClientOnPublicChannels(guild, cfg, clientRoleId) {
+  if (!clientRoleId) return []
+  const all = [...(guild.channels?.cache?.values?.() ?? [])]
+  const rulesCategory = all.find((ch) => ch?.type === ChannelType.GuildCategory && ch.name === CATEGORY_RULES) ?? null
+
+  const targets = new Map()
+  const add = (ch) => { if (ch?.id && !targets.has(ch.id)) targets.set(ch.id, ch) }
+
+  add(await resolveChannel(guild, cfg?.onboardingChannelId))
+  if (rulesCategory) {
+    add(rulesCategory)
+    for (const ch of all) if (ch?.parentId === rulesCategory.id) add(ch)
+  }
+  for (const ch of all) if (ch?.type === ChannelType.GuildText && ch.name === CHANNEL_ANNOUNCEMENTS_ALL) add(ch)
+
+  const denied = []
+  for (const ch of targets.values()) {
+    const cache = ch.permissionOverwrites?.cache
+    if (!cache?.has || cache.has(clientRoleId)) continue
+    try {
+      await ch.permissionOverwrites.edit(clientRoleId, { ViewChannel: false }, { type: OverwriteType.Role, reason: REASON })
+      denied.push(ch.name)
+    } catch (e) {
+      console.warn(`[clientAccess] denying Client on #${ch.name}:`, e?.message || e)
+    }
+  }
+  return denied
+}
+
 async function ensureManualPinned(text, botUserId) {
   const pinned = await text.messages?.fetchPinned?.().catch(() => null)
   const have = pinned && [...pinned.values()].some((m) =>
@@ -98,7 +147,7 @@ async function ensureManualPinned(text, botUserId) {
 /**
  * Idempotent. Creates whatever is missing, repairs whatever lacks an overwrite,
  * pins the manual if it is not pinned, and persists any id that changed.
- * @returns {Promise<{role: object, category: object, text: object, voice: object}>}
+ * @returns {Promise<{role: object, category: object, text: object, voice: object, denied: string[]}>}
  */
 export async function ensureSupportChannels(guild, cfg, { update = updateGuildConfig, botUserId = null } = {}) {
   const role = await ensureClientRole(guild, cfg, { update })
@@ -141,10 +190,12 @@ export async function ensureSupportChannels(guild, cfg, { update = updateGuildCo
 
   await ensureManualPinned(text, botUserId)
 
+  const denied = await denyClientOnPublicChannels(guild, cfg, role.id)
+
   const changed = {}
   if (text.id !== cfg?.supportChannelId) changed.supportChannelId = text.id
   if (voice.id !== cfg?.supportVoiceChannelId) changed.supportVoiceChannelId = voice.id
   if (Object.keys(changed).length) await update(guild.id, changed)
 
-  return { role, category, text, voice }
+  return { role, category, text, voice, denied }
 }
