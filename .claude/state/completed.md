@@ -6,6 +6,9 @@ Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + file
 
 ## 2026-09-24 — Structured fields + screenshots on client requests (MERGED, PUSHED)
 
+Follow-up `de1a102` (merged `2f85053`): optional `semester` text field on both commands, first
+header line beside the platform.
+
 Owner asked for the fields a developer always goes back for. `/report-issue` gains platform, os,
 app_version, severity, frequency, when, account, steps, expected; `/request-feature` gains
 platform, priority, needed_by, problem, who, example — all optional, composed by
