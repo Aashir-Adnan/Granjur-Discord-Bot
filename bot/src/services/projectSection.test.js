@@ -370,12 +370,15 @@ test('observeProjectSection resolves the stored ids and takes names from the who
     parentId: 'c1',
     // Unreadable on this fake, so the planner never plans a permissions edit.
     overwriteIds: null,
+    // Unreadable bits are never "incomplete" either.
+    roleAllowIncomplete: false,
+    membersIncomplete: false,
   })
   assert.equal(observed.channels.documentation, undefined)
   assert.deepEqual(observed.tasks, [
     // A row with no status and no stamp reads as nulls: it files as open, and
     // the planner is free to stamp it if its status ever puts it in Done.
-    { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-0145e3', parentId: 'FEATURES', status: null, retireAt: null, overwriteIds: null },
+    { id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-0145e3', parentId: 'FEATURES', status: null, retireAt: null, overwriteIds: null, roleAllowIncomplete: false, membersIncomplete: false },
   ])
   assert.ok(observed.takenNames.has('general'))
   assert.ok(observed.takenNames.has('framework-members'))
@@ -611,13 +614,25 @@ const ALLOW = [
   PermissionFlagsBits.Stream,
 ]
 
+/** `ALLOW` as one bitfield: a role overwrite the text repair has nothing to add to. */
+const ROLE_FULL = ALLOW.reduce((a, b) => a | b, 0n)
+/** The six text bits: a member overwrite the text repair has nothing to add to. */
+const TEXT_SIX = [
+  PermissionFlagsBits.ViewChannel,
+  PermissionFlagsBits.SendMessages,
+  PermissionFlagsBits.ReadMessageHistory,
+  PermissionFlagsBits.AttachFiles,
+  PermissionFlagsBits.EmbedLinks,
+  PermissionFlagsBits.AddReactions,
+].reduce((a, b) => a | b, 0n)
+
 /** A task channel as /create-task makes it: @everyone denied, its assignee allowed. */
 function ticketChannel(id, name, parentId, extra = []) {
   const ch = fakeChannel(id, name, {
     parentId,
     overwrites: [
       { id: 'G1', type: OverwriteType.Role, allow: 0n, deny: PermissionFlagsBits.ViewChannel },
-      { id: 'assignee', type: OverwriteType.Member, allow: PermissionFlagsBits.ViewChannel, deny: 0n },
+      { id: 'assignee', type: OverwriteType.Member, allow: TEXT_SIX, deny: 0n },
       ...extra,
     ],
   })
@@ -653,7 +668,7 @@ test('a task channel moved into the section gains the project role, keeps its as
   assert.equal(byId.get('G1').deny, PermissionFlagsBits.ViewChannel)
   assert.equal(byId.get('G1').type, OverwriteType.Role)
   assert.equal(byId.get('assignee').type, OverwriteType.Member)
-  assert.equal(byId.get('assignee').allow, PermissionFlagsBits.ViewChannel)
+  assert.equal(byId.get('assignee').allow, TEXT_SIX)
   assert.equal(edit.permissionOverwrites.length, 3)
 })
 
@@ -711,8 +726,9 @@ test('a channel whose overwrites cannot be read still moves, without an allow th
 test('a task channel already named, placed and open to the role gets no edit', async () => {
   const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory })
   // "Placed" is the section category: a ticket's parent is the project's own.
+  // "Open" is the full allow: a role entry short of a text bit is upgraded.
   const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1', [
-    { id: 'r1', type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: 0n },
+    { id: 'r1', type: OverwriteType.Role, allow: ROLE_FULL, deny: 0n },
   ])
   const role = { id: 'r1', name: 'Framework', members: new Map() }
   const guild = fakeGuild({ channels: [cat, taskCh], roles: [role] })
@@ -1497,7 +1513,9 @@ test('a role allow on the category that is not the project’s is reported, neve
   // section. Removing it silently would itself be an unrequested permission
   // change, so it is said out loud instead.
   const denyAll = { id: 'G1', type: OverwriteType.Role, allow: 0n, deny: PermissionFlagsBits.ViewChannel }
-  const mine = { id: 'r1', type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: 0n }
+  // The project's own entry already carries the full allow, so the only
+  // thing a run could do to this category is the thing it must not.
+  const mine = { id: 'r1', type: OverwriteType.Role, allow: ROLE_FULL, deny: 0n }
   const stale = { id: 'rOld', type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: 0n }
   const byHand = { id: 'u9', type: OverwriteType.Member, allow: PermissionFlagsBits.ViewChannel, deny: 0n }
   const cat = fakeChannel('c1', '📂 FRAMEWORK', {
@@ -2353,4 +2371,235 @@ test('an unplanned ticket below the line stays below even when the order has to 
     guild.channels.positions[0].map((e) => e.channel),
     [...section.textIds, 'tc1', 'div', 'orphan-done']
   )
+})
+
+// ---- the six-bit text allow: bit-aware repair of what the bot owns ----------
+// An overwrite the bot owns whose allow lacks a text bit gets the missing bits
+// OR-ed in; its deny is kept; nothing is removed. Everything else stays
+// presence-only, and the divider never gains SendMessages or AddReactions.
+
+const P = PermissionFlagsBits
+const OLD_TEXT = P.ViewChannel | P.SendMessages | P.ReadMessageHistory
+const NEW_TEXT = P.AttachFiles | P.EmbedLinks | P.AddReactions
+const SIX = OLD_TEXT | NEW_TEXT
+const VOICE4 = P.Connect | P.Speak | P.UseVAD | P.Stream
+const bitsIn = (v) => (Array.isArray(v) ? v.reduce((a, b) => a | b, 0n) : BigInt(v ?? 0n))
+
+/**
+ * A whole section, category and divider in place, every channel carrying the
+ * given role overwrite (bits), so a test only varies what it is about.
+ */
+function sixBitSection({ catRole, secRole, extraOn = {}, tasks = [] } = {}) {
+  const role = { id: 'r1', name: 'Framework', members: new Map() }
+  const everyone = { id: 'G1', type: OverwriteType.Role, allow: 0n, deny: P.ViewChannel }
+  const roleOw = (bits) => ({ id: 'r1', type: OverwriteType.Role, allow: bits.allow, deny: bits.deny ?? 0n })
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwrites: [everyone, roleOw(catRole)] })
+  const ids = {}
+  const channels = SECTIONS.map((sec, i) => {
+    const id = `sec${i}`
+    ids[sec.key] = id
+    return fakeChannel(id, channelNameFor(project, sec.suffix), {
+      parentId: 'c1',
+      type: sec.type === 'voice' ? ChannelType.GuildVoice : ChannelType.GuildText,
+      overwrites: [everyone, roleOw(secRole), ...(extraOn[sec.key] ?? [])],
+      rawPosition: i + 1,
+    })
+  })
+  const div = dividerWith({ allow: ALLOW_BITS, deny: DENY_BITS })
+  const guild = fakeGuild({ channels: [cat, ...channels, ...tasks, div], roles: [role] })
+  const stored = { ...withDivider(project, ids), discordRoleId: 'r1' }
+  return { guild, stored, cat, channels, ids, div }
+}
+
+const oldRole = { allow: OLD_TEXT | VOICE4 }
+const newRole = { allow: SIX | VOICE4 }
+
+test('a section channel whose role overwrite has the old three bits is planned grant; the edit carries all six and the old deny', async () => {
+  const s = sixBitSection({ catRole: newRole, secRole: newRole })
+  // One section channel carries the old allow plus a deny an admin set by hand.
+  const members = s.channels[0]
+  members.permissionOverwrites.cache.set('r1', { id: 'r1', type: OverwriteType.Role, allow: OLD_TEXT | VOICE4, deny: P.CreatePublicThreads })
+  const observed = observeProjectSection(s.guild, s.stored, [], { rolesFetched: true })
+  assert.equal(observed.channels.members.roleAllowIncomplete, true)
+  assert.equal(observed.channels.members.membersIncomplete, false)
+  assert.equal(observed.channels.documentation.roleAllowIncomplete, false)
+  const plan = planProjectSection(s.stored, observed)
+  assert.equal(plan.channels.find((c) => c.key === 'members').action, 'grant')
+  assert.equal(plan.channels.find((c) => c.key === 'documentation').action, 'reuse')
+
+  const result = await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  assert.equal(members.edits.length, 1)
+  const entry = members.edits[0].permissionOverwrites.find((o) => o.id === 'r1')
+  assert.equal(entry.type, OverwriteType.Role)
+  assert.equal(bitsIn(entry.allow) & SIX, SIX, 'all six text bits allowed')
+  assert.equal(bitsIn(entry.allow) & VOICE4, VOICE4, 'nothing it had is removed')
+  assert.equal(bitsIn(entry.deny), P.CreatePublicThreads, 'the deny is kept exactly')
+  assert.ok(members.edits[0].permissionOverwrites.some((o) => o.id === 'G1'), 'merged, never replaced')
+  assert.deepEqual(result.granted, [members.name])
+})
+
+test('a task channel whose role and assignee entries carry three bits gets both upgraded in ONE edit', async () => {
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1', [
+    { id: 'r1', type: OverwriteType.Role, allow: OLD_TEXT, deny: 0n },
+  ])
+  taskCh.permissionOverwrites.cache.set('assignee', { id: 'assignee', type: OverwriteType.Member, allow: OLD_TEXT, deny: 0n })
+  const s = sixBitSection({ catRole: newRole, secRole: newRole, tasks: [taskCh] })
+  const observed = observeProjectSection(s.guild, s.stored, [{ id: 't1', title: 'Git Sync', type: 'feature', status: 'open', discordChannelId: 'tc1' }], { rolesFetched: true })
+  assert.equal(observed.tasks[0].roleAllowIncomplete, true)
+  assert.equal(observed.tasks[0].membersIncomplete, true)
+  const plan = planProjectSection(s.stored, observed)
+  assert.equal(plan.tasks[0].action, 'grant')
+
+  await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  assert.equal(taskCh.edits.length, 1)
+  const sent = taskCh.edits[0].permissionOverwrites
+  const roleEntry = sent.find((o) => o.id === 'r1')
+  const assignee = sent.find((o) => o.id === 'assignee')
+  assert.equal(bitsIn(roleEntry.allow) & SIX, SIX)
+  assert.equal(assignee.type, OverwriteType.Member)
+  assert.equal(bitsIn(assignee.allow), SIX)
+  assert.equal(bitsIn(assignee.deny), 0n)
+  // The @everyone deny rides through untouched.
+  assert.equal(bitsIn(sent.find((o) => o.id === 'G1').deny), P.ViewChannel)
+})
+
+test('a task channel whose only gap is its assignee is still upgraded; a member who cannot view is never touched', async () => {
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1', [
+    { id: 'r1', type: OverwriteType.Role, allow: SIX | VOICE4, deny: 0n },
+    // Somebody an admin shut out of this one channel: a deny-only member entry.
+    { id: 'shut-out', type: OverwriteType.Member, allow: 0n, deny: P.ViewChannel },
+  ])
+  taskCh.permissionOverwrites.cache.set('assignee', { id: 'assignee', type: OverwriteType.Member, allow: OLD_TEXT, deny: 0n })
+  const s = sixBitSection({ catRole: newRole, secRole: newRole, tasks: [taskCh] })
+  const observed = observeProjectSection(s.guild, s.stored, [{ id: 't1', title: 'Git Sync', type: 'feature', status: 'open', discordChannelId: 'tc1' }], { rolesFetched: true })
+  assert.equal(observed.tasks[0].roleAllowIncomplete, false)
+  assert.equal(observed.tasks[0].membersIncomplete, true)
+  const plan = planProjectSection(s.stored, observed)
+  assert.equal(plan.tasks[0].action, 'grant')
+  await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  assert.equal(taskCh.edits.length, 1)
+  const sent = taskCh.edits[0].permissionOverwrites
+  assert.equal(bitsIn(sent.find((o) => o.id === 'assignee').allow), SIX)
+  const shut = sent.find((o) => o.id === 'shut-out')
+  assert.equal(bitsIn(shut.allow), 0n, 'a deny-only member entry gains nothing')
+  assert.equal(bitsIn(shut.deny), P.ViewChannel)
+})
+
+test('a locked ticket is upgraded without re-opening it: SendMessages stays denied, never re-allowed', async () => {
+  // lockTicketChannel moved SendMessages from allow to deny on every entry.
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1', [
+    { id: 'r1', type: OverwriteType.Role, allow: (OLD_TEXT | VOICE4) & ~P.SendMessages, deny: P.SendMessages },
+  ])
+  taskCh.permissionOverwrites.cache.set('assignee', { id: 'assignee', type: OverwriteType.Member, allow: OLD_TEXT & ~P.SendMessages, deny: P.SendMessages })
+  const s = sixBitSection({ catRole: newRole, secRole: newRole, tasks: [taskCh] })
+  const rows = [{ id: 't1', title: 'Git Sync', type: 'feature', status: 'done', channelRetireAt: new Date(), discordChannelId: 'tc1' }]
+  const plan = planProjectSection(s.stored, observeProjectSection(s.guild, s.stored, rows, { rolesFetched: true }))
+  assert.equal(plan.tasks[0].action, 'grant')
+  await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  const sent = taskCh.edits[0].permissionOverwrites
+  for (const id of ['r1', 'assignee']) {
+    const e = sent.find((o) => o.id === id)
+    assert.equal(bitsIn(e.allow) & P.SendMessages, 0n, `${id} is still read-only`)
+    assert.equal(bitsIn(e.deny), P.SendMessages, `${id} keeps its lock`)
+    assert.equal(bitsIn(e.allow) & NEW_TEXT, NEW_TEXT, `${id} gains the new bits`)
+  }
+})
+
+test('a locked ticket already carrying the new bits plans nothing: a denied bit is not a missing one', () => {
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1', [
+    { id: 'r1', type: OverwriteType.Role, allow: (SIX | VOICE4) & ~P.SendMessages, deny: P.SendMessages },
+  ])
+  taskCh.permissionOverwrites.cache.set('assignee', { id: 'assignee', type: OverwriteType.Member, allow: SIX & ~P.SendMessages, deny: P.SendMessages })
+  const s = sixBitSection({ catRole: newRole, secRole: newRole, tasks: [taskCh] })
+  const rows = [{ id: 't1', title: 'Git Sync', type: 'feature', status: 'done', channelRetireAt: new Date(), discordChannelId: 'tc1' }]
+  const plan = planProjectSection(s.stored, observeProjectSection(s.guild, s.stored, rows, { rolesFetched: true }))
+  assert.equal(plan.tasks[0].action, 'none')
+})
+
+test('a category whose role entry has the old bits is repaired: allow upgraded, deny and @everyone kept', async () => {
+  const s = sixBitSection({ catRole: { allow: OLD_TEXT | VOICE4, deny: P.MentionEveryone }, secRole: newRole })
+  const observed = observeProjectSection(s.guild, s.stored, [], { rolesFetched: true })
+  assert.equal(observed.categoryRoleAllowIncomplete, true)
+  const plan = planProjectSection(s.stored, observed)
+  assert.equal(plan.category.opens, true)
+  await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  assert.equal(s.cat.edits.length, 1)
+  const sent = s.cat.edits[0].permissionOverwrites
+  const entry = sent.find((o) => o.id === 'r1')
+  assert.equal(bitsIn(entry.allow) & (SIX | VOICE4), SIX | VOICE4)
+  assert.equal(bitsIn(entry.deny), P.MentionEveryone)
+  const everyone = sent.find((o) => o.id === 'G1')
+  assert.equal(everyone.type, OverwriteType.Role)
+  assert.equal(bitsIn(everyone.deny), P.ViewChannel)
+})
+
+test('a client whose support-channel entry has three bits is re-granted', async () => {
+  const oldClient = { id: 'client1', type: OverwriteType.Member, allow: OLD_TEXT, deny: 0n }
+  const s = sixBitSection({ catRole: newRole, secRole: newRole, extraOn: { support: [oldClient] } })
+  const grants = []
+  // The client is on the project, so the voice and casual channels owe them a
+  // grant too; each channel records what it was sent.
+  for (const key of ['support', 'supportVoice', 'casual']) {
+    const ch = s.channels[SECTIONS.findIndex((x) => x.key === key)]
+    ch.permissionOverwrites.edit = async (id, allow, opts) => grants.push({ key, id, allow, opts })
+  }
+  const observed = observeProjectSection(s.guild, s.stored, [], { rolesFetched: true, clientIds: ['client1'] })
+  assert.deepEqual(observed.clientAccess.support.missing, ['client1'])
+  const plan = planProjectSection(s.stored, observed)
+  assert.ok(plan.clients.grant.some((g) => g.key === 'support' && g.memberId === 'client1'))
+  await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  const g = grants.find((x) => x.key === 'support' && x.id === 'client1')
+  assert.deepEqual(g.allow, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true, EmbedLinks: true, AddReactions: true })
+  assert.equal(g.opts.type, OverwriteType.Member)
+})
+
+test('a section already carrying all six bits plans reuse/none everywhere and makes no edit (idempotent)', async () => {
+  const sixClient = { id: 'client1', type: OverwriteType.Member, allow: SIX, deny: 0n }
+  const sixVoiceClient = { id: 'client1', type: OverwriteType.Member, allow: SIX | VOICE4, deny: 0n }
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'c1', [{ id: 'r1', type: OverwriteType.Role, allow: SIX | VOICE4, deny: 0n }])
+  taskCh.permissionOverwrites.cache.set('assignee', { id: 'assignee', type: OverwriteType.Member, allow: SIX, deny: 0n })
+  taskCh.rawPosition = 15
+  const s = sixBitSection({
+    catRole: newRole,
+    secRole: newRole,
+    extraOn: { support: [sixClient], supportVoice: [sixVoiceClient], casual: [sixClient] },
+    tasks: [taskCh],
+  })
+  const rows = [{ id: 't1', title: 'Git Sync', type: 'feature', status: 'open', discordChannelId: 'tc1' }]
+  const observed = observeProjectSection(s.guild, s.stored, rows, { rolesFetched: true, clientIds: ['client1'] })
+  assert.equal(observed.categoryRoleAllowIncomplete, false)
+  const plan = planProjectSection(s.stored, observed)
+  assert.equal(plan.category.action, 'reuse')
+  assert.equal(plan.category.opens, undefined)
+  assert.ok(plan.channels.every((c) => c.action === 'reuse'), 'every section channel is reuse')
+  assert.equal(plan.tasks[0].action, 'none')
+  assert.deepEqual(plan.clients.grant, [])
+  assert.equal(plan.divider.action, 'reuse')
+
+  const result = await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  for (const ch of [s.cat, ...s.channels, taskCh, s.div]) assert.deepEqual(ch.edits, [], `${ch.name} is not edited`)
+  assert.deepEqual(result.granted, [])
+  assert.deepEqual(result.opened, [])
+})
+
+test('a run that upgrades every section channel leaves a correct divider alone: it never gains SendMessages or AddReactions', async () => {
+  const s = sixBitSection({ catRole: oldRole, secRole: oldRole })
+  const plan = planProjectSection(s.stored, observeProjectSection(s.guild, s.stored, [], { rolesFetched: true }))
+  assert.ok(plan.channels.every((c) => c.action === 'grant'), 'every section channel is upgraded')
+  assert.equal(plan.divider.action, 'reuse')
+  await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  assert.deepEqual(s.div.edits, [], 'the divider is not edited')
+  const onDivider = s.div.permissionOverwrites.cache.get('r1')
+  assert.equal(bitsIn(onDivider.allow) & (P.SendMessages | P.AddReactions), 0n)
+  assert.equal(bitsIn(onDivider.deny) & (P.SendMessages | P.AddReactions), P.SendMessages | P.AddReactions)
+})
+
+test('a divider repair still REPLACES the role entry with the read-only set, never OR-ing into it', async () => {
+  // The upgrade merge ORs allow bits into an existing entry; the divider must
+  // not take that path, or a Sync-Now'd SendMessages would survive the repair.
+  const div = dividerWith({ allow: SIX | VOICE4, deny: 0n })
+  await runDividerRepair(div)
+  const entry = div.edits[0].permissionOverwrites.find((o) => o.id === 'r1')
+  assert.deepEqual(entry.allow, DIVIDER_ROLE_ALLOW)
+  assert.deepEqual(entry.deny, DIVIDER_ROLE_DENY)
 })
