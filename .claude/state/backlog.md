@@ -4,6 +4,24 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Six-bit text allow — rollout and follow-ups (branch `feat/attach-files`, 2026-09-25)
+See "Text permissions" in `.claude/knowledge/project-sections.md`.
+
+- **Rollout:** merge, deploy, `/setup` once, then `/project-setup` per project (preview
+  first) or `all:true`. First live check: a client attaches a file in a request channel.
+- Channels no repair path reaches keep three bits until recreated: `/create-channel` private
+  rooms, meeting auto-channels (`meetingAutoChannel.js`), and ticket channels of tasks with no
+  project (global `Features`/`Bugs`, including project-less client requests) — `/project-setup`
+  only walks a project's own task rows.
+- On a project support/casual channel a short client entry is upgraded twice in one run: once
+  inside step 3's merged `grant` edit (member upgrade) and again by step 3b's per-client
+  `permissionOverwrites.edit`. Harmless (the second is a merge no-op on the bits) and once only.
+- Overwrite edits that still carry no explicit `type` (all edit EXISTING entries, where
+  discord.js infers it): `lockTicketChannel`/`unlockTicketChannel` (`utils/channels.js`), the
+  voice-activity repair in `applyProjectSection` 4b, `commands/fix.js`.
+- `repairOverwrites` upgrades a short `Verified` entry on the global support pair as well as
+  `Client` (the design named Client; both are bot-owned allow entries).
+
 ## Archive divider — deferred follow-ups (branch `feat/archive-divider`, 2026-09-25)
 See `.claude/knowledge/ticket-archive.md`. The items that outlived the status buckets, plus
 what this branch added. Newest first.

@@ -992,9 +992,10 @@ function roleAllowMerged(channel, roleId) {
 /**
  * Whether the project role's overwrite on the divider has to be repaired.
  *
- * This is the ONE place in this file that looks at overwrite BITS rather than
- * mere presence, and it is deliberate. Everywhere else, presence-only is what
- * stops the bot re-closing a category an admin deliberately reopened by hand.
+ * One of the two places in this file that look at overwrite BITS rather than
+ * mere presence (the other is the text-allow upgrade, `textGapsOf`, which only
+ * ever ADDS allow bits), and it is deliberate. Everywhere else, presence-only
+ * is what stops the bot re-closing a category an admin deliberately reopened.
  * Here the property being defended is the opposite one: the divider is
  * read-only, and presence-only cannot heal it. One click of the client's
  * "Sync Now" on the category copies the category's own overwrite — `ROLE_ALLOW`,

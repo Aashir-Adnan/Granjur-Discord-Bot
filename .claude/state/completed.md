@@ -2,6 +2,23 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-09-25 — Attachments, embeds and reactions in every bot-made text channel (BUILT on `feat/attach-files`, AWAITING MERGE)
+
+Owner report: "no option to send a document, video or any image in channel". The bot only
+ever granted ViewChannel/SendMessages/ReadMessageHistory. New leaf
+`bot/src/utils/textAllow.js` (`TEXT_ALLOW`, `TEXT_ALLOW_OBJ`, `VOICE_EXTRA`, `TEXT_BITS`,
+deny-aware `missingTextBits`/`lacksTextAllow`) is the one six-bit set; every creation writer
+uses it (`taskTicketChannel.js`, `ROLE_ALLOW`, `clientAccess.js` client sets, `/create-task`,
+`/bug`, `/feature`, `/create-channel`, `meetingAutoChannel.js`, `taskUpdateNotify.js`'s
+assignee grant — the last three now write an explicit `type`). Repair: `/project-setup` ORs
+missing text bits into the role entry and viewing member entries it owns (observer
+`roleAllowIncomplete`/`membersIncomplete`/`categoryRoleAllowIncomplete`, deny kept, a denied
+bit never re-allowed so locked tickets stay locked), re-grants short client entries;
+`/setup`'s `repairOverwrites` upgrades short Client/Verified entries. The divider keeps its
+replace path. Spec `docs/superpowers/specs/2026-09-25-attach-files-design.md`; knowledge
+"Text permissions" in `.claude/knowledge/project-sections.md`. Commits `47fe215`, `34f2e4b`,
+`6599c39` + docs. Rollout: deploy, `/setup` once, `/project-setup all:true`.
+
 
 
 ## 2026-09-25 — The archive divider: finished tickets below a line, inside the project category (BUILT, AWAITING MERGE)

@@ -154,7 +154,12 @@ channels (`support` text, `support-voice` voice) plus the `Client` role itself
 Repair is **presence-only**, exactly like the project-section repair in
 `project-sections.md`: `repairOverwrites` adds whichever of `@everyone`-deny,
 `Client`-allow, `Verified`-allow the channel is missing, one `permissionOverwrites.edit`
-per missing id, never a whole-array replace.
+per missing id, never a whole-array replace. Since 2026-09-25 the client allows are the
+six-bit `TEXT_ALLOW` (attach, embed, react included — `utils/textAllow.js`), and a
+`Client`/`Verified` entry that is present but short of a text bit gets one merge edit
+naming exactly the missing bits (a denied bit is never re-allowed); `/project-setup`
+likewise re-grants a project client whose member overwrite is short. See "Text
+permissions" in `project-sections.md`.
 
 ### The three holes `Verified` does not close: `denyClientOnPublicChannels`
 
