@@ -56,6 +56,7 @@ import {
 } from '../utils/ticketArchive.js'
 import { applyOrder, desiredOrder, textChannelsOf } from '../utils/channelOrder.js'
 import { retireTicketChannel } from './ticketRetire.js'
+import { TEXT_ALLOW, VOICE_EXTRA, bitsOf, textFlagsOf, viewerTextGaps } from '../utils/textAllow.js'
 
 /**
  * The keys the three sibling status-bucket categories used to be stored under.
@@ -305,13 +306,17 @@ function planRole(project, observed, warnings, { adoptRole = false } = {}) {
   )
 }
 
-function planCategory(project, observed) {
+function planCategory(project, observed, role = null) {
   const name = categoryNameFor(project)
   const id = observed?.categoryId ?? null
   if (!id) return { action: 'create', name }
   // Found by id, never by name, so a category renamed by hand is still ours.
-  if (observed.categoryName === name) return { action: 'reuse', id, name }
-  return { action: 'rename', id, name }
+  const entry = observed.categoryName === name ? { action: 'reuse', id, name } : { action: 'rename', id, name }
+  // The project role's overwrite on the category is short of a text bit (the
+  // old three-bit allow): the applier ORs the missing bits in. Said on the plan
+  // so a preview names it; the applier re-reads the live overwrite either way.
+  if (textIncomplete({ roleAllowIncomplete: observed.categoryRoleAllowIncomplete }, role)) entry.opens = true
+  return entry
 }
 
 /**
@@ -359,7 +364,7 @@ function planChannels(project, observed, role) {
     const nameOk = channel.name === name
     // With no category yet there is nothing to sit under, so the channel moves.
     const parentOk = Boolean(parentId) && channel.parentId === parentId
-    const needsAllow = lacksRoleAllow(channel.overwriteIds, role)
+    const needsAllow = lacksRoleAllow(channel.overwriteIds, role) || textIncomplete(channel, role)
     if (nameOk && parentOk) {
       // Already named and placed; the only thing left that can be wrong is who
       // can see it. `grant` is one edit carrying nothing but the overwrites.
@@ -415,6 +420,21 @@ function lacksRoleAllow(overwriteIds, role) {
   return Boolean(gate) && !overwriteIds.includes(gate)
 }
 
+/**
+ * True when an overwrite the bot owns on this channel is present but short of
+ * a `TEXT_ALLOW` bit (the old three-bit allow): the gate role's, when there is
+ * a gate role, or any member's who can view the channel. The repair ORs the
+ * missing bits into the allow and keeps the deny; see `roleAllowMerged`.
+ *
+ * @param {{roleAllowIncomplete?: boolean, membersIncomplete?: boolean}} seen an observed channel or task
+ * @param {{action?: string, gateRoleId?: string|null}|null} role the role plan
+ */
+function textIncomplete(seen, role) {
+  if (seen?.membersIncomplete) return true
+  if (!seen?.roleAllowIncomplete) return false
+  return Boolean(role?.gateRoleId) && role.action !== 'create'
+}
+
 function planTasks(project, observed, channels, divider, role, warnings) {
   const parentId = observed?.categoryId ?? null
   const tasks = Array.isArray(observed?.tasks) ? observed.tasks : []
@@ -465,7 +485,7 @@ function planTasks(project, observed, channels, divider, role, warnings) {
     // replaced role existed. A move or rename carries the allow in its own
     // edit; this one needs an edit of its own, or its project's members never
     // see it. Only on what the snapshot can read, and never for a refused role.
-    const needsAllow = lacksRoleAllow(task.overwriteIds, role)
+    const needsAllow = lacksRoleAllow(task.overwriteIds, role) || textIncomplete(task, role)
     if (action === 'none' && needsAllow) action = 'grant'
 
     if (action === 'move' || action === 'both') {
@@ -473,6 +493,10 @@ function planTasks(project, observed, channels, divider, role, warnings) {
       else {
         // No room: leave it where it is, but still give it a readable name.
         action = action === 'both' ? 'rename' : 'none'
+        // Left where it is, but a member short of a text bit is still upgraded
+        // in an overwrites-only edit — the applier grants members wherever the
+        // channel sits (the role's allow only inside the section).
+        if (action === 'none' && task.membersIncomplete) action = 'grant'
         leftBehind += 1
       }
     }
@@ -570,7 +594,7 @@ function warnStaleBuckets(observed, planned, warnings) {
 export function planProjectSection(project, observed = {}, opts = {}) {
   const warnings = []
   const role = planRole(project, observed, warnings, opts)
-  const category = planCategory(project, observed)
+  const category = planCategory(project, observed, role)
   const divider = planDivider(observed)
   // After the role: every channel decision depends on which role gates the
   // section, and on a refusal there may be none.
@@ -596,15 +620,9 @@ export function planProjectSection(project, observed = {}, opts = {}) {
 // Connect and Speak give neither: without UseVAD a member of the project role is
 // push-to-talk only, and without Stream cannot share a screen, whenever the
 // server's @everyone role does not grant them.
-const ROLE_ALLOW = [
-  PermissionFlagsBits.ViewChannel,
-  PermissionFlagsBits.SendMessages,
-  PermissionFlagsBits.ReadMessageHistory,
-  PermissionFlagsBits.Connect,
-  PermissionFlagsBits.Speak,
-  PermissionFlagsBits.UseVAD,
-  PermissionFlagsBits.Stream,
-]
+// The text half is the one six-bit set in `utils/textAllow.js` (view, send,
+// history, attach, embed, react); the voice half is `VOICE_EXTRA`.
+const ROLE_ALLOW = [...TEXT_ALLOW, ...VOICE_EXTRA]
 
 const REASON = 'Project section'
 
@@ -649,25 +667,9 @@ export function claimedSectionIds(projects, exceptId) {
   return claimed
 }
 
-/**
- * A permission bitfield as a BigInt, from whatever shape it arrives in: a
- * discord.js `PermissionsBitField`, a BigInt, a number, a decimal string.
- * Null when it cannot be read — never 0n, because "no permissions" and "could
- * not tell" must not be the same answer to a question about adopting a role.
- */
-function bitsOf(permissions) {
-  if (permissions === null || permissions === undefined) return null
-  try {
-    if (typeof permissions === 'bigint') return permissions
-    if (typeof permissions === 'number') return BigInt(permissions)
-    if (typeof permissions === 'string') return BigInt(permissions)
-    const raw = permissions.bitfield ?? permissions.valueOf?.()
-    if (raw === null || raw === undefined || typeof raw === 'object') return null
-    return BigInt(raw)
-  } catch {
-    return null
-  }
-}
+// `bitsOf` (a permission bitfield as a BigInt from a PermissionsBitField, a
+// BigInt, a number or a decimal string; null when unreadable, never 0n) lives
+// in `utils/textAllow.js` and is imported above.
 
 /** The two voice permissions Connect and Speak do not include, by discord.js name. */
 const VOICE_EXTRAS = ['UseVAD', 'Stream']
@@ -697,6 +699,40 @@ function grantsView(overwrite) {
   const bits = bitsOf(overwrite?.allow)
   if (bits === null) return false
   return (bits & PermissionFlagsBits.ViewChannel) !== 0n
+}
+
+// The text bits a repair may add to an overwrite of ours are
+// `viewerTextGaps(overwrite)` (`utils/textAllow.js`): the `TEXT_ALLOW` bits it
+// neither allows nor denies, read through `bitsOf`, and only when it ALLOWS
+// ViewChannel. 0n when absent or unreadable — an overwrite we cannot inspect is
+// never "incomplete", so it is never rewritten on every run. A DENIED bit is
+// never missing: `lockTicketChannel` moves `SendMessages` into the deny of every
+// entry on a finished ticket, and OR-ing it back would re-open the ticket (allow
+// beats deny inside one overwrite). An entry that only denies — a member shut
+// out of one channel, a role kept off it — gets nothing at all.
+
+/** A per-member overwrite the text repair upgrades: a member who can VIEW the channel and is short. */
+function memberNeedsText(overwrite) {
+  if (overwrite?.type !== OverwriteType.Member) return false
+  return viewerTextGaps(overwrite) !== 0n
+}
+
+/** The role's overwrite on this channel is present, lets the role see, and is short of a text bit. */
+function roleTextIncomplete(channel, roleId) {
+  if (!roleId) return false
+  return viewerTextGaps(channel?.permissionOverwrites?.cache?.get?.(roleId)) !== 0n
+}
+
+/** Some member who can view this channel is short of a text bit. */
+function membersTextIncomplete(channel) {
+  return valuesOf(channel?.permissionOverwrites?.cache).some(memberNeedsText)
+}
+
+/** A permission list (array of bits) or a single bitfield, as a BigInt; null when unreadable. */
+function bitsOfList(value) {
+  if (Array.isArray(value)) return value.reduce((a, b) => a | BigInt(b), 0n)
+  if (value === null || value === undefined) return 0n
+  return bitsOf(value)
 }
 
 /**
@@ -839,7 +875,13 @@ function missingOverwrites(category, required) {
   if (!required.length) return false
   const cache = category?.permissionOverwrites?.cache
   if (!cache?.has) return false
-  return required.some((o) => !cache.has(o.id))
+  // Presence-only, except for an entry that grants text: an overwrite of ours
+  // that is there but short of a text bit (the old three-bit allow) is due its
+  // missing allow bits too. An entry with no allow — the @everyone deny — is
+  // presence-only, so an admin who reopened a category by hand stays obeyed.
+  return required.some(
+    (o) => !cache.has(o.id) || (o.allow !== undefined && viewerTextGaps(cache.get?.(o.id)) !== 0n)
+  )
 }
 
 /**
@@ -850,18 +892,45 @@ function missingOverwrites(category, required) {
  * silently drop anything a human added to the category by hand — a
  * single-member grant, a moderator role. Carry those through untouched;
  * discord.js accepts a `PermissionsBitField` as a `PermissionResolvable`, so
- * there is nothing to convert. The required entries win for the ids they cover.
+ * there is nothing to convert.
+ *
+ * A required entry whose id is already on the channel is an UPGRADE, never a
+ * replacement: `{ id, type, allow: existing | required, deny: existing }`.
+ * Nothing it already allows is removed and its deny is carried exactly — and a
+ * bit the existing entry denies is not OR-ed into its allow, because allow
+ * beats deny inside one overwrite and a locked ticket would re-open. An entry
+ * whose bits cannot be read falls back to the required entry, as before.
+ *
+ * `replace: true` is the divider's path alone: its role entry has to LOSE
+ * `SendMessages` after a "Sync Now", which an upgrade can never do.
  */
-function mergedOverwrites(category, required) {
+function mergedOverwrites(category, required, { replace = false } = {}) {
   const cache = category?.permissionOverwrites?.cache
   if (!cache?.values) return required
+  const byId = new Map()
+  for (const existing of cache.values()) if (existing) byId.set(existing.id, existing)
   const ours = new Set(required.map((o) => o.id))
+  const merged = required.map((o) => {
+    const existing = byId.get(o.id)
+    if (!existing || replace) return o
+    const allow = bitsOf(existing.allow)
+    const hasDeny = existing.deny !== null && existing.deny !== undefined
+    const deny = hasDeny ? bitsOf(existing.deny) : 0n
+    const wanted = bitsOfList(o.allow)
+    if (allow === null || deny === null || wanted === null) return o
+    // An entry that does not let its holder see the channel is somebody's
+    // decision: carried exactly as it is, never given allow bits.
+    if ((allow & PermissionFlagsBits.ViewChannel) === 0n) {
+      return { id: existing.id, type: existing.type ?? o.type, allow: existing.allow, deny: existing.deny }
+    }
+    return { id: o.id, type: existing.type ?? o.type, allow: allow | (wanted & ~deny), deny: hasDeny ? existing.deny : 0n }
+  })
   const kept = []
-  for (const existing of cache.values()) {
-    if (!existing || ours.has(existing.id)) continue
+  for (const existing of byId.values()) {
+    if (ours.has(existing.id)) continue
     kept.push({ id: existing.id, type: existing.type, allow: existing.allow, deny: existing.deny })
   }
-  return [...required, ...kept]
+  return [...merged, ...kept]
 }
 
 /** The ids of a channel's overwrites, or null when the cache is unreadable. */
@@ -872,29 +941,41 @@ function overwriteIdsOf(channel) {
 }
 
 /**
- * The overwrite set to send so a task channel inside the section lets the
- * project role in: the channel's own overwrites, untouched, plus the role's
- * allow — `mergedOverwrites`, the same merge the category repair uses. Null
- * when there is nothing to add or nothing safe to send: no role that resolves,
- * an overwrite list that cannot be read (sending the allow alone would REPLACE
- * the set and drop every assignee), or a channel that already carries an
- * overwrite for the role (someone set it; it is not ours to overrule).
+ * The overwrite set to send so a channel inside the section lets the project
+ * role in with the full text allow: the channel's own overwrites, untouched,
+ * plus the role's allow — `mergedOverwrites`, the same merge the category
+ * repair uses. A role entry that is ABSENT gets `ROLE_ALLOW`; one that is
+ * present but short of a text bit gets the missing bits OR-ed in, its deny
+ * kept. Every member entry that can view the channel and is short of a text
+ * bit (an assignee, a client) is upgraded the same way in the same edit. A
+ * role entry that already has every text bit is left exactly as someone set it.
+ *
+ * Null when there is nothing to add or nothing safe to send: nothing short of
+ * anything, or an overwrite list that cannot be read (sending the allow alone
+ * would REPLACE the set and drop every assignee). With no `roleId` only the
+ * member upgrades are considered.
  */
 function roleAllowMerged(channel, roleId) {
-  if (!roleId) return null
   const cache = channel?.permissionOverwrites?.cache
   if (!cache?.has || !cache?.values) return null
-  const required = [{ id: roleId, type: OverwriteType.Role, allow: ROLE_ALLOW }]
-  if (!missingOverwrites(channel, required)) return null
+  const required = []
+  if (roleId && (!cache.has(roleId) || roleTextIncomplete(channel, roleId))) {
+    required.push({ id: roleId, type: OverwriteType.Role, allow: ROLE_ALLOW })
+  }
+  for (const o of cache.values()) {
+    if (o?.id !== roleId && memberNeedsText(o)) required.push({ id: o.id, type: OverwriteType.Member, allow: TEXT_ALLOW })
+  }
+  if (!required.length) return null
   return mergedOverwrites(channel, required)
 }
 
 /**
  * Whether the project role's overwrite on the divider has to be repaired.
  *
- * This is the ONE place in this file that looks at overwrite BITS rather than
- * mere presence, and it is deliberate. Everywhere else, presence-only is what
- * stops the bot re-closing a category an admin deliberately reopened by hand.
+ * One of the two places in this file that look at overwrite BITS rather than
+ * mere presence (the other is the text-allow upgrade, `viewerTextGaps`, which only
+ * ever ADDS allow bits), and it is deliberate. Everywhere else, presence-only
+ * is what stops the bot re-closing a category an admin deliberately reopened.
  * Here the property being defended is the opposite one: the divider is
  * read-only, and presence-only cannot heal it. One click of the client's
  * "Sync Now" on the category copies the category's own overwrite — `ROLE_ALLOW`,
@@ -930,7 +1011,9 @@ function dividerAllowMerged(channel, roleId) {
   if (!cache?.has || !cache?.values) return null
   if (!dividerRoleNeedsRepair(channel, roleId)) return null
   const required = [{ id: roleId, type: OverwriteType.Role, allow: DIVIDER_ROLE_ALLOW, deny: DIVIDER_ROLE_DENY }]
-  return mergedOverwrites(channel, required)
+  // REPLACE, never upgrade: the text repair's OR-merge would keep a Sync-Now'd
+  // SendMessages in the allow, and the line would stay a chat channel.
+  return mergedOverwrites(channel, required, { replace: true })
 }
 
 /**
@@ -982,6 +1065,11 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
   // After the category, because a candidate's "does it open channels elsewhere"
   // test has to know where this project's own category is.
   const roleCandidate = sameNamed ? describeRoleCandidate(guild, sameNamed, categoryId, all) : null
+  // The role whose overwrites the text repair reads: the project's own when it
+  // resolves, else the same-named one the planner may adopt. The planner only
+  // acts on the answer when its `gateRoleId` is set, which is this role in
+  // every case but `create` (a role on no channel yet).
+  const textRoleId = roleId ?? sameNamed?.id ?? null
 
   const stored = storedChannels(project)
 
@@ -1051,6 +1139,11 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
         // carries a copy without it. Null when unreadable: the planner only
         // plans a permissions edit on what it can see.
         overwriteIds: overwriteIdsOf(channel),
+        // The bot's overwrites here are present but short of a text bit (the
+        // old three-bit allow): the gate role's, or a viewing member's. False
+        // when absent or unreadable — the presence check above covers absent.
+        roleAllowIncomplete: roleTextIncomplete(channel, textRoleId),
+        membersIncomplete: membersTextIncomplete(channel),
       }
     }
   }
@@ -1077,8 +1170,15 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
       // exactly as the role sync strips a role holder with no `projectmember`
       // row — see `syncProjectRoleMembers`. This only ever runs once the
       // caller actually read the roster (guarded above), never on a default.
+      // A client whose overwrite is there but short of a text bit (the old
+      // three-bit allow) counts as missing: the grant re-edits it with the
+      // full client allow, and `permissionOverwrites.edit` merges.
+      const cache = raw?.permissionOverwrites?.cache
+      // Only an entry that lets the client SEE the channel: one an admin set
+      // to deny ViewChannel is a shut-out, not a client short of a bit.
+      const shortOfText = (id) => viewerTextGaps(cache?.get?.(id)) !== 0n
       clientAccess[key] = {
-        missing: wantedClients.filter((id) => !seen.overwriteIds.includes(id)),
+        missing: wantedClients.filter((id) => !seen.overwriteIds.includes(id) || shortOfText(id)),
         stale: memberIds.filter((id) => !wantedClients.includes(id)),
       }
     }
@@ -1130,6 +1230,9 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
       // The ids of the overwrites the channel carries, or null when they cannot
       // be read — the planner only plans a permissions edit on what it can see.
       overwriteIds: overwriteIdsOf(channel),
+      // Present but short of a text bit: see the section channels above.
+      roleAllowIncomplete: roleTextIncomplete(channel, textRoleId),
+      membersIncomplete: membersTextIncomplete(channel),
     })
   }
 
@@ -1153,6 +1256,8 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
     rolesFetched: Boolean(rolesFetched),
     categoryId,
     categoryName: category?.name ?? null,
+    // The role's overwrite on the category is present but short of a text bit.
+    categoryRoleAllowIncomplete: roleTextIncomplete(category, textRoleId),
     categoryChannelCount: categoryId ? all.filter((c) => c.parentId === categoryId).length : 0,
     divider,
     staleBuckets,
@@ -1170,11 +1275,26 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
 
 const clientAllowFor = (key) => (key === 'supportVoice' ? CLIENT_VOICE_ALLOW_OBJ : CLIENT_TEXT_ALLOW_OBJ)
 
-/** One typed edit per client; a failure is one warning, not a stopped run. */
+/**
+ * One typed edit per client; a failure is one warning, not a stopped run.
+ *
+ * A client with no overwrite yet gets the full client allow. One who already
+ * has an overwrite gets ONLY the text bits it neither allows nor denies (and
+ * only if it lets them see the channel): `{ Flag: true }` flips a denied bit
+ * to allowed, so sending the full set would unmute a muted client or let a
+ * shut-out one back in. `permissionOverwrites.edit` merges, so nothing else on
+ * the entry changes.
+ */
 async function grantClients(channel, key, memberIds, result) {
   for (const memberId of memberIds) {
     try {
-      await channel.permissionOverwrites.edit(memberId, clientAllowFor(key), { type: OverwriteType.Member, reason: REASON })
+      const existing = channel.permissionOverwrites?.cache?.get?.(memberId)
+      let flags = clientAllowFor(key)
+      if (existing) {
+        flags = textFlagsOf(viewerTextGaps(existing))
+        if (!Object.keys(flags).length) continue
+      }
+      await channel.permissionOverwrites.edit(memberId, flags, { type: OverwriteType.Member, reason: REASON })
       result.clientGranted.push(channel.name)
     } catch (e) {
       note(result.warnings, `client access on ${channel.name} for ${memberId}`, e)
@@ -1508,7 +1628,9 @@ export async function applyProjectSection(
         // `grant` is already where it belongs: both keep the parent they have.
         const stays = action === 'rename' || action === 'grant'
         const parent = stays ? channel.parentId ?? null : categoryId
-        const overwrites = projectCategoryIds.has(parent) ? roleAllowMerged(channel, projectRoleId) : null
+        // The role's allow only inside the section; a member short of a text
+        // bit is upgraded wherever the channel ends up.
+        const overwrites = roleAllowMerged(channel, projectCategoryIds.has(parent) ? projectRoleId : null)
 
         if (action === 'grant') {
           // Nothing to add after all (the role is gone, or the channel gained

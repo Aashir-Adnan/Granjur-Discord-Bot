@@ -232,7 +232,9 @@ category was made.
 
 All of this uses **merge, never replace** — see next section — and is presence-only:
 it checks whether the overwrite id is present, not whether its allow/deny bits
-still match. See "Merge, never replace" for why that's deliberate.
+still match. See "Merge, never replace" for why that's deliberate. The one
+exception (since 2026-09-25) is an overwrite of ours short of a text bit — see
+"Text permissions" below.
 
 The same repair pass covers the section's client-facing pair
 (`CLIENT_SECTION_KEYS = ['support', 'supportVoice', 'casual']`), but with a per-**member**
@@ -252,11 +254,16 @@ overwrite a human added by hand (a single-member grant, a moderator role) or any
 per-assignee overwrite already on a task channel. Every place this code writes
 overwrites therefore reads the channel/category's *current* cache and merges:
 
-- `mergedOverwrites(category, required)` — for the category repair.
+- `mergedOverwrites(category, required, { replace })` — for the category repair.
+  A required entry whose id is already present is an **upgrade**, not a
+  replacement: `{ id, type, allow: existing | (required & ~existingDeny), deny:
+  existing }`. `replace: true` is the archive divider's path alone.
 - `roleAllowMerged(channel, roleId)` — for section-channel `grant`/`opens` and for
-  task-channel moves into the section; returns `null` (no edit) when the role
-  doesn't resolve, the overwrite cache is unreadable, or the channel already
-  carries an overwrite for that role id (never overrule a hand-set one).
+  task-channel moves into the section; adds the role entry when absent, ORs in
+  the text bits it lacks when present but short, and upgrades every viewing
+  member entry short of a text bit; returns `null` (no edit) when there is
+  nothing to add or the overwrite cache is unreadable. A role entry that already
+  carries every text bit is never touched (never overrule a hand-set one).
 
 `lockPermissions()` (which would sync a channel to its category, replacing
 everything) is **never called anywhere** in this feature — it would drop
@@ -275,6 +282,72 @@ bug**: `missingOverwrites` guards on `cache?.has`, `mergedOverwrites` guards on
 `cache?.values`. Both exist on a real discord.js `Collection`, so they agree today;
 a future cache-like object exposing only one of the two methods would make them
 disagree about whether the cache is "readable." Parked in the backlog.
+
+## Text permissions: the one six-bit set (2026-09-25)
+
+Every text allow the bot writes is **`TEXT_ALLOW`** from `bot/src/utils/textAllow.js`
+(a leaf): `ViewChannel, SendMessages, ReadMessageHistory, AttachFiles, EmbedLinks,
+AddReactions`. `TEXT_ALLOW_OBJ` is the `{ Flag: true }` form for
+`permissionOverwrites.edit`, `VOICE_EXTRA` is `Connect, Speak, UseVAD, Stream`, and
+`ROLE_ALLOW = [...TEXT_ALLOW, ...VOICE_EXTRA]`. Before this the bot granted only the
+first three, so attachments, link embeds and reactions depended on the server's
+`@everyone` defaults, and a client could not attach a document to a request channel.
+Writers: `taskTicketChannel.js` (member + role entries), `ROLE_ALLOW`,
+`clientAccess.js`'s `CLIENT_TEXT_ALLOW(_OBJ)`/`CLIENT_VOICE_ALLOW(_OBJ)` (and so
+`/project-members`), `/create-task`, `/bug`, `/feature`, `/create-channel`,
+`meetingAutoChannel.js` (text allows, voice = text + `VOICE_EXTRA`, every entry now
+typed) and the assignee grant in `taskUpdateNotify.js` (now typed `Member`). Not in
+scope: `/init`'s `@everyone` view/read-only announcement channels,
+`dailyTimeReport.js`, and the archive divider (`DIVIDER_ROLE_ALLOW/DENY`, read-only).
+
+**The repair rule, bit-aware for text only.** An overwrite the bot owns whose allow
+lacks a `TEXT_ALLOW` bit gets the missing bits OR-ed in; its deny is kept; nothing
+is ever removed. `viewerTextGaps(overwrite)` (`utils/textAllow.js`, which also owns
+`bitsOf`) returns `TEXT_BITS & ~allow & ~deny` for an entry that **allows
+ViewChannel**, else 0n — an entry that only denies (a member shut out, a role kept
+off) is a human's decision and never gains an allow bit; unreadable is 0n. The
+observer reports `roleAllowIncomplete` (the gate role's entry) and
+`membersIncomplete` (any viewing `Member` entry that is short) on every section
+channel and task, `categoryRoleAllowIncomplete` on the category, and counts a
+client whose viewing support-pair entry is short as `missing`; `grantClients` then
+sends only the missing flags to an existing entry (the full client set only to a
+client with no entry), so a muted client stays muted. The planner folds these into
+`needsAllow` (`grant`/`opens`, same wording; `plan.category.opens` prints "(and open
+to the project role)"), and a ticket the category cap leaves outside is still
+`grant`ed its member upgrade. A channel already carrying the six bits plans
+`reuse`/`none` and gets no edit — pinned by a two-pass test, so `/project-setup
+all:true` is idempotent.
+
+**`/setup` reaches the project-less tickets.** `upgradeGlobalTicketAllows(guild)`
+(`services/clientAccess.js`) walks the `isTicketChannel` text channels in the global
+`Features`/`Bugs` categories (found by name exactly as `getOrCreateCategory` does,
+never created) and upgrades their short viewing `Member` entries in one merged,
+typed edit per channel; `/setup` prints "Ticket channels upgraded: N". This is where
+every client request raised without a project lives.
+
+**Rollout prerequisite.** The bot's own role must hold Attach Files, Embed Links and
+Add Reactions (or be Administrator): Discord refuses an overwrite carrying a bit the
+bot lacks, so creation and repair would fail with Missing Permissions.
+
+**Side effect on the category repair.** `mergedOverwrites` now MERGES an entry
+already on the category instead of replacing it, so a hand-cleared `@everyone` deny
+is carried as is and no longer restored when a run edits the category for another
+reason (a missing role entry). Pinned by a test.
+
+**A denied bit is never "missing".** `lockTicketChannel` moves `SendMessages` from
+allow to deny on every entry of a finished ticket, and inside one overwrite
+**allow beats deny** — OR-ing it back would re-open every locked ticket. So a
+locked ticket gains attach/embed/react and stays read-only. The same holds for any
+bit an admin denied by hand.
+
+**Why presence-only stays everywhere else.** Presence-only exists so the bot never
+re-closes something a human deliberately opened (the `@everyone` deny) — repairing
+by value would fight that decision every run. Adding missing *allow* bits to an
+entry the bot itself wrote cannot close anything, and a deny is never touched, so
+this narrow bit-aware rule keeps that promise. The divider is the opposite case
+(its repair must *remove* `SendMessages`), which is why it keeps its own
+`dividerAllowMerged` path with `mergedOverwrites(..., { replace: true })` and is
+never passed through the upgrade.
 
 ## Shared/meeting review channels are never treated as task channels
 

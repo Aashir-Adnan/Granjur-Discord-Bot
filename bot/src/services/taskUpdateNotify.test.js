@@ -379,6 +379,29 @@ test('a field edit posts in the task channel and DMs nobody', async () => {
   assert.match(posts[0], /QA tests passed/)
 })
 
+test('a new assignee is granted the six text bits on the task channel, typed as a member', async () => {
+  const grants = []
+  const channel = {
+    id: 'own',
+    name: 'feature-123456',
+    type: ChannelType.GuildText,
+    guild: { id: 'g1' },
+    send: async () => {},
+    permissionOverwrites: { edit: async (id, allow, opts) => grants.push({ id, allow, opts }), delete: async () => {} },
+  }
+  const h = harness({ channel })
+  const task = { id: h.taskId, title: 'T', status: 'open', assigneeIds: [], discordChannelId: 'own' }
+  await notifyTaskUpdate({
+    client: h.client, guild: h.guild, task, before: task,
+    updates: { assigneeIds: ['11'] }, actorId: '99', db: noQueryDb,
+  })
+  assert.deepEqual(grants, [{
+    id: '11',
+    allow: { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true, EmbedLinks: true, AddReactions: true },
+    opts: { type: OverwriteType.Member },
+  }])
+})
+
 test('closing a task DMs its holders once, and reassignment revokes access', async () => {
   const revoked = []
   const channel = {

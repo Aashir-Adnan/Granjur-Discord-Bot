@@ -3,8 +3,10 @@ import {
   ChannelType,
   PermissionFlagsBits,
   EmbedBuilder,
+  OverwriteType,
 } from "discord.js";
 import db, { getOrCreateGuildConfig, ensureStringArray } from "../db/index.js";
+import { TEXT_ALLOW, VOICE_EXTRA } from "../utils/textAllow.js";
 
 export const data = new SlashCommandBuilder()
   .setName("create-channel")
@@ -52,50 +54,25 @@ export async function execute(interaction) {
   const cfg = await getOrCreateGuildConfig(guild.id);
 
   // Build permission overwrites — hidden from everyone, visible to designated members + bot
+  // Every entry is typed: a wrong or inferred type can make Discord drop an
+  // overwrite without an error. Text allows are the one six-bit set in
+  // utils/textAllow.js. A voice channel has a text chat too, so it gets that
+  // set plus Connect, Speak, voice activity and screen sharing (the last two
+  // are not implied by Connect/Speak: without them the room is push-to-talk
+  // only and nobody can share a screen wherever @everyone lacks them).
+  const everyoneDeny = { id: guild.roles.everyone.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] };
   const voiceOverwrites = [
-    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-    {
-      id: guild.client.user.id,
-      allow: [
-        PermissionFlagsBits.ViewChannel,
-        PermissionFlagsBits.Connect,
-        PermissionFlagsBits.Speak,
-      ],
-    },
+    everyoneDeny,
+    { id: guild.client.user.id, type: OverwriteType.Member, allow: [...TEXT_ALLOW, ...VOICE_EXTRA] },
   ];
   const textOverwrites = [
-    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-    {
-      id: guild.client.user.id,
-      allow: [
-        PermissionFlagsBits.ViewChannel,
-        PermissionFlagsBits.SendMessages,
-        PermissionFlagsBits.ReadMessageHistory,
-      ],
-    },
+    everyoneDeny,
+    { id: guild.client.user.id, type: OverwriteType.Member, allow: TEXT_ALLOW },
   ];
 
   for (const userId of memberIds) {
-    voiceOverwrites.push({
-      id: userId,
-      allow: [
-        PermissionFlagsBits.ViewChannel,
-        PermissionFlagsBits.Connect,
-        PermissionFlagsBits.Speak,
-        // Not implied by Connect/Speak: without them the room is push-to-talk
-        // only and nobody can share a screen wherever @everyone lacks them.
-        PermissionFlagsBits.UseVAD,
-        PermissionFlagsBits.Stream,
-      ],
-    });
-    textOverwrites.push({
-      id: userId,
-      allow: [
-        PermissionFlagsBits.ViewChannel,
-        PermissionFlagsBits.SendMessages,
-        PermissionFlagsBits.ReadMessageHistory,
-      ],
-    });
+    voiceOverwrites.push({ id: userId, type: OverwriteType.Member, allow: [...TEXT_ALLOW, ...VOICE_EXTRA] });
+    textOverwrites.push({ id: userId, type: OverwriteType.Member, allow: TEXT_ALLOW });
   }
 
   let voiceChannel, textChannel;

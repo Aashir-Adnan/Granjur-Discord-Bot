@@ -4,6 +4,41 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Six-bit text allow — rollout and follow-ups (branch `feat/attach-files`, 2026-09-25)
+See "Text permissions" in `.claude/knowledge/project-sections.md`.
+
+- The M3 member-only `grant` on a ticket the cap left outside the section is worded
+  "to open to the project role" in the preview and "opened to the project role" in the
+  reply, though no role allow is written there — reword for member-only grants.
+- `/setup`'s global ticket walk includes every category named Features/Bugs, not only the
+  first one `getOrCreateCategory` would pick; a hand-made duplicate is walked too (effect:
+  three extra allow bits for members who can already view).
+- `grantClients` no longer adds Connect/Speak to an existing viewing `supportVoice` entry
+  that lacks them (presence-only by design; no test either way).
+- `/setup` runs the global ticket walk before its invalid-timezone early return.
+- **Before deploy:** the bot's own role must hold Attach Files, Embed Links and Add
+  Reactions (or Administrator). Discord refuses an overwrite carrying a bit the bot itself
+  lacks, so without them every ticket/section/support channel creation and every repair
+  edit fails with Missing Permissions.
+- **Rollout:** merge, deploy, `/setup` once (support pair + the global Features/Bugs ticket
+  channels, reply line "Ticket channels upgraded: N"), then `/project-setup` per project
+  (preview first) or `all:true`. First live check: a client attaches a file in a request channel.
+- Channels no repair path reaches keep three bits until recreated: `/create-channel` private
+  rooms and meeting auto-channels (`meetingAutoChannel.js`).
+- The category repair now MERGES a present `@everyone` entry instead of replacing it, so a
+  hand-cleared `@everyone` deny on a section category is no longer restored by a run that
+  edits the category for another reason (pinned by a test). Decide whether that is wanted.
+- The voice-activity pass (`voiceGaps`) offers UseVAD/Stream to a role entry that only
+  denies ViewChannel (pre-existing, not changed here; seen while testing the deny-only case).
+- On a project support/casual channel a short client entry can be upgraded twice in one run
+  (step 3's merged `grant` edit, then step 3b) when the cache has not caught up; step 3b now
+  sends only the bits still missing, so with a live discord.js cache it skips.
+- Overwrite edits that still carry no explicit `type` (all edit EXISTING entries, where
+  discord.js infers it): `lockTicketChannel`/`unlockTicketChannel` (`utils/channels.js`), the
+  voice-activity repair in `applyProjectSection` 4b, `commands/fix.js`.
+- `repairOverwrites` upgrades a short `Verified` entry on the global support pair as well as
+  `Client` (the design named Client; both are bot-owned allow entries).
+
 ## Archive divider — deferred follow-ups (branch `feat/archive-divider`, 2026-09-25)
 See `.claude/knowledge/ticket-archive.md`. The items that outlived the status buckets, plus
 what this branch added. Newest first.

@@ -192,6 +192,13 @@ test('a task channel opened to the project role is shown in the preview and the 
   assert.match(result, /^\*\*Framework\*\* — 1 opened to the project role \(incl\. 1 task channel\)\./)
 })
 
+test('renderPlan says when a category keeps its name but its role overwrite gains the missing text bits', () => {
+  const out = renderPlan({ name: 'Framework' }, { category: { action: 'reuse', name: '📂 FRAMEWORK', opens: true } })
+  assert.match(out, /Category: reuse \*\*📂 FRAMEWORK\*\* \(and open to the project role\)/)
+  const plain = renderPlan({ name: 'Framework' }, { category: { action: 'reuse', name: '📂 FRAMEWORK' } })
+  assert.doesNotMatch(plain, /open to the project role/)
+})
+
 test('renderPlan on an empty plan says there is nothing to do', () => {
   assert.equal(renderPlan({ name: 'Framework' }, {}), '**Framework** — nothing to do.')
   assert.equal(renderPlan({ name: 'Framework' }), '**Framework** — nothing to do.')

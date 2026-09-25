@@ -198,11 +198,18 @@ test('a task channel inside a project section allows the project role explicitly
       ['11', OverwriteType.Member],
     ],
   )
-  assert.deepEqual(chan.permissionOverwrites[1].allow, [
+  // Both the role and the member get the six text bits: attachments, embeds
+  // and reactions ride with view/send/history, never on @everyone's defaults.
+  const six = [
     PermissionFlagsBits.ViewChannel,
     PermissionFlagsBits.SendMessages,
     PermissionFlagsBits.ReadMessageHistory,
-  ])
+    PermissionFlagsBits.AttachFiles,
+    PermissionFlagsBits.EmbedLinks,
+    PermissionFlagsBits.AddReactions,
+  ]
+  assert.deepEqual(chan.permissionOverwrites[1].allow, six)
+  assert.deepEqual(chan.permissionOverwrites[2].allow, six)
 })
 
 test('a stale project role id is left off the overwrites rather than failing the create', async () => {

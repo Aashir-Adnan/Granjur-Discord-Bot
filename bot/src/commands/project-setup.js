@@ -198,7 +198,8 @@ export function renderPlan(project, plan = {}) {
 
   const role = plan?.role
   if (role) lines.push(roleLine(role))
-  if (plan?.category) lines.push(`Category: ${plan.category.action} **${plan.category.name}**`)
+  // `opens`: the role's overwrite on the category gains the text bits it lacks.
+  if (plan?.category) lines.push(`Category: ${plan.category.action} **${plan.category.name}**${plan.category.opens ? ' (and open to the project role)' : ''}`)
 
   if (plan?.divider) lines.push(`Archive divider: ${plan.divider.action}`)
 
