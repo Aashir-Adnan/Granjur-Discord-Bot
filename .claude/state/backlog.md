@@ -7,6 +7,15 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 ## Six-bit text allow — rollout and follow-ups (branch `feat/attach-files`, 2026-09-25)
 See "Text permissions" in `.claude/knowledge/project-sections.md`.
 
+- The M3 member-only `grant` on a ticket the cap left outside the section is worded
+  "to open to the project role" in the preview and "opened to the project role" in the
+  reply, though no role allow is written there — reword for member-only grants.
+- `/setup`'s global ticket walk includes every category named Features/Bugs, not only the
+  first one `getOrCreateCategory` would pick; a hand-made duplicate is walked too (effect:
+  three extra allow bits for members who can already view).
+- `grantClients` no longer adds Connect/Speak to an existing viewing `supportVoice` entry
+  that lacks them (presence-only by design; no test either way).
+- `/setup` runs the global ticket walk before its invalid-timezone early return.
 - **Before deploy:** the bot's own role must hold Attach Files, Embed Links and Add
   Reactions (or Administrator). Discord refuses an overwrite carrying a bit the bot itself
   lacks, so without them every ticket/section/support channel creation and every repair
