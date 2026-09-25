@@ -1,13 +1,14 @@
 // The Client role and the global support pair: created on demand (the live
 // server will never be re-inited), found by stored id first, repaired
-// presence-only, one overwrite edit at a time — never a whole-array replace.
+// presence-only (an allow of ours short of a text bit gets the missing bits),
+// one overwrite edit at a time — never a whole-array replace.
 import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
 import { updateGuildConfig } from '../db/index.js'
 import {
   ROLE_CLIENT, ROLE_COLORS, CATEGORY_SUPPORT, CHANNEL_SUPPORT, CHANNEL_SUPPORT_VOICE,
 } from '../constants.js'
 import { clientManual, MANUAL_TITLE } from './clientManual.js'
-import { TEXT_ALLOW, TEXT_ALLOW_OBJ, VOICE_EXTRA } from '../utils/textAllow.js'
+import { TEXT_ALLOW, TEXT_ALLOW_OBJ, VOICE_EXTRA, missingTextBits } from '../utils/textAllow.js'
 
 const F = PermissionFlagsBits
 // The one text allow (utils/textAllow.js): a client attaches documents and
@@ -88,12 +89,28 @@ function findCategory(guild) {
 const FLAG_NAMES = new Map(Object.entries(PermissionFlagsBits).map(([name, bit]) => [bit, name]))
 const flagName = (bit) => FLAG_NAMES.get(bit)
 
-/** Presence-only repair: add whichever required ids the channel lacks, one edit each. */
+/**
+ * Add whichever required ids the channel lacks, one edit each — presence-only,
+ * with one exception: an allow entry of ours (the Client role, Verified) that
+ * is there but short of a text bit (the old three-bit allow) gets exactly the
+ * missing bits. `permissionOverwrites.edit` merges, so everything the entry
+ * already allows or denies stays as it is; a bit it DENIES is not missing and
+ * is never re-allowed. An entry whose bits cannot be read is left alone.
+ */
 async function repairOverwrites(channel, required) {
   const cache = channel?.permissionOverwrites?.cache
   if (!cache?.has) return
   for (const o of required) {
-    if (cache.has(o.id)) continue
+    if (cache.has(o.id)) {
+      if (!o.allow) continue
+      const existing = cache.get?.(o.id)
+      const gaps = missingTextBits(existing?.allow, existing?.deny)
+      if (gaps === 0n) continue
+      const missing = TEXT_ALLOW.filter((bit) => (gaps & bit) !== 0n)
+      const allow = Object.fromEntries(missing.map((bit) => [flagName(bit), true]))
+      await channel.permissionOverwrites.edit(o.id, allow, { type: o.type, reason: REASON })
+      continue
+    }
     const allow = Object.fromEntries((o.allow ?? []).map((bit) => [flagName(bit), true]))
     const deny = Object.fromEntries((o.deny ?? []).map((bit) => [flagName(bit), false]))
     await channel.permissionOverwrites.edit(o.id, { ...allow, ...deny }, { type: o.type, reason: REASON })

@@ -50,6 +50,10 @@ const recorder = () => { const calls = []; return { calls, update: async (guildI
 test('supportOverwrites: @everyone denied, Client and Verified allowed, every entry typed', () => {
   const ows = supportOverwrites({ id: 'g1' }, { clientRoleId: 'rc', verifiedRoleId: 'rv', voice: true })
   assert.deepEqual(ows.map((o) => [o.id, o.type]), [['g1', OverwriteType.Role], ['rc', OverwriteType.Role], ['rv', OverwriteType.Role]])
+  // Clients attach documents and screenshots: the six text bits, on both channels.
+  for (const bit of [PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AddReactions]) {
+    assert.ok(ows[1].allow.includes(bit))
+  }
   assert.deepEqual(ows[0].deny, [PermissionFlagsBits.ViewChannel])
   assert.ok(ows[1].allow.includes(PermissionFlagsBits.Connect))
   const text = supportOverwrites({ id: 'g1' }, { clientRoleId: 'rc', verifiedRoleId: 'rv', voice: false })
@@ -107,6 +111,61 @@ test('ensureSupportChannels reuses stored ids, repairs only a missing overwrite,
   assert.equal(voice.edits.length, 0)
   assert.equal(text.sent.length, 0, 'manual already pinned')
   assert.equal(calls.length, 0, 'nothing to persist')
+})
+
+// The six-bit text allow: /setup upgrades an entry of ours that has the old
+// three bits, and leaves one that already has all six alone.
+const P = PermissionFlagsBits
+const OLD_TEXT = P.ViewChannel | P.SendMessages | P.ReadMessageHistory
+const SIX = OLD_TEXT | P.AttachFiles | P.EmbedLinks | P.AddReactions
+const NEW_FLAGS = { AttachFiles: true, EmbedLinks: true, AddReactions: true }
+
+function supportPairWith(textEntries, voiceEntries) {
+  const everyone = { id: 'g1', type: OverwriteType.Role, allow: 0n, deny: P.ViewChannel }
+  const text = fakeChannel('support', {
+    overwrites: [everyone, ...textEntries],
+    pinned: [{ author: { id: 'bot' }, embeds: [{ title: MANUAL_TITLE }] }],
+  })
+  const voice = fakeChannel('support-voice', { type: ChannelType.GuildVoice, overwrites: [everyone, ...voiceEntries] })
+  const guild = fakeGuild({ roles: [{ id: 'r-client', name: 'Client' }], channels: [text, voice] })
+  const conf = cfg({ clientRoleId: 'r-client', supportChannelId: text.id, supportVoiceChannelId: voice.id })
+  return { text, voice, guild, conf }
+}
+
+test('/setup upgrades a three-bit Client entry on the support channel with just the missing bits, typed', async () => {
+  const { text, guild, conf } = supportPairWith(
+    [
+      { id: 'r-client', type: OverwriteType.Role, allow: OLD_TEXT, deny: P.CreatePublicThreads },
+      { id: 'r-verified', type: OverwriteType.Role, allow: SIX, deny: 0n },
+    ],
+    [
+      { id: 'r-client', type: OverwriteType.Role, allow: SIX | P.Connect | P.Speak | P.UseVAD | P.Stream, deny: 0n },
+      { id: 'r-verified', type: OverwriteType.Role, allow: SIX | P.Connect | P.Speak | P.UseVAD | P.Stream, deny: 0n },
+    ]
+  )
+  const { update } = recorder()
+  await ensureSupportChannels(guild, conf, { update, botUserId: 'bot' })
+  // One merge edit (permissionOverwrites.edit changes only the flags it names),
+  // so the deny and everything already allowed stay exactly as they were.
+  assert.deepEqual(text.edits, [{ id: 'r-client', allow: NEW_FLAGS, opts: { type: OverwriteType.Role, reason: 'Client support' } }])
+})
+
+test('/setup leaves a six-bit Client entry alone, and never re-allows a bit the entry denies', async () => {
+  const { text, voice, guild, conf } = supportPairWith(
+    [
+      { id: 'r-client', type: OverwriteType.Role, allow: SIX, deny: 0n },
+      // Someone decided the Verified role may not react here: that stays.
+      { id: 'r-verified', type: OverwriteType.Role, allow: SIX & ~P.AddReactions, deny: P.AddReactions },
+    ],
+    [
+      { id: 'r-client', type: OverwriteType.Role, allow: SIX | P.Connect | P.Speak | P.UseVAD | P.Stream, deny: 0n },
+      { id: 'r-verified', type: OverwriteType.Role, allow: SIX | P.Connect | P.Speak | P.UseVAD | P.Stream, deny: 0n },
+    ]
+  )
+  const { update } = recorder()
+  await ensureSupportChannels(guild, conf, { update, botUserId: 'bot' })
+  assert.deepEqual(text.edits, [])
+  assert.deepEqual(voice.edits, [])
 })
 
 test('a stored channel id that no longer resolves is recreated, never matched by name', async () => {
