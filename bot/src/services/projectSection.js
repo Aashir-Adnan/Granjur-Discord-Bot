@@ -56,7 +56,7 @@ import {
 } from '../utils/ticketArchive.js'
 import { applyOrder, desiredOrder, textChannelsOf } from '../utils/channelOrder.js'
 import { retireTicketChannel } from './ticketRetire.js'
-import { TEXT_ALLOW, VOICE_EXTRA, missingTextBits } from '../utils/textAllow.js'
+import { TEXT_ALLOW, VOICE_EXTRA, bitsOf, textFlagsOf, viewerTextGaps } from '../utils/textAllow.js'
 
 /**
  * The keys the three sibling status-bucket categories used to be stored under.
@@ -493,6 +493,10 @@ function planTasks(project, observed, channels, divider, role, warnings) {
       else {
         // No room: leave it where it is, but still give it a readable name.
         action = action === 'both' ? 'rename' : 'none'
+        // Left where it is, but a member short of a text bit is still upgraded
+        // in an overwrites-only edit — the applier grants members wherever the
+        // channel sits (the role's allow only inside the section).
+        if (action === 'none' && task.membersIncomplete) action = 'grant'
         leftBehind += 1
       }
     }
@@ -663,25 +667,9 @@ export function claimedSectionIds(projects, exceptId) {
   return claimed
 }
 
-/**
- * A permission bitfield as a BigInt, from whatever shape it arrives in: a
- * discord.js `PermissionsBitField`, a BigInt, a number, a decimal string.
- * Null when it cannot be read — never 0n, because "no permissions" and "could
- * not tell" must not be the same answer to a question about adopting a role.
- */
-function bitsOf(permissions) {
-  if (permissions === null || permissions === undefined) return null
-  try {
-    if (typeof permissions === 'bigint') return permissions
-    if (typeof permissions === 'number') return BigInt(permissions)
-    if (typeof permissions === 'string') return BigInt(permissions)
-    const raw = permissions.bitfield ?? permissions.valueOf?.()
-    if (raw === null || raw === undefined || typeof raw === 'object') return null
-    return BigInt(raw)
-  } catch {
-    return null
-  }
-}
+// `bitsOf` (a permission bitfield as a BigInt from a PermissionsBitField, a
+// BigInt, a number or a decimal string; null when unreadable, never 0n) lives
+// in `utils/textAllow.js` and is imported above.
 
 /** The two voice permissions Connect and Speak do not include, by discord.js name. */
 const VOICE_EXTRAS = ['UseVAD', 'Stream']
@@ -713,39 +701,26 @@ function grantsView(overwrite) {
   return (bits & PermissionFlagsBits.ViewChannel) !== 0n
 }
 
-/**
- * The `TEXT_ALLOW` bits this overwrite neither allows nor denies, read through
- * `bitsOf`. 0n when there is no overwrite or its bits cannot be read — an
- * overwrite we cannot inspect is never "incomplete", so it is never rewritten
- * on every run. A DENIED bit is never missing: `lockTicketChannel` moves
- * `SendMessages` into the deny of every entry on a finished ticket, and OR-ing
- * it back into the allow would re-open the ticket (allow beats deny inside one
- * overwrite).
- */
-function textGapsOf(overwrite) {
-  if (!overwrite) return 0n
-  const allow = bitsOf(overwrite.allow)
-  if (allow === null) return 0n
-  const hasDeny = overwrite.deny !== null && overwrite.deny !== undefined
-  const deny = hasDeny ? bitsOf(overwrite.deny) : 0n
-  if (deny === null) return 0n
-  return missingTextBits(allow, deny)
-}
+// The text bits a repair may add to an overwrite of ours are
+// `viewerTextGaps(overwrite)` (`utils/textAllow.js`): the `TEXT_ALLOW` bits it
+// neither allows nor denies, read through `bitsOf`, and only when it ALLOWS
+// ViewChannel. 0n when absent or unreadable — an overwrite we cannot inspect is
+// never "incomplete", so it is never rewritten on every run. A DENIED bit is
+// never missing: `lockTicketChannel` moves `SendMessages` into the deny of every
+// entry on a finished ticket, and OR-ing it back would re-open the ticket (allow
+// beats deny inside one overwrite). An entry that only denies — a member shut
+// out of one channel, a role kept off it — gets nothing at all.
 
-/**
- * A per-member overwrite the text repair upgrades: a member who can VIEW the
- * channel (an assignee, a client) and is short of a text bit. A deny-only
- * member entry — somebody shut out of this one channel — is never touched.
- */
+/** A per-member overwrite the text repair upgrades: a member who can VIEW the channel and is short. */
 function memberNeedsText(overwrite) {
   if (overwrite?.type !== OverwriteType.Member) return false
-  return grantsView(overwrite) && textGapsOf(overwrite) !== 0n
+  return viewerTextGaps(overwrite) !== 0n
 }
 
-/** The role's overwrite on this channel is present and short of a text bit. */
+/** The role's overwrite on this channel is present, lets the role see, and is short of a text bit. */
 function roleTextIncomplete(channel, roleId) {
   if (!roleId) return false
-  return textGapsOf(channel?.permissionOverwrites?.cache?.get?.(roleId)) !== 0n
+  return viewerTextGaps(channel?.permissionOverwrites?.cache?.get?.(roleId)) !== 0n
 }
 
 /** Some member who can view this channel is short of a text bit. */
@@ -905,7 +880,7 @@ function missingOverwrites(category, required) {
   // missing allow bits too. An entry with no allow — the @everyone deny — is
   // presence-only, so an admin who reopened a category by hand stays obeyed.
   return required.some(
-    (o) => !cache.has(o.id) || (o.allow !== undefined && textGapsOf(cache.get?.(o.id)) !== 0n)
+    (o) => !cache.has(o.id) || (o.allow !== undefined && viewerTextGaps(cache.get?.(o.id)) !== 0n)
   )
 }
 
@@ -943,6 +918,11 @@ function mergedOverwrites(category, required, { replace = false } = {}) {
     const deny = hasDeny ? bitsOf(existing.deny) : 0n
     const wanted = bitsOfList(o.allow)
     if (allow === null || deny === null || wanted === null) return o
+    // An entry that does not let its holder see the channel is somebody's
+    // decision: carried exactly as it is, never given allow bits.
+    if ((allow & PermissionFlagsBits.ViewChannel) === 0n) {
+      return { id: existing.id, type: existing.type ?? o.type, allow: existing.allow, deny: existing.deny }
+    }
     return { id: o.id, type: existing.type ?? o.type, allow: allow | (wanted & ~deny), deny: hasDeny ? existing.deny : 0n }
   })
   const kept = []
@@ -993,7 +973,7 @@ function roleAllowMerged(channel, roleId) {
  * Whether the project role's overwrite on the divider has to be repaired.
  *
  * One of the two places in this file that look at overwrite BITS rather than
- * mere presence (the other is the text-allow upgrade, `textGapsOf`, which only
+ * mere presence (the other is the text-allow upgrade, `viewerTextGaps`, which only
  * ever ADDS allow bits), and it is deliberate. Everywhere else, presence-only
  * is what stops the bot re-closing a category an admin deliberately reopened.
  * Here the property being defended is the opposite one: the divider is
@@ -1194,7 +1174,9 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
       // three-bit allow) counts as missing: the grant re-edits it with the
       // full client allow, and `permissionOverwrites.edit` merges.
       const cache = raw?.permissionOverwrites?.cache
-      const shortOfText = (id) => textGapsOf(cache?.get?.(id)) !== 0n
+      // Only an entry that lets the client SEE the channel: one an admin set
+      // to deny ViewChannel is a shut-out, not a client short of a bit.
+      const shortOfText = (id) => viewerTextGaps(cache?.get?.(id)) !== 0n
       clientAccess[key] = {
         missing: wantedClients.filter((id) => !seen.overwriteIds.includes(id) || shortOfText(id)),
         stale: memberIds.filter((id) => !wantedClients.includes(id)),
@@ -1293,11 +1275,26 @@ export function observeProjectSection(guild, project, tasks = [], opts = {}) {
 
 const clientAllowFor = (key) => (key === 'supportVoice' ? CLIENT_VOICE_ALLOW_OBJ : CLIENT_TEXT_ALLOW_OBJ)
 
-/** One typed edit per client; a failure is one warning, not a stopped run. */
+/**
+ * One typed edit per client; a failure is one warning, not a stopped run.
+ *
+ * A client with no overwrite yet gets the full client allow. One who already
+ * has an overwrite gets ONLY the text bits it neither allows nor denies (and
+ * only if it lets them see the channel): `{ Flag: true }` flips a denied bit
+ * to allowed, so sending the full set would unmute a muted client or let a
+ * shut-out one back in. `permissionOverwrites.edit` merges, so nothing else on
+ * the entry changes.
+ */
 async function grantClients(channel, key, memberIds, result) {
   for (const memberId of memberIds) {
     try {
-      await channel.permissionOverwrites.edit(memberId, clientAllowFor(key), { type: OverwriteType.Member, reason: REASON })
+      const existing = channel.permissionOverwrites?.cache?.get?.(memberId)
+      let flags = clientAllowFor(key)
+      if (existing) {
+        flags = textFlagsOf(viewerTextGaps(existing))
+        if (!Object.keys(flags).length) continue
+      }
+      await channel.permissionOverwrites.edit(memberId, flags, { type: OverwriteType.Member, reason: REASON })
       result.clientGranted.push(channel.name)
     } catch (e) {
       note(result.warnings, `client access on ${channel.name} for ${memberId}`, e)

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
-import { ensureClientRole, ensureSupportChannels, supportOverwrites, everyoneCanView } from './clientAccess.js'
+import { ensureClientRole, ensureSupportChannels, supportOverwrites, everyoneCanView, upgradeGlobalTicketAllows } from './clientAccess.js'
 import { MANUAL_TITLE } from './clientManual.js'
 
 let nextId = 100
@@ -166,6 +166,84 @@ test('/setup leaves a six-bit Client entry alone, and never re-allows a bit the 
   await ensureSupportChannels(guild, conf, { update, botUserId: 'bot' })
   assert.deepEqual(text.edits, [])
   assert.deepEqual(voice.edits, [])
+})
+
+test('/setup never gives allow bits to a Client or Verified entry that keeps the role off the channel', async () => {
+  const { text, guild, conf } = supportPairWith(
+    [
+      { id: 'r-client', type: OverwriteType.Role, allow: 0n, deny: P.ViewChannel },
+      { id: 'r-verified', type: OverwriteType.Role, allow: 0n, deny: P.ViewChannel | P.SendMessages },
+    ],
+    [
+      { id: 'r-client', type: OverwriteType.Role, allow: SIX | P.Connect | P.Speak | P.UseVAD | P.Stream, deny: 0n },
+      { id: 'r-verified', type: OverwriteType.Role, allow: SIX | P.Connect | P.Speak | P.UseVAD | P.Stream, deny: 0n },
+    ]
+  )
+  const { update } = recorder()
+  await ensureSupportChannels(guild, conf, { update, botUserId: 'bot' })
+  assert.deepEqual(text.edits, [])
+})
+
+// --- the global Features/Bugs ticket channels (/setup) -----------------------
+// A task with no project — every client request raised without one — keeps its
+// ticket in the global category, which /project-setup never walks.
+
+function ticketIn(parentId, name, entries, { topic = `Feature: ${name} | Only assigner + assignees` } = {}) {
+  const ch = fakeChannel(name, { parentId, overwrites: entries })
+  ch.topic = topic
+  ch.channelEdits = []
+  ch.edit = async (payload) => { ch.channelEdits.push(payload); return ch }
+  return ch
+}
+const everyoneDenied = { id: 'g1', type: OverwriteType.Role, allow: 0n, deny: P.ViewChannel }
+
+test('upgradeGlobalTicketAllows upgrades a three-bit member entry in one typed, merged edit and reports it', async () => {
+  const features = fakeChannel('Features', { type: ChannelType.GuildCategory })
+  const bugs = fakeChannel('<==== 🐛 BUGS 🐛 ====>', { type: ChannelType.GuildCategory })
+  const short = ticketIn(features.id, 'feature-abc123', [
+    everyoneDenied,
+    { id: 'u1', type: OverwriteType.Member, allow: OLD_TEXT, deny: P.CreatePublicThreads },
+    // A locked request: SendMessages denied stays denied.
+    { id: 'u2', type: OverwriteType.Member, allow: OLD_TEXT & ~P.SendMessages, deny: P.SendMessages },
+  ])
+  const bugTicket = ticketIn(bugs.id, 'bug-def456', [everyoneDenied, { id: 'u3', type: OverwriteType.Member, allow: OLD_TEXT, deny: 0n }], { topic: 'Bug: x | Only assigner + assignees' })
+  const guild = fakeGuild({ channels: [features, bugs, short, bugTicket] })
+  const out = await upgradeGlobalTicketAllows(guild)
+  assert.deepEqual(out.upgraded.sort(), ['bug-def456', 'feature-abc123'])
+  assert.equal(short.channelEdits.length, 1)
+  const sent = short.channelEdits[0].permissionOverwrites
+  const u1 = sent.find((o) => o.id === 'u1')
+  assert.equal(u1.type, OverwriteType.Member)
+  assert.equal(u1.allow, SIX)
+  assert.equal(u1.deny, P.CreatePublicThreads)
+  const u2 = sent.find((o) => o.id === 'u2')
+  assert.equal(u2.allow & P.SendMessages, 0n, 'a locked ticket stays locked')
+  assert.equal(u2.deny, P.SendMessages)
+  // Merged: @everyone rides through exactly, and no role entry is added.
+  assert.deepEqual(sent.find((o) => o.id === 'g1'), everyoneDenied)
+  assert.equal(sent.length, 3)
+})
+
+test('upgradeGlobalTicketAllows leaves six-bit entries, shut-out members and non-ticket channels alone', async () => {
+  const features = fakeChannel('Features', { type: ChannelType.GuildCategory })
+  const done = ticketIn(features.id, 'feature-six', [everyoneDenied, { id: 'u1', type: OverwriteType.Member, allow: SIX, deny: 0n }])
+  const shut = ticketIn(features.id, 'feature-shut', [everyoneDenied, { id: 'u9', type: OverwriteType.Member, allow: 0n, deny: P.ViewChannel }])
+  const notTicket = ticketIn(features.id, 'general-notes', [everyoneDenied, { id: 'u1', type: OverwriteType.Member, allow: OLD_TEXT, deny: 0n }], { topic: 'Team notes' })
+  // A ticket-shaped channel in some OTHER category is not ours to walk here.
+  const elsewhere = ticketIn('other-cat', 'feature-elsewhere', [everyoneDenied, { id: 'u1', type: OverwriteType.Member, allow: OLD_TEXT, deny: 0n }])
+  const guild = fakeGuild({ channels: [features, done, shut, notTicket, elsewhere] })
+  const created = []
+  guild.channels.create = async (o) => { created.push(o) }
+  const out = await upgradeGlobalTicketAllows(guild)
+  assert.deepEqual(out.upgraded, [])
+  for (const ch of [done, shut, notTicket, elsewhere]) assert.deepEqual(ch.channelEdits, [], ch.name)
+  assert.deepEqual(created, [], 'never creates a category')
+})
+
+test('upgradeGlobalTicketAllows with no global ticket category does nothing', async () => {
+  const guild = fakeGuild({ channels: [] })
+  guild.channels.create = async () => { throw new Error('must not create') }
+  assert.deepEqual(await upgradeGlobalTicketAllows(guild), { upgraded: [], failed: [] })
 })
 
 test('a stored channel id that no longer resolves is recreated, never matched by name', async () => {

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { PermissionFlagsBits as F, PermissionsBitField } from 'discord.js'
-import { TEXT_ALLOW, TEXT_ALLOW_OBJ, TEXT_BITS, VOICE_EXTRA, lacksTextAllow, missingTextBits } from './textAllow.js'
+import { TEXT_ALLOW, TEXT_ALLOW_OBJ, TEXT_BITS, VOICE_EXTRA, lacksTextAllow, missingTextBits, viewerTextGaps, textFlagsOf } from './textAllow.js'
 
 const OLD_THREE = F.ViewChannel | F.SendMessages | F.ReadMessageHistory
 const SIX = OLD_THREE | F.AttachFiles | F.EmbedLinks | F.AddReactions
@@ -62,4 +62,18 @@ test('missingTextBits is 0n when the allow or a present deny cannot be read', ()
   assert.equal(missingTextBits(OLD_THREE, 'garbage'), 0n)
   // An absent deny is "nothing denied", not unreadable.
   assert.equal(missingTextBits(OLD_THREE, undefined), F.AttachFiles | F.EmbedLinks | F.AddReactions)
+})
+
+test('viewerTextGaps: only an overwrite that allows ViewChannel is ever short', () => {
+  assert.equal(viewerTextGaps({ allow: OLD_THREE, deny: 0n }), F.AttachFiles | F.EmbedLinks | F.AddReactions)
+  assert.equal(viewerTextGaps({ allow: 0n, deny: F.ViewChannel }), 0n)
+  assert.equal(viewerTextGaps({ allow: F.SendMessages, deny: 0n }), 0n)
+  assert.equal(viewerTextGaps({ allow: SIX, deny: 0n }), 0n)
+  assert.equal(viewerTextGaps(null), 0n)
+  assert.equal(viewerTextGaps({ id: 'x' }), 0n)
+})
+
+test('textFlagsOf names exactly the text bits it is given', () => {
+  assert.deepEqual(textFlagsOf(F.AttachFiles | F.AddReactions), { AttachFiles: true, AddReactions: true })
+  assert.deepEqual(textFlagsOf(0n), {})
 })

@@ -2548,9 +2548,209 @@ test('a client whose support-channel entry has three bits is re-granted', async 
   const plan = planProjectSection(s.stored, observed)
   assert.ok(plan.clients.grant.some((g) => g.key === 'support' && g.memberId === 'client1'))
   await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  // An existing entry gets ONLY the bits it lacks (edit merges; the rest stays).
   const g = grants.find((x) => x.key === 'support' && x.id === 'client1')
-  assert.deepEqual(g.allow, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true, EmbedLinks: true, AddReactions: true })
+  assert.deepEqual(g.allow, { AttachFiles: true, EmbedLinks: true, AddReactions: true })
   assert.equal(g.opts.type, OverwriteType.Member)
+})
+
+/** The three client channels of a `sixBitSection`, each recording the member edits it is sent. */
+function recordClientGrants(s) {
+  const grants = []
+  for (const key of ['support', 'supportVoice', 'casual']) {
+    const ch = s.channels[SECTIONS.findIndex((x) => x.key === key)]
+    ch.permissionOverwrites.edit = async (id, allow, opts) => grants.push({ key, id, allow, opts })
+  }
+  return grants
+}
+
+test('a muted client keeps SendMessages denied and gains only attach, embed and react', async () => {
+  const muted = { id: 'client1', type: OverwriteType.Member, allow: OLD_TEXT & ~P.SendMessages, deny: P.SendMessages }
+  const s = sixBitSection({ catRole: newRole, secRole: newRole, extraOn: { support: [muted], supportVoice: [muted], casual: [muted] } })
+  const grants = recordClientGrants(s)
+  const plan = planProjectSection(s.stored, observeProjectSection(s.guild, s.stored, [], { rolesFetched: true, clientIds: ['client1'] }))
+  await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  const mine = grants.filter((g) => g.id === 'client1')
+  assert.equal(mine.length, 3)
+  for (const g of mine) {
+    assert.deepEqual(g.allow, { AttachFiles: true, EmbedLinks: true, AddReactions: true }, g.key)
+    assert.equal(g.allow.SendMessages, undefined, 'never unmuted')
+  }
+  // The same channels' merged grant edits (the member upgrade) keep the mute too.
+  for (const ch of s.channels) {
+    for (const e of ch.edits) {
+      const entry = e.permissionOverwrites?.find((o) => o.id === 'client1')
+      if (entry) assert.equal(bitsIn(entry.allow) & P.SendMessages, 0n)
+    }
+  }
+})
+
+test('a client shut out of a support channel (ViewChannel denied) is left exactly as they are', async () => {
+  const shut = { id: 'client1', type: OverwriteType.Member, allow: 0n, deny: P.ViewChannel }
+  const six = { id: 'client1', type: OverwriteType.Member, allow: SIX, deny: 0n }
+  const sixVoice = { id: 'client1', type: OverwriteType.Member, allow: SIX | VOICE4, deny: 0n }
+  const s = sixBitSection({ catRole: newRole, secRole: newRole, extraOn: { support: [shut], supportVoice: [sixVoice], casual: [six] } })
+  const grants = recordClientGrants(s)
+  const observed = observeProjectSection(s.guild, s.stored, [], { rolesFetched: true, clientIds: ['client1'] })
+  assert.deepEqual(observed.clientAccess.support.missing, [])
+  assert.equal(observed.channels.support.membersIncomplete, false)
+  const plan = planProjectSection(s.stored, observed)
+  assert.deepEqual(plan.clients.grant, [])
+  await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  assert.deepEqual(grants, [])
+  for (const ch of s.channels) assert.deepEqual(ch.edits, [], ch.name)
+})
+
+test('a client with no overwrite yet gets the full client allow', async () => {
+  const s = sixBitSection({ catRole: newRole, secRole: newRole })
+  const grants = recordClientGrants(s)
+  const plan = planProjectSection(s.stored, observeProjectSection(s.guild, s.stored, [], { rolesFetched: true, clientIds: ['client1'] }))
+  await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  const text = grants.find((g) => g.key === 'support')
+  assert.deepEqual(text.allow, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true, EmbedLinks: true, AddReactions: true })
+  const voice = grants.find((g) => g.key === 'supportVoice')
+  assert.equal(voice.allow.Connect, true)
+  assert.equal(voice.allow.AttachFiles, true)
+})
+
+test('a role entry that only denies is never given allow bits (section channel and category)', async () => {
+  const s = sixBitSection({ catRole: { allow: 0n, deny: P.ViewChannel }, secRole: newRole })
+  const members = s.channels[0]
+  members.permissionOverwrites.cache.set('r1', { id: 'r1', type: OverwriteType.Role, allow: 0n, deny: P.ViewChannel })
+  // The voice-activity pass (untouched here) still offers the role UseVAD/Stream on the
+  // category; record it rather than let the fake throw.
+  s.cat.permissionOverwrites.edit = async () => {}
+  // Make the category due an edit for another reason: its @everyone deny is gone.
+  s.cat.permissionOverwrites.cache.delete('G1')
+  const observed = observeProjectSection(s.guild, s.stored, [], { rolesFetched: true })
+  assert.equal(observed.channels.members.roleAllowIncomplete, false)
+  assert.equal(observed.categoryRoleAllowIncomplete, false)
+  const plan = planProjectSection(s.stored, observed)
+  assert.equal(plan.channels.find((c) => c.key === 'members').action, 'reuse')
+  assert.equal(plan.category.opens, undefined)
+  await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  assert.deepEqual(members.edits, [])
+  assert.equal(s.cat.edits.length, 1, 'the @everyone deny comes back')
+  const role = s.cat.edits[0].permissionOverwrites.find((o) => o.id === 'r1')
+  assert.equal(bitsIn(role.allow), 0n, 'the deny-only role entry is carried exactly')
+  assert.equal(bitsIn(role.deny), P.ViewChannel)
+})
+
+test('the category repair MERGES a present @everyone entry: a hand-cleared deny is not restored', async () => {
+  // Since the text upgrade, an entry already on the category is upgraded, not
+  // replaced — and @everyone has no allow to upgrade, so it is carried as is.
+  const s = sixBitSection({ catRole: newRole, secRole: newRole })
+  s.cat.permissionOverwrites.cache.set('G1', { id: 'G1', type: OverwriteType.Role, allow: 0n, deny: 0n })
+  s.cat.permissionOverwrites.cache.delete('r1')
+  const plan = planProjectSection(s.stored, observeProjectSection(s.guild, s.stored, [], { rolesFetched: true }))
+  await applyProjectSection(s.guild, s.stored, plan, { db: fakeDb() })
+  assert.equal(s.cat.edits.length, 1, 'the missing role entry is added')
+  const everyone = s.cat.edits[0].permissionOverwrites.find((o) => o.id === 'G1')
+  assert.equal(bitsIn(everyone.deny), 0n, 'the cleared @everyone deny stays cleared')
+  assert.ok(s.cat.edits[0].permissionOverwrites.some((o) => o.id === 'r1'))
+})
+
+test('a ticket left outside the section by the category cap still has its short member entries upgraded', async () => {
+  const plan = planProjectSection(project, {
+    ...empty,
+    roleId: 'r1',
+    categoryId: 'c1',
+    categoryName: '📂 FRAMEWORK',
+    categoryChannelCount: 49,
+    channels: placedSections(['G1', 'r1']),
+    tasks: [{
+      id: 't1', title: 'Git Sync', type: 'feature', channelId: 'tc1', channelName: 'feature-git-sync',
+      parentId: 'FEATURES', overwriteIds: ['G1', 'assignee'], roleAllowIncomplete: false, membersIncomplete: true,
+    }],
+  })
+  assert.equal(plan.tasks[0].action, 'grant')
+
+  const taskCh = ticketChannel('tc1', 'feature-git-sync', 'FEATURES')
+  taskCh.permissionOverwrites.cache.set('assignee', { id: 'assignee', type: OverwriteType.Member, allow: OLD_TEXT, deny: 0n })
+  const cat = fakeChannel('c1', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, overwriteIds: ['G1', 'r1'] })
+  const guild = fakeGuild({ channels: [cat, taskCh], roles: [{ id: 'r1', name: 'Framework', members: new Map() }] })
+  const stored = { ...project, discordCategoryId: 'c1', discordRoleId: 'r1' }
+  await applyProjectSection(guild, stored, { ...plan, channels: [], divider: null }, { db: fakeDb() })
+  assert.equal(taskCh.edits.length, 1)
+  assert.deepEqual(Object.keys(taskCh.edits[0]), ['permissionOverwrites'], 'stays where it is')
+  const sent = taskCh.edits[0].permissionOverwrites
+  assert.equal(bitsIn(sent.find((o) => o.id === 'assignee').allow), SIX)
+  assert.equal(sent.find((o) => o.id === 'r1'), undefined, 'no role allow outside the section')
+})
+
+/**
+ * Make a fake channel's overwrite cache follow what it is sent, the way a real
+ * discord.js cache does after an edit: a whole-array `edit` replaces it, a
+ * `permissionOverwrites.edit` merges the named flags into one entry.
+ */
+function live(ch) {
+  const cache = ch.permissionOverwrites.cache
+  const edit = ch.edit
+  ch.edit = async (o) => {
+    const r = await edit(o)
+    if (o.permissionOverwrites) {
+      cache.clear()
+      for (const e of o.permissionOverwrites) cache.set(e.id, { id: e.id, type: e.type, allow: bitsIn(e.allow), deny: bitsIn(e.deny) })
+    }
+    return r
+  }
+  ch.permissionOverwrites.edit = async (id, flags, opts) => {
+    ch.edits.push({ member: id, flags })
+    const cur = cache.get(id) ?? { id, type: opts?.type, allow: 0n, deny: 0n }
+    let { allow, deny } = cur
+    for (const [k, v] of Object.entries(flags)) {
+      if (v === true) { allow |= P[k]; deny &= ~P[k] } else if (v === false) { deny |= P[k]; allow &= ~P[k] }
+    }
+    cache.set(id, { ...cur, allow, deny })
+  }
+  return ch
+}
+
+test('two passes: after one run on three-bit channels, a second run plans reuse/none everywhere and edits nothing', async () => {
+  const oldClient = { id: 'client1', type: OverwriteType.Member, allow: OLD_TEXT, deny: 0n }
+  const oldVoiceClient = { id: 'client1', type: OverwriteType.Member, allow: OLD_TEXT | VOICE4, deny: 0n }
+  const live1 = ticketChannel('tc1', 'feature-git-sync', 'c1', [{ id: 'r1', type: OverwriteType.Role, allow: OLD_TEXT, deny: 0n }])
+  live1.permissionOverwrites.cache.set('assignee', { id: 'assignee', type: OverwriteType.Member, allow: OLD_TEXT, deny: 0n })
+  const locked = ticketChannel('tc2', 'feature-old-work', 'c1', [
+    { id: 'r1', type: OverwriteType.Role, allow: (OLD_TEXT | VOICE4) & ~P.SendMessages, deny: P.SendMessages },
+  ])
+  locked.permissionOverwrites.cache.set('assignee', { id: 'assignee', type: OverwriteType.Member, allow: OLD_TEXT & ~P.SendMessages, deny: P.SendMessages })
+  locked.rawPosition = 21
+  const s = sixBitSection({
+    catRole: oldRole,
+    secRole: oldRole,
+    extraOn: { support: [oldClient], supportVoice: [oldVoiceClient], casual: [oldClient] },
+    tasks: [live1, locked],
+  })
+  for (const ch of [s.cat, ...s.channels, live1, locked, s.div]) live(ch)
+  const rows = [
+    { id: 't1', title: 'Git Sync', type: 'feature', status: 'open', discordChannelId: 'tc1' },
+    { id: 't2', title: 'Old Work', type: 'feature', status: 'done', channelRetireAt: new Date(), discordChannelId: 'tc2' },
+  ]
+  const opts = { rolesFetched: true, clientIds: ['client1'] }
+
+  const first = planProjectSection(s.stored, observeProjectSection(s.guild, s.stored, rows, opts))
+  assert.ok(first.channels.every((c) => c.action === 'grant'))
+  assert.equal(first.category.opens, true)
+  await applyProjectSection(s.guild, s.stored, first, { db: fakeDb() })
+  assert.ok(s.cat.edits.length && live1.edits.length && locked.edits.length, 'the first run edits')
+
+  for (const ch of [s.cat, ...s.channels, live1, locked, s.div]) ch.edits.length = 0
+  const observed = observeProjectSection(s.guild, s.stored, rows, opts)
+  const second = planProjectSection(s.stored, observed)
+  assert.equal(second.category.action, 'reuse')
+  assert.equal(second.category.opens, undefined)
+  assert.ok(second.channels.every((c) => c.action === 'reuse'), JSON.stringify(second.channels.map((c) => c.action)))
+  assert.deepEqual(second.tasks.map((t) => t.action), ['none', 'none'])
+  assert.deepEqual(second.clients.grant, [])
+  assert.equal(second.divider.action, 'reuse')
+  const result = await applyProjectSection(s.guild, s.stored, second, { db: fakeDb() })
+  for (const ch of [s.cat, ...s.channels, live1, locked, s.div]) assert.deepEqual(ch.edits, [], `${ch.name} is not edited on the second run`)
+  assert.deepEqual(result.granted, [])
+  assert.deepEqual(result.clientGranted, [])
+  // And the locked ticket is still locked.
+  assert.equal(locked.permissionOverwrites.cache.get('assignee').allow & P.SendMessages, 0n)
+  assert.equal(locked.permissionOverwrites.cache.get('r1').allow & P.SendMessages, 0n)
 })
 
 test('a section already carrying all six bits plans reuse/none everywhere and makes no edit (idempotent)', async () => {

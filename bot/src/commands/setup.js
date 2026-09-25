@@ -4,7 +4,7 @@ import { isValidZone, guildZone, zoneLabel, localZone } from "../utils/timezone.
 import { parseWhen } from "../utils/parseWhen.js";
 import { discordDateTime } from "../utils/discordTime.js";
 import { syncGuildNow } from "../services/docsSync.js";
-import { ensureSupportChannels } from "../services/clientAccess.js";
+import { ensureSupportChannels, upgradeGlobalTicketAllows } from "../services/clientAccess.js";
 
 export const data = new SlashCommandBuilder()
   .setName("setup")
@@ -64,6 +64,17 @@ export async function execute(interaction) {
     console.warn("[setup] support channels:", e?.message ?? e);
   }
 
+  // Ticket channels in the global Features/Bugs categories (no project, so
+  // /project-setup never reaches them — every project-less client request is
+  // one) get the six-bit text allow on their viewing member entries. Read-only
+  // lookup, one merged edit per channel that is short, none when all is well.
+  let tickets = null;
+  try {
+    tickets = await upgradeGlobalTicketAllows(guild);
+  } catch (e) {
+    console.warn("[setup] ticket channels:", e?.message ?? e);
+  }
+
   if (tzInput) {
     if (!isValidZone(tzInput)) {
       return interaction
@@ -117,6 +128,14 @@ export async function execute(interaction) {
   embed.addFields({
     name: "Client support",
     value: support ? `<#${support.text.id}> and <#${support.voice.id}> · role **${support.role.name}**` : "_could not be set up — check the bot's Manage Channels / Manage Roles permissions_",
+    inline: false,
+  });
+
+  embed.addFields({
+    name: "Ticket channels",
+    value: tickets
+      ? `Ticket channels upgraded: ${tickets.upgraded.length}${tickets.failed.length ? ` (${tickets.failed.length} refused — check the bot's Manage Channels permission)` : ""}`
+      : "_could not be checked_",
     inline: false,
   });
 

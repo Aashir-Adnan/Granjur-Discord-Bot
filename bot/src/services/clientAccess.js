@@ -5,10 +5,11 @@
 import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
 import { updateGuildConfig } from '../db/index.js'
 import {
-  ROLE_CLIENT, ROLE_COLORS, CATEGORY_SUPPORT, CHANNEL_SUPPORT, CHANNEL_SUPPORT_VOICE,
+  ROLE_CLIENT, ROLE_COLORS, CATEGORY_SUPPORT, CHANNEL_SUPPORT, CHANNEL_SUPPORT_VOICE, CATEGORY_BOLD_NAMES,
 } from '../constants.js'
 import { clientManual, MANUAL_TITLE } from './clientManual.js'
-import { TEXT_ALLOW, TEXT_ALLOW_OBJ, VOICE_EXTRA, missingTextBits } from '../utils/textAllow.js'
+import { TEXT_ALLOW, TEXT_ALLOW_OBJ, VOICE_EXTRA, bitsOf, textFlagsOf, viewerTextGaps } from '../utils/textAllow.js'
+import { isTicketChannel } from '../utils/taskChannelName.js'
 
 const F = PermissionFlagsBits
 // The one text allow (utils/textAllow.js): a client attaches documents and
@@ -95,7 +96,8 @@ const flagName = (bit) => FLAG_NAMES.get(bit)
  * is there but short of a text bit (the old three-bit allow) gets exactly the
  * missing bits. `permissionOverwrites.edit` merges, so everything the entry
  * already allows or denies stays as it is; a bit it DENIES is not missing and
- * is never re-allowed. An entry whose bits cannot be read is left alone.
+ * is never re-allowed. An entry that does not allow ViewChannel (the role kept
+ * off the channel by hand) or whose bits cannot be read is left alone.
  */
 async function repairOverwrites(channel, required) {
   const cache = channel?.permissionOverwrites?.cache
@@ -103,12 +105,9 @@ async function repairOverwrites(channel, required) {
   for (const o of required) {
     if (cache.has(o.id)) {
       if (!o.allow) continue
-      const existing = cache.get?.(o.id)
-      const gaps = missingTextBits(existing?.allow, existing?.deny)
+      const gaps = viewerTextGaps(cache.get?.(o.id))
       if (gaps === 0n) continue
-      const missing = TEXT_ALLOW.filter((bit) => (gaps & bit) !== 0n)
-      const allow = Object.fromEntries(missing.map((bit) => [flagName(bit), true]))
-      await channel.permissionOverwrites.edit(o.id, allow, { type: o.type, reason: REASON })
+      await channel.permissionOverwrites.edit(o.id, textFlagsOf(gaps), { type: o.type, reason: REASON })
       continue
     }
     const allow = Object.fromEntries((o.allow ?? []).map((bit) => [flagName(bit), true]))
@@ -207,6 +206,56 @@ export async function ensureManualPinned(text, botUserId) {
   if (have) return
   const msg = await text.send({ embeds: [clientManual()] })
   await msg?.pin?.().catch(() => {})
+}
+
+/** The global ticket categories, found the way `getOrCreateCategory` finds them — by name, bold or plain. */
+const GLOBAL_TICKET_CATEGORY_NAMES = ['Features', 'Bugs'].flatMap((n) => [n, CATEGORY_BOLD_NAMES[n]].filter(Boolean))
+
+/**
+ * Upgrade the ticket channels that live in the global `Features`/`Bugs`
+ * categories — the ones with no project, which `/project-setup` never walks,
+ * among them every client request raised without a project — to the six-bit
+ * text allow.
+ *
+ * Read-only lookup: a category is found by name exactly as
+ * `getOrCreateCategory` finds it, and none is ever created here. Only
+ * `isTicketChannel` text channels are touched, and on each only the VIEWING
+ * `Member` entries short of a text bit: allow OR the missing bits, deny kept
+ * exactly, a denied bit never re-allowed, no role entry added. One typed,
+ * merged `edit` per channel (the whole array, every other entry carried
+ * through untouched). A refused edit is one warning, not a stopped walk.
+ *
+ * @returns {Promise<{upgraded: string[], failed: string[]}>} channel names
+ */
+export async function upgradeGlobalTicketAllows(guild) {
+  const out = { upgraded: [], failed: [] }
+  const all = guild?.channels?.cache?.values ? [...guild.channels.cache.values()] : []
+  const categoryIds = new Set(
+    all.filter((c) => c?.type === ChannelType.GuildCategory && GLOBAL_TICKET_CATEGORY_NAMES.includes(c.name)).map((c) => c.id)
+  )
+  if (!categoryIds.size) return out
+  for (const channel of all) {
+    if (!categoryIds.has(channel?.parentId) || !isTicketChannel(channel)) continue
+    const cache = channel.permissionOverwrites?.cache
+    if (!cache?.values) continue
+    const entries = [...cache.values()].filter(Boolean)
+    let changed = false
+    const overwrites = entries.map((o) => {
+      const gaps = o.type === OverwriteType.Member ? viewerTextGaps(o) : 0n
+      if (gaps === 0n) return { id: o.id, type: o.type, allow: o.allow, deny: o.deny }
+      changed = true
+      return { id: o.id, type: OverwriteType.Member, allow: bitsOf(o.allow) | gaps, deny: o.deny ?? 0n }
+    })
+    if (!changed) continue
+    try {
+      await channel.edit({ permissionOverwrites: overwrites, reason: 'Text permissions' })
+      out.upgraded.push(channel.name)
+    } catch (e) {
+      out.failed.push(channel.name)
+      console.warn(`[clientAccess] ticket channel ${channel.name}:`, e?.message ?? e)
+    }
+  }
+  return out
 }
 
 /**

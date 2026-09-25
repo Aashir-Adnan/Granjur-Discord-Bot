@@ -34,7 +34,7 @@ export const TEXT_BITS = TEXT_ALLOW.reduce((a, b) => a | b, 0n)
  * `PermissionsBitField`, a number or a decimal string. Null when it cannot be
  * read — "no permissions" and "could not tell" are different answers.
  */
-function bitsOf(permissions) {
+export function bitsOf(permissions) {
   if (permissions === null || permissions === undefined) return null
   try {
     if (typeof permissions === 'bigint') return permissions
@@ -68,4 +68,23 @@ export function missingTextBits(allow, deny = null) {
 /** True when `allow` can be read and lacks a `TEXT_ALLOW` bit `deny` does not deny. Unreadable → false. */
 export function lacksTextAllow(allow, deny = null) {
   return missingTextBits(allow, deny) !== 0n
+}
+
+/**
+ * The text bits a repair may add to an existing overwrite: `missingTextBits`,
+ * but only for an overwrite that ALLOWS ViewChannel. An entry that only
+ * denies (somebody shut out of a channel, a role kept off it) is a human's
+ * decision and gets nothing — adding allow bits to it would be a permission
+ * change nobody asked for. 0n when absent or unreadable.
+ */
+export function viewerTextGaps(overwrite) {
+  if (!overwrite) return 0n
+  const allow = bitsOf(overwrite.allow)
+  if (allow === null || (allow & F.ViewChannel) === 0n) return 0n
+  return missingTextBits(allow, overwrite.deny)
+}
+
+/** The `TEXT_ALLOW` bits set in `bits`, as the `{ Flag: true }` object `permissionOverwrites.edit` takes. */
+export function textFlagsOf(bits) {
+  return Object.fromEntries(Object.keys(TEXT_ALLOW_OBJ).filter((k) => (bits & F[k]) !== 0n).map((k) => [k, true]))
 }

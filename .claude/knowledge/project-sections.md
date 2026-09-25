@@ -302,15 +302,37 @@ scope: `/init`'s `@everyone` view/read-only announcement channels,
 
 **The repair rule, bit-aware for text only.** An overwrite the bot owns whose allow
 lacks a `TEXT_ALLOW` bit gets the missing bits OR-ed in; its deny is kept; nothing
-is ever removed. `textGapsOf(overwrite)` reads allow and deny through `bitsOf` and
-returns `TEXT_BITS & ~allow & ~deny` (`missingTextBits`), 0n when unreadable. The
+is ever removed. `viewerTextGaps(overwrite)` (`utils/textAllow.js`, which also owns
+`bitsOf`) returns `TEXT_BITS & ~allow & ~deny` for an entry that **allows
+ViewChannel**, else 0n — an entry that only denies (a member shut out, a role kept
+off) is a human's decision and never gains an allow bit; unreadable is 0n. The
 observer reports `roleAllowIncomplete` (the gate role's entry) and
-`membersIncomplete` (any `Member` entry that allows `ViewChannel` and is short) on
-every section channel and task, `categoryRoleAllowIncomplete` on the category, and
-counts a client whose support-pair entry is short as `missing`. The planner folds
-these into `needsAllow` (`grant`/`opens`, same wording; `plan.category.opens`
-prints "(and open to the project role)"). A channel already carrying the six bits
-plans `reuse`/`none` and gets no edit — `/project-setup all:true` is idempotent.
+`membersIncomplete` (any viewing `Member` entry that is short) on every section
+channel and task, `categoryRoleAllowIncomplete` on the category, and counts a
+client whose viewing support-pair entry is short as `missing`; `grantClients` then
+sends only the missing flags to an existing entry (the full client set only to a
+client with no entry), so a muted client stays muted. The planner folds these into
+`needsAllow` (`grant`/`opens`, same wording; `plan.category.opens` prints "(and open
+to the project role)"), and a ticket the category cap leaves outside is still
+`grant`ed its member upgrade. A channel already carrying the six bits plans
+`reuse`/`none` and gets no edit — pinned by a two-pass test, so `/project-setup
+all:true` is idempotent.
+
+**`/setup` reaches the project-less tickets.** `upgradeGlobalTicketAllows(guild)`
+(`services/clientAccess.js`) walks the `isTicketChannel` text channels in the global
+`Features`/`Bugs` categories (found by name exactly as `getOrCreateCategory` does,
+never created) and upgrades their short viewing `Member` entries in one merged,
+typed edit per channel; `/setup` prints "Ticket channels upgraded: N". This is where
+every client request raised without a project lives.
+
+**Rollout prerequisite.** The bot's own role must hold Attach Files, Embed Links and
+Add Reactions (or be Administrator): Discord refuses an overwrite carrying a bit the
+bot lacks, so creation and repair would fail with Missing Permissions.
+
+**Side effect on the category repair.** `mergedOverwrites` now MERGES an entry
+already on the category instead of replacing it, so a hand-cleared `@everyone` deny
+is carried as is and no longer restored when a run edits the category for another
+reason (a missing role entry). Pinned by a test.
 
 **A denied bit is never "missing".** `lockTicketChannel` moves `SendMessages` from
 allow to deny on every entry of a finished ticket, and inside one overwrite

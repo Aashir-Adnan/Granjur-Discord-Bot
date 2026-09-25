@@ -7,15 +7,23 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 ## Six-bit text allow — rollout and follow-ups (branch `feat/attach-files`, 2026-09-25)
 See "Text permissions" in `.claude/knowledge/project-sections.md`.
 
-- **Rollout:** merge, deploy, `/setup` once, then `/project-setup` per project (preview
-  first) or `all:true`. First live check: a client attaches a file in a request channel.
+- **Before deploy:** the bot's own role must hold Attach Files, Embed Links and Add
+  Reactions (or Administrator). Discord refuses an overwrite carrying a bit the bot itself
+  lacks, so without them every ticket/section/support channel creation and every repair
+  edit fails with Missing Permissions.
+- **Rollout:** merge, deploy, `/setup` once (support pair + the global Features/Bugs ticket
+  channels, reply line "Ticket channels upgraded: N"), then `/project-setup` per project
+  (preview first) or `all:true`. First live check: a client attaches a file in a request channel.
 - Channels no repair path reaches keep three bits until recreated: `/create-channel` private
-  rooms, meeting auto-channels (`meetingAutoChannel.js`), and ticket channels of tasks with no
-  project (global `Features`/`Bugs`, including project-less client requests) — `/project-setup`
-  only walks a project's own task rows.
-- On a project support/casual channel a short client entry is upgraded twice in one run: once
-  inside step 3's merged `grant` edit (member upgrade) and again by step 3b's per-client
-  `permissionOverwrites.edit`. Harmless (the second is a merge no-op on the bits) and once only.
+  rooms and meeting auto-channels (`meetingAutoChannel.js`).
+- The category repair now MERGES a present `@everyone` entry instead of replacing it, so a
+  hand-cleared `@everyone` deny on a section category is no longer restored by a run that
+  edits the category for another reason (pinned by a test). Decide whether that is wanted.
+- The voice-activity pass (`voiceGaps`) offers UseVAD/Stream to a role entry that only
+  denies ViewChannel (pre-existing, not changed here; seen while testing the deny-only case).
+- On a project support/casual channel a short client entry can be upgraded twice in one run
+  (step 3's merged `grant` edit, then step 3b) when the cache has not caught up; step 3b now
+  sends only the bits still missing, so with a live discord.js cache it skips.
 - Overwrite edits that still carry no explicit `type` (all edit EXISTING entries, where
   discord.js infers it): `lockTicketChannel`/`unlockTicketChannel` (`utils/channels.js`), the
   voice-activity repair in `applyProjectSection` 4b, `commands/fix.js`.
