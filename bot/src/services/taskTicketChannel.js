@@ -23,12 +23,10 @@ import { CATEGORY_BOLD_NAMES, CATEGORY_SOFT_CAP } from '../constants.js'
 import { taskChannelName, taskChannelTopic, isTicketChannel } from '../utils/taskChannelName.js'
 import { archiveDividerIdOf, isFinished } from '../utils/ticketArchive.js'
 import { applyOrder, desiredOrder, textChannelsOf } from '../utils/channelOrder.js'
+import { TEXT_ALLOW } from '../utils/textAllow.js'
 
-const MEMBER_PERMS = [
-  PermissionFlagsBits.ViewChannel,
-  PermissionFlagsBits.SendMessages,
-  PermissionFlagsBits.ReadMessageHistory,
-]
+/** The one text allow (`utils/textAllow.js`): view, send, history, attach, embed, react. */
+const MEMBER_PERMS = TEXT_ALLOW
 
 /**
  * What the project role may do in a task channel that sits inside its own

@@ -19,6 +19,7 @@ import { getOrCreateCategory } from '../utils/categories.js'
 import { createTaskTicketChannel } from '../services/taskTicketChannel.js'
 import { createIssue } from '../services/github.js'
 import { CATEGORY_BOLD_NAMES, CATEGORY_SOFT_CAP } from '../constants.js'
+import { TEXT_ALLOW } from '../utils/textAllow.js'
 import { EPHEMERAL } from '../constants.js'
 import { SCOPE_CHOICES, scopeLabel, isValidScope } from '../utils/taskScope.js'
 
@@ -897,7 +898,7 @@ export async function handleCreate(
       const category = await getOrCreateCategory(guild, 'Bugs', { orNames: [CATEGORY_BOLD_NAMES['Bugs']].filter(Boolean) })
       const overwrites = [
         { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
-        ...uniqueParticipants.map((id) => ({ id, type: OverwriteType.Member, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
+        ...uniqueParticipants.map((id) => ({ id, type: OverwriteType.Member, allow: TEXT_ALLOW })),
       ]
       const channel = await guild.channels.create({
         name: `bug-${task.id.slice(-6)}`,

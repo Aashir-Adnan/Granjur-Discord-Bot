@@ -17,6 +17,7 @@ import { createIssue } from '../services/github.js'
 import * as flowStore from '../flows/store.js'
 import { getOrCreateCategory } from '../utils/categories.js'
 import { CATEGORY_BOLD_NAMES } from '../constants.js'
+import { TEXT_ALLOW } from '../utils/textAllow.js'
 import { EPHEMERAL } from '../constants.js'
 
 export const data = new SlashCommandBuilder()
@@ -226,7 +227,7 @@ export async function handleCreate(interaction) {
     const category = await getOrCreateCategory(guild, 'Bugs', { orNames: [CATEGORY_BOLD_NAMES['Bugs']].filter(Boolean) })
     const overwrites = [
       { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
-      ...uniqueParticipants.map((id) => ({ id, type: OverwriteType.Member, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
+      ...uniqueParticipants.map((id) => ({ id, type: OverwriteType.Member, allow: TEXT_ALLOW })),
     ]
     const channel = await guild.channels.create({
       name: `bug-${ticket.id.slice(-6)}`,

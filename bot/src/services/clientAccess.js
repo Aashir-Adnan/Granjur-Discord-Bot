@@ -7,12 +7,16 @@ import {
   ROLE_CLIENT, ROLE_COLORS, CATEGORY_SUPPORT, CHANNEL_SUPPORT, CHANNEL_SUPPORT_VOICE,
 } from '../constants.js'
 import { clientManual, MANUAL_TITLE } from './clientManual.js'
+import { TEXT_ALLOW, TEXT_ALLOW_OBJ, VOICE_EXTRA } from '../utils/textAllow.js'
 
 const F = PermissionFlagsBits
-export const CLIENT_TEXT_ALLOW = [F.ViewChannel, F.SendMessages, F.ReadMessageHistory]
-export const CLIENT_VOICE_ALLOW = [...CLIENT_TEXT_ALLOW, F.Connect, F.Speak, F.UseVAD, F.Stream]
+// The one text allow (utils/textAllow.js): a client attaches documents and
+// screenshots to their support and request channels, so AttachFiles, EmbedLinks
+// and AddReactions ride with view/send/history rather than on @everyone.
+export const CLIENT_TEXT_ALLOW = TEXT_ALLOW
+export const CLIENT_VOICE_ALLOW = [...CLIENT_TEXT_ALLOW, ...VOICE_EXTRA]
 /** The same sets as the `{ Flag: true }` objects `permissionOverwrites.edit` takes. */
-export const CLIENT_TEXT_ALLOW_OBJ = { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }
+export const CLIENT_TEXT_ALLOW_OBJ = TEXT_ALLOW_OBJ
 export const CLIENT_VOICE_ALLOW_OBJ = { ...CLIENT_TEXT_ALLOW_OBJ, Connect: true, Speak: true, UseVAD: true, Stream: true }
 
 const REASON = 'Client support'

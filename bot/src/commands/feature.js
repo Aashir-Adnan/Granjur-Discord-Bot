@@ -16,6 +16,7 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { getOrCreateCategory } from '../utils/categories.js'
 import { CATEGORY_BOLD_NAMES } from '../constants.js'
+import { TEXT_ALLOW } from '../utils/textAllow.js'
 import { EPHEMERAL } from '../constants.js'
 
 const SELECT_REPOS_PROJECTS_STEP = 1
@@ -345,7 +346,7 @@ export async function handleCreate(interaction) {
     const category = await getOrCreateCategory(guild, 'Features', { orNames: [CATEGORY_BOLD_NAMES['Features']].filter(Boolean) })
     const overwrites = [
       { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
-      ...uniqueSet.map((id) => ({ id, type: OverwriteType.Member, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] })),
+      ...uniqueSet.map((id) => ({ id, type: OverwriteType.Member, allow: TEXT_ALLOW })),
     ]
     const channel = await guild.channels.create({
       name: `feature-${feature.id.slice(-6)}`,

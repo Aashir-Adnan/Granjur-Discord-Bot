@@ -56,6 +56,7 @@ import {
 } from '../utils/ticketArchive.js'
 import { applyOrder, desiredOrder, textChannelsOf } from '../utils/channelOrder.js'
 import { retireTicketChannel } from './ticketRetire.js'
+import { TEXT_ALLOW, VOICE_EXTRA } from '../utils/textAllow.js'
 
 /**
  * The keys the three sibling status-bucket categories used to be stored under.
@@ -596,15 +597,9 @@ export function planProjectSection(project, observed = {}, opts = {}) {
 // Connect and Speak give neither: without UseVAD a member of the project role is
 // push-to-talk only, and without Stream cannot share a screen, whenever the
 // server's @everyone role does not grant them.
-const ROLE_ALLOW = [
-  PermissionFlagsBits.ViewChannel,
-  PermissionFlagsBits.SendMessages,
-  PermissionFlagsBits.ReadMessageHistory,
-  PermissionFlagsBits.Connect,
-  PermissionFlagsBits.Speak,
-  PermissionFlagsBits.UseVAD,
-  PermissionFlagsBits.Stream,
-]
+// The text half is the one six-bit set in `utils/textAllow.js` (view, send,
+// history, attach, embed, react); the voice half is `VOICE_EXTRA`.
+const ROLE_ALLOW = [...TEXT_ALLOW, ...VOICE_EXTRA]
 
 const REASON = 'Project section'
 

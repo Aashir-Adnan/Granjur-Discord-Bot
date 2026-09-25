@@ -1,5 +1,6 @@
 import db, { ensureStringArray, getGuildConfig } from "../db/index.js";
-import { PermissionFlagsBits, ChannelType, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder } from "discord.js";
+import { PermissionFlagsBits, ChannelType, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder, OverwriteType } from "discord.js";
+import { TEXT_ALLOW, VOICE_EXTRA } from "../utils/textAllow.js";
 import { startMeetingRecording } from "./voiceCapture.js";
 import { ensureMeetingChannel } from "./meetingListener.js";
 import { ensureGuidelinesPinned } from "../config/meetingGuidelines.js";
@@ -120,54 +121,28 @@ async function createMeetingChannelAndJoin(guild, meeting) {
     (ch) => ch.type === ChannelType.GuildCategory && ch.name === '📋 Meetings',
   );
 
+  // Every entry is typed (a wrong type makes Discord drop an overwrite
+  // silently). Text allows are the one six-bit set in utils/textAllow.js; a
+  // voice channel has a text chat too, so it gets that set plus the voice bits.
+  const everyoneDeny = { id: guild.roles.everyone.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] };
   const voicePermissionOverwrites = [
-    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-    {
-      id: guild.client.user.id,
-      allow: [
-        PermissionFlagsBits.ViewChannel,
-        PermissionFlagsBits.Connect,
-        PermissionFlagsBits.Speak,
-      ],
-    },
+    everyoneDeny,
+    { id: guild.client.user.id, type: OverwriteType.Member, allow: [...TEXT_ALLOW, ...VOICE_EXTRA] },
   ];
   const textPermissionOverwrites = [
-    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-    {
-      id: guild.client.user.id,
-      allow: [
-        PermissionFlagsBits.ViewChannel,
-        PermissionFlagsBits.SendMessages,
-        PermissionFlagsBits.ReadMessageHistory,
-      ],
-    },
+    everyoneDeny,
+    { id: guild.client.user.id, type: OverwriteType.Member, allow: TEXT_ALLOW },
   ];
 
   for (const userId of allowedIds) {
     try {
       const member = await guild.members.fetch(userId).catch(() => null);
       if (member) {
-        voicePermissionOverwrites.push({
-          id: member.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.Connect,
-            PermissionFlagsBits.Speak,
-            // Not implied by Connect/Speak: without them the room is
-            // push-to-talk only and nobody can share a screen wherever the
-            // server's @everyone role does not grant them.
-            PermissionFlagsBits.UseVAD,
-            PermissionFlagsBits.Stream,
-          ],
-        });
-        textPermissionOverwrites.push({
-          id: member.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory,
-          ],
-        });
+        // VOICE_EXTRA carries UseVAD and Stream, not implied by Connect/Speak:
+        // without them the room is push-to-talk only and nobody can share a
+        // screen wherever the @everyone role does not grant them.
+        voicePermissionOverwrites.push({ id: member.id, type: OverwriteType.Member, allow: [...TEXT_ALLOW, ...VOICE_EXTRA] });
+        textPermissionOverwrites.push({ id: member.id, type: OverwriteType.Member, allow: TEXT_ALLOW });
       }
     } catch (e) {
       console.warn(`[meetingAutoChannel] Failed to fetch member ${userId}: ${e.message}`);

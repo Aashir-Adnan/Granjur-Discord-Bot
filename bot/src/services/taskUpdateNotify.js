@@ -17,6 +17,8 @@ import { openBlockers, TERMINAL_STATUSES, unblockNotice } from '../utils/taskDep
 import { formatDuration } from '../utils/timeTracking.js'
 import { requestStatusLabel } from '../utils/clientRequestView.js'
 import db from '../db/index.js'
+import { OverwriteType } from 'discord.js'
+import { TEXT_ALLOW_OBJ } from '../utils/textAllow.js'
 
 export { TERMINAL_STATUSES }
 
@@ -69,7 +71,8 @@ export function changeSummary(before, updates, { omit = [] } = {}) {
   return lines
 }
 
-const MEMBER_ALLOW = { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }
+/** The one text allow (`utils/textAllow.js`), in the object form `permissionOverwrites.edit` takes. */
+const MEMBER_ALLOW = TEXT_ALLOW_OBJ
 
 /**
  * Whether a channel is THIS task's ticket channel rather than somewhere the
@@ -223,7 +226,7 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
     if (!isSubtask) {
       for (const id of added) {
         await channel.permissionOverwrites
-          ?.edit?.(id, MEMBER_ALLOW)
+          ?.edit?.(id, MEMBER_ALLOW, { type: OverwriteType.Member })
           .catch((e) => console.warn(`[taskUpdate] grant ${id} failed:`, e?.message || e))
       }
       for (const id of removed) {
