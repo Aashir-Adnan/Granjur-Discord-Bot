@@ -9,8 +9,8 @@ import { notifyTaskUpdate } from './taskUpdateNotify.js'
 import { blockerWarning, openBlockers } from '../utils/taskDeps.js'
 import { activityChanges, recordTaskActivity } from './taskActivity.js'
 import { assertCanFinish, syncParent } from './taskHierarchy.js'
-import { moveTicketToBucket } from './ticketBucketMove.js'
-import { bucketFor, isDoneBucket } from '../utils/statusBuckets.js'
+import { placeTicketForStatus } from './ticketArchive.js'
+import { isFinished } from '../utils/ticketArchive.js'
 
 /** What /close-feature and /resolve-bug already say in the channel they close. */
 export const READ_ONLY_LINE = 'This channel is now read-only and will be removed in 14 days.'
@@ -28,9 +28,9 @@ export const WARNING_MAX = 1500
  * change did not come from Discord. Pass `guild` when the caller already has
  * it — otherwise the guild is looked up from the task's config.
  *
- * @returns {Promise<{ warning: string, notified: { channelId: string|null, created: boolean, dmed: string[] }, placement: { moved: boolean, bucket: string|null, reason: string|null } }>}
+ * @returns {Promise<{ warning: string, notified: { channelId: string|null, created: boolean, dmed: string[] }, placement: { moved: boolean, archived: boolean|null, reason: string|null } }>}
  */
-export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, actor = {}, notify = notifyTaskUpdate, guild = null, record = recordTaskActivity, move = moveTicketToBucket }) {
+export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, actor = {}, notify = notifyTaskUpdate, guild = null, record = recordTaskActivity, move = placeTicketForStatus }) {
   // A task with an open subtask cannot be finished: refuse before anything is written.
   await assertCanFinish({ db: dbArg, task, updates })
   await dbArg.task.update({ where: { id: task.id }, data: updates })
@@ -73,15 +73,16 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
     }
   }
 
-  // The channel follows the status — into its bucket, locked on entering Done,
-  // unlocked on leaving. After the write, before the post. Best-effort.
-  let placement = { moved: false, bucket: null, reason: null }
+  // The channel follows the status — across the archive divider inside its
+  // project's category, locked on becoming finished, unlocked on becoming live
+  // again. After the write, before the post. Best-effort.
+  let placement = { moved: false, archived: null, reason: null }
   if (updates.status !== undefined) {
     try {
       placement = await move({ guild: g, task, before: task, updates, db: dbArg })
     } catch (e) {
-      console.error('[taskStatusChange] bucket move:', e?.message ?? e)
-      placement = { moved: false, bucket: null, reason: 'error' }
+      console.error('[taskStatusChange] archive placement:', e?.message ?? e)
+      placement = { moved: false, archived: null, reason: 'error' }
     }
   }
 
@@ -91,10 +92,10 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
   // mover refused to touch because the task does not own it.
   let extraLines = []
   if (updates.status !== undefined && placement.reason !== 'not-ticket') {
-    const intoDone = isDoneBucket(bucketFor(updates.status))
-    const wasDone = isDoneBucket(bucketFor(task.status))
-    if (intoDone && !wasDone) extraLines = [READ_ONLY_LINE]
-    else if (!intoDone && wasDone) extraLines = [WRITABLE_LINE]
+    const finished = isFinished(updates.status)
+    const wasFinished = isFinished(task.status)
+    if (finished && !wasFinished) extraLines = [READ_ONLY_LINE]
+    else if (!finished && wasFinished) extraLines = [WRITABLE_LINE]
   }
 
   let notified = { channelId: task.discordChannelId || null, created: false, dmed: [] }

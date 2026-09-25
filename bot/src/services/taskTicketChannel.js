@@ -20,8 +20,9 @@ import { getOrCreateCategory } from '../utils/categories.js'
 // projectMembersPanel → db/index.js into this leaf helper, so its test loaded
 // the whole database layer and the production `.env` to touch no database.
 import { CATEGORY_BOLD_NAMES, CATEGORY_SOFT_CAP } from '../constants.js'
-import { taskChannelName, taskChannelTopic } from '../utils/taskChannelName.js'
-import { bucketFor, bucketIdsOf } from '../utils/statusBuckets.js'
+import { taskChannelName, taskChannelTopic, isTicketChannel } from '../utils/taskChannelName.js'
+import { archiveDividerIdOf, isFinished } from '../utils/ticketArchive.js'
+import { applyOrder, desiredOrder, textChannelsOf } from '../utils/channelOrder.js'
 
 const MEMBER_PERMS = [
   PermissionFlagsBits.ViewChannel,
@@ -61,29 +62,16 @@ function categoryById(guild, id) {
 
 /**
  * Where a new task channel goes, in order:
- *   1. the project's bucket for the task's status (`bucketFor`), when its
- *      stored id still resolves to a category with room;
- *   2. the project's section category, under the rules it always had;
- *   3. the global Features/Bugs category.
- * `fellBack` is non-null only for 3 — the channel left the project's space,
+ *   1. the project's section category, under the rules it always had;
+ *   2. the global Features/Bugs category.
+ * `fellBack` is non-null only for 2 — the channel left the project's space,
  * so the project role's allow is not added and the reply says so. `placed`
- * says which of the three it was.
+ * says which of the two it was.
  *
- * @returns {Promise<{category: object, fellBack: 'cap'|'missing'|null, placed: 'bucket'|'section'|'global'}>}
+ * @returns {Promise<{category: object, fellBack: 'cap'|'missing'|null, placed: 'section'|'global'}>}
  */
-async function resolveParentCategory(guild, project, categoryLabel, status) {
+async function resolveParentCategory(guild, project, categoryLabel) {
   if (!project) return { category: await globalCategory(guild, categoryLabel), fellBack: null, placed: 'global' }
-
-  const bucketKey = bucketFor(status)
-  const bucket = categoryById(guild, bucketIdsOf(project)[bucketKey])
-  if (bucket) {
-    if (countChannelsInCategory(guild, bucket.id) < CATEGORY_SOFT_CAP) {
-      return { category: bucket, fellBack: null, placed: 'bucket' }
-    }
-    console.warn(
-      `[taskTicket] project "${project?.name}"'s ${bucketKey} bucket is at Discord's cap (${CATEGORY_SOFT_CAP} channels); the task channel was created in the section category instead.`
-    )
-  }
 
   const projectCategory = categoryById(guild, project.discordCategoryId)
   if (!projectCategory) {
@@ -99,6 +87,40 @@ async function resolveParentCategory(guild, project, categoryLabel, status) {
     return { category: await globalCategory(guild, categoryLabel), fellBack: 'cap', placed: 'global' }
   }
   return { category: projectCategory, fellBack: null, placed: 'section' }
+}
+
+/**
+ * Slide a brand-new LIVE ticket up to just above the project's archive divider.
+ *
+ * Discord puts a new channel last in its category, which is below the line —
+ * right for a ticket that is already finished (no reorder at all, and no
+ * request spent), wrong for every other one. Best-effort: a refused reorder is
+ * one warning and a channel one row out of place, never a failed create.
+ */
+async function placeAboveDivider(guild, project, category, channel, status) {
+  if (!project || isFinished(status)) return
+  const dividerId = archiveDividerIdOf(project)
+  if (!dividerId) return
+  try {
+    const divider = guild?.channels?.cache?.get?.(dividerId) ?? null
+    if (!divider || divider.type !== ChannelType.GuildText || divider.parentId !== category.id) return
+    const cached = textChannelsOf(guild, category.id)
+    // The create response is in the cache by now, but a cache that has not
+    // caught up must not silently drop the new channel out of its category.
+    const current = cached.some((c) => c.id === channel.id) ? cached : [...cached, channel]
+    const dividerIndex = current.findIndex((c) => c.id === divider.id)
+    const ticketIds = new Set(current.filter((c) => isTicketChannel(c)).map((c) => c.id))
+    ticketIds.add(channel.id)
+    // Everything already below the line stays below it; the new channel is the
+    // one exception, because Discord only just put it there.
+    const archivedIds = new Set(
+      current.filter((c, i) => i > dividerIndex && ticketIds.has(c.id)).map((c) => c.id)
+    )
+    archivedIds.delete(channel.id)
+    await applyOrder(guild, current, desiredOrder(current, { dividerId: divider.id, archivedIds, ticketIds }))
+  } catch (e) {
+    console.warn(`[taskTicket] ordering ${channel?.id} above the archive divider:`, e?.message || e)
+  }
 }
 
 /**
@@ -119,17 +141,19 @@ async function resolveParentCategory(guild, project, categoryLabel, status) {
  *   behaviour: the global Features/Bugs category and `<prefix>-<last six of
  *   the task id>`.
  * @param {string} [opts.type]          - 'bug' or anything else (feature); default feature
- * @param {string} [opts.status]        - the task's status, used to pick its bucket; default 'open'
+ * @param {string} [opts.status]        - the task's status; a finished one is
+ *   left below the project's archive divider, a live one is ordered above it.
+ *   Default 'open'
  * @param {string} [opts.closeHint]     - appended as a "Close" field when given
  * @param {(channel: object) => Promise<void>} [opts.onCreated]
  *   run with the new channel BETWEEN the create and the opening embed, so a
  *   caller can point its row at the channel before anything can fail: a `send`
  *   that throws must not leave a channel with no row pointing at it.
- * @returns {Promise<{channel: import('discord.js').TextChannel, fellBack: 'cap'|'missing'|null, placed: 'bucket'|'section'|'global'}>}
+ * @returns {Promise<{channel: import('discord.js').TextChannel, fellBack: 'cap'|'missing'|null, placed: 'section'|'global'}>}
  *   `fellBack` says why the channel is not in the project's own space: `'cap'`
  *   the section is full, `'missing'` the project has no category the bot can
- *   use, `null` it is where it should be (a bucket, the section, or there was
- *   no project). `placed` says which of the three it landed in.
+ *   use, `null` it is where it should be (the section, or there was no
+ *   project). `placed` says which of the two it landed in.
  */
 export async function createTaskTicketChannel(guild, opts) {
   const {
@@ -147,13 +171,13 @@ export async function createTaskTicketChannel(guild, opts) {
 
   const isBug = type === 'bug'
   // A client's support task: its own prefix and title, but a project-less one
-  // shares the global Features category rather than adding a fourth bucket.
+  // shares the global Features category, exactly as a feature ticket does.
   const isSupport = type === 'task'
   const categoryLabel = isBug ? 'Bugs' : 'Features'
   const namePrefix = isBug ? 'bug' : isSupport ? 'task' : 'feature'
   const members = [...new Set(memberIds.filter(Boolean))]
 
-  const { category, fellBack, placed } = await resolveParentCategory(guild, project, categoryLabel, status)
+  const { category, fellBack, placed } = await resolveParentCategory(guild, project, categoryLabel)
 
   const name = project
     ? taskChannelName({
@@ -204,6 +228,10 @@ export async function createTaskTicketChannel(guild, opts) {
   })
 
   if (onCreated) await onCreated(channel)
+
+  // A live ticket belongs above the project's archive divider; a finished one
+  // is already where Discord put it, below the line.
+  await placeAboveDivider(guild, project, category, channel, status)
 
   const embed = new EmbedBuilder()
     .setTitle(`${isBug ? 'Bug' : isSupport ? 'Task' : 'Feature'}: ${String(title || 'Task').slice(0, 200)}`)

@@ -18,7 +18,7 @@ function harness({ ticket = { id: 'T1', title: 'Crash on save', status: 'pending
     },
     ticketDoc: { findFirst: async () => ({ id: 'd1' }), update: async () => {}, create: async () => {} },
   }
-  const move = async (a) => { log.push(['move', a.task.id, a.before.status, a.updates.status, a.db === db, a.guild?.id]); return { moved: true, bucket: 'done', reason: null } }
+  const move = async (a) => { log.push(['move', a.task.id, a.before.status, a.updates.status, a.db === db, a.guild?.id]); return { moved: true, archived: true, reason: null } }
   return { interaction, channel, db, move, log }
 }
 

@@ -9,6 +9,7 @@ import {
   unblockNotices,
   TERMINAL_STATUSES,
 } from './taskUpdateNotify.js'
+import { ARCHIVE_DIVIDER_NAME, ARCHIVE_DIVIDER_TOPIC } from '../utils/ticketArchive.js'
 
 test('assigneeDiff reports who gained and who lost the task', () => {
   assert.deepEqual(assigneeDiff(['1', '2'], ['2', '3']), { added: ['3'], removed: ['1'] })
@@ -287,11 +288,15 @@ test('a task carrying a projectId gets a channel inside that project, looked up 
   assert.equal(created[0].parent, 'projcat')
 })
 
-test('the channel opened for a newly assigned task lands in the bucket for its new status', async () => {
-  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null, type: ChannelType.GuildCategory }
-  const bucketCategory = { id: 'b-prog', name: '📂 FRAMEWORK · IN PROGRESS', parentId: null, type: ChannelType.GuildCategory }
-  const catMap = new Map([[projectCategory.id, projectCategory], [bucketCategory.id, bucketCategory]])
+test('the channel opened for a newly assigned task is placed by its NEW status, not the one on the row', async () => {
+  // The row still says `open`; the same edit that opens the channel also
+  // finishes the task, and it is the new status that decides which side of the
+  // archive divider the channel belongs on.
+  const projectCategory = { id: 'projcat', name: '📂 FRAMEWORK', parentId: null, type: ChannelType.GuildCategory, rawPosition: 0 }
+  const divider = { id: 'div', name: ARCHIVE_DIVIDER_NAME, parentId: 'projcat', type: ChannelType.GuildText, topic: ARCHIVE_DIVIDER_TOPIC, rawPosition: 1 }
+  const catMap = new Map([[projectCategory.id, projectCategory], [divider.id, divider]])
   const created = []
+  const positions = []
   const dms = []
   const client = {
     channels: { fetch: async () => null },
@@ -305,9 +310,12 @@ test('the channel opened for a newly assigned task lands in the bucket for its n
         find: () => null,
         values: () => catMap.values(),
       },
+      setPositions: async (list) => { positions.push(list) },
       create: async (o) => {
         created.push(o)
-        return { id: 'newchan', type: ChannelType.GuildText, name: o.name, parentId: o.parent, guild: { id: 'g1' }, send: async () => ({ id: 'm' }) }
+        const made = { id: `newchan${created.length}`, type: ChannelType.GuildText, name: o.name, parentId: o.parent, topic: o.topic, rawPosition: catMap.size, guild: { id: 'g1' }, send: async () => ({ id: 'm' }) }
+        catMap.set(made.id, made)
+        return made
       },
     },
   }
@@ -316,7 +324,7 @@ test('the channel opened for a newly assigned task lands in the bucket for its n
     project: {
       findFirst: async ({ where }) => {
         lookedUpId = where.id
-        return { id: 'p1', name: 'Framework', discordCategoryId: 'projcat', discordChannels: { bucketInProgress: 'b-prog' } }
+        return { id: 'p1', name: 'Framework', discordCategoryId: 'projcat', discordChannels: { archiveDivider: 'div' } }
       },
     },
   }
@@ -331,12 +339,14 @@ test('the channel opened for a newly assigned task lands in the bucket for its n
   }
   const out = await notifyTaskUpdate({
     client, guild, task, before: task,
-    updates: { assigneeIds: ['11'], status: 'in_progress' }, actorId: '99', db: dbFake,
+    updates: { assigneeIds: ['11'], status: 'done' }, actorId: '99', db: dbFake,
   })
   assert.equal(lookedUpId, 'p1')
   assert.equal(out.created, true)
-  // The fresh channel lands in the bucket for the NEW status, not the section.
-  assert.equal(created[0].parent, 'b-prog')
+  assert.equal(created[0].parent, 'projcat')
+  // Finished on arrival: Discord already put it last, below the line, so no
+  // reorder is spent on it at all.
+  assert.deepEqual(positions, [])
 })
 
 test('a field edit posts in the task channel and DMs nobody', async () => {

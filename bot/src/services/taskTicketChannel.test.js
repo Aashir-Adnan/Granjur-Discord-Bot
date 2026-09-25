@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType, PermissionFlagsBits, OverwriteType } from 'discord.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
+import { ARCHIVE_DIVIDER_NAME, ARCHIVE_DIVIDER_TOPIC } from '../utils/ticketArchive.js'
 
 function fakeGuild() {
   return fakeGuildWithChannels([])
@@ -12,11 +13,17 @@ function fakeGuild() {
  * for `resolveParentCategory` (`.get`, `.find`, `.values`) — seeded with
  * `channels`, then extended by every `channels.create` call so a category
  * created mid-test is immediately visible to the next lookup.
+ *
+ * Every channel carries a `rawPosition` (creation order, as Discord assigns
+ * it) and a `type`, because `textChannelsOf` sorts on the first and filters on
+ * the second. `channels.setPositions` records the one reorder call the archive
+ * divider costs.
  */
 function fakeGuildWithChannels(channels = []) {
-  const map = new Map(channels.map((c) => [c.id, c]))
+  const map = new Map(channels.map((c, i) => [c.id, { rawPosition: i, ...c }]))
   const created = []
   const sends = []
+  const positions = []
   let nextId = 1
   const guild = {
     id: 'guild1',
@@ -26,16 +33,23 @@ function fakeGuildWithChannels(channels = []) {
         find: (pred) => [...map.values()].find(pred) ?? null,
         values: () => map.values(),
       },
+      setPositions: async (list) => {
+        positions.push(list)
+        return undefined
+      },
       create: async (opts) => {
         created.push(opts)
         if (opts.type === ChannelType.GuildCategory) {
-          const cat = { id: 'cat1', name: opts.name, parentId: null }
+          const cat = { id: 'cat1', name: opts.name, parentId: null, type: ChannelType.GuildCategory, rawPosition: map.size }
           map.set(cat.id, cat)
           return cat
         }
         const chan = {
           id: `chan${nextId++}`,
           name: opts.name,
+          type: opts.type ?? ChannelType.GuildText,
+          // Discord puts a new channel last in its category.
+          rawPosition: map.size,
           parentId: opts.parent ?? null,
           topic: opts.topic,
           permissionOverwrites: opts.permissionOverwrites,
@@ -51,6 +65,7 @@ function fakeGuildWithChannels(channels = []) {
   }
   guild._created = created
   guild._sends = sends
+  guild._positions = positions
   guild._map = map
   return guild
 }
@@ -387,63 +402,72 @@ test('dmTaskAssignees takes a headline, so a lead is not told they were "assigne
   assert.ok(!dms[0][1].includes("You've been assigned"))
 })
 
-// ---- status buckets ---------------------------------------------------------
-const bucketCat = (id, name) => ({ id, name, parentId: null, type: ChannelType.GuildCategory })
-const bucketed = () => ({
+// ---- the archive divider ----------------------------------------------------
+const cat = (id, name) => ({ id, name, parentId: null, type: ChannelType.GuildCategory })
+const dividerIn = (parentId) => ({
+  id: 'div', name: ARCHIVE_DIVIDER_NAME, parentId, type: ChannelType.GuildText, topic: ARCHIVE_DIVIDER_TOPIC,
+})
+const ticketIn = (id, parentId) => ({ id, name: `feature-${id}`, parentId, type: ChannelType.GuildText, topic: `Feature: X — Task ${id}` })
+const dividedProject = () => ({
   id: 'p1', name: 'Framework', discordCategoryId: 'projcat', discordRoleId: 'r1',
-  discordChannels: { bucketOpen: 'b-open', bucketInProgress: 'b-prog', bucketDone: 'b-done' },
+  discordChannels: { archiveDivider: 'div' },
 })
 
-test('a project task is parented to the bucket for its status and carries the project role', async () => {
-  const guild = fakeGuildWithChannels([bucketCat('projcat', '📂 FRAMEWORK'), bucketCat('b-open', '📂 FRAMEWORK · OPEN'), bucketCat('b-done', '📂 FRAMEWORK · DONE')])
+test('a live ticket created under a category with a divider is ordered just above the line, in one call', async () => {
+  const guild = fakeGuildWithChannels([cat('projcat', '📂 FRAMEWORK'), ticketIn('t1', 'projcat'), dividerIn('projcat'), ticketIn('a1', 'projcat')])
   guild.roles = { cache: new Map([['r1', { id: 'r1' }]]) }
-  const out = await createTaskTicketChannel(guild, { taskId: 'abcdef1234567890', title: 'Add rules', memberIds: ['11'], project: bucketed(), type: 'feature', status: 'done' })
-  assert.equal(guild._created[0].parent, 'b-done')
-  assert.equal(out.placed, 'bucket')
-  assert.equal(out.fellBack, null)
-  assert.ok(guild._created[0].permissionOverwrites.some((o) => o.id === 'r1' && o.type === OverwriteType.Role))
-})
-
-test('no status means open; pending is open too', async () => {
-  const guild = fakeGuildWithChannels([bucketCat('projcat', '📂 FRAMEWORK'), bucketCat('b-open', '📂 FRAMEWORK · OPEN')])
-  await createTaskTicketChannel(guild, { taskId: 'a1', title: 'One', memberIds: [], project: bucketed(), type: 'feature' })
-  await createTaskTicketChannel(guild, { taskId: 'a2', title: 'Two', memberIds: [], project: bucketed(), type: 'bug', status: 'pending' })
-  assert.deepEqual(guild._created.map((c) => c.parent), ['b-open', 'b-open'])
-})
-
-test('a bucket that is missing falls back to the section category, still inside the project', async () => {
-  const guild = fakeGuildWithChannels([bucketCat('projcat', '📂 FRAMEWORK')])
-  const out = await createTaskTicketChannel(guild, { taskId: 'a1', title: 'One', memberIds: [], project: bucketed(), type: 'feature', status: 'in_progress' })
-  assert.equal(guild._created[0].parent, 'projcat')
+  const out = await createTaskTicketChannel(guild, { taskId: 'a1b2c3d4e5f6', title: 'New', memberIds: [], project: dividedProject(), type: 'feature' })
   assert.equal(out.placed, 'section')
-  assert.equal(out.fellBack, null)
+  assert.equal(guild._positions.length, 1, 'exactly one setPositions')
+  // Discord created it last, below the line; it belongs at the bottom of the
+  // live group, and the already-archived ticket stays below the divider.
+  assert.deepEqual(guild._positions[0].map((e) => e.channel), ['t1', out.channel.id, 'div', 'a1'])
+  assert.deepEqual(guild._positions[0].map((e) => e.position), [0, 1, 2, 3])
 })
 
-test('a stored bucket id that resolves to a text channel is treated as missing', async () => {
-  const guild = fakeGuildWithChannels([bucketCat('projcat', '📂 FRAMEWORK'), { id: 'b-open', name: 'not-a-category', parentId: null, type: ChannelType.GuildText }])
-  const out = await createTaskTicketChannel(guild, { taskId: 'a1', title: 'One', memberIds: [], project: bucketed(), type: 'feature' })
-  assert.equal(guild._created[0].parent, 'projcat')
+test('a ticket created already finished is left where Discord put it — below the line, no reorder', async () => {
+  const guild = fakeGuildWithChannels([cat('projcat', '📂 FRAMEWORK'), ticketIn('t1', 'projcat'), dividerIn('projcat')])
+  const out = await createTaskTicketChannel(guild, { taskId: 'a1', title: 'Old', memberIds: [], project: dividedProject(), type: 'feature', status: 'done' })
   assert.equal(out.placed, 'section')
+  assert.deepEqual(guild._positions, [])
 })
 
-test('a full bucket falls back to the section category and warns', async () => {
-  const packed = Array.from({ length: 49 }, (_, i) => ({ id: `c${i}`, name: `chan-${i}`, parentId: 'b-open' }))
-  const guild = fakeGuildWithChannels([bucketCat('projcat', '📂 FRAMEWORK'), bucketCat('b-open', '📂 FRAMEWORK · OPEN'), ...packed])
+test('no divider — none stored, gone, not a text channel, or in another category — means no reorder at all', async () => {
+  const base = [cat('projcat', '📂 FRAMEWORK'), ticketIn('t1', 'projcat')]
+  const cases = [
+    ['none stored', base, { ...dividedProject(), discordChannels: {} }],
+    ['id no longer resolves', base, dividedProject()],
+    ['stored id is a category', [...base, cat('div', 'nope')], dividedProject()],
+    ['divider is in another category', [...base, dividerIn('ELSEWHERE')], dividedProject()],
+  ]
+  for (const [what, channels, project] of cases) {
+    const guild = fakeGuildWithChannels(channels)
+    await createTaskTicketChannel(guild, { taskId: 'a1', title: 'New', memberIds: [], project, type: 'feature' })
+    assert.deepEqual(guild._positions, [], what)
+  }
+})
+
+test('a refused reorder is one warning, never a failed create', async () => {
+  const guild = fakeGuildWithChannels([cat('projcat', '📂 FRAMEWORK'), ticketIn('t1', 'projcat'), dividerIn('projcat')])
+  guild.channels.setPositions = async () => { throw new Error('Missing Permissions') }
   const warnings = []
   const real = console.warn
   console.warn = (...a) => warnings.push(a.join(' '))
   let out
   try {
-    out = await createTaskTicketChannel(guild, { taskId: 'a1', title: 'One', memberIds: [], project: bucketed(), type: 'feature' })
+    out = await createTaskTicketChannel(guild, { taskId: 'a1', title: 'New', memberIds: [], project: dividedProject(), type: 'feature' })
   } finally { console.warn = real }
-  assert.equal(guild._created[0].parent, 'projcat')
   assert.equal(out.placed, 'section')
-  assert.ok(warnings.some((w) => w.includes('open bucket') && w.includes('cap')))
+  assert.ok(warnings.some((w) => w.includes('archive divider') && w.includes('Missing Permissions')))
+  // The opening embed still went out: the ticket is usable, just one row low.
+  assert.equal(guild._sends.length, 1)
 })
 
-test('with no bucket and no section category the global category is used, as before', async () => {
+test('with no section category the global category is used, as before, and nothing is reordered', async () => {
   const guild = fakeGuildWithChannels([])
-  const out = await createTaskTicketChannel(guild, { taskId: 'a1', title: 'One', memberIds: [], project: bucketed(), type: 'feature' })
+  const out = await quiet(() => createTaskTicketChannel(guild, { taskId: 'a1', title: 'One', memberIds: [], project: dividedProject(), type: 'feature' }))
   assert.equal(out.placed, 'global')
   assert.equal(out.fellBack, 'missing')
+  assert.deepEqual(guild._positions, [])
 })
+

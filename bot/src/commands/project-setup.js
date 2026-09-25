@@ -30,7 +30,6 @@ import {
 } from '../services/projectSection.js'
 import { ensureMembersPanel } from '../services/projectMembersPanel.js'
 import { isClientRole } from '../utils/clientRoles.js'
-import { BUCKETS, bucketByKey } from '../utils/statusBuckets.js'
 
 /** Discord's hard limit on a message. */
 const REPLY_LIMIT = 2000
@@ -91,23 +90,10 @@ const TASK_WORDS = [
   ['none', 'already right'],
 ]
 
-const BUCKET_WORDS = [
-  ['create', 'to create'],
-  ['rename', 'to rename'],
-  ['reuse', 'already right'],
-]
-
-/** '(into OPEN: 2, DONE: 1)' — where the moves go, zeros dropped, table order. */
-function intoBuckets(tasks) {
-  const counts = new Map()
-  for (const t of Array.isArray(tasks) ? tasks : []) {
-    if (t?.action !== 'move' && t?.action !== 'both') continue
-    counts.set(t.bucket, (counts.get(t.bucket) ?? 0) + 1)
-  }
-  const parts = BUCKETS.map((b) => b.key)
-    .filter((k) => counts.get(k))
-    .map((k) => `${bucketByKey(k)?.label ?? k}: ${counts.get(k)}`)
-  return parts.length ? ` (into ${parts.join(', ')})` : ''
+/** ' (3 archived)' — how many of the tickets sit below the archive divider. */
+function archivedSuffix(tasks) {
+  const n = (Array.isArray(tasks) ? tasks : []).filter((t) => t?.archived).length
+  return n ? ` (${n} archived)` : ''
 }
 
 /**
@@ -214,13 +200,12 @@ export function renderPlan(project, plan = {}) {
   if (role) lines.push(roleLine(role))
   if (plan?.category) lines.push(`Category: ${plan.category.action} **${plan.category.name}**`)
 
-  const buckets = summarise(plan?.buckets, BUCKET_WORDS)
-  if (buckets) lines.push(`Status buckets: ${buckets}`)
+  if (plan?.divider) lines.push(`Archive divider: ${plan.divider.action}`)
 
   const channels = summarise(plan?.channels, CHANNEL_WORDS)
   if (channels) lines.push(`Channels: ${channels}`)
   const tasks = summarise(plan?.tasks, TASK_WORDS)
-  if (tasks) lines.push(`Task channels: ${tasks}${intoBuckets(plan?.tasks)}`)
+  if (tasks) lines.push(`Task channels: ${tasks}${archivedSuffix(plan?.tasks)}`)
   const retiring = (plan?.tasks ?? []).filter((t) => t?.retire).length
   if (retiring) lines.push(`${retiring} finished ticket(s) will become read-only and be removed in 14 days.`)
   const voiceCategory = plan?.voice?.category ?? []
@@ -286,15 +271,10 @@ export function renderResult(project, result = {}) {
 
   const lines = [`**${name}** — ${summary}${breakdown}.`]
 
-  // A bucket category the applier created or renamed is already in `created`
-  // / `renamed` above — it pushes into both — so this is a breakdown of those
-  // counts, not an addition to them, and it says "of those" to stop "3
-  // created" plus "Status buckets: 1 created" reading as four categories.
-  const b = result?.buckets ?? {}
-  const bucketBits = []
-  if (b.created?.length) bucketBits.push(`${b.created.length} of those created`)
-  if (b.renamed?.length) bucketBits.push(`${b.renamed.length} of those renamed`)
-  if (bucketBits.length) lines.push(`Status buckets: ${bucketBits.join(', ')}.`)
+  // The one reorder the archive divider costs. Not a channel count: every
+  // channel it touched is already named above as created, renamed or moved, or
+  // was not touched by this run at all.
+  if (result?.reordered) lines.push('Ticket order refreshed.')
   const retired = Number(result?.retired ?? 0)
   if (retired) lines.push(`${retired} finished ticket channel(s) are now read-only and will be removed in 14 days.`)
 

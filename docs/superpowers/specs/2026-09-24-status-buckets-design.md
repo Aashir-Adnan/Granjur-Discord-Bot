@@ -1,8 +1,21 @@
 # Per-project status buckets for ticket channels — design
 
+> **Superseded on 2026-09-25 by
+> [`2026-09-25-archive-divider-design.md`](2026-09-25-archive-divider-design.md).**
+> The three sibling bucket categories described below shipped, were seen live,
+> and were replaced the next day by ordering inside the project's own category
+> around a read-only `────archive────` divider channel — the owner's call:
+> *"open should've been inside TEST."* Everything here about the Done
+> transition, the 14-day `channelRetireAt` retention, the hourly sweep and the
+> read-only notice is still current; everything about bucket categories,
+> `utils/statusBuckets.js` and `services/ticketBucketMove.js` is not — those
+> files are deleted. The current record is
+> `.claude/knowledge/ticket-archive.md`. This document, including its
+> Corrections section, is kept as history.
+
 **Date:** 2026-09-24
 **Repo:** Granjur-Discord-Bot only
-**Status:** approved in conversation; implementation plan to follow
+**Status:** SUPERSEDED (see the note above); was approved in conversation and shipped
 
 ## 1. Goal
 

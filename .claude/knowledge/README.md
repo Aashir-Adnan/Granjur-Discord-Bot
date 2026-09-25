@@ -30,14 +30,15 @@
   role-adoption model with `adopt_role`, merge-never-replace overwrites, project
   inference from a channel, `/project-setup`'s preview/backfill procedure, and
   the Administrator requirement.
-- [status-buckets.md](status-buckets.md) — per-project status buckets for ticket
-  channels (`feat/status-buckets`): the bucket table (`utils/statusBuckets.js`),
-  where bucket ids are stored and the claim-set/`/cleanup` protection that buys,
-  new-channel placement order and `fellBack` vs `placed`, the live mover
-  (`ticketBucketMove.js`) called from `applyTaskUpdate`, the Done transition and
-  14-day retention (`ticketRetire.js`), `/project-setup`'s bucket steps,
-  `/close-feature`/`/resolve-bug`'s move-not-delete, known limitations, and the
-  spec corrections.
+- [ticket-archive.md](ticket-archive.md) — the archive divider
+  (`feat/archive-divider`, replacing the one-day-old status buckets): the
+  vocabulary leaf (`utils/ticketArchive.js`) and why the divider must never look
+  like a ticket, the one reorder primitive (`utils/channelOrder.js`,
+  `guild.channels.setPositions`), placement at creation, the live placement call
+  (`services/ticketArchive.js`) and every `reason` it returns, the Done
+  transition and 14-day retention (`ticketRetire.js`), `/project-setup`'s
+  divider/reorder steps and its stale-bucket report, `/close-feature` and
+  `/resolve-bug`, what clients see, known limitations and the rollout.
 - [client-role.md](client-role.md) — the `Client` role and `guildmember.kind`:
   why a client never gets `Verified`, the two `/verify` acceptance paths, the
   shared `approveMember`, `/set-roles`' refusal, the deny-by-default command
