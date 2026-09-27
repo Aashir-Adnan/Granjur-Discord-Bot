@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType, OverwriteType } from 'discord.js'
 import { observeProjectSection, planProjectSection, applyProjectSection, CLIENT_SECTION_KEYS, storedChannels } from './projectSection.js'
-import { MANUAL_TITLE } from './clientManual.js'
+import { MANUAL_TITLE, clientManual } from './clientManual.js'
 
 const project = { id: 'p1', name: 'Framework', docsSlug: 'framework', discordCategoryId: 'cat', discordRoleId: 'role', discordChannels: { support: 'sup', supportVoice: 'supv' } }
 
@@ -124,7 +124,7 @@ test('apply: a freshly created project support channel gets the client manual pi
 
 test('apply: a reused project support channel that already has the manual pinned posts nothing', async () => {
   const sup = channel('sup', 'framework-support', { overwrites: [role('g1'), role('role')] })
-  sup.pinned.push({ author: { id: 'bot' }, embeds: [{ title: MANUAL_TITLE }] })
+  sup.pinned.push({ author: { id: 'bot' }, embeds: [clientManual().toJSON()] })
   const cat = channel('cat', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, parentId: null })
   const guild = guildWith([cat, sup])
   const plan = {
@@ -136,4 +136,29 @@ test('apply: a reused project support channel that already has the manual pinned
   }
   await quiet(() => applyProjectSection(guild, project, plan, { db: { project: { update: async () => {} } }, botUserId: 'bot' }))
   assert.equal(sup.sent.length, 0, 'manual already pinned')
+})
+
+test('apply: a reused project support channel whose pinned manual is out of date gets it rewritten in place', async () => {
+  const sup = channel('sup', 'framework-support', { overwrites: [role('g1'), role('role')] })
+  const stale = {
+    author: { id: 'bot' }, embeds: [{ title: MANUAL_TITLE, description: 'old', fields: [] }],
+    edits: [], unpinned: false,
+    edit: async (p) => { stale.edits.push(p) },
+    unpin: async () => { stale.unpinned = true },
+  }
+  sup.pinned.push(stale)
+  const cat = channel('cat', '📂 FRAMEWORK', { type: ChannelType.GuildCategory, parentId: null })
+  const guild = guildWith([cat, sup])
+  const plan = {
+    role: { action: 'reuse', id: 'role', name: 'Framework', gateRoleId: 'role' },
+    category: { action: 'reuse', id: 'cat', name: '📂 FRAMEWORK' },
+    channels: [{ key: 'support', action: 'reuse', id: 'sup', name: 'framework-support', type: 'text' }],
+    tasks: [], voice: { category: [], channels: [] }, warnings: [],
+    clients: { wanted: [], grant: [], revoke: [] },
+  }
+  await quiet(() => applyProjectSection(guild, project, plan, { db: { project: { update: async () => {} } }, botUserId: 'bot' }))
+  assert.equal(stale.edits.length, 1, 'the pinned manual was edited in place')
+  assert.match(JSON.stringify(stale.edits[0].embeds[0].toJSON()), /request-task/)
+  assert.equal(stale.unpinned, false)
+  assert.equal(sup.sent.length, 0, 'nothing new was posted')
 })

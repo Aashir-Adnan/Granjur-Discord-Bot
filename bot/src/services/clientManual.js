@@ -43,6 +43,25 @@ export const CLIENT_COMMANDS = [
   },
 ]
 
+/**
+ * The parts of an embed that decide whether a pinned manual is current: title,
+ * description, and the fields' names and values. Reads a discord.js Embed, an
+ * EmbedBuilder, or a raw API object the same way.
+ */
+export function manualShape(embed) {
+  const raw = typeof embed?.toJSON === 'function' ? embed.toJSON() : (embed?.data ?? embed ?? {})
+  return {
+    title: raw.title ?? null,
+    description: raw.description ?? null,
+    fields: (raw.fields ?? []).map((f) => ({ name: f?.name ?? '', value: f?.value ?? '' })),
+  }
+}
+
+/** True when a pinned embed says exactly what `clientManual()` says today. */
+export function manualUpToDate(embed) {
+  return JSON.stringify(manualShape(embed)) === JSON.stringify(manualShape(clientManual()))
+}
+
 export function clientManual() {
   const embed = new EmbedBuilder()
     .setTitle(MANUAL_TITLE)

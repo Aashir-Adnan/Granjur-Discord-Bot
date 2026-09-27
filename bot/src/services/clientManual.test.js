@@ -33,3 +33,16 @@ test('the manual says more documents can be posted in the request channel later'
   const text = (json.fields ?? []).map((f) => f.value).join('\n')
   assert.match(text, /post more documents or screenshots in that request's channel at any time/i)
 })
+
+import { manualUpToDate, clientManual as buildManual } from './clientManual.js'
+
+test('manualUpToDate: the current manual matches itself as a builder, as JSON, and as an Embed-like; a stale one does not', () => {
+  const now = buildManual()
+  assert.equal(manualUpToDate(now), true)
+  assert.equal(manualUpToDate(now.toJSON()), true)
+  assert.equal(manualUpToDate({ data: now.toJSON() }), true)
+  const stale = { ...now.toJSON(), fields: now.toJSON().fields.slice(1) }
+  assert.equal(manualUpToDate(stale), false)
+  assert.equal(manualUpToDate({ title: 'How to work with us here' }), false)
+  assert.equal(manualUpToDate(null), false)
+})
