@@ -2,7 +2,17 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
-## 2026-09-25 — Attachments, embeds and reactions in every bot-made text channel (BUILT on `feat/attach-files`, AWAITING MERGE)
+## 2026-09-27 — The pinned client manual refreshes itself
+
+Owner could not unpin the stale manual in `#support` to get the one that lists
+`/request-task`: only the bot holds Manage Messages there. `ensureManualPinned`
+(`services/clientAccess.js`) now compares the pinned manual with `clientManual()`
+(`manualUpToDate`/`manualShape` in `services/clientManual.js`) and edits it in place when
+stale, falling back to unpin + post + pin if the edit is refused; a stranger's message with
+the same title is never touched. `/setup` and `/project-setup` therefore refresh every
+support channel's manual. Branch `fix/manual-refresh`.
+
+## 2026-09-25 — Attachments, embeds and reactions in every bot-made text channel (`feat/attach-files`, merged 6bad423, deployed)
 
 Owner report: "no option to send a document, video or any image in channel". The bot only
 ever granted ViewChannel/SendMessages/ReadMessageHistory. New leaf

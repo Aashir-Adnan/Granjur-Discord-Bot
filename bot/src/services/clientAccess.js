@@ -7,7 +7,7 @@ import { updateGuildConfig } from '../db/index.js'
 import {
   ROLE_CLIENT, ROLE_COLORS, CATEGORY_SUPPORT, CHANNEL_SUPPORT, CHANNEL_SUPPORT_VOICE, CATEGORY_BOLD_NAMES,
 } from '../constants.js'
-import { clientManual, MANUAL_TITLE } from './clientManual.js'
+import { clientManual, manualUpToDate, MANUAL_TITLE } from './clientManual.js'
 import { TEXT_ALLOW, TEXT_ALLOW_OBJ, VOICE_EXTRA, bitsOf, textFlagsOf, viewerTextGaps } from '../utils/textAllow.js'
 import { isTicketChannel } from '../utils/taskChannelName.js'
 
@@ -201,11 +201,33 @@ export async function ensureManualPinned(text, botUserId) {
       return
     }
   }
-  const have = pinned && [...pinned.values()].some((m) =>
-    (!botUserId || m?.author?.id === botUserId) && (m?.embeds ?? []).some((e) => (e?.title ?? e?.data?.title) === MANUAL_TITLE))
-  if (have) return
+  const isManual = (e) => (e?.title ?? e?.data?.title) === MANUAL_TITLE
+  const ours = pinned
+    ? [...pinned.values()].filter((m) => (!botUserId || m?.author?.id === botUserId) && (m?.embeds ?? []).some(isManual))
+    : []
+  const current = ours.find((m) => (m.embeds ?? []).some((e) => isManual(e) && manualUpToDate(e)))
+  if (current) return { action: 'kept' }
+
+  // A manual is pinned but says something older (a command was added since):
+  // rewrite it where it is. Nobody but the bot holds Manage Messages in a
+  // support channel, so an operator cannot unpin it by hand, and should not
+  // have to. Only when the message cannot be edited (not ours after all, or
+  // Discord refuses) is it unpinned and a fresh one posted and pinned.
+  const stale = ours[0] ?? null
+  if (stale) {
+    if (typeof stale.edit === 'function') {
+      try {
+        await stale.edit({ embeds: [clientManual()] })
+        return { action: 'edited' }
+      } catch (e) {
+        console.warn(`[clientAccess] the pinned manual in #${text?.name} could not be edited; replacing it:`, e?.message || e)
+      }
+    }
+    await stale.unpin?.().catch((e) => console.warn(`[clientAccess] unpin in #${text?.name}:`, e?.message || e))
+  }
   const msg = await text.send({ embeds: [clientManual()] })
   await msg?.pin?.().catch(() => {})
+  return { action: stale ? 'replaced' : 'posted' }
 }
 
 /** The global ticket categories, found the way `getOrCreateCategory` finds them — by name, bold or plain. */

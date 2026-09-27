@@ -195,6 +195,17 @@ quoting the manual's title in their own pinned message can never be mistaken for
 both pass `interaction.client?.user?.id ?? null` (`/init` uses `guild.client?.user?.id`,
 the same client instance, since `runInit` only receives the `guild`).
 
+**The manual refreshes itself (2026-09-27).** Nobody but the bot holds Manage Messages in
+a support channel, so an operator cannot unpin a stale manual by hand — and does not
+need to. `ensureManualPinned` compares the bot's pinned manual against `clientManual()`
+(`manualUpToDate` in `clientManual.js`: title, description, field names and values) and,
+when it differs (a command was added, wording changed), **edits the pinned message in
+place**. Only if the edit is refused does it unpin, post and pin a fresh one. A message by
+somebody else carrying the manual's title is never edited or unpinned. Returns
+`{ action: 'kept' | 'edited' | 'replaced' | 'posted' }`. So after any change to the
+manual, `/setup` refreshes `#support` and `/project-setup` refreshes every project's
+support channel; no manual step.
+
 `ensureSupportChannels(guild, cfg, { update, botUserId })` is called by the first client
 approval, by `/init` (after the permission pass and the senior/dashboard config update,
 so `verifiedRoleId` and the freshly-saved `clientRoleId` are both in the config it

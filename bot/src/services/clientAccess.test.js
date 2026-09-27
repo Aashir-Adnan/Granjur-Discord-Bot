@@ -1,8 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
-import { ensureClientRole, ensureSupportChannels, supportOverwrites, everyoneCanView, upgradeGlobalTicketAllows } from './clientAccess.js'
-import { MANUAL_TITLE } from './clientManual.js'
+import { ensureClientRole, ensureSupportChannels, supportOverwrites, everyoneCanView, upgradeGlobalTicketAllows, ensureManualPinned } from './clientAccess.js'
+import { MANUAL_TITLE, clientManual } from './clientManual.js'
+
+/** A pinned manual that says exactly what the bot would post today. */
+const currentManual = () => ({ author: { id: 'bot' }, embeds: [clientManual().toJSON()] })
 
 let nextId = 100
 function fakeChannel(name, { type = ChannelType.GuildText, parentId = null, overwrites = [], pinned = [] } = {}) {
@@ -100,7 +103,7 @@ test('ensureSupportChannels builds the category and both channels, persists ids,
 test('ensureSupportChannels reuses stored ids, repairs only a missing overwrite, and does not re-post a pinned manual', async () => {
   const text = fakeChannel('support', {
     overwrites: [{ id: 'g1', type: OverwriteType.Role }, { id: 'r-verified', type: OverwriteType.Role }],
-    pinned: [{ author: { id: 'bot' }, embeds: [{ title: MANUAL_TITLE }] }],
+    pinned: [currentManual()],
   })
   const voice = fakeChannel('support-voice', { type: ChannelType.GuildVoice, overwrites: [{ id: 'g1' }, { id: 'r-client' }, { id: 'r-verified' }] })
   const guild = fakeGuild({ roles: [{ id: 'r-client', name: 'Client' }], channels: [text, voice] })
@@ -124,7 +127,7 @@ function supportPairWith(textEntries, voiceEntries) {
   const everyone = { id: 'g1', type: OverwriteType.Role, allow: 0n, deny: P.ViewChannel }
   const text = fakeChannel('support', {
     overwrites: [everyone, ...textEntries],
-    pinned: [{ author: { id: 'bot' }, embeds: [{ title: MANUAL_TITLE }] }],
+    pinned: [currentManual()],
   })
   const voice = fakeChannel('support-voice', { type: ChannelType.GuildVoice, overwrites: [everyone, ...voiceEntries] })
   const guild = fakeGuild({ roles: [{ id: 'r-client', name: 'Client' }], channels: [text, voice] })
@@ -316,7 +319,7 @@ test('the public-channel deny is presence-only: a second run edits nothing', asy
 test('a stored channel id missing from a cold cache is fetched, not duplicated', async () => {
   const text = fakeChannel('support', {
     overwrites: [{ id: 'g1' }, { id: 'r-client' }, { id: 'r-verified' }],
-    pinned: [{ author: { id: 'bot' }, embeds: [{ title: MANUAL_TITLE }] }],
+    pinned: [currentManual()],
   })
   const voice = fakeChannel('support-voice', { type: ChannelType.GuildVoice, overwrites: [{ id: 'g1' }, { id: 'r-client' }, { id: 'r-verified' }] })
   const guild = fakeGuild({ roles: [{ id: 'r-client', name: 'Client' }], uncached: [text, voice] })
@@ -358,4 +361,67 @@ test('everyoneCanView: the channel overwrite decides, else the guild @everyone r
   const noRole = { id: 'g1', roles: {} }
   assert.equal(everyoneCanView(noRole, fakeChannel('d')), false, 'no overwrite and no readable role: not visible')
   assert.equal(everyoneCanView(noRole, fakeChannel('e', { overwrites: [{ id: 'g1', type: OverwriteType.Role }] })), false, 'a neutral overwrite decides nothing')
+})
+
+// ---- the pinned manual refreshes itself ---------------------------------------
+// Nobody but the bot holds Manage Messages in a support channel, so an operator
+// cannot unpin a stale manual to make room for the new one. The bot rewrites it.
+function staleManual({ editFails = false, author = 'bot' } = {}) {
+  const msg = {
+    author: { id: author },
+    embeds: [{ title: MANUAL_TITLE, description: 'old wording', fields: [{ name: '/report-issue', value: 'x' }] }],
+    edits: [], unpinned: false,
+    edit: async (p) => { if (editFails) throw new Error('Missing Permissions'); msg.edits.push(p) },
+    unpin: async () => { msg.unpinned = true },
+  }
+  return msg
+}
+
+test('a pinned manual that says what the current manual says is left alone', async () => {
+  const text = fakeChannel('support', { pinned: [currentManual()] })
+  const out = await ensureManualPinned(text, 'bot')
+  assert.deepEqual(out, { action: 'kept' })
+  assert.equal(text.sent.length, 0)
+})
+
+test('a stale pinned manual is rewritten in place: no unpin, no new message', async () => {
+  const stale = staleManual()
+  const text = fakeChannel('support', { pinned: [stale] })
+  const out = await ensureManualPinned(text, 'bot')
+  assert.deepEqual(out, { action: 'edited' })
+  assert.equal(stale.edits.length, 1)
+  assert.equal(stale.edits[0].embeds[0].toJSON().title, MANUAL_TITLE)
+  assert.match(JSON.stringify(stale.edits[0].embeds[0].toJSON()), /request-task/)
+  assert.equal(stale.unpinned, false)
+  assert.equal(text.sent.length, 0)
+})
+
+test('a stale manual the bot cannot edit is unpinned and a fresh one is posted and pinned', async () => {
+  const stale = staleManual({ editFails: true })
+  const text = fakeChannel('support', { pinned: [stale] })
+  const real = console.warn
+  console.warn = () => {}
+  let out
+  try { out = await ensureManualPinned(text, 'bot') } finally { console.warn = real }
+  assert.deepEqual(out, { action: 'replaced' })
+  assert.equal(stale.unpinned, true)
+  assert.equal(text.sent.length, 1)
+  assert.equal(text.sent[0].pinned, true)
+})
+
+test('a pinned message by somebody else that carries the manual title is not ours to touch', async () => {
+  const theirs = staleManual({ author: 'human' })
+  const text = fakeChannel('support', { pinned: [theirs] })
+  const out = await ensureManualPinned(text, 'bot')
+  assert.deepEqual(out, { action: 'posted' })
+  assert.equal(theirs.edits.length, 0)
+  assert.equal(theirs.unpinned, false)
+  assert.equal(text.sent.length, 1)
+})
+
+test('with nothing pinned the manual is posted and pinned', async () => {
+  const text = fakeChannel('support')
+  const out = await ensureManualPinned(text, 'bot')
+  assert.deepEqual(out, { action: 'posted' })
+  assert.equal(text.sent[0].pinned, true)
 })
