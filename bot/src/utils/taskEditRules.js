@@ -67,7 +67,7 @@ function holdersFrom(value, memberIds) {
   if (!ids) return ['holderIds must be a list of Discord ids.']
   if (ids.length > MAX_IDS) return [`A task can have at most ${MAX_IDS} people.`]
   const stranger = ids.find((id) => !memberIds.has(id))
-  if (stranger) return [`${stranger} is not a member of this Discord server.`]
+  if (stranger) return [`Member …${stranger.slice(-4)} is not a member of this Discord server.`]
   return [null, ids]
 }
 

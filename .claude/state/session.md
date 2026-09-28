@@ -3,7 +3,7 @@
 **Date:** 2026-09-28
 
 ## Outcome
-BUILT: Create and edit Discord-bot tasks from the UBS-Doc site. Owner request delivered end-to-end across three repos (bot, CSAAS, UBS-Doc) on branch `feat/site-task-edit`. All tests green (bot 1283, CSAAS all 13 discord-tasks scripts pass, site 316 tests pass + tsc clean + build succeeds). Awaiting rollout.
+BUILT: Create and edit Discord-bot tasks from the UBS-Doc site. Owner request delivered end-to-end across three repos (bot, CSAAS, UBS-Doc) on branch `feat/site-task-edit`. All tests green (bot 1283, CSAAS all 12 discord-tasks scripts pass, site 316 tests pass + tsc clean + build succeeds). Awaiting rollout.
 
 ## What was built
 - **Bot** internal routes: `POST /internal/tasks/create`, `POST /internal/tasks/update`, `POST /internal/tasks/subtask` (beside existing `/internal/tasks/status`) — all guarded by `x-internal-secret` and return 503 when `BOT_INTERNAL_SECRET` is unset.
@@ -21,7 +21,7 @@ See `backlog.md` "Site create/edit — rollout" for tasks:
 2. Bot first: `pm2 logs granjur-bot` should show internal task routes enabled.
 3. CSAAS deployment unknown: "Deploy to Azure" workflow has not run on main since 2026-09-12.
 4. Live checks: create a feature, see channel in project; edit it, see "(via the site) updated this task" post; add subtask; visual pass (light/dark).
-5. Security note: create/update/subtask routes find by task id (no guild scope) — update_discord_tasks holder can edit another server's tasks if second server onboarded.
+5. Security note: update/subtask routes find by task id (no guild scope) — create looks up the project instead — update_discord_tasks holder can edit another server's tasks if second server onboarded.
 6. Creator mention: site-created task's opening message @mentions email-matched creator.
 7. Deferred minors from review: 6 items documented in backlog (preselect guard, form keying, memoize, picker nav, error handling, guarded response text).
 

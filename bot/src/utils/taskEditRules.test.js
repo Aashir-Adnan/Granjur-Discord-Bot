@@ -62,7 +62,7 @@ test('projectId: a known project writes id and name together; null detaches', ()
 test('holderIds: members only, deduped, order-insensitive, at most 50', () => {
   assert.deepEqual(edit({ holderIds: ['u2', 'u1', 'u2'] }).updates, { assigneeIds: ['u2', 'u1'] })
   assert.deepEqual(edit({ holderIds: ['u1'] }).updates, {})
-  assert.equal(edit({ holderIds: ['u9'] }).error, 'u9 is not a member of this Discord server.')
+  assert.equal(edit({ holderIds: ['u9'] }).error, 'Member …u9 is not a member of this Discord server.')
   assert.equal(edit({ holderIds: 'u1' }).error, 'holderIds must be a list of Discord ids.')
   const many = new Set(Array.from({ length: 51 }, (_, i) => `m${i}`))
   assert.equal(edit({ holderIds: [...many] }, task, { ...ctx, memberIds: many }).error, 'A task can have at most 50 people.')
@@ -131,7 +131,7 @@ test('create refusals', () => {
   assert.equal(create({ type: 'bug', title: 'x', repositoryIds: ['R1', 'R2'] }).error, 'A bug can name one repository.')
   assert.equal(create({ type: 'bug', title: 'x', modules: ['auth'] }).error, 'Modules are for features only.')
   assert.equal(create({ type: 'feature', title: 'x', repositoryIds: ['R9'] }).error, 'No repository matches R9.')
-  assert.equal(create({ type: 'feature', title: 'x', holderIds: ['u9'] }).error, 'u9 is not a member of this Discord server.')
+  assert.equal(create({ type: 'feature', title: 'x', holderIds: ['u9'] }).error, 'Member …u9 is not a member of this Discord server.')
   assert.equal(create({ type: 'feature', title: 'x', modules: ['m'.repeat(101)] }).error, 'A module name can be at most 100 characters.')
 })
 test('a bug with one repository and no lists is fine', () => {

@@ -8,9 +8,9 @@ function parseRepoUrl(url) {
   return match ? { owner: match[1], repo: match[2].replace(/\.git$/, '') } : null
 }
 
-async function gh(path, options = {}) {
+async function gh(path, { fetchImpl = fetch, ...options } = {}) {
   const base = 'https://api.github.com'
-  const res = await fetch(`${base}${path}`, {
+  const res = await fetchImpl(`${base}${path}`, {
     ...options,
     headers: {
       Accept: 'application/vnd.github.v3+json',
@@ -29,13 +29,21 @@ async function gh(path, options = {}) {
   return data
 }
 
-export async function createIssue(repoUrl, title, body) {
+/**
+ * @param {{fetchImpl?: typeof fetch}} [opts] test-only seam; production callers
+ *   never pass it, so behaviour is unchanged (real `fetch`, no signature break).
+ */
+export async function createIssue(repoUrl, title, body, { fetchImpl } = {}) {
   const p = parseRepoUrl(repoUrl)
   if (!p || !token) return null
+  // Bounded so a hung GitHub call can't hold `createTask` open long enough to
+  // make CSAAS's own wait time out and the site report a false "offline".
   const res = await gh(`/repos/${p.owner}/${p.repo}/issues`, {
     method: 'POST',
     body: JSON.stringify({ title, body }),
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(8000),
+    fetchImpl,
   })
   return { url: res.html_url, number: res.number }
 }

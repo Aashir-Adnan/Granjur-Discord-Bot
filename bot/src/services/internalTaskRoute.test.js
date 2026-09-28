@@ -210,7 +210,7 @@ test('create: validated fields, the bug repo row and a site actor reach createTa
 })
 test('create: an unknown member is a 400', async () => {
   const r = await handleCreateRequest({ headers: H, body: { type: 'feature', title: 'x', projectId: 'P1', holderIds: ['u9'] }, db: routeDb(), client: guildClient, secret: 's3cret' })
-  assert.equal(r.status, 400); assert.equal(r.body.message, 'u9 is not a member of this Discord server.')
+  assert.equal(r.status, 400); assert.equal(r.body.message, 'Member …u9 is not a member of this Discord server.')
 })
 
 test('subtask: title required, 404 for an unknown parent, members checked', async () => {

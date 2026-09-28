@@ -567,7 +567,7 @@ activity log still shows the right person by name. **Create is the one exception
 purpose**: `handleCreateRequest` passes `actor: { discordId: activityId, label,
 viaSite: true }` to `createTask`, because `createdByField` only ever puts that value
 in the opening embed's "Created by" field (`<@id>` when matched, the plain label
-otherwise) — it is never one of the channel's `memberIds`/holders. The creator is
+otherwise) — it is never one of the holders. The creator is
 admitted to the new channel (`taskCreate.js` appends `creator` to `members`) but is
 never added to `holderIds`/`assigneeIds` — being let into the channel and being
 made a holder are different things.
