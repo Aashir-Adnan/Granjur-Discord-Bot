@@ -7,19 +7,15 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  ChannelType,
-  PermissionFlagsBits,
-  OverwriteType,
   ButtonBuilder,
   ButtonStyle,
 } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
-import { getOrCreateCategory } from '../utils/categories.js'
 import { createTaskTicketChannel } from '../services/taskTicketChannel.js'
 import { createIssue } from '../services/github.js'
-import { CATEGORY_BOLD_NAMES, CATEGORY_SOFT_CAP } from '../constants.js'
-import { TEXT_ALLOW } from '../utils/textAllow.js'
+import { createTask } from '../services/taskCreate.js'
+import { CATEGORY_SOFT_CAP } from '../constants.js'
 import { EPHEMERAL } from '../constants.js'
 import { SCOPE_CHOICES, scopeLabel, isValidScope } from '../utils/taskScope.js'
 
@@ -778,7 +774,7 @@ export function channelPlacementNote(mention, project, fellBack) {
  */
 export async function handleCreate(
   interaction,
-  { db: dbArg = db, getConfig = getOrCreateGuildConfig, createChannel = createTaskTicketChannel } = {}
+  { db: dbArg = db, getConfig = getOrCreateGuildConfig, createChannel = createTaskTicketChannel, openIssue = createIssue } = {}
 ) {
   const guild = interaction.guild
   if (!guild) return
@@ -788,144 +784,39 @@ export async function handleCreate(
   const cfg = await getConfig(guild.id)
   const isFeature = state.taskType === 'feature'
 
-  const passedApiTests = (state.hasApiTest === true) ? 0 : null
-  const passedQaTests = (state.hasQaTest === true) ? 0 : null
-  const passedAcceptanceCriteria = (state.hasAc === true) ? 0 : null
-
   try {
+    // Tasks belong to the real `project` table (Framework, Badar HMS, CSAAS),
+    // not `projectschema`, which is a dump-versioning table with no rows.
+    const firstProject = isFeature && state.projectIds?.[0]
+      ? await dbArg.project.findFirst({ where: { id: state.projectIds[0] } })
+      : null
+    const fields = {
+      type: isFeature ? 'feature' : 'bug',
+      title: state.title,
+      description: state.description ?? null,
+      scope: state.scope ?? null,
+      modules: state.modules || [],
+      holderIds: isFeature ? (state.assigneeIds || []) : (state.taggedMemberIds || []),
+      repositoryIds: isFeature ? (state.repositoryIds || []) : [],
+      tracks: { apiTests: state.hasApiTest === true, qaTests: state.hasQaTest === true, acceptanceCriteria: state.hasAc === true },
+    }
+    const { channel, fellBack, issueUrl } = await createTask({
+      db: dbArg, guild, cfg, fields,
+      project: firstProject,
+      // Carries state.repositoryId even without state.repo, as the old code wrote it.
+      repo: isFeature || (!state.repositoryId && !state.repo)
+        ? null
+        : { ...(state.repo || {}), id: state.repositoryId ?? state.repo?.id ?? null },
+      actor: { discordId: interaction.user.id },
+      createChannel, openIssue,
+    })
+    flowStore.clear(interaction.user.id, guild.id, FLOW_KEY)
     if (isFeature) {
-      const assigneeIds = state.assigneeIds || []
-      const uniqueSet = [...new Set([interaction.user.id, ...assigneeIds].filter(Boolean))]
-      const firstRepoId = state.repositoryIds?.[0] ?? null
-      // Tasks belong to the real `project` table (Framework, Badar HMS, CSAAS),
-      // not `projectschema`, which is a dump-versioning table with no rows.
-      const firstProject = state.projectIds?.[0] ? await dbArg.project.findFirst({ where: { id: state.projectIds[0] } }) : null
-      const projectId = firstProject?.id ?? null
-      const projectName = firstProject?.name ?? null
-
-      const task = await dbArg.feature.create({
-        data: {
-          guildConfigId: cfg.id,
-          repositoryId: firstRepoId,
-          projectId,
-          projectName,
-          title: state.title,
-          description: state.description ?? null,
-          createdBy: interaction.user.id,
-          assigneeIds,
-          status: 'open',
-          modules: state.modules || [],
-          scope: state.scope ?? null,
-          implementationStatus: 'not_started',
-          passedApiTests,
-          passedQaTests,
-          passedAcceptanceCriteria,
-        },
-      })
-
-      if (state.repositoryIds?.length) await dbArg.featureRepositories.add(task.id, state.repositoryIds)
-      await dbArg.ticketDoc.create({ data: { guildConfigId: cfg.id, ticketType: 'feature', taskId: task.id, title: state.title?.slice(0, 512) || 'Feature', content: null } })
-
-      // Lands in the project's own section when one was picked and its
-      // category still has room; otherwise the global Features category,
-      // exactly as before createTaskTicketChannel knew about projects — and
-      // `fellBack` is why, for the reply.
-      const scopeMod = [scopeLabel(state.scope), (state.modules?.length ? state.modules.join(', ') : null)].filter(Boolean).join(' · ')
-      const { channel, fellBack } = await createChannel(guild, {
-        taskId: task.id,
-        title: state.title,
-        description: state.description,
-        memberIds: uniqueSet,
-        project: firstProject,
-        type: 'feature',
-        status: 'open',
-        fields: [
-          { name: 'Status', value: 'open', inline: true },
-          { name: 'Assignees', value: (assigneeIds.map((id) => `<@${id}>`).join(' ') || 'None'), inline: true },
-          { name: 'Scope / Modules', value: scopeMod || '—', inline: false },
-        ],
-        closeHint: 'Use **/close-feature** in this channel when done.',
-        // Straight after the create, before the opening embed is sent: a `send`
-        // that throws must not leave a channel with no row pointing at it.
-        onCreated: (made) => dbArg.feature.update({ where: { id: task.id }, data: { discordChannelId: made.id } }),
-      })
-
-      flowStore.clear(interaction.user.id, guild.id, FLOW_KEY)
       await respond(interaction, {
-        embeds: [
-          new EmbedBuilder()
-            .setTitle('Feature task created')
-            .setDescription(channelPlacementNote(`<#${channel.id}>`, firstProject, fellBack))
-            .setColor(0x57f287),
-        ],
+        embeds: [new EmbedBuilder().setTitle('Feature task created').setDescription(channelPlacementNote(`<#${channel.id}>`, firstProject, fellBack)).setColor(0x57f287)],
         components: [],
       })
     } else {
-      const taggedIds = state.taggedMemberIds || []
-      const uniqueParticipants = [...new Set([interaction.user.id, ...taggedIds])]
-      const taggedMentions = taggedIds.map((id) => `<@${id}>`).join(' ')
-
-      const task = await dbArg.bugTicket.create({
-        data: {
-          guildConfigId: cfg.id,
-          repositoryId: state.repositoryId,
-          title: state.title,
-          description: state.description || null,
-          status: 'pending',
-          taggedMemberIds: taggedIds,
-          createdBy: interaction.user.id,
-          scope: state.scope ?? null,
-          passedApiTests,
-          passedQaTests,
-          passedAcceptanceCriteria,
-        },
-      })
-
-      let issueUrl = ''
-      if (state.repo?.url) {
-        try {
-          const body = [state.description || '', `\n---\n**Tagged:** ${taggedMentions || 'none'}`, `**Ticket ID:** ${task.id}`].join('\n')
-          const res = await createIssue(state.repo.url, state.title, body)
-          if (res?.url) {
-            issueUrl = res.url
-            await dbArg.bugTicket.update({ where: { id: task.id }, data: { externalIssueUrl: res.url, externalIssueNumber: res.number } })
-          }
-        } catch (_) {}
-      }
-
-      await dbArg.ticketDoc.create({ data: { guildConfigId: cfg.id, ticketType: 'bug', taskId: task.id, title: (state.title || 'Bug').slice(0, 512), content: null } })
-
-      const category = await getOrCreateCategory(guild, 'Bugs', { orNames: [CATEGORY_BOLD_NAMES['Bugs']].filter(Boolean) })
-      const overwrites = [
-        { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
-        ...uniqueParticipants.map((id) => ({ id, type: OverwriteType.Member, allow: TEXT_ALLOW })),
-      ]
-      const channel = await guild.channels.create({
-        name: `bug-${task.id.slice(-6)}`,
-        type: ChannelType.GuildText,
-        parent: category.id,
-        topic: `Bug: ${state.title} | Repo: ${state.repo?.name || '—'}`,
-        permissionOverwrites: overwrites,
-      })
-      await dbArg.bugTicket.update({ where: { id: task.id }, data: { discordChannelId: channel.id } })
-
-      const allMentions = uniqueParticipants.map((id) => `<@${id}>`).join(' ')
-      const embed = new EmbedBuilder()
-        .setTitle(`Bug: ${state.title}`)
-        .setDescription((state.description || 'No description.').slice(0, 1000))
-        .addFields(
-          { name: 'Status', value: 'pending', inline: true },
-          { name: 'Scope', value: scopeLabel(state.scope) || '—', inline: true },
-          { name: 'Tagged', value: taggedMentions || 'None', inline: true },
-          { name: 'Repository', value: state.repo?.url || '—', inline: false },
-          { name: 'Resolve', value: 'Use **/resolve-bug** in this channel when fixed.', inline: false },
-          ...(issueUrl ? [{ name: 'Issue', value: issueUrl, inline: false }] : [])
-        )
-        .setFooter({ text: `Ticket ID: ${task.id}` })
-        .setColor(0xed4245)
-      await channel.send({ content: allMentions || null, embeds: [embed] })
-
-      flowStore.clear(interaction.user.id, guild.id, FLOW_KEY)
       await respond(interaction, {
         embeds: [new EmbedBuilder().setTitle('Bug task created').setDescription(`Channel: ${channel}${issueUrl ? `\nIssue: ${issueUrl}` : ''}`).setColor(0x57f287)],
         components: [],
