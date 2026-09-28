@@ -74,9 +74,15 @@ email guess for attribution:
    and that `discordId` not already linked to another user → insert a link with
    `linked_via = 'email'` (`INSERT IGNORE`, so two concurrent requests cannot fail).
    Zero or several rows → no link for that guild.
-4. `seesAll` is true when `actorIsRoleAdmin` (Platform Admin/Admin, admin emails) is
-   true, or when any linked member's `guildmember.roleNames` contains `CEO` or
-   `Server Manager` (the bot's `LEADERSHIP_ROLE_NAMES`).
+4. `seesAll` is true when the user is a site admin — an active URDD whose role is
+   `Admin` or `Platform Admin`, or an email in the admin allowlist (`actorIsRoleAdmin`
+   alone covers only Platform Admin and the allowlist, not the org `Admin` role) — or
+   when any linked member's `guildmember.roleNames` contains `CEO` or `Server Manager`
+   (the bot's `LEADERSHIP_ROLE_NAMES`). The admin part alone is `isAdmin`, which gates
+   the link-management endpoints.
+5. CSAAS tables and the bot's `granjur.*` tables are never JOINed on string columns
+   (their collations can differ, which makes MySQL refuse the comparison); each side is
+   queried separately and joined in JavaScript.
 
 ### 3. Linking by code (bot + CSAAS + site)
 
@@ -96,7 +102,7 @@ email guess for attribution:
   discordId, name, avatarUrl, via }], seesAll }`.
 - **CSAAS (admin):** `GET /api/discord/identity/links` and `POST
   /api/discord/identity/unlink` `{ user_id, guild_config_id }` — both require
-  `actorIsRoleAdmin`; unlink deletes the row so the person can link again.
+  `isAdmin` (section 2); unlink deletes the row so the person can link again.
 
 ### 4. Reading, scoped (CSAAS)
 
@@ -109,8 +115,9 @@ email guess for attribution:
   - **visible tasks** = every task in a visible project, plus tasks the caller holds that
     have no project (holding a task in a project already makes that project visible);
   - a reference to an invisible task (`blockedBy`, `blocks`, `parent`, `subtasks`) is
-    reduced to `{ id, hidden: true }` — no title, status or people — and the site renders
-    it as "a task in another project";
+    reduced to `{ id, title: 'A task in another project', status, hidden: true }` — the
+    real title and people never leave CSAAS; the status stays so "blocked" still reads
+    correctly — and the site renders it as plain text, not a link;
   - `members[]` stays the full roster (assigning anyone remains possible), but each
     member's `projects` list is trimmed to visible projects;
   - `repositories` unchanged.
