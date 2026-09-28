@@ -126,6 +126,27 @@ test('syncParent never throws: a failing parent update is logged and reported as
   assert.equal(await syncParent({ db, client, parentId: null, notify, apply }), null)
 })
 
+test('createSubtask: a site actor is the creator and the activity actor, never a mention', async () => {
+  const log = []
+  const db = {
+    task: {
+      findChildren: async () => [],
+      create: async ({ data }) => { log.push(['create', data.createdBy]); return { id: 'S1', ...data } },
+      findFirst: async () => null,
+    },
+    taskActivity: { add: async ({ data }) => { log.push(['activity', data.actorDiscordId, data.actorLabel]) } },
+  }
+  let notified
+  await createSubtask({
+    db, client: {}, guild: null, parent: { id: 'P', guildConfigId: 'g1', parentTaskId: null }, fields: { title: 'x' },
+    actor: { activityId: 'u-site', label: 'Ana (via the site)' },
+    notify: async (a) => { notified = a }, apply: async () => ({}),
+  })
+  assert.deepEqual(log.slice(0, 2), [['create', 'u-site'], ['activity', 'u-site', 'Ana (via the site)']])
+  assert.equal(notified.actorId, null)
+  assert.equal(notified.actorLabel, 'Ana (via the site)')
+})
+
 // ------------------------------------------------------- creating subtasks ----
 
 const fields = { title: '  Write tests  ', description: 'Cover the rules', scope: 'qa', assigneeIds: ['u2', 'u2', 'u3'] }

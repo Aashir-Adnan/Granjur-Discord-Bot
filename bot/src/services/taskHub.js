@@ -26,6 +26,7 @@ import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.j
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
 import { BAD_DURATION, MAX_STORABLE_MINUTES as MAX_ESTIMATE_MINUTES, formatDuration, parseDuration } from '../utils/timeTracking.js'
 import { wouldCycle } from '../utils/taskDeps.js'
+import { ESTIMATE_TOO_LARGE, MAX_TEST_COUNT } from '../utils/taskEditRules.js'
 import { notifyTaskUpdate } from './taskUpdateNotify.js'
 import { applyTaskUpdate } from './taskStatusChange.js'
 import { createSubtask } from './taskHierarchy.js'
@@ -36,9 +37,7 @@ export const EDIT_MODAL_PREFIX = 'ut_edit:'
 export const COUNTS_MODAL_PREFIX = 'ut_counts:'
 export const SUBTASK_MODAL_PREFIX = 'ut_sub:'
 const NONE = '-'
-export const MAX_TEST_COUNT = 127 // the column is a signed TINYINT
-export { MAX_ESTIMATE_MINUTES }
-const ESTIMATE_TOO_LARGE = 'That estimate is too large to store.'
+export { MAX_ESTIMATE_MINUTES, MAX_TEST_COUNT }
 export const NOT_FOUND = 'That task is not available to you any more. Run **/update-task** again.'
 
 const STATUS_OPTIONS = [

@@ -75,7 +75,7 @@ export async function createSubtask({
       title: title.slice(0, 200),
       description: fields?.description ? String(fields.description).slice(0, 2000) : null,
       status: 'open',
-      createdBy: actor.discordId ?? null,
+      createdBy: actor.discordId ?? actor.activityId ?? null,
       assigneeIds,
       scope: fields?.scope || null,
       repositoryId: parent.repositoryId ?? null,
@@ -86,7 +86,8 @@ export async function createSubtask({
   })
 
   await recordTaskActivity({
-    db: dbArg, task: parent, changes: [{ field: 'subtask', action: 'added', title: child.title }], actor,
+    db: dbArg, task: parent, changes: [{ field: 'subtask', action: 'added', title: child.title }],
+    actor: { discordId: actor.discordId ?? actor.activityId ?? null, label: actor.label ?? null },
   })
 
   // Tell the parent's channel, and DM whoever was assigned. Best-effort.

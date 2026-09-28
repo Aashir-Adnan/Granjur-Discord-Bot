@@ -4,6 +4,19 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Site create/edit — rollout (branch `feat/site-task-edit` in all three repos, 2026-09-28)
+
+- Deploy order bot → CSAAS → site. No new env values (BOT_INTERNAL_SECRET / DISCORD_BOT_SECRET + DISCORD_BOT_URL already cover the new routes).
+- Bot first: `pm2 logs granjur-bot` shows the internal task routes enabled.
+- CSAAS: the `Deploy to Azure` workflow has not run on `main` since 2026-09-12 — confirm how CSAAS is actually deployed before relying on a push.
+- First live check: create a feature on the site, see its channel in the project's section; edit it and see one "(via the site) updated this task" post; add a subtask.
+- The edit form and create page were never looked at in a browser during the build (no portal sign-in available) — do a visual pass in light and dark mode.
+- Before a second Discord server is onboarded: the update and add-subtask routes (like the status route) find tasks by id with no guild scope, so an update_discord_tasks holder could edit another server's tasks.
+- A site-created task's opening channel message @mentions the email-matched creator (like /create-task's invoker).
+- Deferred minors from review: create page's ?project= preselect re-selects after the user clears the project select (guard with a ref); key TaskEditForm by task.id so back/forward while editing cannot show the previous task's form; memoize formFromTask in TaskEditForm; member picker has no arrow-key navigation; applyEdit's unblock loop ignores dep.error (unblock never errors today); guarded() 500 returns raw error text to CSAAS.
+
+---
+
 ## Six-bit text allow — rollout and follow-ups (branch `feat/attach-files`, 2026-09-25)
 See "Text permissions" in `.claude/knowledge/project-sections.md`.
 

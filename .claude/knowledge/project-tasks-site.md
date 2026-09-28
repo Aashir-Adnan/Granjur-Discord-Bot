@@ -499,6 +499,87 @@ server (production). Fixed in Task 1; every query here is now lowercase.
 - Charts are hand-rolled SVG in `src/screens/team/charts/`; all math is in
   `statsLogic.ts` (tested). No chart library.
 
+## Site create, edit and add-subtask (2026-09-28)
+
+Three more internal routes alongside `/internal/tasks/status`, all in
+`bot/src/services/internalTaskRoute.js`, dispatched from one table in
+`bot/src/server.js` (`INTERNAL_ROUTES`, body capped at `INTERNAL_MAX_BODY = 64 * 1024`
+via the existing `readBody` helper — a create's body, worst case a 2000-char
+description plus id lists, sits well under this). Every route: **503**
+`internal route not configured` when `BOT_INTERNAL_SECRET` is unset (checked first),
+**401** `unauthorized` on a wrong/missing `x-internal-secret` header, **500** on
+anything thrown and not caught more specifically. The startup log line is now
+`[internal] task routes enabled` / `disabled: BOT_INTERNAL_SECRET unset` (renamed
+from the old status-only wording).
+
+- **`POST /internal/tasks/update`** — `{ taskId, changes, actor: { email, name } }` →
+  200 `{ ok: true, task: { id, status }, warning, lines, unchanged }`; 400
+  `{ ok:false, message }`; 404 `Task not found`; 409 `{ ok:false, message }`.
+- **`POST /internal/tasks/create`** — `{ type, title, description, projectId, scope,
+  modules, holderIds, repositoryIds, tracks: { apiTests, qaTests, acceptanceCriteria },
+  actor }` → 200 `{ ok: true, task: { id, type, status, projectId }, channelId,
+  fellBack, note }`; 400; 500 when the guild is not in the bot's cache (the project
+  names a `guildConfigId` whose `guildId` the running bot doesn't have in
+  `client.guilds.cache` — a config/deploy problem, not a bad request).
+- **`POST /internal/tasks/subtask`** — `{ parentId, title, holderIds, actor }` → 200
+  `{ ok: true, task: { id, status, parentId } }`; 400; 404; 409 (a `TaskRuleError` —
+  parent is itself a subtask, or already has 25 — surfaces as 409, not 500).
+
+**Validation is whole-request, before any write.** `update` and `create` both load
+just enough context (the named project if any, the guild's member ids if `holderIds`
+is present, the named blocker tasks and the guild's dependency rows if `blockerIds`
+is present) and hand it to the pure checkers in `utils/taskEditRules.js`
+(`validateEdit(task, changes, ctx)`, `validateCreate(input, ctx)` — Task 1's leaf
+module, importing only other `utils/` files). Any refusal there is a **400** with
+nothing written: not the task row, not a blocker edge, not even the fields beside
+the bad one in the same request (the blocker-cycle test in
+`internalTaskRoute.test.js` covers this — a bad `blockerIds` value refuses the
+whole update, including the otherwise-valid `title` in the same body). A refusal
+that only shows up once `applyEdit`/`createSubtask` actually runs — the state moved
+under the validated request, e.g. a subtask reopened or a blocker row deleted
+between validation and write — is a **409**, not a 400: the request was fine when
+checked, the world changed first.
+
+**Holders write to `assigneeIds` for every task type** — bug or feature — exactly as
+`/update-task` and the task hub already do; only `holdersOf(task)` (which falls back
+to `taggedMemberIds` when `assigneeIds` is empty) is compared against, never
+`taggedMemberIds` directly. Emptying a bug's holders down to zero also clears
+`taggedMemberIds` in the same update (`validateEdit`'s `holderIds` branch), or
+`holdersOf` would keep reporting the old tagged members since `assigneeIds` would
+be empty.
+
+**Site-created bugs with a project get a channel in that project's section**, via
+`createTaskTicketChannel` (`services/taskCreate.js`) — the same path a feature or a
+project-scoped Discord bug uses. Only a **Discord**-made bug can have no project at
+all (the site route requires one, per `validateCreate`'s "Pick a project for the
+task."); that's the one case that still falls through to the old global-Bugs-category
+code path in `createTask`.
+
+**The creator is the site actor's email match, never a mention target for
+holders.** `siteActor(db, guildConfigId, actor)` matches `actor.email` against
+`guildmember.email` and returns `{ label, activityId }` — `activityId` is a Discord
+id or null, and is **never** placed at `actor.discordId` for an update or a
+subtask (that field exists solely so a Discord-originated call can `@mention` the
+acting user in the channel post and the activity log; a site call must never
+trigger that for an edit or an add-subtask). `applyEdit`/`recordTaskActivity` read
+`actor.discordId ?? actor.activityId ?? null` for who gets credited, so the
+activity log still shows the right person by name. **Create is the one exception on
+purpose**: `handleCreateRequest` passes `actor: { discordId: activityId, label,
+viaSite: true }` to `createTask`, because `createdByField` only ever puts that value
+in the opening embed's "Created by" field (`<@id>` when matched, the plain label
+otherwise) — it is never one of the holders. The creator is
+admitted to the new channel (`taskCreate.js` appends `creator` to `members`) but is
+never added to `holderIds`/`assigneeIds` — being let into the channel and being
+made a holder are different things.
+
+**`createSubtask` (`services/taskHierarchy.js`) accepts a site actor**: `createdBy`
+and the activity-log actor both fall back to `actor.activityId` when there's no
+`actor.discordId` (`actor.discordId ?? actor.activityId ?? null`, both at the task
+`create` call and at the `recordTaskActivity` call). The subtask's own
+`notify(...)` call is untouched — it already reads only `actor.discordId`, so a
+site-added subtask's parent-channel post names the actor by label, never a mention,
+with no further change needed there.
+
 ## Related
 
 [[project-docs]] (the other bot-to-site data path, UBS-Doc markdown into MySQL — this

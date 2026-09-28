@@ -2,6 +2,16 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-09-28 — Create and edit Discord tasks from the UBS-Doc site (BUILT, ON BRANCHES)
+
+Owner request: "we need the user to give option to create-task, update task on the ubs-doc too … on update anything which can be updated from discord should be editable from there." Three-repo build extending the write path (site forms → CSAAS endpoints → bot internal routes) with create/update/add-subtask workflows. Spec `docs/superpowers/specs/2026-09-28-site-task-create-edit-design.md`, plan `docs/superpowers/plans/2026-09-28-site-task-create-edit.md`.
+
+- **Bot** (`feat/site-task-edit`): `23b8e64` rule module (`utils/taskEditRules.js`); `6dde222` applyEdit extracted (`services/taskEdit.js`); `a8f36bf` creation service (`services/taskCreate.js`); `6652b72` internal create/update/subtask routes (`services/internalTaskRoute.js`, `server.js`, createSubtask activityId). Suite 1283 tests.
+- **CSAAS_Backend** (`feat/site-task-edit`): `6cc1459` + `615de40` botLink.js helper; `6cf7ed1` discordTasksWrite.js (create/update/subtask endpoints); `e29cb0f` repositories + member kind on the tasks read. All 12 discord-tasks scripts pass.
+- **UBS-Doc** (`feat/site-task-edit`, worktree `../UBS-Doc-site-task-edit`): `baa74f0` api + taskFormLogic; `19089fd` MemberPicker; `1db4688` TaskEditForm + AddSubtask on TaskDetail; `e2ecdfa` TaskCreate page + New task buttons. 30 files, 316 tests pass, tsc clean, build succeeds.
+
+Knowledge: `.claude/knowledge/project-tasks-site.md` gains "Site create, edit and add-subtask" section. Rollout and deferred minors documented in `backlog.md`.
+
 ## 2026-09-27 — The pinned client manual refreshes itself
 
 Owner could not unpin the stale manual in `#support` to get the one that lists
