@@ -1227,6 +1227,19 @@ async function taskActivityFindByTask({ where }) {
   return query("SELECT * FROM `taskactivity` WHERE taskId = ? ORDER BY createdAt DESC LIMIT 50", [where.taskId]);
 }
 
+// /link codes. Issuing replaces the member's unused code and clears day-old
+// rows, so the table stays tiny. The expiry is MySQL's own clock (see migration 027).
+async function discordLinkCodeIssue({ guildConfigId, discordId, code }) {
+  await query("DELETE FROM `discordlinkcode` WHERE createdAt < NOW() - INTERVAL 1 DAY", []);
+  await query("DELETE FROM `discordlinkcode` WHERE guildConfigId = ? AND discordId = ? AND usedAt IS NULL", [guildConfigId, String(discordId)]);
+  const pk = id();
+  await query(
+    "INSERT INTO `discordlinkcode` (id, guildConfigId, discordId, code, expiresAt) VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))",
+    [pk, guildConfigId, String(discordId), code],
+  );
+  return { id: pk, code };
+}
+
 // A verified member by the email they verified with — how a site user (who has
 // an email, not a Discord id) is matched to a Discord member for the activity log.
 async function guildMemberFindByConfigEmail({ where }) {
@@ -2428,6 +2441,9 @@ const db = {
   taskActivity: {
     add: taskActivityAdd,
     findByTask: taskActivityFindByTask,
+  },
+  discordLinkCode: {
+    issue: discordLinkCodeIssue,
   },
   taskDependency: {
     add: taskDependencyAdd,
