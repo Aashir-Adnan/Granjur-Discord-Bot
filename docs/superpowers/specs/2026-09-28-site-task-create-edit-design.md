@@ -139,6 +139,8 @@ actor }`.
   `[discord-tasks] <email> created|updated|added subtask …`.
 - `GET /api/discord/tasks` gains top-level `repositories: [{ id, name, url }]` from
   `granjur.repository`, `[]` if the query fails (deploy-order safe).
+- Each roster entry (`members[]`) gains `kind` (`guildmember.kind`, `'member'` when the
+  column is absent — the existing fallback select pattern).
 
 ### Site
 
@@ -150,8 +152,8 @@ actor }`.
   the bot still decides), `createPayload(form)`.
 - **Task page** (`TaskDetail.tsx`): an Edit button, shown only when
   `useActingPermissions().has('update_discord_tasks')`, swaps the read view for
-  `TaskEditForm` — every field in the table, holders as a multi-select from the roster
-  (`payload.members`), project select, blockers as a removable list plus a task picker
+  `TaskEditForm` — every field in the table, holders picked from the server's Discord
+  member list (see "Member picker" below), project select, blockers as a removable list plus a task picker
   (other tasks in the payload), Save / Cancel. Save sends `diffChanges`; nothing changed →
   no request. Success: warning (if any) as a notice, back to read view, `refresh()`.
   Failure: the message inline, the form keeps its values. A subtask checklist and an
@@ -160,6 +162,16 @@ actor }`.
   title, description, project, scope, holders (label "Assignees" / "Tagged members" by
   type), modules and repositories (feature), one repository (bug), the three "tracks …"
   switches. On success, navigate to `/tools/team/tasks/<newId>` after `refresh()`.
+- **Member picker** (shared by holders on both forms and by "Add subtask"): a searchable
+  multi-select over the server's Discord members — `payload.members`, the `guildmember`
+  roster the bot keeps in step with Discord (`memberNameSync`: at start-up, every 6 hours,
+  and on every member update). Each option shows the Discord avatar, display name and
+  `@username`; search matches either name. The selected task's project members are listed
+  first under "In this project", everyone else under "Everyone else". Only verified team
+  members are offered (`verified: true` and `kind !== 'client'`); pending joiners and
+  clients are not, matching who Discord's own task commands are for. A client can be
+  verified too, so this needs the new `kind` field on the roster (CSAAS section). A member who is already a holder but no longer
+  verified stays shown as selected so saving does not silently drop them.
 - Without the permission the buttons do not render and the create route shows the
   existing permission notice.
 
