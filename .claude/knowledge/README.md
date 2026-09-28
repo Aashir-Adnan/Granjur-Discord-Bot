@@ -41,6 +41,11 @@
   transition and 14-day retention (`ticketRetire.js`), `/project-setup`'s
   divider/reorder steps and its stale-bucket report, `/close-feature` and
   `/resolve-bug`, what clients see, known limitations and the rollout.
+- [identity-link.md](identity-link.md) — linking a UBS-Doc account to a Discord
+  member (`discord_identity_link`, auto-link by verified email or a `/link` code) and
+  scoping what a site user sees/changes to their own projects: `resolveIdentity`'s
+  `isAdmin`/`seesAll` split, `visibility.js`'s "my project" rule and hidden-ref stubs,
+  the no-cross-database-string-JOIN rule, and the site's link card and admin panel.
 - [client-role.md](client-role.md) — the `Client` role and `guildmember.kind`:
   why a client never gets `Verified`, the two `/verify` acceptance paths, the
   shared `approveMember`, `/set-roles`' refusal, the deny-by-default command

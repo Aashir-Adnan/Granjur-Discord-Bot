@@ -5,8 +5,41 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 ---
 
 ## Owner roadmap, 2026-09-28 — seven sub-projects, in build order (each: spec → plan → build)
-1. **Identity link and access scoping** — spec `docs/superpowers/specs/2026-09-28-identity-link-access-scoping-design.md`
-   (branch `feat/identity-link`). Site users see and change only their projects/tasks.
+1. **Identity link and access scoping — BUILT, NOT DEPLOYED.** Spec
+   `docs/superpowers/specs/2026-09-28-identity-link-access-scoping-design.md`, knowledge
+   `.claude/knowledge/identity-link.md`. Branch `feat/identity-link` in all three repos;
+   nothing merged or deployed. Site users see and change only their projects/tasks.
+   - **Rollout, in order:**
+     1. Bot to `main`. Migration 027 (`discordlinkcode`) runs automatically on deploy.
+     2. CSAAS by hand — pushes to CSAAS `main` do NOT auto-deploy; someone must trigger
+        the deploy directly. Its migration (`discord_identity_link` +
+        `discord_identity_link_block`) runs at CSAAS startup, before it serves requests.
+     3. Site to `main` — Vercel builds on push.
+     - Scoping has no effect until CSAAS is live; until then the site behaves exactly as
+       before this feature.
+   - **First live checks:** a linked non-admin sees only their own projects; an admin (or
+     anyone whose linked Discord account holds CEO/Server Manager) still sees everything;
+     a `/link` code works once (a second attempt with the same code fails); unlink then
+     re-link needs a fresh `/link` code (email auto-link is blocked after an admin unlink).
+   - **Bonus from this deploy:** the site create page's repository list, which has been
+     empty on `main` since the site-task-edit build (`TeamLayout.refresh()` was dropping
+     `repositories` from the payload), starts working the moment the site's `feat/identity-link`
+     build ships — `normalizePayload` fixed it as a side effect.
+   - **Deferred (review-flagged, not required for rollout):**
+     - The bot keeps a `guildmember`'s `verifiedAt` when an invite rejoin overwrites its
+       `email` — the root cause behind the admin-unlink-blocks-email-relink rule in
+       `identity-link.md`. Worth fixing in the bot directly (clear or re-check `verifiedAt`
+       on a rejoin that changes the stored email) so CSAAS's block table is only a
+       safety net, not the only thing preventing a silent wrong re-link.
+     - The bot's task activity log records blocker/subtask **titles**, not ids
+       (`taskactivity.changes`). CSAAS's visibility scrubbing has to match hidden refs by
+       **title text** against the guild's visible-title set — workable, but a title
+       collision (a visible task sharing a hidden task's exact title) would show that
+       title even though it's coincidental. Recording ids in the activity log instead
+       would make this exact rather than heuristic.
+     - The visual check of the link card and the admin People-tab links panel was never
+       done — no portal sign-in was available during the build (same limitation noted on
+       earlier site work). Do a real sign-in pass, light and dark, before calling this done.
 2. **Scope everywhere** — scope filter on the site's Board and Tasks; Claude/meeting-generated
    tasks forced to `backend/frontend/qa/design` (today `meetingTaskMap.js` copies CSAAS's
    free-text `feature` into `scope`).
