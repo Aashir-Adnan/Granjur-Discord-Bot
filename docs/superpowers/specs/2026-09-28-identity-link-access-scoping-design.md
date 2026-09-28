@@ -102,7 +102,14 @@ email guess for attribution:
   discordId, name, avatarUrl, via }], seesAll }`.
 - **CSAAS (admin):** `GET /api/discord/identity/links` and `POST
   /api/discord/identity/unlink` `{ user_id, guild_config_id }` — both require
-  `isAdmin` (section 2); unlink deletes the row so the person can link again.
+  `isAdmin` (section 2). Unlink deletes the row and records a block
+  (`discord_identity_link_block (user_id, guild_config_id)`) so email auto-linking does
+  not silently recreate it; the person links again with a `/link` code, which clears the
+  block. (Why: the bot keeps `verifiedAt` when an invite rejoin overwrites
+  `guildmember.email`, so an email match can point at the wrong member, and an admin's
+  correction has to stick.)
+- **Code guessing:** the redeem endpoint limits failed attempts per account
+  (the plan sets the numbers).
 
 ### 4. Reading, scoped (CSAAS)
 
