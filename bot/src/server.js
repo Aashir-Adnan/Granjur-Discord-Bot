@@ -8,10 +8,21 @@ import { completeVerification } from './commands/verify.js'
 import { config } from './config.js'
 import { RateLimiter } from './security/rateLimiter.js'
 import { getClientIp } from './security/ipUtils.js'
-import { handleStatusRequest } from './services/internalTaskRoute.js'
+import { handleCreateRequest, handleStatusRequest, handleSubtaskRequest, handleUpdateRequest } from './services/internalTaskRoute.js'
 
 const { port: PORT, allowedOrigin: ALLOWED_ORIGIN, trustProxy: TRUST_PROXY, maxBodyBytes: MAX_BODY_BYTES, rateLimit: RATE_LIMIT } =
   config.verifyServer
+
+// Loopback routes CSAAS calls on behalf of a signed-in site user. Bodies are
+// capped (a create carries a 2000-character description plus id lists, well
+// under this) so a runaway caller cannot exhaust memory.
+const INTERNAL_ROUTES = {
+  '/internal/tasks/status': handleStatusRequest,
+  '/internal/tasks/update': handleUpdateRequest,
+  '/internal/tasks/create': handleCreateRequest,
+  '/internal/tasks/subtask': handleSubtaskRequest,
+}
+const INTERNAL_MAX_BODY = 64 * 1024
 
 function setCors(res, origin) {
   if (ALLOWED_ORIGIN === '*' || origin === ALLOWED_ORIGIN) {
@@ -56,33 +67,28 @@ export function startVerifyServer(discordClient) {
       res.end()
       return
     }
-    if (req.method === 'POST' && req.url === '/internal/tasks/status') {
+    const internal = req.method === 'POST' ? INTERNAL_ROUTES[req.url] : null
+    if (internal) {
       try {
         req.setEncoding('utf8')
-        let ibody = ''
-        for await (const chunk of req) ibody += chunk
+        let ibody
+        try {
+          ibody = await readBody(req, INTERNAL_MAX_BODY)
+        } catch (err) {
+          if (err.code === 'PAYLOAD_TOO_LARGE') return send(res, 413, { ok: false, message: 'Payload too large' })
+          throw err
+        }
         let idata
         try {
           idata = JSON.parse(ibody)
         } catch {
-          res.writeHead(400)
-          res.end(JSON.stringify({ ok: false, message: 'Invalid JSON' }))
-          return
+          return send(res, 400, { ok: false, message: 'Invalid JSON' })
         }
-        const r = await handleStatusRequest({
-          headers: req.headers,
-          body: idata,
-          client: discordClient,
-          secret: process.env.BOT_INTERNAL_SECRET || '',
-        })
-        res.writeHead(r.status)
-        res.end(JSON.stringify(r.body))
+        const r = await internal({ headers: req.headers, body: idata, client: discordClient, secret: process.env.BOT_INTERNAL_SECRET || '' })
+        return send(res, r.status, r.body)
       } catch (e) {
-        console.error('[internal] status route:', e?.message ?? e)
-        if (!res.headersSent) {
-          res.writeHead(500)
-          res.end(JSON.stringify({ ok: false, message: 'internal error' }))
-        }
+        console.error(`[internal] ${req.url}:`, e?.message ?? e)
+        if (!res.headersSent) send(res, 500, { ok: false, message: 'internal error' })
       }
       return
     }
@@ -146,7 +152,7 @@ export function startVerifyServer(discordClient) {
 
   server.listen(PORT, () => {
     console.log(`Verify callback server on port ${PORT}`)
-    console.log(process.env.BOT_INTERNAL_SECRET ? '[internal] status route enabled' : '[internal] status route disabled: BOT_INTERNAL_SECRET unset')
+    console.log(process.env.BOT_INTERNAL_SECRET ? '[internal] task routes enabled' : '[internal] task routes disabled: BOT_INTERNAL_SECRET unset')
   })
   return server
 }
