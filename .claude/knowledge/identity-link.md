@@ -128,6 +128,20 @@ endpoint and every write handler.
 - **`linkedDiscordId`/`actorWithLink`**: the actor sent to the bot gains `discordId`
   only when the caller has a link in the **task's own guild** (no `links[0]`
   fallback — a link in a different guild would name the wrong Discord account).
+  Exception: `/create` with no project and exactly one link uses that link.
+- **Writes need a link** (`assertCanWrite`, final-review F4): a non-seesAll caller
+  with no links gets 403 `Link your Discord account to change tasks.` on `/status`,
+  `/update`, `/create` and `/subtask`, before any bot call.
+- **`hiddenRelatedTaskIds`** (final-review F1): for a non-seesAll caller, the ids of
+  the target task's blockers, the tasks it blocks and its subtasks that the caller
+  cannot see (same rule as `assertCanTouchTask`), capped at 200. `/status`, `/update`
+  and `/subtask` send them to the bot as `hiddenTaskIds` (key omitted when empty).
+  The bot (`redactSetFrom` in `internalTaskRoute.js`, threaded as `redact` through
+  `applyEdit`/`applyTaskUpdate`/`assertCanFinish`) names those tasks "A task in
+  another project" in the three reply texts that can carry a title back: the
+  blocker warning (`blockerWarning`), the unblock line (`applyDependencyChange`) and
+  the "can't be finished" refusal (`finishBlockMessage`). The Discord channel post
+  and the activity row keep the real titles; with no set the texts are unchanged.
 
 ## The bot's `siteActor` prefers the linked id
 
@@ -156,10 +170,12 @@ preference — see `identity.js`'s module comment and every function in it.
   had been dropping `repositories` on every refresh (rebuilding the payload from
   `generatedAt`/`projects`/`members` only), which is why the site-task-edit create
   page's repository list was always empty on `main` — refreshing now keeps it.
-- **Link card** (`LinkCard.tsx`): shown instead of the Team tabs
-  (`needsLink(payload)` in `identityLogic.ts` — true when `viewer.linked` is false and
-  `viewer.seesAll` is false) — the tab bar and filter/search controls are hidden
-  along with it (`TeamLayout.tsx`), since there is nothing behind them to filter yet.
+- **Link card** (`LinkCard.tsx`): shown instead of the Outlet on the People, Tasks
+  and Board tabs only (`showsLinkCard(payload, tab)` in `identityLogic.ts` —
+  `needsLink(payload)`, i.e. `viewer.linked` and `viewer.seesAll` both false, and the
+  tab is one of those three). Time and Stats follow `view_discord_time`, not the
+  link, so they render normally while unlinked; the tab bar always shows, and the
+  filter/search controls are hidden only where the card shows (`TeamLayout.tsx`).
   Explains email auto-linking, takes a 6-character code, calls `linkDiscord(code)`,
   and re-runs `refresh()` on success.
 - **Signed-in line** (`viewerLine` in `identityLogic.ts`): "Signed in as <name>",
@@ -199,9 +215,9 @@ preference — see `identity.js`'s module comment and every function in it.
 
 ## Rollout
 
-Bot (migration 027 runs on deploy) → CSAAS (**manual deploy** — pushes to CSAAS's
-`main` do not auto-deploy; migration runs at CSAAS startup, before it serves any
-request) → site (Vercel, builds on push). Scoping has no effect until CSAAS is live;
+Bot (migration 027 runs on deploy) → site (Vercel, builds on push) → CSAAS (**manual
+deploy** — pushes to CSAAS's `main` do not auto-deploy; migration runs at CSAAS startup,
+before it serves any request). The site ships before CSAAS because the new site works against the old CSAAS (no `viewer` in the payload, so no link card and nothing changes), while the old site against the new CSAAS would leave unlinked users on an empty page with no way to link. Scoping has no effect until CSAAS is live;
 until then the site behaves exactly as before this feature. See `backlog.md` for the
 full rollout/first-live-check list.
 

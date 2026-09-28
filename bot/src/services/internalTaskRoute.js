@@ -72,6 +72,21 @@ function idFrom(value, field) {
   return [null, id]
 }
 
+/** At most this many ids in `hiddenTaskIds` (CSAAS caps its list at the same number). */
+export const MAX_HIDDEN_IDS = 200
+
+/**
+ * `hiddenTaskIds` from the body as a Set: the tasks related to the target (its
+ * blockers, what it blocks, its subtasks) that the site caller cannot see, so
+ * the reply names them generically. Anything but an array of at most 200
+ * non-empty strings of at most 64 characters is ignored (an empty Set).
+ */
+export function redactSetFrom(value) {
+  if (!Array.isArray(value) || value.length > MAX_HIDDEN_IDS) return new Set()
+  if (!value.every((v) => typeof v === 'string' && v.length > 0 && v.length <= 64)) return new Set()
+  return new Set(value)
+}
+
 /** The Discord ids of every member row in a guild. */
 async function memberIdsOf(dbArg, guildConfigId) {
   const rows = await dbArg.guildMember.findMany({ where: { guildConfigId, all: true } })
@@ -93,7 +108,7 @@ export async function handleStatusRequest({ headers = {}, body = {}, db: dbArg =
     if (!task) return { status: 404, body: { ok: false, message: 'Task not found' } }
     if (task.status === status) return { status: 200, body: { ok: true, task: { id: task.id, status }, warning: '', unchanged: true } }
     const actor = await siteActor(dbArg, task.guildConfigId, b.actor)
-    const { warning } = await apply({ db: dbArg, client, task, updates: { status }, actor })
+    const { warning } = await apply({ db: dbArg, client, task, updates: { status }, actor, redact: redactSetFrom(b.hiddenTaskIds) })
     return { status: 200, body: { ok: true, task: { id: task.id, status }, warning: warning || '', unchanged: false } }
   })
 }
@@ -128,7 +143,10 @@ export async function handleUpdateRequest({ headers = {}, body = {}, db: dbArg =
       return { status: 200, body: { ok: true, task: { id: task.id, status: task.status }, warning: '', lines: [], unchanged: true } }
     }
     const actor = await siteActor(dbArg, task.guildConfigId, b.actor)
-    const r = await edit({ db: dbArg, client, cfg: { id: task.guildConfigId }, task, updates: v.updates, blockers: v.blockers, actor })
+    const r = await edit({
+      db: dbArg, client, cfg: { id: task.guildConfigId }, task, updates: v.updates, blockers: v.blockers, actor,
+      redact: redactSetFrom(b.hiddenTaskIds),
+    })
     // Validation already passed, so a refusal here is the state changing under
     // us (a subtask reopened, a blocker deleted) — a conflict, not bad input.
     if (r?.error) return { status: 409, body: { ok: false, message: r.error } }
@@ -180,7 +198,11 @@ export async function handleCreateRequest({ headers = {}, body = {}, db: dbArg =
   })
 }
 
-/** A site "Add subtask": createSubtask with the site user as the actor. */
+/**
+ * A site "Add subtask": createSubtask with the site user as the actor. Its
+ * replies name no other task today; `hiddenTaskIds` is still accepted and
+ * passed on as `redact` so a future text that does is scrubbed the same way.
+ */
 export async function handleSubtaskRequest({ headers = {}, body = {}, db: dbArg = db, client, secret, addSubtask = createSubtask }) {
   return guarded({ headers, body, secret, route: 'subtask' }, async (b) => {
     const [idErr, parentId] = idFrom(b.parentId, 'parentId')
@@ -200,7 +222,7 @@ export async function handleSubtaskRequest({ headers = {}, body = {}, db: dbArg 
     const { guild } = await guildOf(dbArg, client, parent.guildConfigId)
     const child = await addSubtask({
       db: dbArg, client, guild, parent, fields: { title, assigneeIds }, actor,
-      notify: notifyTaskUpdate, apply: applyTaskUpdate,
+      notify: notifyTaskUpdate, apply: applyTaskUpdate, redact: redactSetFrom(b.hiddenTaskIds),
     })
     return { status: 200, body: { ok: true, task: { id: child.id, status: child.status, parentId: child.parentTaskId ?? parent.id } } }
   })

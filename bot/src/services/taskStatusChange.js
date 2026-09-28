@@ -30,9 +30,12 @@ export const WARNING_MAX = 1500
  *
  * @returns {Promise<{ warning: string, notified: { channelId: string|null, created: boolean, dmed: string[] }, placement: { moved: boolean, archived: boolean|null, reason: string|null } }>}
  */
-export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, actor = {}, notify = notifyTaskUpdate, guild = null, record = recordTaskActivity, move = placeTicketForStatus }) {
+export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, actor = {}, notify = notifyTaskUpdate, guild = null, record = recordTaskActivity, move = placeTicketForStatus, redact = new Set() }) {
+  // `redact`: ids of related tasks the site caller cannot see (CSAAS sends them).
+  // They are named generically in what this returns and in the refusal; the
+  // Discord channel post keeps the real titles. Discord callers pass nothing.
   // A task with an open subtask cannot be finished: refuse before anything is written.
-  await assertCanFinish({ db: dbArg, task, updates })
+  await assertCanFinish({ db: dbArg, task, updates, redact })
   await dbArg.task.update({ where: { id: task.id }, data: updates })
 
   // Who did what. `actor.activityId` is the Discord member a site user was
@@ -46,6 +49,8 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
   })
 
   let warning = ''
+  // The channel post's copy of the warning — real titles; differs from `warning` only when `redact` hides one.
+  let postWarning = ''
   if (updates.status && updates.status !== task.status && updates.status !== 'open' && updates.status !== 'pending') {
     // The write already succeeded; a failure here must not look like a failed update.
     try {
@@ -54,11 +59,14 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
         ? await dbArg.task.findByIds({ where: { guildConfigId: task.guildConfigId, ids: rows.map((r) => r.blockedByTaskId) } })
         : []
       const byId = Object.fromEntries(blockers.map((b) => [b.id, b]))
-      warning = blockerWarning(openBlockers(task.id, rows, byId))
-      if (warning.length > WARNING_MAX) warning = `${warning.slice(0, WARNING_MAX - 1)}…`
+      const open = openBlockers(task.id, rows, byId)
+      const clip = (w) => (w.length > WARNING_MAX ? `${w.slice(0, WARNING_MAX - 1)}…` : w)
+      postWarning = clip(blockerWarning(open))
+      warning = redact?.size ? clip(blockerWarning(open, redact)) : postWarning
     } catch (e) {
       console.error('[taskStatusChange] blocker warning:', e?.message ?? e)
       warning = ''
+      postWarning = ''
     }
   }
 
@@ -108,7 +116,7 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
       updates,
       actorId: actor.discordId ?? null,
       actorLabel: actor.label ?? null,
-      warning,
+      warning: postWarning,
       extraLines,
       db: dbArg,
     })

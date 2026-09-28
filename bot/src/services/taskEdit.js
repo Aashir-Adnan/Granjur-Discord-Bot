@@ -10,14 +10,14 @@ import { notifyTaskUpdate } from './taskUpdateNotify.js'
 import { assertCanFinish } from './taskHierarchy.js'
 import { recordTaskActivity } from './taskActivity.js'
 import { TaskRuleError } from '../utils/taskHierarchy.js'
-import { wouldCycle } from '../utils/taskDeps.js'
+import { HIDDEN_TASK_TITLE, wouldCycle } from '../utils/taskDeps.js'
 
 /**
  * Record / remove one dependency for `task`. Validates before writing, so a
  * refused change leaves the table untouched.
  * @returns {{ lines: string[], error: string|null }}
  */
-export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById = null, unblockId = null, actorId = null, actorLabel = null, record = recordTaskActivity }) {
+export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById = null, unblockId = null, actorId = null, actorLabel = null, record = recordTaskActivity, redact = new Set() }) {
   const lines = []
   if (blockedById) {
     if (String(blockedById) === String(task.id)) return { lines, error: 'A task cannot be blocked by itself.' }
@@ -37,7 +37,9 @@ export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById 
     const [blocker] = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: [unblockId] } })
     const { removed } = await dbArg.taskDependency.remove({ where: { taskId: task.id, blockedByTaskId: String(unblockId) } })
     const name = blocker?.title || unblockId
-    lines.push(removed > 0 ? `**Unblocked:** ${name}` : `**Unblock:** ${name} was not blocking this task`)
+    // The reply names a blocker the site caller cannot see generically; the activity row keeps the real title.
+    const shown = redact?.has?.(String(unblockId)) ? HIDDEN_TASK_TITLE : name
+    lines.push(removed > 0 ? `**Unblocked:** ${shown}` : `**Unblock:** ${shown} was not blocking this task`)
     if (removed > 0) await record({ db: dbArg, task, changes: [{ field: 'blocked_by', action: 'removed', title: name }], actor: { discordId: actorId, label: actorLabel } })
   }
   return { lines, error: null }
@@ -64,15 +66,18 @@ export function projectMoveNote(task, updates) {
  *
  * `actor` is `{ discordId }` from Discord (the channel post @mentions them) or
  * `{ activityId, label }` from the site (named, never mentioned).
+ *
+ * `redact` is the set of related task ids the site caller cannot see; the reply
+ * texts name those generically. Discord callers pass nothing.
  */
 export async function applyEdit({
   db: dbArg = db, client, guild = null, cfg, task, updates = {}, blockers = {}, actor = {},
-  notify = notifyTaskUpdate, apply = applyTaskUpdate,
+  notify = notifyTaskUpdate, apply = applyTaskUpdate, redact = new Set(),
 }) {
   let notified = { channelId: task.discordChannelId || null, created: false, dmed: [] }
   const lines = []
   try {
-    await assertCanFinish({ db: dbArg, task, updates })
+    await assertCanFinish({ db: dbArg, task, updates, redact })
   } catch (e) {
     if (e instanceof TaskRuleError) return { error: e.message, dep: { lines }, warning: '', notified }
     throw e
@@ -85,12 +90,12 @@ export async function applyEdit({
     lines.push(...dep.lines)
   }
   for (const unblockId of blockers.remove || []) {
-    const dep = await applyDependencyChange({ db: dbArg, cfg, task, unblockId, actorId, actorLabel })
+    const dep = await applyDependencyChange({ db: dbArg, cfg, task, unblockId, actorId, actorLabel, redact })
     lines.push(...dep.lines)
   }
   let warning = ''
   if (Object.keys(updates).length > 0) {
-    ;({ warning, notified } = await apply({ db: dbArg, client, guild, task, updates, actor, notify }))
+    ;({ warning, notified } = await apply({ db: dbArg, client, guild, task, updates, actor, notify, redact }))
   }
   return { error: null, dep: { lines }, warning: warning || '', notified }
 }

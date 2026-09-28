@@ -8,6 +8,8 @@
 //     reopened) it goes back to in progress, so "parent finished" always means
 //     "every subtask finished".
 
+import { visibleName } from './taskDeps.js'
+
 /** Statuses that count as finished — the same three the rest of the bot uses. */
 export const FINISHED = new Set(['done', 'closed', 'resolved'])
 export const isFinished = (status) => FINISHED.has(String(status ?? ''))
@@ -36,11 +38,12 @@ export function subtaskProgress(children) {
  * Why `task` cannot move to `nextStatus`, or null when it can. Only moving to a
  * finished status is ever blocked, and only while a subtask is still open.
  */
-export function finishBlockMessage(task, children, nextStatus) {
+export function finishBlockMessage(task, children, nextStatus, redact = new Set()) {
   if (!isFinished(nextStatus)) return null
   const open = openChildren(children)
   if (!open.length) return null
-  const names = open.slice(0, 5).map((c) => `• ${c.title || c.id}`).join('\n')
+  // `redact`: ids of subtasks the site caller cannot see, named generically.
+  const names = open.slice(0, 5).map((c) => `• ${visibleName(c, redact)}`).join('\n')
   const more = open.length > 5 ? `\n…and ${open.length - 5} more` : ''
   return `**${task.title || task.id}** can't be marked ${nextStatus} yet — ${open.length} subtask${open.length === 1 ? ' is' : 's are'} still open:\n${names}${more}`
 }

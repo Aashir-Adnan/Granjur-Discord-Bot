@@ -191,9 +191,9 @@ email match when it is absent (older CSAAS). Channel posts still name, never men
 
 ## Rollout
 
-Bot (migration 027, `/link`) → CSAAS (migration, identity, filters — **manual deploy**,
-pushes do not deploy CSAAS) → site. Scoping takes effect when CSAAS is live; until then
-the site behaves as today.
+Bot (migration 027, `/link`) → site → CSAAS (migration, identity, filters — **manual
+deploy**, pushes do not deploy CSAAS). The site ships before CSAAS because the new site works against the old CSAAS (no `viewer` in the payload, so no link card and nothing changes), while the old site against the new CSAAS would leave unlinked users on an empty page with no way to link. Scoping takes effect when CSAAS is
+live; until then the site behaves as today.
 
 ## Roadmap (the other six sub-projects, in order; each gets its own spec)
 

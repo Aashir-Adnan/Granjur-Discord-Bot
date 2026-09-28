@@ -9,12 +9,13 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
    `docs/superpowers/specs/2026-09-28-identity-link-access-scoping-design.md`, knowledge
    `.claude/knowledge/identity-link.md`. Branch `feat/identity-link` in all three repos;
    nothing merged or deployed. Site users see and change only their projects/tasks.
-   - **Rollout, in order:**
+   - **Rollout, in order (bot → site → CSAAS):**
      1. Bot to `main`. Migration 027 (`discordlinkcode`) runs automatically on deploy.
-     2. CSAAS by hand — pushes to CSAAS `main` do NOT auto-deploy; someone must trigger
+     2. Site to `main` — Vercel builds on push.
+     3. CSAAS by hand — pushes to CSAAS `main` do NOT auto-deploy; someone must trigger
         the deploy directly. Its migration (`discord_identity_link` +
         `discord_identity_link_block`) runs at CSAAS startup, before it serves requests.
-     3. Site to `main` — Vercel builds on push.
+     - Why this order: the site ships before CSAAS because the new site works against the old CSAAS (no `viewer` in the payload, so no link card and nothing changes), while the old site against the new CSAAS would leave unlinked users on an empty page with no way to link.
      - Scoping has no effect until CSAAS is live; until then the site behaves exactly as
        before this feature.
    - **First live checks:** a linked non-admin sees only their own projects; an admin (or

@@ -22,7 +22,8 @@ admin-only links panel on People.
 
 ## Rollout status: OPEN
 See `backlog.md` roadmap item 1 ("built, not deployed") for the full rollout order
-(bot → CSAAS by hand → site) and first live checks. Nothing has been deployed anywhere.
+(bot → site → CSAAS by hand) and first live checks. Nothing has been deployed anywhere.
+The site ships before CSAAS because the new site works against the old CSAAS (no `viewer` in the payload, so no link card and nothing changes), while the old site against the new CSAAS would leave unlinked users on an empty page with no way to link.
 
 ## Deferred, not part of this rollout
 - Bot: fix `verifiedAt` surviving an invite-rejoin email overwrite (root cause of the
