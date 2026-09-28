@@ -4,6 +4,23 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Owner roadmap, 2026-09-28 — seven sub-projects, in build order (each: spec → plan → build)
+1. **Identity link and access scoping** — spec `docs/superpowers/specs/2026-09-28-identity-link-access-scoping-design.md`
+   (branch `feat/identity-link`). Site users see and change only their projects/tasks.
+2. **Scope everywhere** — scope filter on the site's Board and Tasks; Claude/meeting-generated
+   tasks forced to `backend/frontend/qa/design` (today `meetingTaskMap.js` copies CSAAS's
+   free-text `feature` into `scope`).
+3. **Global channel layout** — trim `/init`'s global staff/onboarding channels to
+   announcements + casual (+ documentation); add a global feedback channel. Deletes live
+   channels: ship with a preview mode.
+4. **Repositories per project with a scope** — `project_repos` gains a scope; a task's scope
+   picks the repo and opens the GitHub issue (today only bugs open one, `taskCreate.js`).
+5. **Clock in / out on the site** — needs sub-project 1 to know whose clock.
+6. **JSON task import** on the site with a documented format — only into the user's projects.
+7. **Meeting docs/JSON → Claude → tasks** without a meeting, plus a document field when a
+   meeting starts (today only a voice recording enqueues the pipeline; channel attachments
+   land in `meeting.notes` and are never read).
+
 ## Site create/edit — rollout (branch `feat/site-task-edit` in all three repos, 2026-09-28)
 
 - Deploy order bot → CSAAS → site. No new env values (BOT_INTERNAL_SECRET / DISCORD_BOT_SECRET + DISCORD_BOT_URL already cover the new routes).
