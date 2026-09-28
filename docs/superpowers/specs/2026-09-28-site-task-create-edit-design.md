@@ -30,7 +30,7 @@ update anything which can be updated from discord should be editable from there"
 | `scope` | one of `SCOPE_VALUES` (`backend`, `frontend`, `qa`, `design`) or `null` |
 | `implementationStatus` | `not_started`, `in_progress`, `done` |
 | `projectId` | an existing project in the task's guild, or `null` (no project); `projectName` follows. The reply carries `projectMoveNote` as a warning (the channel does not move) |
-| holders | the full id list. Written to `assigneeIds` for a feature/task, `taggedMemberIds` for a bug (`holdersOf`). Every id must be a `guildmember` of the task's guild |
+| holders | the full id list, compared against `holdersOf(task)`. Written to `assigneeIds` for every type, exactly as `/update-task` and the hub do — the notifier and the activity log read only `assigneeIds`, so a write anywhere else would be invisible in Discord. Clearing a bug's list while it still has `taggedMemberIds` clears those too, or `holdersOf`'s fallback would bring the old tagged members back. Every id must be a `guildmember` of the task's guild |
 | `passedApiTests`, `passedQaTests`, `passedAcceptanceCriteria` | integer 0–127 (`MAX_TEST_COUNT`, signed TINYINT). Cannot be cleared to "not tracked" — Discord cannot either |
 | estimate | a duration string parsed by the bot's `parseDuration` (`8h 30m`); empty → `estimateMinutes = null`; must be a safe integer ≤ `MAX_STORABLE_MINUTES` |
 | blockers | the full list of blocking task ids; the bot diffs it against `taskdependency` into adds and removes |
@@ -122,8 +122,8 @@ actor }`.
 
 **`POST /internal/tasks/subtask`** — body `{ parentId, title, holderIds, actor }`. Calls
 `createSubtask` (its own refusals — subtask of a subtask, more than 25, empty title — are
-`TaskRuleError` → 409). Ticking a subtask is an ordinary `/update` of that subtask's
-`status` (`done`/`open`); `syncParent` handles the parent.
+`TaskRuleError` → 409). Ticking a subtask already works on the site today (the checklist
+calls the existing `/status` route) and stays as it is; `syncParent` handles the parent.
 
 ### CSAAS
 
