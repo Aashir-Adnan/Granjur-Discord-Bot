@@ -236,3 +236,35 @@ test('subtask: a TaskRuleError from createSubtask is a 409', async () => {
   const r = await handleSubtaskRequest({ headers: H, body: { parentId: 'T', title: 'x' }, db: routeDb(), client: guildClient, secret: 's3cret', addSubtask: async () => { throw new TaskRuleError('A task can have at most 25 subtasks.') } })
   assert.equal(r.status, 409); assert.equal(r.body.message, 'A task can have at most 25 subtasks.')
 })
+
+test('status: a linked Discord id from CSAAS is used as the actor without an email lookup', async () => {
+  let looked = 0
+  const db2 = {
+    task: { findFirst: async () => ({ id: 'A', guildConfigId: 'g1', title: 'Git Sync', status: 'open' }) },
+    guildMember: { findByConfigEmail: async () => { looked++; return { discordId: 'u-email' } } },
+  }
+  let seen
+  const r = await handleStatusRequest({
+    headers: { 'x-internal-secret': 's3cret' },
+    body: { taskId: 'A', status: 'in_progress', actor: { email: 'a@granjur.com', name: 'Aashir', discordId: '123456789012345678' } },
+    db: db2, client: {}, secret: 's3cret', apply: async (a) => { seen = a; return { warning: '' } },
+  })
+  assert.equal(r.status, 200)
+  assert.equal(seen.actor.activityId, '123456789012345678')
+  assert.equal(seen.actor.discordId, undefined, 'still never a mention')
+  assert.equal(looked, 0)
+})
+
+test('status: a malformed discordId falls back to the email match', async () => {
+  const db2 = {
+    task: { findFirst: async () => ({ id: 'A', guildConfigId: 'g1', title: 'Git Sync', status: 'open' }) },
+    guildMember: { findByConfigEmail: async () => ({ discordId: 'u-email' }) },
+  }
+  let seen
+  await handleStatusRequest({
+    headers: { 'x-internal-secret': 's3cret' },
+    body: { taskId: 'A', status: 'in_progress', actor: { email: 'a@granjur.com', discordId: 'not an id' } },
+    db: db2, client: {}, secret: 's3cret', apply: async (a) => { seen = a; return { warning: '' } },
+  })
+  assert.equal(seen.actor.activityId, 'u-email')
+})

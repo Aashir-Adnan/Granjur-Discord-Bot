@@ -47,6 +47,10 @@ async function guarded({ headers = {}, body, secret, route }, handler) {
  */
 async function siteActor(dbArg, guildConfigId, actor) {
   const name = String(actor?.name || actor?.email || 'Someone').slice(0, 100)
+  // CSAAS sends the caller's stored Discord link (identity link, 2026-09-28).
+  // Trusted like the rest of the body (the shared secret); only its shape is checked.
+  const linked = typeof actor?.discordId === 'string' && /^\d{1,32}$/.test(actor.discordId) ? actor.discordId : null
+  if (linked) return { label: `${name} (via the site)`, activityId: linked }
   let activityId = null
   const email = String(actor?.email ?? '').trim()
   if (email) {
