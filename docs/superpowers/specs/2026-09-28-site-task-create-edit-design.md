@@ -139,7 +139,7 @@ actor }`.
   `[discord-tasks] <email> created|updated|added subtask …`.
 - `GET /api/discord/tasks` gains top-level `repositories: [{ id, name, url }]` from
   `granjur.repository`, `[]` if the query fails (deploy-order safe).
-- Each roster entry (`members[]`) gains `kind` (`guildmember.kind`, `'member'` when the
+- Each roster entry (`members[]`) gains `kind` (`guildmember.kind`: `staff` or `client`; `'staff'` when the
   column is absent — the existing fallback select pattern).
 
 ### Site
