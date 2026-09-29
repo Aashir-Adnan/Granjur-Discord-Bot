@@ -12,12 +12,13 @@ import { recordTaskActivity } from './taskActivity.js'
 /**
  * Throw a TaskRuleError if `updates` would finish `task` while a subtask is
  * still open. Reads the subtasks only when a finishing move is actually being
- * made. Called before anything is written.
+ * made. Called before anything is written. `redact` (task ids the site caller
+ * cannot see) names those subtasks generically in the refusal.
  */
-export async function assertCanFinish({ db: dbArg = db, task, updates }) {
+export async function assertCanFinish({ db: dbArg = db, task, updates, redact = new Set() }) {
   if (!updates?.status || !isFinished(updates.status) || isFinished(task.status)) return
   const children = await dbArg.task.findChildren({ where: { parentTaskId: task.id } })
-  const message = finishBlockMessage(task, children, updates.status)
+  const message = finishBlockMessage(task, children, updates.status, redact)
   if (message) throw new TaskRuleError(message)
 }
 

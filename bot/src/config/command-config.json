@@ -10,6 +10,7 @@
       "Server Manager"
     ],
     "verify": [],
+    "link": ["Verified"],
     "report-issue": ["Client"],
     "request-feature": ["Client"],
     "request-task": ["Client"],
@@ -171,6 +172,7 @@
     "init": true,
     "scrap": true,
     "verify": true,
+    "link": false,
     "invite": true,
     "backlog": true,
     "approve": true,
@@ -222,6 +224,11 @@
       "summary": "Verify your email (OTP) and enter holding.",
       "syntax": "`/verify`",
       "detail": "Click **Request verification code**, enter your @granjur.com email, then enter the code sent to your email. Your nickname will be set from your email."
+    },
+    "link": {
+      "summary": "Link your Discord account to UBS-Doc.",
+      "syntax": "`/link`",
+      "detail": "Replies privately with a 6-character code. On UBS-Doc open **Team** and enter it under **Link your Discord account** within 10 minutes; it works once. Most accounts link by email automatically — you only need this if the email you verified with here differs from the one you sign in to UBS-Doc with. Running it again replaces your unused code."
     },
     "report-issue": {
       "summary": "Report something that is broken in your project.",

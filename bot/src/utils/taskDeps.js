@@ -62,9 +62,22 @@ export function wouldCycle(taskId, blockerId, depRows = []) {
 
 const labelOf = (status) => STATUS_LABEL[String(status)] ?? String(status ?? 'open')
 
-export function blockerWarning(openBlockerTasks = []) {
+/**
+ * What a site caller is shown in place of a task they cannot see (a task in a
+ * project they are not part of). CSAAS sends those ids as `hiddenTaskIds`.
+ */
+export const HIDDEN_TASK_TITLE = 'A task in another project'
+
+/** A task's name for a reply, or HIDDEN_TASK_TITLE when its id is in `redact`. */
+export function visibleName(task, redact) {
+  if (task?.id != null && redact?.has?.(String(task.id))) return HIDDEN_TASK_TITLE
+  return task?.title || task?.id
+}
+
+/** `redact` (a Set of task ids) names hidden blockers generically; Discord callers pass nothing. */
+export function blockerWarning(openBlockerTasks = [], redact = new Set()) {
   if (!openBlockerTasks.length) return ''
-  const parts = openBlockerTasks.map((t) => `**${t.title || t.id}** (${labelOf(t.status)})`)
+  const parts = openBlockerTasks.map((t) => `**${visibleName(t, redact)}** (${labelOf(t.status)})`)
   return `⛔ Still blocked by: ${parts.join(', ')}`
 }
 

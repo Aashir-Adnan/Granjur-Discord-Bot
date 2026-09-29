@@ -2,6 +2,56 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-09-29 — Identity link and access scoping (BUILT, ON BRANCHES, NOT DEPLOYED)
+
+Owner request: persist a mapping between a Discord identity and a UBS-Doc account so a
+site user sees and changes only the projects/tasks they are part of. Roadmap sub-project
+1 of 7. Spec `docs/superpowers/specs/2026-09-28-identity-link-access-scoping-design.md`,
+plan `docs/superpowers/plans/2026-09-28-identity-link-access-scoping.md`, ledger
+`.superpowers/sdd/2026-09-28-identity-link-access-scoping/progress.md`. Eleven tasks via
+subagent-driven development, each reviewed, most clean on the first pass.
+
+- **Bot** (`feat/identity-link`): `c7a094c` `/link` command + migration 027
+  (`discordlinkcode`, `bot/src/commands/link.js`, `db.discordLinkCode.issue`);
+  `f59e8c4` `siteActor` prefers the caller's linked `discordId` when CSAAS sends one
+  (`bot/src/services/internalTaskRoute.js`), falling back to the old email guess only
+  when absent. Spec/plan docs: `3092f48`, `c49adb2`, `e26079a`, `1f99279`.
+- **CSAAS** (`feat/identity-link`, worktree `D:\Work\Granjur Technologies\CSAAS_Backend`):
+  `c0cec4a` + `c50ef9f` `identity.js` (`resolveIdentity`, auto-link by verified email,
+  `/link` code redemption) + migration `20260929_1_discord_identity_link.sql`
+  (`discord_identity_link` and `discord_identity_link_block`); `db558c6` + `1e5d031`
+  `visibility.js` + the scoped `GET /api/discord/tasks` (activity-log titles/project
+  names scrubbed by match; dangling project ids ignored); `aaf500c`
+  `discordIdentity.js` endpoints (`/me`, `/link`, `/links`, `/unlink`; failed code
+  attempts rate-limited 10 per 15 minutes per account, then 429 "Too many attempts.
+  Wait a few minutes, then run /link again."); `ed6ebfd` + `40e753e` scoped writes
+  (every write handler reads the row first, 404 "Task not found" for a missing
+  task/project/parent, a newly-added blocker must be visible, actor `discordId` only
+  from the task's own guild); `d19097b` `timeScope` + the stats endpoint use the
+  stored link instead of an email guess.
+- **Site** (`feat/identity-link`, worktree `D:\Work\Granjur Technologies\UBS-Doc-identity-link`):
+  `9617ca4` identity types/api/logic; `438f2c3` + `d1555f4` link card, signed-in line,
+  hidden refs rendered as plain non-clickable text (`TaskDetail`, `SubtaskChecklist`,
+  `DependencyGraph` stubs), the tab bar and filters hidden while the link card shows,
+  and `normalizePayload` (fixed `TeamLayout.refresh()` dropping `viewer` and
+  `repositories` from the payload — the latter closes a pre-existing bug where the
+  site-task-edit create page's repository list had been empty on `main`); `8495ef9`
+  admin-only "Account links" panel on the People tab.
+
+**Rulings that changed behaviour vs the written spec** (full detail in
+`.claude/knowledge/identity-link.md`): an admin's unlink now records a block that stops
+email auto-linking for that account+server, cleared only by a `/link` code redemption
+(root cause: the bot keeps `verifiedAt` when an invite rejoin overwrites
+`guildmember.email`); a code redemption claims the code before doing anything else with
+it, closing a race; hidden refs keep their `status` field and use the exact title
+`'A task in another project'`; the org `Admin` role counts as a site admin alongside
+`actorIsRoleAdmin`.
+
+Knowledge: `.claude/knowledge/identity-link.md` (new), indexed in
+`.claude/knowledge/README.md`; `.claude/knowledge/project-tasks-site.md` gains a pointer
+from "The bot route has no guild scope" to the new scoping model. Rollout order and
+deferred items in `backlog.md`.
+
 ## 2026-09-28 — Create and edit Discord tasks from the UBS-Doc site (BUILT, ON BRANCHES)
 
 Owner request: "we need the user to give option to create-task, update task on the ubs-doc too … on update anything which can be updated from discord should be editable from there." Three-repo build extending the write path (site forms → CSAAS endpoints → bot internal routes) with create/update/add-subtask workflows. Spec `docs/superpowers/specs/2026-09-28-site-task-create-edit-design.md`, plan `docs/superpowers/plans/2026-09-28-site-task-create-edit.md`.

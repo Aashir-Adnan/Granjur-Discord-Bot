@@ -314,6 +314,11 @@ guild-blind. It stops being harmless the moment a second guild is onboarded — 
 point the route needs the caller's guild (or the permission needs a guild scope) before
 the write, not after.
 
+The site now scopes by project membership instead — see
+[[identity-link]] for how a non-admin, non-`seesAll` caller is narrowed to the
+projects/tasks they are actually part of (built on `feat/identity-link`, not yet
+deployed).
+
 ### The error-body shape (read this before parsing a CSAAS error anywhere)
 
 Every CSAAS error response, at every status code, has the same envelope:

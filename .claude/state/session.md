@@ -1,31 +1,49 @@
 # Current Session
 
-**Date:** 2026-09-28
+**Date:** 2026-09-29
 
 ## Outcome
-BUILT: Create and edit Discord-bot tasks from the UBS-Doc site. Owner request delivered end-to-end across three repos (bot, CSAAS, UBS-Doc) on branch `feat/site-task-edit`. All tests green (bot 1283, CSAAS all 12 discord-tasks scripts pass, site 316 tests pass + tsc clean + build succeeds). Awaiting rollout.
+BUILT: Identity link and access scoping (roadmap sub-project 1 of 7). Owner request
+delivered end-to-end across three repos (bot, CSAAS, UBS-Doc site) on branch
+`feat/identity-link`. Eleven tasks via subagent-driven development, all reviewed clean
+(most on the first pass). Knowledge and state written this session (Task 11); nothing
+merged or deployed.
 
 ## What was built
-- **Bot** internal routes: `POST /internal/tasks/create`, `POST /internal/tasks/update`, `POST /internal/tasks/subtask` (beside existing `/internal/tasks/status`) — all guarded by `x-internal-secret` and return 503 when `BOT_INTERNAL_SECRET` is unset.
-- **CSAAS** public endpoints: `POST /api/discord/tasks/create`, `POST /api/discord/tasks/update`, `POST /api/discord/tasks/subtask` — gated by `update_discord_tasks` permission, loopback call to bot internal routes.
-- **UBS-Doc** site: TaskCreate page (+ New task buttons), TaskEditForm on task detail (+ Add subtask button), MemberPicker component shared by both paths.
-- Rule module `utils/taskEditRules.js` (shared bot side, enforces constraints via `validateEdit` and `validateCreate`: status rules, assignee/blocker/scope writes, field limits).
-- Shared code paths: `applyEdit` extracted from `/update-task`'s `runUpdate`, `createTask` service extracted from `/create-task`'s `handleCreate`, both reused for site flows.
-
-## Knowledge written
-`.claude/knowledge/project-tasks-site.md` gains "Site create, edit and add-subtask" section.
+See `.claude/knowledge/identity-link.md` for the full mechanics and
+`.claude/state/completed.md`'s 2026-09-29 entry for the commit list per repo. In short:
+a stored `discord_identity_link` table in CSAAS maps a UBS-Doc account to a Discord
+member per guild, made automatically by exact verified-email match or by a `/link`
+code from Discord; `resolveIdentity` computes `isAdmin`/`seesAll`; `visibility.js`
+narrows the tasks read, the stats endpoint, and every write handler to "my project"
+(explicit member or task holder); the site shows a link card when unlinked, a
+signed-in line, hidden-ref stubs for tasks outside the caller's view, and an
+admin-only links panel on People.
 
 ## Rollout status: OPEN
-See `backlog.md` "Site create/edit — rollout" for tasks:
-1. Deploy order: bot → CSAAS → site. No new env values needed; the existing BOT_INTERNAL_SECRET / DISCORD_BOT_SECRET + DISCORD_BOT_URL pair covers the new routes.
-2. Bot first: `pm2 logs granjur-bot` should show internal task routes enabled.
-3. CSAAS deployment unknown: "Deploy to Azure" workflow has not run on main since 2026-09-12.
-4. Live checks: create a feature, see channel in project; edit it, see "(via the site) updated this task" post; add subtask; visual pass (light/dark).
-5. Security note: update/subtask routes find by task id (no guild scope) — create looks up the project instead — update_discord_tasks holder can edit another server's tasks if second server onboarded.
-6. Creator mention: site-created task's opening message @mentions email-matched creator.
-7. Deferred minors from review: 6 items documented in backlog (preselect guard, form keying, memoize, picker nav, error handling, guarded response text).
+See `backlog.md` roadmap item 1 ("built, not deployed") for the full rollout order
+(bot → site → CSAAS by hand) and first live checks. Nothing has been deployed anywhere.
+The site ships before CSAAS because the new site works against the old CSAAS (no `viewer` in the payload, so no link card and nothing changes), while the old site against the new CSAAS would leave unlinked users on an empty page with no way to link.
 
-## Files touched
-Bot: `bot/src/utils/taskEditRules.js`, `bot/src/services/taskEdit.js`, `bot/src/services/taskCreate.js`, `bot/src/services/internalTaskRoute.js`, `bot/src/server.js`, spec `d24554e..f2d108c`, plan `1bb3a24`.
-CSAAS: `botLink.js`, `discordTasksWrite.js` (create/update/subtask), repositories + member kind updates.
-UBS-Doc: TaskCreate page, TaskEditForm, AddSubtask button, MemberPicker, api + taskFormLogic.
+## Deferred, not part of this rollout
+- Bot: fix `verifiedAt` surviving an invite-rejoin email overwrite (root cause of the
+  admin-unlink-blocks-email-relink rule).
+- Bot: activity log should record blocker/subtask ids, not titles (CSAAS currently
+  scrubs hidden refs by title match, which is heuristic, not exact).
+- Visual check of the link card and admin links panel was never done (no portal
+  sign-in available during the build) — needed before calling this fully verified.
+
+## Knowledge/skill files used this session
+- `.claude/knowledge/identity-link.md` (new, written this session)
+- `.claude/knowledge/project-tasks-site.md` (pointer added)
+- `.claude/knowledge/README.md` (index entry added)
+- Read for context: spec `docs/superpowers/specs/2026-09-28-identity-link-access-scoping-design.md`,
+  ledger `.superpowers/sdd/2026-09-28-identity-link-access-scoping/progress.md`, and the
+  actual code in all three repos (bot `commands/link.js`, `services/internalTaskRoute.js`;
+  CSAAS `identity.js`, `visibility.js`, `discordIdentity.js`, `discordTasks.js`,
+  `discordTasksWrite.js`; site `payloadLogic.ts`, `LinkCard.tsx`, `IdentityLinks.tsx`,
+  `identityLogic.ts`, `TeamLayout.tsx`).
+
+## Open questions
+None — Task 11 (this session) was the last of the eleven planned tasks. The next step
+is the owner's call on when to run the rollout.
