@@ -94,13 +94,13 @@ test('syncIssueState: no call when there is no issue', async () => {
   assert.equal(db.calls.length, 0)
 })
 
-test('syncIssueState: no call when the repo row is missing', async () => {
+test('syncIssueState: no call, and a line saying so, when the repo row is missing', async () => {
   const task = { id: 'T1', status: 'in_progress', externalIssueNumber: 3, repositoryId: 'gone', guildConfigId: 'g1' }
   const db = fakeDb(null)
   let called = false
   const setState = async () => { called = true }
   const out = await syncIssueState({ db, task, updates: { status: 'done' }, setState })
-  assert.equal(out.line, null)
+  assert.equal(out.line, "GitHub issue not closed — the issue's repository is unknown")
   assert.equal(called, false)
 })
 
@@ -111,6 +111,56 @@ test('syncIssueState: the issue number is parsed from the url when not stored se
   const setState = async (...a) => { calls.push(a) }
   await syncIssueState({ db, task, updates: { status: 'done' }, setState })
   assert.deepEqual(calls, [['https://github.com/o/r', 42, { state: 'closed', reason: 'completed' }]])
+})
+
+// F2 (final review, 2026-09-30): the issue's own repository, from its URL.
+test('syncIssueState: the repository comes from the issue URL first, even when repositoryId points elsewhere', async () => {
+  const task = { id: 'T1', status: 'in_progress', externalIssueUrl: 'https://github.com/ubs-dev-org/site/issues/12', externalIssueNumber: 99, repositoryId: 'r1', guildConfigId: 'g1' }
+  const db = fakeDb({ id: 'r1', url: 'https://github.com/o/r' })
+  const calls = []
+  const setState = async (...a) => { calls.push(a) }
+  const out = await syncIssueState({ db, task, updates: { status: 'done' }, setState })
+  assert.equal(out.line, null)
+  assert.deepEqual(calls, [['https://github.com/ubs-dev-org/site', 12, { state: 'closed', reason: 'completed' }]])
+  assert.equal(db.calls.length, 0, 'no repository lookup when the URL names the repository')
+})
+
+test('syncIssueState: a URL with no repository id still closes the issue (a CSAAS-opened issue)', async () => {
+  const task = { id: 'T1', status: 'done', externalIssueUrl: 'https://github.com/o/r/issues/3', repositoryId: null, guildConfigId: 'g1' }
+  const calls = []
+  const out = await syncIssueState({ db: fakeDb(null), task, updates: { status: 'open' }, setState: async (...a) => { calls.push(a) } })
+  assert.equal(out.line, null)
+  assert.deepEqual(calls, [['https://github.com/o/r', 3, { state: 'open' }]])
+})
+
+test('syncIssueState: an unparsable URL falls back to repositoryId + externalIssueNumber', async () => {
+  const task = { id: 'T1', status: 'in_progress', externalIssueUrl: 'not a url', externalIssueNumber: 8, repositoryId: 'r1', guildConfigId: 'g1' }
+  const db = fakeDb()
+  const calls = []
+  await syncIssueState({ db, task, updates: { status: 'done' }, setState: async (...a) => { calls.push(a) } })
+  assert.deepEqual(calls, [['https://github.com/o/r', 8, { state: 'closed', reason: 'completed' }]])
+  assert.deepEqual(db.calls, [{ where: { id: 'r1', guildConfigId: 'g1' } }])
+})
+
+test('syncIssueState: no URL and no repositoryId is an unknown repository — a line, no lookup, no call', async () => {
+  const task = { id: 'T1', status: 'done', externalIssueNumber: 4, repositoryId: null, guildConfigId: 'g1' }
+  const db = fakeDb()
+  let called = false
+  const out = await syncIssueState({ db, task, updates: { status: 'in_progress' }, setState: async () => { called = true } })
+  assert.equal(out.line, "GitHub issue not reopened — the issue's repository is unknown")
+  assert.equal(called, false)
+  assert.equal(db.calls.length, 0, 'a falsy repositoryId is never looked up')
+})
+
+test('syncIssueState: a failing repository lookup is also an unknown repository', async () => {
+  const task = { id: 'T1', status: 'in_progress', externalIssueNumber: 4, repositoryId: 'r1', guildConfigId: 'g1' }
+  const db = { repository: { findFirst: async () => { throw new Error('db down') } } }
+  const orig = console.error; console.error = () => {}
+  let out
+  try {
+    out = await syncIssueState({ db, task, updates: { status: 'done' }, setState: async () => { throw new Error('must not run') } })
+  } finally { console.error = orig }
+  assert.equal(out.line, "GitHub issue not closed — the issue's repository is unknown")
 })
 
 test('syncIssueState: a throwing setState produces the exact failure line, and never throws', async () => {

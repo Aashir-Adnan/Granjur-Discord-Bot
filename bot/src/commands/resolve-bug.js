@@ -59,19 +59,23 @@ export async function execute(interaction, { db: dbArg = db, move = placeTicketF
     .setDescription(`**${(ticket.title || 'Bug').slice(0, 200)}** has been resolved. Solution documentation has been saved.`)
     .setColor(0x57f287)
 
-  await interaction.editReply({ embeds: [embed] }).catch(() => {})
+  // The GitHub issue first: `move` below locks the channel, so a failure line
+  // posted after it could be missed. The line also goes in the reply.
+  let issueLine = null
+  try {
+    ;({ line: issueLine } = await syncIssue({ db: dbArg, task: ticket, updates: { status: 'resolved' } }))
+  } catch (e) {
+    console.warn('[resolve-bug] issue sync:', e?.message || e)
+  }
+
+  await interaction.editReply({ embeds: [embed], ...(issueLine ? { content: issueLine } : {}) }).catch(() => {})
   await channel.send({ content: 'This bug ticket has been resolved. This channel is now read-only and will be removed in 14 days.', embeds: [embed] }).catch(() => {})
+  if (issueLine) await channel.send({ content: issueLine }).catch(() => {})
   // Below the project's archive divider, locked, stamped for deletion in 14
   // days. The same placement every other status writer uses.
   try {
     await move({ guild, task: ticket, before: ticket, updates: { status: 'resolved' }, db: dbArg })
   } catch (e) {
     console.warn('[resolve-bug] archive placement:', e?.message || e)
-  }
-  try {
-    const { line } = await syncIssue({ db: dbArg, task: ticket, updates: { status: 'resolved' } })
-    if (line) await channel.send({ content: line }).catch(() => {})
-  } catch (e) {
-    console.warn('[resolve-bug] issue sync:', e?.message || e)
   }
 }

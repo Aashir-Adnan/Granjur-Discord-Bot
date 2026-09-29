@@ -72,19 +72,23 @@ export async function execute(interaction, { db: dbArg = db, move = placeTicketF
     )
     .setColor(0x57f287)
 
-  await interaction.editReply({ embeds: [embed] }).catch(() => {})
+  // The GitHub issue first: `move` below locks the channel, so a failure line
+  // posted after it could be missed. The line also goes in the reply.
+  let issueLine = null
+  try {
+    ;({ line: issueLine } = await syncIssue({ db: dbArg, task: feature, updates: { status: 'closed' } }))
+  } catch (e) {
+    console.warn('[close-feature] issue sync:', e?.message || e)
+  }
+
+  await interaction.editReply({ embeds: [embed], ...(issueLine ? { content: issueLine } : {}) }).catch(() => {})
   await channel.send({ content: 'This feature ticket has been closed. This channel is now read-only and will be removed in 14 days.', embeds: [embed] }).catch(() => {})
+  if (issueLine) await channel.send({ content: issueLine }).catch(() => {})
   // Below the project's archive divider, locked, stamped for deletion in 14
   // days. The same placement every other status writer uses.
   try {
     await move({ guild, task: feature, before: feature, updates: { status: 'closed' }, db: dbArg })
   } catch (e) {
     console.warn('[close-feature] archive placement:', e?.message || e)
-  }
-  try {
-    const { line } = await syncIssue({ db: dbArg, task: feature, updates: { status: 'closed' } })
-    if (line) await channel.send({ content: line }).catch(() => {})
-  } catch (e) {
-    console.warn('[close-feature] issue sync:', e?.message || e)
   }
 }
