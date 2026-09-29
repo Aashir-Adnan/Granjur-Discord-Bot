@@ -2,6 +2,74 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-09-30 — Repositories per scope, and a GitHub issue for every task (BUILT, NOT DEPLOYED)
+
+Owner roadmap sub-project 4 of 7: "Let a project have multiple repositories and be
+associated with a scope (backend/frontend) so a task's scope selects the applicable repo
+and creates git issue." Spec
+`docs/superpowers/specs/2026-09-30-repositories-per-scope-design.md`, knowledge
+`.claude/knowledge/repositories-and-issues.md` (new). Built across all three repos on
+branch `feat/repo-scopes`; **not merged, not deployed.**
+
+- **Bot** (base `main` `744ea34`; `git log --oneline 744ea34..HEAD`): `a5bce89`/`63a6940`/
+  `382e8a9` spec docs, `bd722b6` plan doc; `8e4cae9` Mobile scope added to
+  `utils/taskScope.js` and the meeting platform fallback; `0a41a57` migration 030 —
+  `project_repos.scope` + unique `(project_id, scope)`; `9ef6e8f`
+  `services/taskRepo.js` — the one `resolveTaskRepo` rule (scope link → the project's
+  only untagged link → none) shared by `/create-task`, the site's create route and the
+  meeting pipeline; `05c208e` `services/github.js` — `GITHUB_TOKENS` per-owner map ahead
+  of the `GITHUB_TOKEN` fallback, `createIssue`/`setIssueState` reporting a real reason
+  instead of swallowing failures, `checkRepoAccess`; `bb94d62`
+  `services/taskCreate.js` — an issue for bugs and features alike, a per-task opt-out,
+  the site route passes `create_issue` through; `547f622`/`7513665` `/create-task` —
+  bugs pick a project, the scope picks the repository, an Issue on/off toggle (plus a
+  fix round: refuse a bug with no repositories up front, re-pick a project after a
+  dismissed modal, defer the repo/assignee selects, the scope label shown only for the
+  scope rule); `a2b851b` `services/projectRepoLinks.js` + `/projects` (link with scope,
+  unlink) + `/repos add` scope + the GitHub access check on both; `53f0d73`
+  `services/taskIssueState.js` — `syncIssueState` closes an issue as completed/not
+  planned or reopens it, wired into `applyTaskUpdate`, `/close-feature`, `/resolve-bug`;
+  `f22177a` meeting pipeline — `mirroredStage` picks a repository by project + scope,
+  the review's GitHub switch now starts on, `issue_syncing` opens issues from the bot
+  itself (idempotent, each issue persisted immediately), CSAAS's `issueSync` no longer
+  called. `npm test 2>&1 | tail -20` → 1459 tests, `fail 0`.
+- **CSAAS** (worktree `D:\Work\Granjur Technologies\CSAAS_Backend`, branch
+  `feat/repo-scopes` from `main` `09b2f61`): `aab5f8e` — Mobile scope in
+  `meetingTaskScope.js`/the task-generation prompt, `create_issue` forwarded on the
+  create pass-through (`discordTasksWrite.js`), `projectRepos` added to the tasks
+  payload (`discordTasks.js`). `npx jest .../meeting-test/meetingTaskScope.test.js` →
+  8/8 pass; the 18 `discord-tasks-test/*.test.js` assert-based scripts (not real jest
+  tests — jest's `testMatch` just happens to collect them) each run clean with
+  `node <file>.test.js`, including the two this build touched (`repos.test.js`,
+  `write.test.js`).
+- **Site** (worktree `D:\Work\Granjur Technologies\UBS-Doc-repo-scopes`, branch
+  `feat/repo-scopes` from `main` `4f6dc09`): `42069c0` — Mobile scope, `repoLogic.ts`'s
+  `resolveTaskRepo`/`issueTargetText` mirroring the bot's rule and confirm-step text,
+  repositories shown read-only on project cards (`projectRepoList`); `544176a` — fix so
+  the "Issue goes to … (`<Scope>`)" line's parenthetical shows only when the scope rule
+  itself chose the repository, matching the bot's confirm step. `npx vitest run` → 34
+  files, 367 tests pass.
+
+Behaviour that changed vs. the written spec, recorded in the knowledge file: a feature or
+bug with no rule match but an explicitly picked repository still gets that repository and
+its issue (a controller ruling); the scope parenthetical on both the bot's confirm step
+and the site's create line shows only for the actual scope-rule match, never the
+only-untagged-repo fallback or a human's own pick.
+
+Rollout (bot → CSAAS → site, each needing the owner's go-ahead, then the owner tags
+existing links and repoints Badar HMS) is in `.claude/state/backlog.md` roadmap item 4.
+`GITHUB_TOKENS=ubs-dev-org:<PAT>` is already set on the VM's bot `.env` (and locally) by
+the owner; CSAAS's own migrations still apply automatically at its startup and this
+sub-project adds none; the bot's deploy runs migration 030.
+
+## 2026-09-30 — Global channel layout and feedback: deployed
+
+Roadmap sub-project 3 (built 2026-09-29, see the entry below) went live: the bot's `main`
+was pushed (migration 029 ran, `/feedback` registered), then the owner ran `/setup`
+(`#feedback` appeared) and `/cleanup` on the live server, reading the grouped preview
+before confirming. Sub-project 3 is now DEPLOYED — see `.claude/state/backlog.md`
+roadmap item 3.
+
 ## 2026-09-29 — Global channel layout and feedback (BUILT, NOT DEPLOYED)
 
 Owner roadmap sub-project 3 of 7: "Trim staff/onboarding channels global level to only
