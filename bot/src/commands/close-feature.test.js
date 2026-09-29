@@ -44,6 +44,24 @@ test('a mover that throws does not turn a successful close into an error', async
   assert.equal(h.interaction.replies.length, 1)
 })
 
+test('the issue seam is called with status: closed, and a returned line is sent to the channel', async () => {
+  const h = harness()
+  const syncCalls = []
+  const syncIssue = async (a) => { syncCalls.push(a); return { line: 'GitHub issue not closed — No GitHub access to o/r' } }
+  await execute(h.interaction, { db: h.db, move: h.move, syncIssue })
+  assert.equal(syncCalls.length, 1)
+  assert.deepEqual(syncCalls[0].updates, { status: 'closed' })
+  assert.equal(syncCalls[0].task.id, 'T1')
+  assert.deepEqual(h.log[h.log.length - 1], ['send', 'GitHub issue not closed — No GitHub access to o/r'])
+})
+
+test('no line from the issue seam: nothing extra is sent', async () => {
+  const h = harness()
+  const syncIssue = async () => ({ line: null })
+  await execute(h.interaction, { db: h.db, move: h.move, syncIssue })
+  assert.equal(h.log.filter((l) => l[0] === 'send').length, 1)
+})
+
 test('outside a feature channel, or when already closed, nothing is written or moved', async () => {
   const h = harness({ feature: null })
   await execute(h.interaction, { db: h.db, move: h.move })

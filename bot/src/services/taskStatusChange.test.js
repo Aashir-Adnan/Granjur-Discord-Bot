@@ -158,6 +158,28 @@ test('a channel the task does not own is never told it is read-only', async () =
   assert.deepEqual(seen[0], [])
 })
 
+test('the issue seam is called with the updates, and a returned line reaches extraLines', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'in_progress', discordChannelId: 'c1', externalIssueNumber: 7 }
+  const seen = []
+  const notify = async (a) => { seen.push(a.extraLines); return { channelId: 'c1', created: false, dmed: [] } }
+  const move = async () => ({ moved: false, archived: false, reason: 'same-zone' })
+  const syncCalls = []
+  const syncIssue = async (a) => { syncCalls.push(a); return { line: 'GitHub issue not closed — No GitHub access to o/r' } }
+  await applyTaskUpdate({ db: fakeDb(), client, task, updates: { status: 'done' }, notify, move, syncIssue })
+  assert.equal(syncCalls.length, 1)
+  assert.deepEqual(syncCalls[0].updates, { status: 'done' })
+  assert.equal(syncCalls[0].task.id, 'A')
+  assert.deepEqual(seen[0], ['This channel is now read-only and will be removed in 14 days.', 'GitHub issue not closed — No GitHub access to o/r'])
+})
+
+test('the issue seam is not called when updates carries no status', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open' }
+  let called = false
+  const syncIssue = async () => { called = true; return { line: null } }
+  await applyTaskUpdate({ db: fakeDb(), client, task, updates: { title: 'New' }, notify: async () => ({ channelId: null, created: false, dmed: [] }), syncIssue })
+  assert.equal(called, false)
+})
+
 test('the mover is not called without a status change, and a mover that throws does not fail the update', async () => {
   const task = { id: 'A', guildConfigId: 'g1', title: 'T', status: 'open', discordChannelId: 'c1' }
   let calls = 0

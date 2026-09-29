@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js'
 import db from '../db/index.js'
 import { placeTicketForStatus } from '../services/ticketArchive.js'
+import { syncIssueState } from '../services/taskIssueState.js'
 
 export const data = new SlashCommandBuilder()
   .setName('close-feature')
@@ -11,9 +12,9 @@ export const data = new SlashCommandBuilder()
 
 /**
  * @param {import('discord.js').ChatInputCommandInteraction} interaction already deferred
- * @param {{db?: object, move?: typeof placeTicketForStatus}} [deps]
+ * @param {{db?: object, move?: typeof placeTicketForStatus, syncIssue?: typeof syncIssueState}} [deps]
  */
-export async function execute(interaction, { db: dbArg = db, move = placeTicketForStatus } = {}) {
+export async function execute(interaction, { db: dbArg = db, move = placeTicketForStatus, syncIssue = syncIssueState } = {}) {
   const channel = interaction.channel
   const guild = interaction.guild
   if (!guild || !channel) return interaction.editReply({ content: 'Use this in a server channel.' })
@@ -79,5 +80,11 @@ export async function execute(interaction, { db: dbArg = db, move = placeTicketF
     await move({ guild, task: feature, before: feature, updates: { status: 'closed' }, db: dbArg })
   } catch (e) {
     console.warn('[close-feature] archive placement:', e?.message || e)
+  }
+  try {
+    const { line } = await syncIssue({ db: dbArg, task: feature, updates: { status: 'closed' } })
+    if (line) await channel.send({ content: line }).catch(() => {})
+  } catch (e) {
+    console.warn('[close-feature] issue sync:', e?.message || e)
   }
 }

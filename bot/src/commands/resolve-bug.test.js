@@ -53,6 +53,32 @@ test('a mover that throws does not turn a successful resolve into an error', asy
   assert.equal(h.interaction.replies.length, 1)
 })
 
+test('the issue seam is called with status: resolved, and a returned line is sent to the channel', async () => {
+  const h = harness()
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ text: async () => '# fix' })
+  const syncCalls = []
+  const syncIssue = async (a) => { syncCalls.push(a); return { line: 'GitHub issue not closed — No GitHub access to o/r' } }
+  try {
+    await execute(h.interaction, { db: h.db, move: h.move, syncIssue })
+  } finally { globalThis.fetch = realFetch }
+  assert.equal(syncCalls.length, 1)
+  assert.deepEqual(syncCalls[0].updates, { status: 'resolved' })
+  assert.equal(syncCalls[0].task.id, 'T1')
+  assert.deepEqual(h.log[h.log.length - 1], ['send', 'GitHub issue not closed — No GitHub access to o/r'])
+})
+
+test('no line from the issue seam: nothing extra is sent', async () => {
+  const h = harness()
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ text: async () => '# fix' })
+  const syncIssue = async () => ({ line: null })
+  try {
+    await execute(h.interaction, { db: h.db, move: h.move, syncIssue })
+  } finally { globalThis.fetch = realFetch }
+  assert.equal(h.log.filter((l) => l[0] === 'send').length, 1)
+})
+
 test('outside a bug channel, or when already resolved, nothing is written or moved', async () => {
   const h = harness({ ticket: null })
   await execute(h.interaction, { db: h.db, move: h.move })
