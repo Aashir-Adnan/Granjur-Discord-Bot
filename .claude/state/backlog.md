@@ -130,6 +130,14 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
         `/cleanup` also now fails closed if the `/create-channel` read errors, and never
         lists a category that was already empty before the trim (only ones this trim is
         actually emptying out).
+   - **Deferred from the final review (not needed for the live trim, which renders at ~1900
+     chars):**
+     - `/cleanup`'s 3800-char switch to the attachment measures only the grouped lines, not
+       the whole embed description, so a preview of ~207–210 channels errors instead of
+       rendering (fails safe — nothing is deleted). Measure the full description, and set
+       `pendingCleanups` only after the embed is built (today a stale earlier preview's
+       button could act on the newer list after such an error).
+     - The attachment path (`cleanup-preview.txt`) has no test.
 4. **Repositories per project with a scope** — `project_repos` gains a scope; a task's scope
    picks the repo and opens the GitHub issue (today only bugs open one, `taskCreate.js`).
 5. **Clock in / out on the site** — needs sub-project 1 to know whose clock.
