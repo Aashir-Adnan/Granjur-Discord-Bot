@@ -61,3 +61,20 @@ export function protectedChannelNames() {
   const names = [...GLOBAL_LAYOUT.flatMap((e) => e.channels.map((c) => c.name)), CHANNEL_BARE_TEXT, CHANNEL_BARE_VOICE]
   return new Set(names.map((n) => n.toLowerCase()))
 }
+
+/**
+ * Create each category, then its channels under it, in order. Categories
+ * append to the bottom of the server list, so creation order IS the order.
+ * @returns {Promise<Map<string, object>>} every created channel and category, by name
+ */
+export async function createGlobalCategories(guild, entries) {
+  const made = new Map()
+  for (const entry of entries) {
+    const category = await guild.channels.create({ name: entry.category, type: ChannelType.GuildCategory })
+    made.set(entry.category, category)
+    for (const ch of entry.channels) {
+      made.set(ch.name, await guild.channels.create({ ...ch, parent: category.id }))
+    }
+  }
+  return made
+}

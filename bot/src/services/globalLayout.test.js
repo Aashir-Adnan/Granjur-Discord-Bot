@@ -7,6 +7,7 @@ import {
   GLOBAL_TICKET_CATEGORIES,
   protectedCategoryNames,
   protectedChannelNames,
+  createGlobalCategories,
 } from './globalLayout.js'
 import { CATEGORY_FEEDBACK, CHANNEL_FEEDBACK, CATEGORY_SUPPORT } from '../constants.js'
 
@@ -68,4 +69,30 @@ test('protected channel names: every layout channel plus the bare general/voice 
     assert.ok(names.has(n), n)
   }
   for (const gone of ['rules', 'meeting-metadata', 'frontend-chat', 'cmd-create-task']) assert.ok(!names.has(gone), gone)
+})
+
+test('createGlobalCategories makes each category, then its channels under it, in order', async () => {
+  const calls = []
+  let n = 0
+  const guild = {
+    channels: {
+      create: async (opts) => { n += 1; calls.push(opts); return { id: `id${n}`, name: opts.name } },
+    },
+  }
+  const entries = GLOBAL_LAYOUT.filter((e) => e.category !== '📥 Onboarding')
+  const made = await createGlobalCategories(guild, entries)
+  assert.deepEqual(calls.map((c) => c.name), [
+    '📢 Announcements', 'announcements-all', 'announcements-verified', 'announcements-leadership', 'admin',
+    '💬 Casual', 'casual-chat', 'off-topic', 'voice-lounge',
+    '📚 Documentation', 'documentation',
+    '💡 Feedback', 'feedback',
+    '📋 Meetings', 'general-meetings', 'meeting-voice', 'upcoming-meetings',
+  ])
+  assert.equal(calls[0].type, ChannelType.GuildCategory)
+  assert.equal(calls[1].parent, 'id1')
+  assert.equal(calls[1].topic, 'Announcements for everyone')
+  assert.equal(calls.find((c) => c.name === 'voice-lounge').type, ChannelType.GuildVoice)
+  assert.equal(made.get('feedback').id, 'id13')
+  assert.equal(made.get('📚 Documentation').id, 'id10')
+  assert.equal(made.get('documentation').id, 'id11')
 })
