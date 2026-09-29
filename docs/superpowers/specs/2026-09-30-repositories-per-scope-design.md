@@ -171,7 +171,37 @@ tagged.
   same one-per-scope refusal.
 - Who can manage links is unchanged: the same roles as `/projects` and `/repos` today.
 
-### 8. Site: repositories shown read-only
+### 8. The issue follows the task's status
+
+Asked for by the owner on 2026-09-30.
+
+**The hook:**
+- A new `syncIssueState({ task, before, updates })` in `bot/src/services/taskIssueState.js`
+  runs wherever a status change runs its ticket-channel step:
+  - `applyTaskUpdate` in `services/taskStatusChange.js`, which covers `/update-task`, the
+    task hub, and the site's status route and board moves;
+  - `/close-feature`;
+  - `/resolve-bug`.
+- It acts only when the task has an issue (`externalIssueUrl` or `externalIssueNumber`)
+  and the status actually changed.
+
+**What it does:**
+- **Task becomes `done`, `closed` or `resolved`:** the issue is closed as *completed*.
+- **Task becomes `abandoned`:** the issue is closed as *not planned*.
+- **Task moves from any of those back to an active status:** the issue is reopened.
+- It calls `PATCH /repos/{owner}/{repo}/issues/{number}` with `state` and `state_reason`,
+  using the owner's token from §4 (`github.js` gains `setIssueState(repoUrl, number, {
+  state, reason })`).
+
+**Failure:**
+- It never blocks or undoes the status change.
+- The reply or channel post gains one line, "GitHub issue not closed — <reason>" (or "not
+  reopened").
+- An issue already in the target state counts as success.
+
+GitHub → Discord (closing the issue on GitHub closes the task) is out of scope.
+
+### 9. Site: repositories shown read-only
 
 The project cards list each linked repository and its scope, e.g. "Framework_Node ·
 Backend", from `projectRepos`. There is no editing on the site.
@@ -189,6 +219,10 @@ Backend", from `projectRepos`. There is no editing on the site.
     - `repositoryId` from the rule.
   - `/create-task`: the repository step skipped or asked; the Issue toggle.
   - `/projects` link, scope, refusal and unlink with a fake db; `/repos add` scope.
+  - `syncIssueState`: closes as completed on done/closed/resolved, as not planned on
+    abandoned, and reopens on the way back. It does nothing when there is no issue or no
+    status change, reports failure without throwing, and each of the three call sites
+    calls it.
   - Meeting pipeline: `repositoryId` by scope; review switch default on;
     `issue_syncing` via `createIssue`, idempotent, errors recorded.
   - Migration 030: a static guard test, like 028.
@@ -216,4 +250,4 @@ Each part tolerates the others' old versions:
 
 - Managing links on the site.
 - Moving or creating an issue when a task's project or scope changes later.
-- Closing issues when tasks close.
+- Closing a task when its issue is closed on GitHub.
