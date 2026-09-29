@@ -63,6 +63,15 @@ test('protected category names: the layout, its /migrate bold names, the ticket 
   assert.deepEqual(GLOBAL_TICKET_CATEGORIES, ['Features', 'Bugs'])
 })
 
+test('a legacy plain "Meetings" is the same category as "📋 Meetings", by their shared /migrate bold name', () => {
+  const cats = protectedCategoryNames()
+  assert.ok(cats.has('meetings'), 'plain Meetings shares 📋 Meetings\' bold name and must be protected too')
+  // Rules was never in the layout, so its own legacy alias (there isn't one —
+  // 'Rules' has no plain-name key in CATEGORY_BOLD_NAMES) must stay unprotected.
+  assert.ok(!cats.has('rules'), 'rules')
+  assert.ok(!cats.has('📜 rules'), '📜 rules')
+})
+
 test('protected channel names: every layout channel plus the bare general/voice pair', () => {
   const names = protectedChannelNames()
   for (const n of ['welcome-and-verify', 'admin', 'casual-chat', 'feedback', 'upcoming-meetings', 'general', 'voice']) {

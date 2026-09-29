@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType } from 'discord.js'
-import { execute } from './cleanup.js'
+import { execute, handleConfirm } from './cleanup.js'
 
 const CFG = { id: 'cfg1' }
 
@@ -46,9 +46,12 @@ function seams(projects = [], { projectThrows = false, userChannels = [], tasks 
         },
       },
       task: {
-        findMany: async ({ where }) => {
+        findMany: async ({ where, take }) => {
           if (taskThrows) throw new Error('read timeout')
           assert.equal(where.guildConfigId, CFG.id)
+          // The default LIMIT is 500 — a cleanup must ask for every ticket, or
+          // the cap silently drops older tasks back into toDelete.
+          assert.ok(take >= 1_000_000, `task read must not be capped: take=${take}`)
           return tasks
         },
       },
@@ -292,4 +295,75 @@ test('channels whose ids the config stores are protected by id', async () => {
   const cfg = { ...CFG, timeReportChannelId: 'tr', feedbackChannelId: 'fb' }
   await execute(it, { db, getConfig: async () => cfg })
   assert.deepEqual(listedForDeletion(it.replies.at(-1)), ['random-leftover'])
+})
+
+test('a legacy plain "Meetings" category and its room are protected too', async () => {
+  // /migrate bolds '📋 Meetings' and plain 'Meetings' to the same bold name —
+  // a server that never renamed from the old plain name is still ours.
+  const cat = category('cat-meet-legacy', 'Meetings')
+  const reply = await run([], [cat, chan('m1', 'standup-k9-text', { parent: cat })])
+  assert.deepEqual(listedForDeletion(reply), [])
+  assert.deepEqual(categoriesListed(reply), [])
+})
+
+test('an empty project category renamed by hand is not offered up', async () => {
+  // The rename defeats the name rule; only the recorded discordCategoryId
+  // still says this is ours — and it now holds nothing at all.
+  const cat = category('cat-renamed', 'Renamed By The Client')
+  const legacy = { id: 'p9', name: 'Original Project Name', guildConfigId: CFG.id, discordCategoryId: 'cat-renamed' }
+  const reply = await run([legacy], [cat, chan('junk', 'random-leftover')])
+  assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
+  assert.deepEqual(categoriesListed(reply), [])
+})
+
+test('an empty support category, known only by name, is not offered up', async () => {
+  // No support ids stored yet (pre-/init window) — only the name fallback
+  // marks this category as ours, and it holds nothing at all.
+  const supportCat = category('supcat', '🛟 Support')
+  const reply = await run([], [supportCat, chan('junk', 'random-leftover')])
+  assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
+  assert.deepEqual(categoriesListed(reply), [])
+})
+
+/** A guild whose channels.fetch(id) returns a live, deletable channel object,
+ * and whose channels.fetch() (no id) returns the current state of the server —
+ * so a failed delete is still visible to the next check. */
+function fakeGuildWithDelete(channels, { failIds = [] } = {}) {
+  const map = new Map(channels.map((c) => [c.id, c]))
+  const deleteCalls = []
+  const guild = {
+    id: 'G1',
+    channels: {
+      fetch: async (id) => {
+        if (id === undefined) return new Map(map)
+        const ch = map.get(id)
+        if (!ch) return null
+        return {
+          ...ch,
+          delete: async () => {
+            deleteCalls.push(ch.id)
+            if (failIds.includes(ch.id)) throw new Error('missing permissions')
+            map.delete(ch.id)
+          },
+        }
+      },
+    },
+  }
+  return { guild, deleteCalls }
+}
+
+test('handleConfirm keeps a category whose channel failed to delete, and reports the skip', async () => {
+  const cat = category('cat-empty', 'Some Old Category')
+  const leftover = chan('junk', 'random-leftover', { parent: cat })
+  const { guild, deleteCalls } = fakeGuildWithDelete([cat, leftover], { failIds: ['junk'] })
+  const it = fakeInteraction(guild)
+  const { db } = seams([])
+  await execute(it, { db, getConfig: async () => CFG })
+  assert.deepEqual(listedForDeletion(it.replies.at(-1)), ['random-leftover'])
+  assert.deepEqual(categoriesListed(it.replies.at(-1)), ['Some Old Category'])
+
+  await handleConfirm(it)
+  const final = it.replies.at(-1)
+  assert.ok(!deleteCalls.includes('cat-empty'), `category delete was called: ${deleteCalls}`)
+  assert.match(final.content, /Kept 1 category\(ies\) that still had channels\./)
 })

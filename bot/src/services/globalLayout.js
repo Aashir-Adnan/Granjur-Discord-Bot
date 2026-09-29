@@ -53,7 +53,14 @@ export const GLOBAL_TICKET_CATEGORIES = Object.freeze(['Features', 'Bugs'])
 export function protectedCategoryNames() {
   const names = [...GLOBAL_LAYOUT.map((e) => e.category), ...GLOBAL_TICKET_CATEGORIES, CATEGORY_SUPPORT]
   const withBold = names.flatMap((n) => [n, CATEGORY_BOLD_NAMES[n]].filter(Boolean))
-  return new Set(withBold.map((n) => n.toLowerCase()))
+  const protectedNames = new Set(withBold.map((n) => n.toLowerCase()))
+  // Legacy aliases: a CATEGORY_BOLD_NAMES key (e.g. plain 'Meetings') that maps
+  // to the same bold name as a protected category is that category's old name,
+  // still sitting on a server /migrate already renamed once.
+  for (const [alias, bold] of Object.entries(CATEGORY_BOLD_NAMES)) {
+    if (protectedNames.has(bold.toLowerCase())) protectedNames.add(alias.toLowerCase())
+  }
+  return protectedNames
 }
 
 /** Channel names /cleanup must leave alone inside a protected category, lowercased. */

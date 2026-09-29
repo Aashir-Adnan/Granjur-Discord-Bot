@@ -107,7 +107,9 @@ export async function execute(
   // in the global Features/Bugs categories, and a trim must never offer one up.
   let tasks;
   try {
-    tasks = (await dbArg.task.findMany({ where: { guildConfigId: cfg.id } })) ?? [];
+    // Every ticket id must be read — taskFindMany defaults to LIMIT 500, and a
+    // silent cap here would drop older tasks' tickets right back into toDelete.
+    tasks = (await dbArg.task.findMany({ where: { guildConfigId: cfg.id }, take: 1_000_000 })) ?? [];
   } catch (e) {
     console.error("[cleanup] task read failed:", e);
     return interaction.editReply({
@@ -212,8 +214,13 @@ export async function execute(
     })
     .join("\n");
   const remaining = toDelete.length > 25 ? `\n_… and ${toDelete.length - 25} more_` : "";
+  const categoryList = emptyCategories
+    .slice(0, 25)
+    .map((c) => `- 📁 ${c.name}`)
+    .join("\n");
+  const categoryRemaining = emptyCategories.length > 25 ? `\n_… and ${emptyCategories.length - 25} more_` : "";
   const categoryBlock = emptyCategories.length
-    ? `\n\n**Categories left empty, removed too:**\n${emptyCategories.map((c) => `- 📁 ${c.name}`).join("\n")}`
+    ? `\n\n**Empty categories, removed too:**\n${categoryList}${categoryRemaining}`
     : "";
 
   // Channels first, then their categories: Discord refuses nothing either way,
@@ -260,21 +267,34 @@ export async function handleConfirm(interaction) {
 
   let deleted = 0;
   let failed = 0;
+  let skipped = 0;
 
   for (const id of channelIds) {
     try {
       const ch = await guild.channels.fetch(id).catch(() => null);
-      if (ch) {
-        await ch.delete("Cleanup command");
-        deleted++;
+      if (!ch) continue;
+      if (ch.type === ChannelType.GuildCategory) {
+        // A channel earlier in this same run may have failed to delete and be
+        // still parented here — deleting the category now would orphan it.
+        const current = await guild.channels.fetch();
+        const stillHasChildren = [...current.values()].some(
+          (c) => c && c.id !== id && (c.parentId ?? c.parent?.id ?? null) === id,
+        );
+        if (stillHasChildren) {
+          skipped++;
+          continue;
+        }
       }
+      await ch.delete("Cleanup command");
+      deleted++;
     } catch (_) {
       failed++;
     }
   }
 
+  const skipNote = skipped ? ` Kept ${skipped} category(ies) that still had channels.` : "";
   await interaction.editReply({
-    content: `Cleanup complete. Deleted **${deleted}** item(s).${failed ? ` Failed: ${failed}.` : ""}`,
+    content: `Cleanup complete. Deleted **${deleted}** item(s).${failed ? ` Failed: ${failed}.` : ""}${skipNote}`,
     embeds: [],
     components: [],
   });
