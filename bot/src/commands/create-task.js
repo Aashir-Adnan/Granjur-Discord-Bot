@@ -14,7 +14,7 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { createTaskTicketChannel } from '../services/taskTicketChannel.js'
 import { createIssue } from '../services/github.js'
-import { createTask } from '../services/taskCreate.js'
+import { createTask, issueReplyLine } from '../services/taskCreate.js'
 import { resolveTaskRepo, loadProjectLinks } from '../services/taskRepo.js'
 import { CATEGORY_SOFT_CAP } from '../constants.js'
 import { EPHEMERAL } from '../constants.js'
@@ -295,18 +295,10 @@ export function issueToggleButton(on) {
     .setStyle(on ? ButtonStyle.Primary : ButtonStyle.Secondary)
 }
 
-/**
- * The last line of the "task created" reply: what happened to the GitHub issue.
- * A failure or a skip is always said, never silent. Pure; exported for its test.
- *
- * @param {{url:string}|{error:string}|{skipped:string}|null} issue  createTask's `issue`
- */
-export function issueReplyLine(issue) {
-  if (issue && issue.url) return `Issue: ${issue.url}`
-  if (issue && 'error' in issue) return `Issue: not opened — ${issue.error}`
-  if (issue && 'skipped' in issue) return `Issue: not opened — ${issue.skipped}`
-  return 'Issue: off'
-}
+// The last line of the "task created" reply: what happened to the GitHub issue.
+// Lives in services/taskCreate.js so the site create route says it the same
+// way; re-exported here for this command's tests.
+export { issueReplyLine }
 
 /**
  * The repository the confirm step shows — the same one createTask will use, so

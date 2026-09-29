@@ -208,7 +208,7 @@ test('create: validated fields, the bug repo row and a site actor reach createTa
   assert.deepEqual(r.body.task, { id: 'N1', type: 'bug', status: 'pending', projectId: 'P1' })
   assert.equal(r.body.channelId, 'ch9')
   assert.equal(r.body.fellBack, 'missing')
-  assert.equal(r.body.note, 'Framework has no Discord section yet, so the channel went to the global Bugs category. Run /project-setup for it.')
+  assert.equal(r.body.note, 'Framework has no Discord section yet, so the channel went to the global Bugs category. Run /project-setup for it.\nIssue: off')
 })
 test('create: an unknown member is a 400', async () => {
   const r = await handleCreateRequest({ headers: H, body: { type: 'feature', title: 'x', projectId: 'P1', holderIds: ['u9'] }, db: routeDb(), client: guildClient, secret: 's3cret' })
@@ -297,4 +297,52 @@ test('status: a malformed discordId falls back to the email match', async () => 
     db: db2, client: {}, secret: 's3cret', apply: async (a) => { seen = a; return { warning: '' } },
   })
   assert.equal(seen.actor.activityId, 'u-email')
+})
+
+// F1 (final review, 2026-09-30): CSAAS forwards only `note` to the site, so the
+// issue outcome rides on it, in the same words the Discord reply uses.
+for (const [issue, line] of [
+  [{ url: 'https://github.com/g/bot/issues/4' }, 'Issue: https://github.com/g/bot/issues/4'],
+  [{ error: 'No GitHub access to g/bot' }, 'Issue: not opened — No GitHub access to g/bot'],
+  [{ skipped: 'the project has no repository for this scope' }, 'Issue: not opened — the project has no repository for this scope'],
+  [null, 'Issue: off'],
+]) {
+  test(`create: the response note carries the issue outcome (${line})`, async () => {
+    const r = await handleCreateRequest({
+      headers: H, body: { type: 'bug', title: 'Crash', projectId: 'P1', holderIds: ['u1'], repositoryIds: ['R1'] },
+      db: routeDb(), client: guildClient, secret: 's3cret',
+      create: async () => ({ task: { id: 'N1', type: 'bug', status: 'pending', projectId: 'P1' }, channel: { id: 'ch9' }, fellBack: null, issueUrl: '', issue }),
+    })
+    assert.equal(r.status, 200)
+    assert.equal(r.body.note, line)
+  })
+}
+test('create: the issue line follows the placement note on its own line', async () => {
+  const r = await handleCreateRequest({
+    headers: H, body: { type: 'bug', title: 'Crash', projectId: 'P1', holderIds: ['u1'], repositoryIds: ['R1'] },
+    db: routeDb(), client: guildClient, secret: 's3cret',
+    create: async () => ({ task: { id: 'N1', type: 'bug', status: 'pending', projectId: 'P1' }, channel: { id: 'ch9' }, fellBack: 'cap', issueUrl: '', issue: { error: 'boom' } }),
+  })
+  assert.equal(r.body.note, "Framework's section is full, so the channel went to the global Bugs category.\nIssue: not opened — boom")
+})
+
+// M1: the rule path — a bug with no repositoryIds whose project link carries its scope.
+test('create: a bug with no repositoryIds is accepted when the project link resolves by scope, and createTask gets the ruled repo', async () => {
+  let seen
+  const db = routeDb({
+    repository: { findMany: async () => [{ id: 'R1', name: 'bot', url: 'https://github.com/g/bot' }, { id: 'R2', name: 'site', url: 'https://github.com/g/site' }] },
+    projectRepos: { findMany: async ({ where }) => (where.project_id === 'P1' ? [{ project_id: 'P1', repository_id: 'R1', scope: 'frontend' }, { project_id: 'P1', repository_id: 'R2', scope: 'backend' }] : []) },
+  })
+  const r = await handleCreateRequest({
+    headers: H, body: { type: 'bug', title: 'Crash', projectId: 'P1', holderIds: ['u1'], scope: 'backend' },
+    db, client: guildClient, secret: 's3cret',
+    create: async (a) => { seen = a; return { task: { id: 'N1', type: 'bug', status: 'pending', projectId: 'P1' }, channel: { id: 'ch9' }, fellBack: null, issueUrl: '', issue: { url: 'https://github.com/g/site/issues/1' } } },
+  })
+  assert.equal(r.status, 200)
+  assert.ok(seen, 'createTask ran')
+  assert.deepEqual(seen.fields.repositoryIds, [])
+  assert.equal(seen.fields.scope, 'backend')
+  assert.equal(seen.project.id, 'P1')
+  assert.deepEqual(seen.repo, { id: 'R2', name: 'site', url: 'https://github.com/g/site' }, 'the ruled repository reaches createTask')
+  assert.equal(r.body.note, 'Issue: https://github.com/g/site/issues/1')
 })

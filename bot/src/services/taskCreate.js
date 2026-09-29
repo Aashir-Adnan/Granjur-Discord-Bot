@@ -58,24 +58,50 @@ function issueBody(fields, project, guild, channel, task) {
 }
 
 /**
+ * The line that says what happened to a new task's GitHub issue. A failure or
+ * a skip is always said, never silent. Shared by /create-task's reply and the
+ * site create route's `note` (CSAAS forwards only `note` to the site), so both
+ * say it in the same words. Pure.
+ *
+ * @param {{url:string}|{error:string}|{skipped:string}|null} issue  createTask's `issue`
+ */
+export function issueReplyLine(issue) {
+  if (issue && issue.url) return `Issue: ${issue.url}`
+  if (issue && 'error' in issue) return `Issue: not opened — ${issue.error}`
+  if (issue && 'skipped' in issue) return `Issue: not opened — ${issue.skipped}`
+  return 'Issue: off'
+}
+
+/**
  * Open (or skip, or report the failure of) a task's GitHub issue, once its
  * channel exists. Never throws — a GitHub failure is always reported back,
- * never silent, and never undoes the task or its channel.
+ * never silent, and never undoes the task or its channel. A failure is also
+ * said in the task's channel (best-effort); a skip or an opt-out is not.
  */
 async function openTaskIssue({ dbArg, model, wantIssue, usedRepo, reasonText, fields, project, guild, channel, task, openIssue }) {
   if (!wantIssue) return { issue: null, issueUrl: '' }
   if (!usedRepo?.url) return { issue: { skipped: reasonText }, issueUrl: '' }
+  let res
   try {
     const body = issueBody(fields, project, guild, channel, task)
-    const res = await openIssue(usedRepo.url, fields.title, body)
-    await dbArg[model].update({ where: { id: task.id }, data: { externalIssueUrl: res.url, externalIssueNumber: res.number } })
-    try {
-      await channel.send({ content: `GitHub issue: ${res.url}` })
-    } catch (_) { /* best-effort: the issue is open either way */ }
-    return { issue: { url: res.url }, issueUrl: res.url }
+    res = await openIssue(usedRepo.url, fields.title, body)
   } catch (e) {
-    return { issue: { error: e.message }, issueUrl: '' }
+    const reason = e?.message ?? String(e)
+    try {
+      await channel.send({ content: `GitHub issue not opened — ${reason}` })
+    } catch (_) { /* best-effort: the reply still reports it */ }
+    return { issue: { error: reason }, issueUrl: '' }
   }
+  // The issue exists from here on: a failed row write must not hide it.
+  try {
+    await dbArg[model].update({ where: { id: task.id }, data: { externalIssueUrl: res.url, externalIssueNumber: res.number } })
+  } catch (e) {
+    console.warn('[taskCreate] issue url write failed:', e?.message ?? e)
+  }
+  try {
+    await channel.send({ content: `GitHub issue: ${res.url}` })
+  } catch (_) { /* best-effort: the issue is open either way */ }
+  return { issue: { url: res.url }, issueUrl: res.url }
 }
 
 /**

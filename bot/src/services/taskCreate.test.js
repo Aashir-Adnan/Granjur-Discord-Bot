@@ -177,3 +177,60 @@ test('a bug with no project but an explicit repo: that repo is used (the Discord
   assert.deepEqual(r.issue, { url: 'https://github.com/g/bot/issues/3' })
   assert.ok(sentMessages.some((m) => m.content === 'GitHub issue: https://github.com/g/bot/issues/3'), 'the follow-up went to the new channel')
 })
+
+// F1 (final review, 2026-09-30): a failed issue is said in the task's channel too.
+test('a failed issue posts "GitHub issue not opened — <reason>" in the task channel', async () => {
+  const db = fakeDb({ repos: [{ id: 'R1', name: 'bot', url: 'https://github.com/g/bot' }], links: [{ project_id: 'P1', repository_id: 'R1', scope: 'backend' }] })
+  const { sent, maker } = fakeChannelMaker()
+  await createTask({
+    db, guild: { id: 'G' }, cfg, fields: { ...baseFields, repositoryIds: [] }, project, actor: {}, createChannel: maker,
+    openIssue: async () => { throw new GitHubError('no-access', 'No GitHub access to g/bot') },
+  })
+  assert.deepEqual(sent, [{ content: 'GitHub issue not opened — No GitHub access to g/bot' }])
+})
+
+test('a skipped or switched-off issue posts nothing in the channel', async () => {
+  const links = [{ project_id: 'P1', repository_id: 'R1' }, { project_id: 'P1', repository_id: 'R2' }]
+  const repos = [{ id: 'R1', name: 'a', url: 'https://github.com/g/a' }, { id: 'R2', name: 'b', url: 'https://github.com/g/b' }]
+  for (const createIssue of [true, false]) {
+    const { sent, maker } = fakeChannelMaker()
+    await createTask({
+      db: fakeDb({ repos, links }), guild: { id: 'G' }, cfg, fields: { ...baseFields, scope: 'design', repositoryIds: [] }, project,
+      actor: {}, createChannel: maker, createIssue, openIssue: async () => { throw new Error('must not run') },
+    })
+    assert.deepEqual(sent, [])
+  }
+})
+
+test('a channel send that throws after a failed issue still returns issue.error', async () => {
+  const db = fakeDb({ repos: [{ id: 'R1', name: 'bot', url: 'https://github.com/g/bot' }], links: [{ project_id: 'P1', repository_id: 'R1', scope: 'backend' }] })
+  const maker = async (guild, opts) => {
+    const channel = { id: 'ch1', send: async () => { throw new Error('missing access') } }
+    if (opts.onCreated) await opts.onCreated(channel)
+    return { channel, fellBack: null }
+  }
+  const r = await createTask({
+    db, guild: { id: 'G' }, cfg, fields: { ...baseFields, repositoryIds: [] }, project, actor: {}, createChannel: maker,
+    openIssue: async () => { throw new GitHubError('github', 'Validation Failed') },
+  })
+  assert.deepEqual(r.issue, { error: 'Validation Failed' })
+})
+
+// M2: the row update after a successful issue is best-effort on its own.
+test('a failing row update after the issue opened still returns { url } and posts the link', async () => {
+  const db = fakeDb({ repos: [{ id: 'R1', name: 'bot', url: 'https://github.com/g/bot' }], links: [{ project_id: 'P1', repository_id: 'R1', scope: 'backend' }] })
+  const realUpdate = db.feature.update
+  db.feature.update = async (a) => { if (a.data.externalIssueUrl) throw new Error('db down'); return realUpdate(a) }
+  const { sent, maker } = fakeChannelMaker()
+  const orig = console.warn; console.warn = () => {}
+  let r
+  try {
+    r = await createTask({
+      db, guild: { id: 'G' }, cfg, fields: { ...baseFields, repositoryIds: [] }, project, actor: {}, createChannel: maker,
+      openIssue: async (url) => ({ url: `${url}/issues/5`, number: 5 }),
+    })
+  } finally { console.warn = orig }
+  assert.deepEqual(r.issue, { url: 'https://github.com/g/bot/issues/5' })
+  assert.equal(r.issueUrl, 'https://github.com/g/bot/issues/5')
+  assert.deepEqual(sent, [{ content: 'GitHub issue: https://github.com/g/bot/issues/5' }])
+})
