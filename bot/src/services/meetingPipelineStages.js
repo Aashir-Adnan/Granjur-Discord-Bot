@@ -12,7 +12,7 @@ import { deriveMeetingName, formatMeetingDate } from '../commands/playback.js'
 import { initReviewState, buildReviewMessage, summarizeApproval, taskKey } from './meetingReviewUI.js'
 import { mapMeetingTaskToRow } from './meetingTaskMap.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
-import { matchProject } from '../utils/projectMatch.js'
+import { loadProjectContext, settledProject, resolveMeetingTaskProject, reviewProjectOptions } from './meetingTaskProject.js'
 import { buildAnalyzeLivePayload } from './liveTranscriptPayload.js'
 
 // overrides is a test-only seam, never meant to carry real data: the `db`
@@ -222,7 +222,12 @@ async function awaitingReviewStage({ job, db, client, csaasClient }) {
     }
   }
 
-  const state = initReviewState(tasks, assignments)
+  // Settle each task's project now (meeting project, else the project Claude
+  // named) so the review can ask only about the unclear ones. The choices are
+  // stored so every re-render offers the same list.
+  const projectCtx = await loadProjectContext(db, job)
+  const state = initReviewState(tasks, assignments, (t) => settledProject(t, projectCtx))
+  data.reviewProjects = reviewProjectOptions(projectCtx.projects)
   data.notes = notes ?? null
   data.review = state
 
@@ -310,30 +315,9 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     }
   }
 
-  // CSAAS names the project as it heard it ("Badar_HMS"); the bot's rows are
-  // "Badar HMS" and "Badar_HMS_Node". Load the three tables once and match
-  // loosely — an exact-name lookup left every mirrored task with no project.
-  let matchCtx = { projects: [], repos: [], links: [] }
-  try {
-    const [projects, repos, links] = await Promise.all([
-      db.project.findMany({ where: { guildConfigId: job.guildConfigId } }),
-      db.repository.findMany({ where: { guildConfigId: job.guildConfigId } }),
-      db.projectRepos.findMany({ where: {} }),
-    ])
-    matchCtx = { projects: projects || [], repos: repos || [], links: links || [] }
-  } catch (e) {
-    console.warn('[meetingPipeline] project/repo lookup failed:', e?.message || e)
-  }
-
-  // The project the MEETING belongs to — `/meeting-channel` records it when the
-  // meeting was started for a project or inside its section. CSaaS never sees
-  // it, so `matchProject` cannot produce it from a spoken project name.
-  let meetingProjectId = null
-  try {
-    meetingProjectId = (await db.meeting.findUnique({ where: { id: job.meetingId } }))?.projectId || null
-  } catch (e) {
-    console.warn('[meetingPipeline] meeting project lookup failed:', e?.message || e)
-  }
+  // Meeting project, else the project CSaaS named, else the reviewer's pick —
+  // see meetingTaskProject.js.
+  const projectCtx = await loadProjectContext(db, job)
 
   const mirrored = []
   for (const reviewTask of reviewTasks) {
@@ -341,16 +325,16 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     const csaasTask = csaasTasks.find((t) => taskKey(t.task_id) === taskKey(reviewTask.taskId))
     if (!csaasTask) continue
 
-    const match = matchProject(csaasTask.project, matchCtx)
+    const project = resolveMeetingTaskProject(csaasTask, reviewTask, projectCtx)
 
     const row = mapMeetingTaskToRow(csaasTask, reviewTask, {
       guildConfigId: job.guildConfigId,
       meetingId: job.meetingId,
       discordChannelId,
       botUserId,
-      repositoryId: match?.repositoryId ?? null,
-      projectId: match?.projectId ?? null,
-      projectName: match?.projectName ?? null,
+      repositoryId: project.repositoryId,
+      projectId: project.projectId,
+      projectName: project.projectName,
     })
 
     // Idempotency: a retry after a partial mirror must not double-create rows.
@@ -379,16 +363,10 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     // the channel to — it is covered by the summary line below instead.
     let taskChannelId = prior.get(taskKey(csaasTask.task_id))?.taskChannelId || null
     if (!taskChannelId && guild && reviewTask.assigneeRef) {
-      // Same projects already loaded for the match above — look this task's up
-      // by the id matchProject settled on, so the channel lands in its section.
-      // When CSaaS named no project the meeting's own one stands in: a meeting
-      // held inside a project's section belongs to it whatever was said out
-      // loud, and without this its tasks land in the global Features category.
-      // Placement only — the task ROW keeps what matchProject decided, because
-      // attribution and channel placement are different claims.
-      const placementProjectId = row.projectId || meetingProjectId
-      const project = placementProjectId
-        ? matchCtx.projects.find((p) => p.id === placementProjectId) ?? null
+      // The channel goes into the section of the project the row settled on
+      // (meeting project, named project, or the reviewer's pick).
+      const project = row.projectId
+        ? projectCtx.projects.find((p) => p.id === row.projectId) ?? null
         : null
       try {
         const { channel: ticket } = await createTaskTicketChannel(guild, {

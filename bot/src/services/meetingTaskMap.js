@@ -42,10 +42,11 @@ export function mapMeetingTaskToRow(csaasTask, reviewTask, ctx) {
     status: 'open',
     createdBy: ctx.botUserId || null,
     assigneeIds: reviewTask.assigneeRef ? [reviewTask.assigneeRef] : [],
-    // The bot's own project row when the CSAAS name could be matched to one;
-    // otherwise keep CSAAS's name so the dashboard can still show it.
+    // Settled by resolveMeetingTaskProject (meeting project, named project, or
+    // the reviewer's pick). No project means no name: the name CSAAS heard is
+    // not kept, so it cannot show up on the site as a stray project group.
     projectId: ctx.projectId || null,
-    projectName: ctx.projectName || csaasTask.project || null,
+    projectName: ctx.projectName || null,
     repositoryId: ctx.repositoryId || null,
     scope: meetingTaskScope(csaasTask),
     modules: meetingTaskModules(csaasTask),

@@ -876,6 +876,7 @@ test("a task CSaaS could not attribute is placed in the MEETING's project sectio
     users: { fetch: async () => ({ send: async () => {} }) },
   }
   const project = { id: 'p1', name: 'Framework', docsSlug: 'framework', discordCategoryId: 'cat-fw' }
+  const createdRows = []
   const db = {
     meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1', projectId: 'p1' }) },
     meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
@@ -884,7 +885,7 @@ test("a task CSaaS could not attribute is placed in the MEETING's project sectio
     projectRepos: { findMany: async () => [] },
     task: {
       findFirst: async () => null,
-      create: async ({ data }) => ({ id: 'dbtask1', ...data }),
+      create: async ({ data }) => { createdRows.push(data); return { id: 'dbtask1', ...data } },
       update: async () => ({}),
     },
     meetingPipelineJob: { update: async () => ({}) },
@@ -908,6 +909,7 @@ test("a task CSaaS could not attribute is placed in the MEETING's project sectio
   const taskChannel = guildCreates.find((c) => c.type !== ChannelType.GuildCategory)
   assert.equal(taskChannel.parent, 'cat-fw', 'the channel went into the project section')
   assert.equal(guildCreates.filter((c) => c.type === ChannelType.GuildCategory).length, 0, 'no global category was made')
+  assert.equal(createdRows[0].projectId, 'p1', 'the meeting project is now the task row project too')
 })
 
 test('a meeting with no project still places the task channel exactly as before', async () => {
@@ -950,4 +952,97 @@ test('a meeting with no project still places the task channel exactly as before'
   await stageRunners.mirrored({ job, db, client, csaasClient: {} })
 
   assert.equal(guildCreates.filter((c) => c.type === ChannelType.GuildCategory).length, 1, 'the global category, as today')
+})
+
+// ---------------------------------------------------------------------------
+// Roadmap sub-project 2 (2026-09-29): meeting tasks get their project
+// ---------------------------------------------------------------------------
+
+const FW = { id: 'p1', name: 'Framework' }
+const HMS = { id: 'p2', name: 'Badar HMS' }
+
+function reviewDb({ meetingProjectId = null, projects = [FW, HMS] } = {}) {
+  return {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1', projectId: meetingProjectId }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    meetingRecording: { findMany: async () => [] },
+    project: { findMany: async () => projects },
+    repository: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
+  }
+}
+const twoTaskJob = () => ({
+  id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+  dataJson: {
+    title: 'Sync',
+    tasks: [
+      { task_id: 'a', goal_of_task: 'Do A', project: 'Framework' },
+      { task_id: 'b', goal_of_task: 'Do B', project: 'Something unheard of' },
+    ],
+    assignments: [],
+    roster: [],
+  },
+})
+
+test('awaiting_review asks for a project only where the rules settle none, and stores the choices', async () => {
+  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
+  const sent = []
+  const channel = { id: 'tc1', send: async (p) => { sent.push(p); return { id: 'msg1' } } }
+  const client = { channels: { fetch: async () => channel } }
+  const csaasClient = { fetchNotes: async () => ({ notes: 'N' }) }
+  const out = await stageRunners.awaiting_review({ job: twoTaskJob(), db: reviewDb(), csaasClient, client })
+  const [a, b] = out.patch.dataJson.review.tasks
+  assert.deepEqual([a.needsProject, a.projectLabel], [false, 'Framework'])
+  assert.deepEqual([b.needsProject, b.projectId], [true, null])
+  assert.deepEqual(out.patch.dataJson.reviewProjects, [{ id: 'p2', name: 'Badar HMS' }, { id: 'p1', name: 'Framework' }])
+  // One task per page while b needs a project: page 1 is a, with no select.
+  assert.match(sent[0].embeds[0].data.description, /Page 1\/2/)
+})
+
+test("awaiting_review asks nothing when the meeting has a project", async () => {
+  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
+  const channel = { id: 'tc1', send: async () => ({ id: 'msg1' }) }
+  const out = await stageRunners.awaiting_review({
+    job: twoTaskJob(), db: reviewDb({ meetingProjectId: 'p1' }),
+    csaasClient: { fetchNotes: async () => ({ notes: 'N' }) }, client: { channels: { fetch: async () => channel } },
+  })
+  assert.ok(out.patch.dataJson.review.tasks.every((t) => !t.needsProject && t.projectLabel === 'Framework'))
+})
+
+function mirrorDb({ meetingProjectId = null } = {}) {
+  const created = []
+  const db = {
+    ...reviewDb({ meetingProjectId }),
+    task: { findFirst: async () => null, create: async ({ data }) => { created.push(data); return { id: `db${created.length}` } }, update: async () => ({}) },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  return { db, created }
+}
+const mirrorClient = () => ({ user: { id: 'bot' }, channels: { fetch: async () => ({ id: 'tc1', send: async () => ({ id: 'x' }) }) } })
+const mirrorJob = (reviewTasks) => ({ ...twoTaskJob(), dataJson: { ...twoTaskJob().dataJson, review: { tasks: reviewTasks } } })
+
+test("mirrored: the meeting's project wins for every task", async () => {
+  const { db, created } = mirrorDb({ meetingProjectId: 'p2' })
+  await stageRunners.mirrored({ job: mirrorJob([{ taskId: 'a' }, { taskId: 'b' }]), db, client: mirrorClient(), csaasClient: {} })
+  assert.deepEqual(created.map((r) => [r.projectId, r.projectName]), [['p2', 'Badar HMS'], ['p2', 'Badar HMS']])
+})
+
+test("mirrored: a named project is matched, and an unclear task takes the reviewer's pick", async () => {
+  const { db, created } = mirrorDb()
+  await stageRunners.mirrored({
+    job: mirrorJob([{ taskId: 'a', needsProject: false, projectId: null }, { taskId: 'b', needsProject: true, projectId: 'p2' }]),
+    db, client: mirrorClient(), csaasClient: {},
+  })
+  assert.deepEqual(created.map((r) => [r.projectId, r.projectName]), [['p1', 'Framework'], ['p2', 'Badar HMS']])
+})
+
+test('mirrored: an unclear task left on "No project" (or a legacy review) has no project and no name', async () => {
+  const { db, created } = mirrorDb()
+  await stageRunners.mirrored({ job: mirrorJob([{ taskId: 'b', needsProject: true, projectId: null }]), db, client: mirrorClient(), csaasClient: {} })
+  const legacy = mirrorDb()
+  await stageRunners.mirrored({ job: mirrorJob([{ taskId: 'b' }]), db: legacy.db, client: mirrorClient(), csaasClient: {} })
+  for (const row of [created[0], legacy.created[0]]) {
+    assert.equal(row.projectId, null)
+    assert.equal(row.projectName, null)
+  }
 })

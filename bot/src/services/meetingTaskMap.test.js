@@ -18,7 +18,9 @@ test('maps a csaas task + review row to a task.create payload', () => {
   assert.deepEqual(row.assigneeIds, ['11'])
   assert.equal(row.status, 'open')
   assert.equal(row.createdBy, 'bot')
-  assert.equal(row.projectName, 'granjur')
+  // No project resolved: no name either. The name CSAAS heard is not kept
+  // (roadmap sub-project 2), so it cannot become a stray project group.
+  assert.equal(row.projectName, null)
   // No scope from CSAAS and no platform: no scope. The free-text feature is a
   // module now, never a scope (roadmap sub-project 2, 2026-09-29).
   assert.equal(row.scope, null)
