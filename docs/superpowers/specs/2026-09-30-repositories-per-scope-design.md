@@ -170,6 +170,14 @@ tagged.
 - **`/repos add`** gains an optional `scope` alongside its optional `project`, with the
   same one-per-scope refusal.
 - Who can manage links is unchanged: the same roles as `/projects` and `/repos` today.
+- **Access check** (owner, 2026-09-30):
+  - `/repos add` and `/projects` → Link repo ask GitHub whether the owner's token (§4)
+    can see the repository (`GET /repos/{owner}/{repo}`, with a new
+    `checkRepoAccess(repoUrl)` in `github.js`).
+  - The reply gains `✅ GitHub access OK`, or `⚠️ No GitHub access to <owner>/<repo> —
+    issues won't open until a token can reach it` (also for an unparsable URL).
+  - The repository is added or linked either way. A GitHub error or timeout reads as
+    "couldn't check" and never blocks.
 
 ### 8. The issue follows the task's status
 
