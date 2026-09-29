@@ -14,6 +14,7 @@
     "announcements-all": "**Announcements (all)** — Server-wide announcements.",
     "announcements-verified": "**Announcements (verified)** — For verified members only.",
     "announcements-leadership": "**Announcements (leadership)** — For leadership only.",
-    "admin": "**Admin** — Backlog notifications. When someone enters holding, server owner and CEOs are tagged here. Use **/backlog** to approve."
+    "admin": "**Admin** — Backlog notifications. When someone enters holding, server owner and CEOs are tagged here. Use **/backlog** to approve.",
+    "feedback": "**Feedback** — Tell us what to improve: the server, the bot, UBS-Doc or how we work. Type here, or use **/feedback** from any channel to post a tidy card with a type (Bug, Idea, Process or Other)."
   }
 }
