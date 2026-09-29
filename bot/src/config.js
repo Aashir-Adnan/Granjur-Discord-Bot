@@ -20,6 +20,9 @@ export const config = {
   allowedDomains,
   github: {
     token: process.env.GITHUB_TOKEN || '',
+    // "owner:token,owner2:token2" — a token per repo owner, checked before the
+    // single GITHUB_TOKEN fallback above. Owner match is case-insensitive.
+    tokens: process.env.GITHUB_TOKENS || '',
   },
   transcription: {
     apiKey: process.env.TRANSCRIPTION_API_KEY || '',
