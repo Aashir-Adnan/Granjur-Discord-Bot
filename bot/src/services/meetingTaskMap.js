@@ -1,10 +1,10 @@
 import { isValidScope } from '../utils/taskScope.js'
 
 // Where a meeting task's work is done, when Claude gives no usable scope.
-const PLATFORM_SCOPE = { node: 'backend', python: 'backend', react: 'frontend', 'react-native': 'frontend' }
+const PLATFORM_SCOPE = { node: 'backend', python: 'backend', react: 'frontend', 'react-native': 'mobile' }
 
-// One of the four fixed scopes, never free text (roadmap sub-project 2,
-// 2026-09-29). Claude's pick wins when it is one of the four; otherwise the
+// One of the five fixed scopes, never free text (roadmap sub-project 2,
+// 2026-09-29). Claude's pick wins when it is one of the five; otherwise the
 // platform decides; otherwise the task has no scope.
 export function meetingTaskScope(csaasTask) {
   const picked = String(csaasTask?.scope ?? '').trim().toLowerCase()

@@ -20,12 +20,12 @@ test('assignee row with no assignees has no defaults', () => {
   assert.ok(!menu.default_values || menu.default_values.length === 0)
 })
 
-test('scope row offers exactly the four fixed choices', () => {
+test('scope row offers exactly the five fixed choices', () => {
   const menu = scopeRow().toJSON().components[0]
   assert.equal(menu.custom_id, 'create_task_scope')
   assert.deepEqual(
     menu.options.map((o) => [o.label, o.value]),
-    [['Backend', 'backend'], ['Frontend', 'frontend'], ['QA', 'qa'], ['Design', 'design']],
+    [['Backend', 'backend'], ['Frontend', 'frontend'], ['Mobile', 'mobile'], ['QA', 'qa'], ['Design', 'design']],
   )
 })
 

@@ -71,6 +71,7 @@ test('description is capped at 4000 chars', () => {
 test('meetingTaskScope takes a valid CSAAS scope, in any case or padding', () => {
   assert.equal(meetingTaskScope({ scope: 'backend' }), 'backend')
   assert.equal(meetingTaskScope({ scope: '  Frontend ' }), 'frontend')
+  assert.equal(meetingTaskScope({ scope: 'Mobile' }), 'mobile')
   assert.equal(meetingTaskScope({ scope: 'QA' }), 'qa')
   assert.equal(meetingTaskScope({ scope: 'design', platform: 'node' }), 'design', 'Claude wins over platform')
 })
@@ -79,10 +80,10 @@ test('meetingTaskScope falls back to the platform when the scope is missing or f
   assert.equal(meetingTaskScope({ platform: 'node' }), 'backend')
   assert.equal(meetingTaskScope({ platform: 'Python' }), 'backend')
   assert.equal(meetingTaskScope({ platform: 'react' }), 'frontend')
-  assert.equal(meetingTaskScope({ scope: 'GitSync', platform: 'react-native' }), 'frontend')
+  assert.equal(meetingTaskScope({ scope: 'GitSync', platform: 'react-native' }), 'mobile')
   // Platform spelled with a space or underscore still normalises to the hyphenated key.
-  assert.equal(meetingTaskScope({ platform: 'React Native' }), 'frontend')
-  assert.equal(meetingTaskScope({ platform: 'react_native' }), 'frontend')
+  assert.equal(meetingTaskScope({ platform: 'React Native' }), 'mobile')
+  assert.equal(meetingTaskScope({ platform: 'react_native' }), 'mobile')
 })
 
 test('meetingTaskScope is null with no usable scope or platform', () => {

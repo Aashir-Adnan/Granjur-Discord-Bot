@@ -97,7 +97,7 @@ export async function execute(interaction) {
   const typeOpt = interaction.options.getString('type')
   const titleOpt = interaction.options.getString('title')
   const descriptionOpt = (interaction.options.getString('description') || '').trim() || null
-  const scopeOpt = interaction.options.getString('scope') // constrained to the four choices, or null
+  const scopeOpt = interaction.options.getString('scope') // constrained to the five choices, or null
   const modulesOpt = (interaction.options.getString('modules') || '').trim()
   const assigneesOpt = interaction.options.getString('assignees')
   const taggedOpt = interaction.options.getString('tagged')

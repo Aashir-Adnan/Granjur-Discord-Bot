@@ -43,11 +43,11 @@ test('description: blank is null, null equals null, at most 2000', () => {
   assert.deepEqual(edit({ description: '' }, { ...task, description: 'old' }).updates, { description: null })
   assert.equal(edit({ description: 'x'.repeat(2001) }).error, 'The description can be at most 2000 characters.')
 })
-test('scope: one of four or empty', () => {
+test('scope: one of five or empty', () => {
   assert.deepEqual(edit({ scope: null }).updates, { scope: null })
   assert.deepEqual(edit({ scope: '' }).updates, { scope: null })
   assert.deepEqual(edit({ scope: 'qa' }).updates, { scope: 'qa' })
-  assert.match(edit({ scope: 'Backend' }).error, /^scope must be one of backend, frontend, qa, design/)
+  assert.match(edit({ scope: 'Backend' }).error, /^scope must be one of backend, frontend, mobile, qa, design/)
 })
 test('implementationStatus: one of three', () => {
   assert.deepEqual(edit({ implementationStatus: 'done' }).updates, { implementationStatus: 'done' })
