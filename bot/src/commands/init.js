@@ -174,6 +174,10 @@ export async function runInit(guild) {
         if (ch.type === ChannelType.GuildVoice) {
           await ch.permissionOverwrites.edit(verifiedRole.id, { Connect: true, Speak: true }).catch(() => {})
         }
+        // Constraint: #feedback — Verified also gets SendMessages, matching ensureFeedbackChannel.
+        if (feedbackChannel && ch.id === feedbackChannel.id) {
+          await ch.permissionOverwrites.edit(verifiedRole.id, { SendMessages: true }).catch(() => {})
+        }
       } catch (_) {}
     }
     await category.permissionOverwrites.edit(everyoneId, { ViewChannel: true, ReadMessageHistory: true })
