@@ -21,7 +21,7 @@ branch `feat/repo-scopes` in each. Nothing in this sub-project is merged or depl
   `.claude/knowledge/README.md`; `.claude/knowledge/csaas-meeting-workflow-integration.md`
   and `.claude/knowledge/project-tasks-site.md` updated where they described the
   now-superseded repository-matching behaviour.
-- `.claude/state/backlog.md`: roadmap item 3 marked DEPLOYED 2026-09-30 (the owner ran
+- `.claude/state/backlog.md`: roadmap item 3 marked DEPLOYED 2026-09-29 (the owner ran
   `/setup` then `/cleanup` on the live server); roadmap item 4 marked BUILT, NOT DEPLOYED
   with commits per repo, the reviewed-in behaviour, and the rollout order.
 - `.claude/state/completed.md`: two 2026-09-30 entries at the top — the sub-project 4

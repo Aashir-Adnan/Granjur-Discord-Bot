@@ -62,14 +62,6 @@ existing links and repoints Badar HMS) is in `.claude/state/backlog.md` roadmap 
 the owner; CSAAS's own migrations still apply automatically at its startup and this
 sub-project adds none; the bot's deploy runs migration 030.
 
-## 2026-09-30 — Global channel layout and feedback: deployed
-
-Roadmap sub-project 3 (built 2026-09-29, see the entry below) went live: the bot's `main`
-was pushed (migration 029 ran, `/feedback` registered), then the owner ran `/setup`
-(`#feedback` appeared) and `/cleanup` on the live server, reading the grouped preview
-before confirming. Sub-project 3 is now DEPLOYED — see `.claude/state/backlog.md`
-roadmap item 3.
-
 ## 2026-09-29 — Global channel layout and feedback (BUILT, NOT DEPLOYED)
 
 Owner roadmap sub-project 3 of 7: "Trim staff/onboarding channels global level to only
@@ -111,6 +103,14 @@ before confirming.
 Also recorded under roadmap item 1: the owner decided (2026-09-29) to leave the
 org-level `Admin` role as it is, closing the open question carried from sub-project 1
 through sub-project 2.
+
+## 2026-09-29 — Global channel layout and feedback: deployed
+
+Roadmap sub-project 3 (built 2026-09-29, see the entry above) went live the same day: the
+bot's `main` was pushed (migration 029 ran, `/feedback` registered), then the owner ran
+`/setup` (`#feedback` appeared) and `/cleanup` on the live server, reading the grouped
+preview before confirming. Sub-project 3 is now DEPLOYED — see `.claude/state/backlog.md`
+roadmap item 3.
 
 ## 2026-09-29 — Scope everywhere and meeting-task projects (BUILT, ON BRANCHES, NOT DEPLOYED)
 

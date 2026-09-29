@@ -102,7 +102,7 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
    - The usman@granjur.com permission fix (CSAAS `20856ae`, site `a594551`) is pushed, so
      it deployed with those pushes. (The org-level `Admin` role question carried from
      sub-project 1 is resolved — see item 1 above.)
-3. **Global channel layout and feedback — DEPLOYED 2026-09-30.** Trims `/init`'s global
+3. **Global channel layout and feedback — DEPLOYED 2026-09-29.** Trims `/init`'s global
    layout to Onboarding/Announcements/Casual/Documentation/Feedback/Meetings (Rules,
    Archive, Frontend/Backend/Database and Command channels dropped — nothing reads them);
    adds a global `#feedback` channel (Verified only, never clients) and `/feedback`.
@@ -112,7 +112,7 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
    `913b8e3..997dc26`), bot repo only, migration 029 (`guildconfig.feedbackChannelId`).
    Suite 1375 tests (final-review fix wave 2026-09-29 added 3 to `cleanup.test.js`), `fail 0`.
    Merged, pushed and deployed; the owner ran `/setup` then `/cleanup` on the live server
-   on 2026-09-30, confirming the preview list before deleting.
+   on 2026-09-29, confirming the preview list before deleting.
    - **Rollout that was followed, each step taken with the owner's go-ahead:**
      1. Pushed the bot's `main` — the deploy ran migration 029, and the restarted bot
         registered `/feedback`.
