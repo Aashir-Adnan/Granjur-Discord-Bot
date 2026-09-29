@@ -9,7 +9,7 @@ const PLATFORM_SCOPE = { node: 'backend', python: 'backend', react: 'frontend', 
 export function meetingTaskScope(csaasTask) {
   const picked = String(csaasTask?.scope ?? '').trim().toLowerCase()
   if (isValidScope(picked)) return picked
-  const platform = String(csaasTask?.platform ?? '').trim().toLowerCase()
+  const platform = String(csaasTask?.platform ?? '').trim().toLowerCase().replace(/[\s_]+/g, '-')
   return PLATFORM_SCOPE[platform] ?? null
 }
 

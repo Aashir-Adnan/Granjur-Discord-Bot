@@ -21,6 +21,15 @@ test('four UPDATEs on task and nothing else', () => {
   assert.ok(!/\b(DELETE|DROP|ALTER|TRUNCATE|INSERT)\b/i.test(sql.replace(/--.*$/gm, '')))
 })
 
+// task.updatedAt is DATETIME(3) ... ON UPDATE CURRENT_TIMESTAMP(3) (schema.sql).
+// Every UPDATE here must set it back to itself, or MySQL stamps it to deploy
+// time on every touched row — old meeting tasks would jump to the top of
+// every `ORDER BY updatedAt desc` (taskFinder, taskHub, /update-task,
+// /clock-in) and the site's "Last updated" would lie.
+test('every statement holds updatedAt unchanged', () => {
+  for (const s of statements) assert.ok(s.includes('updatedAt = updatedAt'), s)
+})
+
 test('1: case variants of the four become lowercase, compared byte-for-byte', () => {
   const s = statements[0]
   assert.ok(s.includes('SET scope = LOWER(TRIM(scope))'), s)

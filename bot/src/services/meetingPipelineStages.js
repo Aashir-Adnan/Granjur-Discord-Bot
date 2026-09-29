@@ -224,10 +224,16 @@ async function awaitingReviewStage({ job, db, client, csaasClient }) {
 
   // Settle each task's project now (meeting project, else the project Claude
   // named) so the review can ask only about the unclear ones. The choices are
-  // stored so every re-render offers the same list.
+  // stored so every re-render offers the same list. When the guild has no
+  // projects to offer (or the project read failed), reviewProjects is empty —
+  // asking "Which project?" then would mean a select whose only option is "No
+  // project", so settle is left unset and every task falls back to legacy
+  // behaviour (no needsProject, no page-size drop).
   const projectCtx = await loadProjectContext(db, job)
-  const state = initReviewState(tasks, assignments, (t) => settledProject(t, projectCtx))
-  data.reviewProjects = reviewProjectOptions(projectCtx.projects)
+  const reviewProjects = reviewProjectOptions(projectCtx.projects)
+  const settle = reviewProjects.length > 0 ? (t) => settledProject(t, projectCtx) : undefined
+  const state = initReviewState(tasks, assignments, settle)
+  data.reviewProjects = reviewProjects
   data.notes = notes ?? null
   data.review = state
 

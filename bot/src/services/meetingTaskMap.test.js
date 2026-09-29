@@ -80,6 +80,9 @@ test('meetingTaskScope falls back to the platform when the scope is missing or f
   assert.equal(meetingTaskScope({ platform: 'Python' }), 'backend')
   assert.equal(meetingTaskScope({ platform: 'react' }), 'frontend')
   assert.equal(meetingTaskScope({ scope: 'GitSync', platform: 'react-native' }), 'frontend')
+  // Platform spelled with a space or underscore still normalises to the hyphenated key.
+  assert.equal(meetingTaskScope({ platform: 'React Native' }), 'frontend')
+  assert.equal(meetingTaskScope({ platform: 'react_native' }), 'frontend')
 })
 
 test('meetingTaskScope is null with no usable scope or platform', () => {

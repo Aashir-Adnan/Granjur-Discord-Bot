@@ -999,6 +999,19 @@ test('awaiting_review asks for a project only where the rules settle none, and s
   assert.match(sent[0].embeds[0].data.description, /Page 1\/2/)
 })
 
+test('awaiting_review asks nothing when the guild has no projects to offer', async () => {
+  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
+  const sent = []
+  const channel = { id: 'tc1', send: async (p) => { sent.push(p); return { id: 'msg1' } } }
+  const client = { channels: { fetch: async () => channel } }
+  const csaasClient = { fetchNotes: async () => ({ notes: 'N' }) }
+  const out = await stageRunners.awaiting_review({ job: twoTaskJob(), db: reviewDb({ projects: [] }), csaasClient, client })
+  assert.ok(out.patch.dataJson.review.tasks.every((t) => t.needsProject === false))
+  assert.deepEqual(out.patch.dataJson.reviewProjects, [])
+  // No task needs a project, so the legacy page size (2) applies to both tasks: one page.
+  assert.match(sent[0].embeds[0].data.description, /Page 1\/1/)
+})
+
 test("awaiting_review asks nothing when the meeting has a project", async () => {
   process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const channel = { id: 'tc1', send: async () => ({ id: 'msg1' }) }
