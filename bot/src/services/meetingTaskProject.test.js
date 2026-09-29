@@ -56,13 +56,13 @@ test('unclear: no meeting project and no match settles nothing', () => {
 
 test("rule 3: the reviewer's pick applies only to an unclear task", () => {
   const picked = resolveMeetingTaskProject({}, { projectId: 'p2' }, ctxOf())
-  assert.deepEqual(picked, { projectId: 'p2', projectName: 'Badar HMS', repositoryId: null })
+  assert.deepEqual(picked, { projectId: 'p2', projectName: 'Badar HMS', repositoryId: null, repoReason: 'no-scope' })
   const ignored = resolveMeetingTaskProject({}, { projectId: 'p2' }, ctxOf({ meetingProjectId: 'p1' }))
   assert.equal(ignored.projectId, 'p1')
 })
 
 test('a picked project that no longer exists, "none", or a legacy state gives no project and no name', () => {
-  const none = { projectId: null, projectName: null, repositoryId: null }
+  const none = { projectId: null, projectName: null, repositoryId: null, repoReason: 'no-project' }
   assert.deepEqual(resolveMeetingTaskProject({ project: 'Ghost' }, { projectId: 'deleted' }, ctxOf()), none)
   assert.deepEqual(resolveMeetingTaskProject({ project: 'Ghost' }, { projectId: null }, ctxOf()), none)
   assert.deepEqual(resolveMeetingTaskProject({ project: 'Ghost' }, { taskId: 'a' }, ctxOf()), none)
@@ -119,7 +119,7 @@ test("the meeting project's override picks the meeting project's scope link, not
     ],
   })
   const out = resolveMeetingTaskProject({ project: 'Badar HMS', platform: 'node' }, {}, ctx)
-  assert.deepEqual(out, { projectId: 'p1', projectName: 'Framework', repositoryId: 'r-fw-be' })
+  assert.deepEqual(out, { projectId: 'p1', projectName: 'Framework', repositoryId: 'r-fw-be', repoReason: 'scope' })
   assert.equal(resolveMeetingTaskProject({ project: 'Badar HMS', platform: 'react-native' }, {}, ctx).repositoryId, 'r-fw-mob')
 })
 
@@ -130,7 +130,7 @@ test("the reviewer's pick gets that project's repository by the rule", () => {
 
 test('a task with no project has no repository, even when its name matches a repository', () => {
   const ctx = ctxOf({ projects: [], repos: [{ id: 'r1', name: 'granjur' }] })
-  assert.deepEqual(resolveMeetingTaskProject({ project: 'granjur' }, {}, ctx), { projectId: null, projectName: null, repositoryId: null })
+  assert.deepEqual(resolveMeetingTaskProject({ project: 'granjur' }, {}, ctx), { projectId: null, projectName: null, repositoryId: null, repoReason: 'no-project' })
 })
 
 test('reviewProjectOptions sorts by name, drops unnamed rows, and caps at 24', () => {

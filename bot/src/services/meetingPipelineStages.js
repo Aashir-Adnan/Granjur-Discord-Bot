@@ -15,6 +15,7 @@ import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js
 import { loadProjectContext, settledProject, resolveMeetingTaskProject, reviewProjectOptions } from './meetingTaskProject.js'
 import { buildAnalyzeLivePayload } from './liveTranscriptPayload.js'
 import { createIssue } from './github.js'
+import { repoReasonText } from './taskRepo.js'
 
 // overrides is a test-only seam, never meant to carry real data: the `db`
 // facade passed at runtime (bot/src/db/index.js default export) is a plain
@@ -414,6 +415,8 @@ async function mirroredStage({ job, db, client, csaasClient }) {
       taskChannelId,
       // issue_syncing opens the issue here — the repository the rule gave the row.
       repositoryId: row.repositoryId ?? null,
+      // …and, when there is none, says why (repoReasonText).
+      repoReason: project.repoReason ?? null,
     })
 
     // Persist progress after each task so a retry resumes where it stopped.
@@ -503,6 +506,21 @@ async function issueSyncingStage({ job, db, openIssue = createIssue }) {
   const errors = []
 
   const todo = flagged.filter((m) => !m.externalIssueUrl)
+
+  // An entry mirrored before repositories were recorded on it (pre-deploy)
+  // has none: the task row's own repositoryId is the next best source.
+  if (typeof db.task?.findFirst === 'function') {
+    for (const entry of todo) {
+      if (entry.repositoryId) continue
+      try {
+        const row = await db.task.findFirst({ where: { id: entry.dbTaskId } })
+        if (row?.repositoryId) entry.repositoryId = row.repositoryId
+      } catch (e) {
+        console.warn('[meetingPipeline] task.findFirst (issue repo) failed:', e?.message || e)
+      }
+    }
+  }
+
   let repoById = new Map()
   let repoReadError = null
   if (todo.some((m) => m.repositoryId)) {
@@ -517,25 +535,30 @@ async function issueSyncingStage({ job, db, openIssue = createIssue }) {
 
   for (const entry of todo) {
     const { csaasTaskId } = entry
+    const csaasTask = csaasTasks.find((t) => taskKey(t.task_id) === taskKey(csaasTaskId))
+    const title = entry.title || csaasTask?.goal_of_task || `Task ${csaasTaskId}`
+    // `skipped`: the rule gave the task no repository — nothing went wrong.
+    // `failed`: there was a repository and the issue still did not open.
+    const skip = (reason) => errors.push({ csaasTaskId, title, kind: 'skipped', reason })
+    const fail = (reason) => errors.push({ csaasTaskId, title, kind: 'failed', reason })
     if (!entry.repositoryId) {
-      errors.push({ csaasTaskId, reason: 'no repository for this project and scope' })
+      skip(entry.repoReason ? repoReasonText(entry.repoReason) : 'no repository for this project and scope')
       continue
     }
     if (repoReadError) {
-      errors.push({ csaasTaskId, reason: `repositories could not be read: ${repoReadError}` })
+      fail(`repositories could not be read: ${repoReadError}`)
       continue
     }
     const repo = repoById.get(String(entry.repositoryId))
     if (!repo?.url) {
-      errors.push({ csaasTaskId, reason: repo ? `${repo.name || 'the repository'} has no URL` : 'the repository is no longer linked' })
+      fail(repo ? `${repo.name || 'the repository'} has no URL` : 'the repository is no longer linked')
       continue
     }
-    const csaasTask = csaasTasks.find((t) => taskKey(t.task_id) === taskKey(csaasTaskId))
     let res
     try {
-      res = await openIssue(repo.url, entry.title || csaasTask?.goal_of_task || `Task ${csaasTaskId}`, meetingIssueBody(csaasTask, job))
+      res = await openIssue(repo.url, title, meetingIssueBody(csaasTask, job))
     } catch (e) {
-      errors.push({ csaasTaskId, reason: e?.message || String(e) })
+      fail(e?.message || String(e))
       continue
     }
     // The issue exists now: record it on the entry (and the saved job) first,
@@ -543,9 +566,10 @@ async function issueSyncingStage({ job, db, openIssue = createIssue }) {
     entry.externalIssueUrl = res?.url ?? null
     entry.externalIssueNumber = res?.number ?? null
     try {
+      // repositoryId too, so the row agrees with where its issue lives.
       await db.task.update({
         where: { id: entry.dbTaskId },
-        data: { externalIssueUrl: entry.externalIssueUrl, externalIssueNumber: entry.externalIssueNumber },
+        data: { repositoryId: repo.id, externalIssueUrl: entry.externalIssueUrl, externalIssueNumber: entry.externalIssueNumber },
       })
     } catch (e) {
       console.warn('[meetingPipeline] task.update (issue) failed:', e?.message || e)
@@ -572,20 +596,29 @@ async function doneStage({ job, db, client }) {
   const mirrored = Array.isArray(dataJson.mirrored) ? dataJson.mirrored : []
   const issueSyncErrors = Array.isArray(dataJson.issueSyncErrors) ? dataJson.issueSyncErrors : []
 
-  const lines = [
-    `✅ ${summary.approved.length} task(s) created`,
-    `${summary.rejectedCount} rejected`,
-    `${summary.githubCount} pushed to GitHub`,
-  ]
   const issueLinks = []
   for (const m of mirrored) {
     if (m.externalIssueUrl) issueLinks.push(`• [${m.title || m.csaasTaskId}](${m.externalIssueUrl})`)
   }
+  const lines = [
+    `✅ ${summary.approved.length} task(s) created`,
+    `${summary.rejectedCount} rejected`,
+    // Issues that actually opened — not the tasks that were flagged for one.
+    `${issueLinks.length} pushed to GitHub`,
+  ]
   if (issueLinks.length) lines.push('', '**GitHub issues:**', ...issueLinks)
   if (issueSyncErrors.length) {
     lines.push('', `⚠️ ${issueSyncErrors.length} issue-sync problem(s):`)
-    for (const err of issueSyncErrors) {
-      lines.push(`• ${err.reason || err.error || 'unknown error'}`)
+    const reasonOf = (err) => err.reason || err.error || 'unknown error'
+    const titleOf = (err) => err.title || err.csaasTaskId || 'a task'
+    // Entries saved before `kind` existed read as failures.
+    const skipped = issueSyncErrors.filter((err) => err.kind === 'skipped')
+    const failed = issueSyncErrors.filter((err) => err.kind !== 'skipped')
+    if (skipped.length) {
+      lines.push(`• skipped — no repository: ${skipped.map((err) => `${titleOf(err)} (${reasonOf(err)})`).join(', ')}`)
+    }
+    for (const err of failed) {
+      lines.push(`• failed: ${titleOf(err)} — ${reasonOf(err)}`)
     }
   }
 

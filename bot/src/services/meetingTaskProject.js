@@ -59,11 +59,13 @@ export function resolveMeetingTaskProject(csaasTask, reviewTask, ctx) {
   const picked = settled ? null : projectById(ctx, reviewTask?.projectId)
   const projectId = settled?.projectId ?? picked?.id ?? null
   const projectName = settled?.projectName ?? picked?.name ?? null
-  const { repository } = resolveTaskRepo(
+  const { repository, reason } = resolveTaskRepo(
     { projectId, scope: meetingTaskScope(csaasTask) },
     { links: ctx.links, repos: ctx.repos },
   )
-  return { projectId, projectName, repositoryId: repository?.id ?? null }
+  // repoReason: the rule's verdict ('scope', 'only-repo', or why there is
+  // none), so a skipped GitHub issue can say precisely why.
+  return { projectId, projectName, repositoryId: repository?.id ?? null, repoReason: reason }
 }
 
 // The choices the review's "Which project?" select offers, stored on the job so

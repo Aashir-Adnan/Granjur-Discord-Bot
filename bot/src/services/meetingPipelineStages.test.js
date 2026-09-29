@@ -89,9 +89,10 @@ test('issue_syncing opens one issue per flagged task in its repository and write
     title: 'Do B',
     body: 'Build the page\n\n---\nFrom meeting: Sprint sync',
   })
+  // F2: the row's repositoryId is written with the issue, so it agrees with where the issue lives.
   assert.deepEqual(updates, [
-    { where: { id: 'db1' }, data: { externalIssueUrl: 'https://github.com/granjur/bot/issues/41', externalIssueNumber: 41 } },
-    { where: { id: 'db2' }, data: { externalIssueUrl: 'https://github.com/granjur/site/issues/42', externalIssueNumber: 42 } },
+    { where: { id: 'db1' }, data: { repositoryId: 'r-be', externalIssueUrl: 'https://github.com/granjur/bot/issues/41', externalIssueNumber: 41 } },
+    { where: { id: 'db2' }, data: { repositoryId: 'r-fe', externalIssueUrl: 'https://github.com/granjur/site/issues/42', externalIssueNumber: 42 } },
   ])
   assert.notEqual(out.advance, false)
   const m = out.patch.dataJson.mirrored
@@ -152,8 +153,46 @@ test('issue_syncing records a task with no repository and opens nothing for it',
   const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
   assert.equal(calls.length, 0)
   assert.equal(updates.length, 0)
-  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [{ csaasTaskId: 'a', reason: 'no repository for this project and scope' }])
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [{ csaasTaskId: 'a', title: 'Do A', kind: 'skipped', reason: 'no repository for this project and scope' }])
   assert.notEqual(out.advance, false)
+})
+
+// F4 (final review, 2026-09-30): a precise, named reason, and skips kept apart from failures.
+test("issue_syncing records the rule's own reason for a task with no repository", async () => {
+  const { db } = syncDb()
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([
+    { csaasTaskId: 'a', dbTaskId: 'db1', github: true, repositoryId: null, repoReason: 'no-scope', title: 'Do A' },
+    { csaasTaskId: 'b', dbTaskId: 'db2', github: true, repositoryId: null, repoReason: 'no-repo-for-scope', title: 'Do B' },
+  ])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.equal(calls.length, 0)
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [
+    { csaasTaskId: 'a', title: 'Do A', kind: 'skipped', reason: 'the task has no scope' },
+    { csaasTaskId: 'b', title: 'Do B', kind: 'skipped', reason: 'the project has no repository for this scope' },
+  ])
+})
+
+test("issue_syncing: a pre-deploy entry with no repositoryId falls back to the task row's repositoryId", async () => {
+  const { db, updates } = syncDb()
+  const reads = []
+  db.task.findFirst = async (q) => { reads.push(q); return { id: 'db1', repositoryId: 'r-fe' } }
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([{ csaasTaskId: 'a', dbTaskId: 'db1', github: true, title: 'Do A' }]) // no repositoryId key at all
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.deepEqual(reads, [{ where: { id: 'db1' } }])
+  assert.deepEqual(calls.map((c) => c.url), ['https://github.com/granjur/site'])
+  assert.equal(updates[0].data.repositoryId, 'r-fe')
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [])
+})
+
+test('issue_syncing: a pre-deploy entry whose task row has no repository either is a named skip', async () => {
+  const { db } = syncDb()
+  db.task.findFirst = async () => ({ id: 'db1', repositoryId: null })
+  const { openIssue } = fakeOpenIssue()
+  const job = syncJob([{ csaasTaskId: 'a', dbTaskId: 'db1', github: true, title: 'Do A' }])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [{ csaasTaskId: 'a', title: 'Do A', kind: 'skipped', reason: 'no repository for this project and scope' }])
 })
 
 test('issue_syncing records a repository that is no longer there', async () => {
@@ -164,6 +203,8 @@ test('issue_syncing records a repository that is no longer there', async () => {
   assert.equal(calls.length, 0)
   assert.equal(out.patch.dataJson.issueSyncErrors.length, 1)
   assert.equal(out.patch.dataJson.issueSyncErrors[0].csaasTaskId, 'a')
+  assert.equal(out.patch.dataJson.issueSyncErrors[0].kind, 'failed')
+  assert.equal(out.patch.dataJson.issueSyncErrors[0].title, 'Do A')
   assert.notEqual(out.advance, false)
 })
 
@@ -177,7 +218,7 @@ test('a failing openIssue is recorded with its message; the other tasks still ge
   const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
   assert.equal(calls.length, 2)
   assert.deepEqual(updates.map((u) => u.where.id), ['db2'])
-  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [{ csaasTaskId: 'a', reason: 'No GitHub access to granjur/bot' }])
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [{ csaasTaskId: 'a', title: 'Do A', kind: 'failed', reason: 'No GitHub access to granjur/bot' }])
   assert.equal(out.patch.dataJson.mirrored[0].externalIssueUrl, undefined)
   assert.notEqual(out.advance, false)
 })
@@ -228,6 +269,72 @@ test('done renders the issue links and the issue problems from the entries', asy
   const desc = edited.embeds[0].data.description
   assert.match(desc, /\[Do A\]\(https:\/\/github\.com\/granjur\/bot\/issues\/41\)/)
   assert.match(desc, /no repository for this project and scope/)
+})
+
+// F3 + F4 (final review, 2026-09-30).
+function doneHarness(dataJson) {
+  let edited = null
+  const msg = { edit: async (p) => { edited = p } }
+  const channel = { id: 'tc1', send: async () => ({}), messages: { fetch: async () => msg } }
+  const client = { channels: { fetch: async () => channel }, user: { id: 'bot' } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+  }
+  const job = { id: 'j', meetingId: 'M', guildConfigId: 'g', reviewMessageId: 'rm1', dataJson: { title: 'Sprint sync', reviewChannelId: 'tc1', ...dataJson } }
+  return { job, db, client, description: () => edited.embeds[0].data.description }
+}
+
+test('done counts only the tasks whose issue actually opened as pushed to GitHub', async () => {
+  const h = doneHarness({
+    tasks: [{ task_id: 'a' }, { task_id: 'b' }, { task_id: 'c' }],
+    review: { tasks: [{ taskId: 'a', github: true }, { taskId: 'b', github: true }, { taskId: 'c', github: true }] },
+    mirrored: [
+      { csaasTaskId: 'a', title: 'Do A', github: true, externalIssueUrl: 'https://github.com/granjur/bot/issues/41' },
+      { csaasTaskId: 'b', title: 'Do B', github: true },
+      { csaasTaskId: 'c', title: 'Do C', github: true },
+    ],
+    issueSyncErrors: [
+      { csaasTaskId: 'b', title: 'Do B', kind: 'skipped', reason: 'the task has no scope' },
+      { csaasTaskId: 'c', title: 'Do C', kind: 'failed', reason: 'No GitHub access to granjur/bot' },
+    ],
+  })
+  await stageRunners.done({ job: h.job, db: h.db, client: h.client, csaasClient: {} })
+  const desc = h.description()
+  assert.match(desc, /^1 pushed to GitHub$/m)
+  assert.doesNotMatch(desc, /3 pushed to GitHub/)
+})
+
+test('done lists skipped tasks apart from failed ones, each by title', async () => {
+  const h = doneHarness({
+    tasks: [{ task_id: 'a' }, { task_id: 'b' }, { task_id: 'c' }],
+    review: { tasks: [{ taskId: 'a', github: true }, { taskId: 'b', github: true }, { taskId: 'c', github: true }] },
+    mirrored: [
+      { csaasTaskId: 'a', title: 'Do A', github: true },
+      { csaasTaskId: 'b', title: 'Do B', github: true },
+      { csaasTaskId: 'c', title: 'Do C', github: true },
+    ],
+    issueSyncErrors: [
+      { csaasTaskId: 'a', title: 'Do A', kind: 'skipped', reason: 'the task has no scope' },
+      { csaasTaskId: 'b', title: 'Do B', kind: 'skipped', reason: 'the project has no repository for this scope' },
+      { csaasTaskId: 'c', title: 'Do C', kind: 'failed', reason: 'No GitHub access to granjur/bot' },
+    ],
+  })
+  await stageRunners.done({ job: h.job, db: h.db, client: h.client, csaasClient: {} })
+  const lines = h.description().split('\n')
+  assert.ok(lines.includes('• skipped — no repository: Do A (the task has no scope), Do B (the project has no repository for this scope)'), lines.join('\n'))
+  assert.ok(lines.includes('• failed: Do C — No GitHub access to granjur/bot'), lines.join('\n'))
+})
+
+test('done still renders an issue problem saved before kind/title existed, as a failure', async () => {
+  const h = doneHarness({
+    tasks: [{ task_id: 'b' }],
+    review: { tasks: [{ taskId: 'b', github: true }] },
+    mirrored: [{ csaasTaskId: 'b', github: true }],
+    issueSyncErrors: [{ csaasTaskId: 'b', reason: 'boom' }],
+  })
+  await stageRunners.done({ job: h.job, db: h.db, client: h.client, csaasClient: {} })
+  assert.ok(h.description().split('\n').includes('• failed: b — boom'))
 })
 
 test('done edits the review message and terminates', async () => {
@@ -1233,4 +1340,6 @@ test('mirrored entries carry the repositoryId the row was created with (null whe
   })
   assert.deepEqual(created.map((r) => r.repositoryId), ['r-fw', null])
   assert.deepEqual(out.patch.dataJson.mirrored.map((m) => m.repositoryId), ['r-fw', null])
+  // F4: the rule's reason rides along, so issue_syncing can say why there is no repository.
+  assert.deepEqual(out.patch.dataJson.mirrored.map((m) => m.repoReason), ['only-repo', 'no-project'])
 })
