@@ -140,10 +140,12 @@ export async function setIssueState(repoUrl, number, { state, reason } = {}, { f
 }
 
 /**
- * Whether the configured token(s) can reach a repo. Never throws.
+ * Whether the configured token(s) can open issues on a repo. Never throws.
+ * Reading the repo is not enough: issues switched off, or a token that can
+ * read but neither push nor triage, still means no issue will open.
  * @param {string} repoUrl
  * @param {{fetchImpl?: typeof fetch, tokens?: Map<string,string>, fallback?: string}} [opts]
- * @returns {Promise<{ok: true} | {ok: false, code: 'no-access'|'bad-url'|'error', message: string}>}
+ * @returns {Promise<{ok: true} | {ok: false, code: 'no-access'|'bad-url'|'error', message: string, issuesDisabled?: true}>}
  */
 export async function checkRepoAccess(repoUrl, { fetchImpl, tokens = DEFAULT_TOKENS, fallback = DEFAULT_FALLBACK } = {}) {
   const p = parseRepoUrl(repoUrl)
@@ -151,7 +153,14 @@ export async function checkRepoAccess(repoUrl, { fetchImpl, tokens = DEFAULT_TOK
   const token = tokenFor(p.owner, { tokens, fallback })
   if (!token) return { ok: false, code: 'no-access', message: `No GitHub access to ${p.owner}/${p.repo}` }
   try {
-    await gh(`/repos/${p.owner}/${p.repo}`, { fetchImpl, token, signal: AbortSignal.timeout(8000) })
+    const repo = await gh(`/repos/${p.owner}/${p.repo}`, { fetchImpl, token, signal: AbortSignal.timeout(8000) })
+    if (repo?.has_issues === false) {
+      return { ok: false, code: 'no-access', message: `Issues are disabled on ${p.owner}/${p.repo}`, issuesDisabled: true }
+    }
+    const perms = repo?.permissions
+    if (perms && typeof perms === 'object' && perms.push === false && perms.triage !== true) {
+      return { ok: false, code: 'no-access', message: `No GitHub access to ${p.owner}/${p.repo}` }
+    }
     return { ok: true }
   } catch (e) {
     if (isAccessStatus(e.status)) return { ok: false, code: 'no-access', message: `No GitHub access to ${p.owner}/${p.repo}` }

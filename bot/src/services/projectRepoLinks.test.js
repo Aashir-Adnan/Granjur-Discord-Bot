@@ -1,7 +1,7 @@
 // Fakes only — no real db (.claude/rules/tests-never-touch-production.md).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { linkRepo, unlinkRepo, linkRefusalText, accessLine } from './projectRepoLinks.js'
+import { linkRepo, unlinkRepo, linkRefusalText, accessLine, linkUpdatedText, SCOPE_IGNORED_TEXT } from './projectRepoLinks.js'
 
 function fakeDb(initialRows = [], { setScope } = {}) {
   const rows = initialRows.map((r) => ({ ...r }))
@@ -82,6 +82,35 @@ test('linkRepo: a duplicate-key race from setScope is re-read and reported as a 
   assert.deepEqual(result, { ok: false, holderRepositoryId: 'r1' })
 })
 
+test('linkRepo: a race right after inserting a NEW row removes that row before refusing (no stray untagged link)', async () => {
+  const db = fakeDb([], {
+    setScope: (rows) => async () => {
+      // Another request took 'backend' for r1 between our pre-check and setScope.
+      rows.push({ project_id: 'p1', repository_id: 'r1', scope: 'backend' })
+      const err = new Error('ER_DUP_ENTRY')
+      err.code = 'ER_DUP_ENTRY'
+      throw err
+    },
+  })
+  const result = await linkRepo({ db, projectId: 'p1', repositoryId: 'r2', scope: 'backend' })
+  assert.deepEqual(result, { ok: false, holderRepositoryId: 'r1' })
+  assert.deepEqual(db.rows.map((r) => [r.repository_id, r.scope]), [['r1', 'backend']], 'the untagged r2 row this call added is gone')
+})
+
+test('linkRepo: a race on an EXISTING link leaves that link in place', async () => {
+  const db = fakeDb([{ project_id: 'p1', repository_id: 'r2', scope: 'frontend' }], {
+    setScope: (rows) => async () => {
+      rows.push({ project_id: 'p1', repository_id: 'r1', scope: 'backend' })
+      const err = new Error('ER_DUP_ENTRY')
+      err.errno = 1062
+      throw err
+    },
+  })
+  const result = await linkRepo({ db, projectId: 'p1', repositoryId: 'r2', scope: 'backend' })
+  assert.deepEqual(result, { ok: false, holderRepositoryId: 'r1' })
+  assert.ok(db.rows.some((r) => r.repository_id === 'r2' && r.scope === 'frontend'), 'the pre-existing link survives')
+})
+
 test('linkRepo: a non-duplicate-key error from setScope is not swallowed', async () => {
   const db = fakeDb([], {
     setScope: () => async () => {
@@ -146,4 +175,22 @@ test('accessLine: error', () => {
     accessLine({ ok: false, code: 'error', message: 'timeout' }),
     "GitHub access couldn't be checked right now."
   )
+})
+
+test('accessLine: issues disabled shows its own message', () => {
+  assert.equal(
+    accessLine({ ok: false, code: 'no-access', message: 'Issues are disabled on o/r', issuesDisabled: true }),
+    "⚠️ Issues are disabled on o/r — issues won't open until they are turned on in the repository's settings"
+  )
+})
+
+// --- M5 / M6 texts -------------------------------------------------------------
+
+test('linkUpdatedText: names the repository, the project and the new scope', () => {
+  assert.equal(linkUpdatedText('bot', 'Framework', 'backend'), 'Updated **bot** in **Framework** to Backend.')
+  assert.equal(linkUpdatedText('bot', 'Framework', null), 'Updated **bot** in **Framework** to no scope.')
+})
+
+test('SCOPE_IGNORED_TEXT: verbatim', () => {
+  assert.equal(SCOPE_IGNORED_TEXT, 'Scope ignored — give a project to link with a scope.')
 })

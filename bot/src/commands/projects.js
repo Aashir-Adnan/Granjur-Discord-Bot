@@ -17,7 +17,7 @@ import { cut, projectSlug } from '../services/projectSection.js'
 import { EPHEMERAL } from '../constants.js'
 import { setupOneProject } from './project-setup.js'
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
-import { linkRepo, unlinkRepo, linkRefusalText, accessLine } from '../services/projectRepoLinks.js'
+import { linkRepo, unlinkRepo, linkRefusalText, accessLine, linkUpdatedText } from '../services/projectRepoLinks.js'
 import { checkRepoAccess } from '../services/github.js'
 
 const NO_SCOPE_VALUE = 'none'
@@ -287,7 +287,7 @@ export async function handleLinkScopeSelect(interaction) {
 
   const scopeText = scope ? scopeLabel(scope) : 'no scope'
   const headline = result.updated
-    ? `Updated **${repo?.name ?? 'the repository'}**’s scope in **${project?.name ?? 'the project'}** — scope to ${scopeText}.`
+    ? linkUpdatedText(repo?.name ?? 'the repository', project?.name ?? 'the project', scope)
     : `Linked **${repo?.name ?? 'the repository'}** to **${project?.name ?? 'the project'}** as ${scopeText}.`
   const access = await checkRepoAccess(repo?.url)
   return interaction

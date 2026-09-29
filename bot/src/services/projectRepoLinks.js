@@ -37,14 +37,25 @@ export async function linkRepo({ db, projectId, repositoryId, scope }) {
   }
 
   const existing = links.find((l) => String(l.repository_id) === String(repositoryId))
+  let inserted = false
   try {
     if (!existing) {
       await db.projectRepos.add({ data: { project_id: projectId, repository_id: repositoryId } })
+      inserted = true
     }
     await db.projectRepos.setScope({ project_id: projectId, repository_id: repositoryId, scope: wantScope })
     return { ok: true, updated: !!existing }
   } catch (e) {
     if (!isDupKeyError(e)) throw e
+    // The row this call just added is untagged; a refusal must not leave it
+    // behind as a stray link the user never asked for.
+    if (inserted) {
+      try {
+        await db.projectRepos.remove({ project_id: projectId, repository_id: repositoryId })
+      } catch (removeErr) {
+        console.warn('[projectRepoLinks] stray link cleanup failed:', removeErr?.message ?? removeErr)
+      }
+    }
     const fresh = (await db.projectRepos.findMany({ where: { project_id: projectId } })) ?? []
     const holder = holderFor(fresh, wantScope, repositoryId)
     return { ok: false, holderRepositoryId: holder?.repository_id ?? null }
@@ -61,17 +72,28 @@ export function linkRefusalText(projectName, repoName, scope) {
   return `${projectName} already has ${repoName} as its ${scopeLabel(scope)} repository — unlink it or pick another scope.`
 }
 
+/** /projects → Link repo, when the repository was already linked and only its scope changed. */
+export function linkUpdatedText(repoName, projectName, scope) {
+  return `Updated **${repoName}** in **${projectName}** to ${scope ? scopeLabel(scope) : 'no scope'}.`
+}
+
+/** /repos add with a `scope` but no `project`: the scope has nothing to attach to. */
+export const SCOPE_IGNORED_TEXT = 'Scope ignored — give a project to link with a scope.'
+
 /**
  * One line describing whether a token can reach a repository, from
  * `checkRepoAccess`'s result. `result.url` is an optional extra the callers
  * in this feature attach (the checked URL) so the bad-url case has something
  * to show in place of `<owner>/<repo>` — `checkRepoAccess` itself never
  * learns the owner/repo for a URL it could not parse.
- * @param {{ok: true} | {ok: false, code: 'no-access'|'bad-url'|'error', message: string, url?: string}} result
+ * @param {{ok: true} | {ok: false, code: 'no-access'|'bad-url'|'error', message: string, issuesDisabled?: boolean, url?: string}} result
  */
 export function accessLine(result) {
   if (!result) return `GitHub access couldn't be checked right now.`
   if (result.ok) return '✅ GitHub access OK'
+  if (result.code === 'no-access' && result.issuesDisabled) {
+    return `⚠️ ${result.message} — issues won't open until they are turned on in the repository's settings`
+  }
   if (result.code === 'no-access') {
     return `⚠️ ${result.message} — issues won't open until a token can reach it`
   }

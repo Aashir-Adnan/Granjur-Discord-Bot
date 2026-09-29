@@ -13,7 +13,7 @@ import * as flowStore from '../flows/store.js'
 import { EPHEMERAL } from '../constants.js'
 import { reattributeGuildDocs } from '../services/docsSync.js'
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
-import { linkRepo, linkRefusalText, accessLine } from '../services/projectRepoLinks.js'
+import { linkRepo, linkRefusalText, accessLine, SCOPE_IGNORED_TEXT } from '../services/projectRepoLinks.js'
 import { checkRepoAccess } from '../services/github.js'
 
 export const data = new SlashCommandBuilder()
@@ -58,7 +58,7 @@ export async function execute(interaction) {
       const embed = new EmbedBuilder()
         .setTitle('Confirm add repository')
         .setDescription(
-          `**${nameOpt}**\n${url}${projectOpt ? `\nProject: ${projectOpt}` : ''}${scopeOpt ? `\nScope: ${scopeLabel(scopeOpt)}` : ''}`
+          `**${nameOpt}**\n${url}${projectOpt ? `\nProject: ${projectOpt}` : ''}${scopeOpt ? `\nScope: ${scopeLabel(scopeOpt)}` : ''}${scopeOpt && !projectOpt ? `\n${SCOPE_IGNORED_TEXT}` : ''}`
         )
         .setColor(0x5865f2)
         .setFooter({ text: 'Step 2 of 2' })
@@ -212,11 +212,13 @@ export async function handleConfirmAdd(interaction) {
     }
   }
 
+  // A scope only means something on a project link.
+  const scopeNote = state.scope && !state.project ? `\n\n${SCOPE_IGNORED_TEXT}` : ''
   const access = await checkRepoAccess(state.url)
   const embed = new EmbedBuilder()
     .setTitle('Repository added')
     .setDescription(
-      `**${state.name}**: ${state.url}${state.project ? ` (${state.project})` : ''}${linkNote}\n\n${accessLine({ ...access, url: state.url })}`
+      `**${state.name}**: ${state.url}${state.project ? ` (${state.project})` : ''}${linkNote}${scopeNote}\n\n${accessLine({ ...access, url: state.url })}`
     )
     .setColor(0x57f287)
 

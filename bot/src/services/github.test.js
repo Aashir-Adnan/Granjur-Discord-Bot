@@ -84,3 +84,27 @@ test('checkRepoAccess never throws', async () => {
   assert.equal((await checkRepoAccess('nope', { tokens: new Map(), fallback: 'DEF' })).code, 'bad-url')
   assert.equal((await checkRepoAccess('https://github.com/o/r', { tokens: new Map(), fallback: '' })).code, 'no-access')
 })
+
+// M7 (final review, 2026-09-30): reading the repo is not enough to open issues.
+test('checkRepoAccess: issues switched off on the repo is no-access with its own message', async () => {
+  const fetchImpl = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ has_issues: false, permissions: { push: true } }) })
+  assert.deepEqual(await checkRepoAccess('https://github.com/o/r', { fetchImpl, tokens: new Map(), fallback: 'DEF' }),
+    { ok: false, code: 'no-access', message: 'Issues are disabled on o/r', issuesDisabled: true })
+})
+
+test('checkRepoAccess: a token that can read but neither push nor triage is no-access', async () => {
+  const readOnly = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ has_issues: true, permissions: { pull: true, push: false, triage: false } }) })
+  assert.deepEqual(await checkRepoAccess('https://github.com/o/r', { fetchImpl: readOnly, tokens: new Map(), fallback: 'DEF' }),
+    { ok: false, code: 'no-access', message: 'No GitHub access to o/r' })
+})
+
+test('checkRepoAccess: triage without push, push, or no permissions block at all is ok', async () => {
+  for (const body of [
+    { has_issues: true, permissions: { pull: true, push: false, triage: true } },
+    { has_issues: true, permissions: { pull: true, push: true } },
+    { has_issues: true },
+  ]) {
+    const fetchImpl = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(body) })
+    assert.deepEqual(await checkRepoAccess('https://github.com/o/r', { fetchImpl, tokens: new Map(), fallback: 'DEF' }), { ok: true }, JSON.stringify(body))
+  }
+})
