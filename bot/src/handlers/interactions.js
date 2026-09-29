@@ -274,6 +274,8 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/projects.js")).handleAddButton(interaction);
     if (customId === "projects_link_repo")
       return (await import("../commands/projects.js")).handleLinkRepo(interaction);
+    if (customId === "projects_unlink_repo")
+      return (await import("../commands/projects.js")).handleUnlinkRepo(interaction);
     await interaction
       .editReply({
         content: `Unknown button. Received customId: "${customId}"`,
@@ -428,6 +430,12 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/projects.js")).handleLinkRepoSelect(interaction);
     if (customId === "projects_link_project_select")
       return (await import("../commands/projects.js")).handleLinkProjectSelect(interaction);
+    if (customId === "projects_link_scope_select")
+      return (await import("../commands/projects.js")).handleLinkScopeSelect(interaction);
+    if (customId === "projects_unlink_project_select")
+      return (await import("../commands/projects.js")).handleUnlinkProjectSelect(interaction);
+    if (customId === "projects_unlink_repo_select")
+      return (await import("../commands/projects.js")).handleUnlinkRepoSelect(interaction);
     // No handler matched — we already deferred, so we must editReply or Discord shows "interaction failed"
     await interaction
       .editReply({ content: "Unknown action.", components: [] })

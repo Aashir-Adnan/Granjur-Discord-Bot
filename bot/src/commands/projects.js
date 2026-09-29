@@ -16,6 +16,11 @@ import { reattributeGuildDocs } from '../services/docsSync.js'
 import { cut, projectSlug } from '../services/projectSection.js'
 import { EPHEMERAL } from '../constants.js'
 import { setupOneProject } from './project-setup.js'
+import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
+import { linkRepo, unlinkRepo, linkRefusalText, accessLine } from '../services/projectRepoLinks.js'
+import { checkRepoAccess } from '../services/github.js'
+
+const NO_SCOPE_VALUE = 'none'
 
 /** Discord's hard limit on a message. */
 const REPLY_LIMIT = 2000
@@ -42,7 +47,8 @@ async function listPayload(cfg) {
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('projects_add').setLabel('Add project').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('projects_link_repo').setLabel('Link repo').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId('projects_link_repo').setLabel('Link repo').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('projects_unlink_repo').setLabel('Unlink repo').setStyle(ButtonStyle.Secondary)
   )
 
   return { embeds: [embed], components: [row], content: null }
@@ -238,7 +244,124 @@ export async function handleLinkProjectSelect(interaction) {
   if (!state?.repositoryId) {
     return interaction.editReply({ content: 'That selection expired — start again with /projects.', components: [] }).catch(() => {})
   }
-  await db.projectRepos.add({ data: { project_id: interaction.values[0], repository_id: state.repositoryId } })
+  flowStore.set(interaction.user.id, interaction.guild.id, 'projects_link', {
+    ...state,
+    projectId: interaction.values[0],
+  })
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('projects_link_scope_select')
+    .setPlaceholder('Choose a scope…')
+    .addOptions([
+      ...SCOPE_CHOICES.map((c) => ({ label: c.name, value: c.value })),
+      { label: 'No scope', value: NO_SCOPE_VALUE },
+    ])
+  return interaction
+    .editReply({ content: 'As which scope?', components: [new ActionRowBuilder().addComponents(select)] })
+    .catch(() => {})
+}
+
+export async function handleLinkScopeSelect(interaction) {
+  const state = flowStore.get(interaction.user.id, interaction.guild.id, 'projects_link')
+  if (!state?.repositoryId || !state?.projectId) {
+    return interaction.editReply({ content: 'That selection expired — start again with /projects.', components: [] }).catch(() => {})
+  }
+  const cfg = await getOrCreateGuildConfig(interaction.guild.id)
+  const scope = interaction.values[0] === NO_SCOPE_VALUE ? null : interaction.values[0]
+  const result = await linkRepo({ db, projectId: state.projectId, repositoryId: state.repositoryId, scope })
   flowStore.clear(interaction.user.id, interaction.guild.id, 'projects_link')
-  return interaction.editReply({ content: 'Linked.', components: [] }).catch(() => {})
+
+  const [repo, project] = await Promise.all([
+    db.repository.findFirst({ where: { id: state.repositoryId, guildConfigId: cfg.id } }),
+    db.project.findFirst({ where: { id: state.projectId } }),
+  ])
+
+  if (!result.ok) {
+    const holder = await db.repository.findFirst({ where: { id: result.holderRepositoryId, guildConfigId: cfg.id } })
+    return interaction
+      .editReply({
+        content: linkRefusalText(project?.name ?? 'That project', holder?.name ?? 'another repository', scope),
+        components: [],
+      })
+      .catch(() => {})
+  }
+
+  const scopeText = scope ? scopeLabel(scope) : 'no scope'
+  const headline = result.updated
+    ? `Updated **${repo?.name ?? 'the repository'}**’s scope in **${project?.name ?? 'the project'}** — scope to ${scopeText}.`
+    : `Linked **${repo?.name ?? 'the repository'}** to **${project?.name ?? 'the project'}** as ${scopeText}.`
+  const access = await checkRepoAccess(repo?.url)
+  return interaction
+    .editReply({ content: `${headline}\n\n${accessLine({ ...access, url: repo?.url })}`, components: [] })
+    .catch(() => {})
+}
+
+export async function handleUnlinkRepo(interaction) {
+  const cfg = await getOrCreateGuildConfig(interaction.guild.id)
+  const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
+  if (projects.length === 0) {
+    return interaction.editReply({ content: 'No projects yet — add one first.', components: [] }).catch(() => {})
+  }
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('projects_unlink_project_select')
+    .setPlaceholder('Choose a project…')
+    .addOptions(projects.slice(0, 25).map((p) => ({ label: p.name.slice(0, 100), value: p.id })))
+  return interaction
+    .editReply({
+      content: 'Unlink a repository from which project?',
+      embeds: [],
+      components: [new ActionRowBuilder().addComponents(select)],
+    })
+    .catch(() => {})
+}
+
+export async function handleUnlinkProjectSelect(interaction) {
+  const cfg = await getOrCreateGuildConfig(interaction.guild.id)
+  const projectId = interaction.values[0]
+  const project = await db.project.findFirst({ where: { id: projectId } })
+  const links = await db.projectRepos.findMany({ where: { project_id: projectId } })
+  if (!links.length) {
+    return interaction
+      .editReply({ content: `**${project?.name ?? 'That project'}** has no linked repositories.`, components: [] })
+      .catch(() => {})
+  }
+  const repos = await db.repository.findMany({ where: { guildConfigId: cfg.id } })
+  const byId = new Map(repos.map((r) => [String(r.id), r]))
+  flowStore.set(interaction.user.id, interaction.guild.id, 'projects_unlink', {
+    projectId,
+    projectName: project?.name ?? 'That project',
+  })
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('projects_unlink_repo_select')
+    .setPlaceholder('Choose a repository…')
+    .addOptions(
+      links.slice(0, 25).map((l) => {
+        const repo = byId.get(String(l.repository_id))
+        const scopeText = l.scope ? scopeLabel(l.scope) : 'no scope'
+        return {
+          label: `${(repo?.name || 'Unknown repository').slice(0, 90)} · ${scopeText}`.slice(0, 100),
+          value: l.repository_id,
+        }
+      })
+    )
+  return interaction
+    .editReply({
+      content: `Unlink which repository from **${project?.name ?? 'that project'}**?`,
+      components: [new ActionRowBuilder().addComponents(select)],
+    })
+    .catch(() => {})
+}
+
+export async function handleUnlinkRepoSelect(interaction) {
+  const state = flowStore.get(interaction.user.id, interaction.guild.id, 'projects_unlink')
+  if (!state?.projectId) {
+    return interaction.editReply({ content: 'That selection expired — start again with /projects.', components: [] }).catch(() => {})
+  }
+  const cfg = await getOrCreateGuildConfig(interaction.guild.id)
+  const repositoryId = interaction.values[0]
+  const repo = await db.repository.findFirst({ where: { id: repositoryId, guildConfigId: cfg.id } })
+  await unlinkRepo({ db, projectId: state.projectId, repositoryId })
+  flowStore.clear(interaction.user.id, interaction.guild.id, 'projects_unlink')
+  return interaction
+    .editReply({ content: `Unlinked **${repo?.name ?? 'the repository'}** from **${state.projectName}**.`, components: [] })
+    .catch(() => {})
 }
