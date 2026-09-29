@@ -24,6 +24,17 @@ const FLOW_KEY = 'create_task'
 
 const SESSION_EXPIRED_MSG = 'Session expired or invalid step. Run **/create-task** again.'
 
+export const NO_REPOSITORIES_MSG = 'No repositories. Add with **/repos** first.'
+
+/**
+ * A bug still needs a repository (the rule's, or one picked from the server's),
+ * so a guild with none refuses a bug before its first step — as it always did.
+ * Returns the reply payload, or null when the bug can start. Pure; exported for its test.
+ */
+export function bugStartRefusal(repos) {
+  return repos?.length ? null : { content: NO_REPOSITORIES_MSG, components: [] }
+}
+
 /** After deferUpdate() we must use editReply(); after deferReply() use editReply(); only use update() when not yet acknowledged. */
 async function respond(interaction, payload) {
   const p = typeof payload === 'string' ? { content: payload, components: [], embeds: [] } : payload
@@ -106,6 +117,13 @@ export async function execute(interaction) {
 
   flowStore.clear(interaction.user.id, guild.id, FLOW_KEY)
 
+  // A bug with no repository in the guild is refused before any step (the fast
+  // path and the type-only path alike).
+  if (typeOpt === 'bug') {
+    const refusal = bugStartRefusal(repos)
+    if (refusal) return interaction.editReply(refusal)
+  }
+
   // If type + title provided in command, skip type step and modal; go to repos/project or repo step
   if (typeOpt && titleOpt) {
     const taskType = typeOpt
@@ -184,6 +202,11 @@ export async function handleTypeButton(interaction) {
     const isFeature = interaction.customId === 'create_task_type_feature'
     const taskType = isFeature ? 'feature' : 'bug'
     const cfg = await getOrCreateGuildConfig(guild.id)
+
+    if (!isFeature) {
+      const refusal = bugStartRefusal(await db.repository.findMany({ where: { guildConfigId: cfg.id } }))
+      if (refusal) return interaction.update(refusal).catch(() => {})
+    }
 
     const typeState = { step: isFeature ? STEP_MODAL : STEP_BUG_PROJECT, taskType }
     flowStore.set(interaction.user.id, guild.id, FLOW_KEY, typeState)
@@ -287,14 +310,19 @@ export function issueReplyLine(issue) {
 
 /**
  * The repository the confirm step shows — the same one createTask will use, so
- * what the user sees is what happens. A feature: the rule on its first project
- * and its scope, else its first picked repository. A bug: `state.repo`, already
- * settled by the rule or the repository step in proceedAfterScope (createTask
- * re-applies the same rule and falls back to that same repo).
- * `db` is a seam; exported for its test.
+ * what the user sees is what happens — and how it was chosen: `'scope'` or
+ * `'only-repo'` (the rule), `'picked'` (the user's pick), or null (none).
+ * A feature: the rule on its first project and its scope, else its first picked
+ * repository. A bug: `state.repo`, already settled by the rule or the repository
+ * step in proceedAfterScope (createTask re-applies the same rule and falls back
+ * to that same repo). `db` is a seam; exported for its test.
+ *
+ * @returns {Promise<{repository: object|null, reason: 'scope'|'only-repo'|'picked'|null}>}
  */
 export async function confirmRepository(state, { db: dbArg = db, cfg } = {}) {
-  if (state.taskType !== 'feature') return state.repo ?? null
+  if (state.taskType !== 'feature') {
+    return state.repo ? { repository: state.repo, reason: state.repoReason ?? 'picked' } : { repository: null, reason: null }
+  }
   let repos = []
   try {
     repos = (await dbArg.repository.findMany({ where: { guildConfigId: cfg.id } })) ?? []
@@ -304,10 +332,22 @@ export async function confirmRepository(state, { db: dbArg = db, cfg } = {}) {
   }
   const projectId = state.projectIds?.[0] ?? null
   const links = await loadProjectLinks(dbArg, projectId)
-  const { repository } = resolveTaskRepo({ projectId, scope: state.scope }, { links, repos })
-  if (repository) return repository
+  const { repository, reason } = resolveTaskRepo({ projectId, scope: state.scope }, { links, repos })
+  if (repository) return { repository, reason }
   const first = state.repositoryIds?.[0]
-  return first ? (repos.find((r) => String(r.id) === String(first)) ?? null) : null
+  const picked = first ? (repos.find((r) => String(r.id) === String(first)) ?? null) : null
+  return picked ? { repository: picked, reason: 'picked' } : { repository: null, reason: null }
+}
+
+/**
+ * The confirm step's "Repository" value: the name, with `(<Scope>)` only when
+ * the scope rule chose it; `None — no issue` when there is none. Pure; exported for its test.
+ */
+export function repositoryFieldText(repository, reason, scope) {
+  if (!repository) return 'None — no issue'
+  const name = String(repository.name || 'Repository').slice(0, 100)
+  const label = reason === 'scope' ? scopeLabel(scope) : null
+  return label ? `${name} (${label})` : name
 }
 
 async function showBugProjectStep(interaction, state, projects) {
@@ -333,7 +373,10 @@ export async function handleBugProjectSelect(interaction) {
       return
     }
     const state = flowStore.get(interaction.user.id, guild.id, FLOW_KEY)
-    if (!state || state.taskType !== 'bug' || state.step !== STEP_BUG_PROJECT) {
+    // STEP_MODAL too: a dismissed details modal leaves the project select on
+    // screen, and picking again from it must still work.
+    const onProjectStep = state?.step === STEP_BUG_PROJECT || (state?.step === STEP_MODAL && !state?.title)
+    if (!state || state.taskType !== 'bug' || !onProjectStep) {
       console.error('[create-task] handleBugProjectSelect: wrong step or no state', state?.step, state?.taskType)
       await respond(interaction, { content: SESSION_EXPIRED_MSG, components: [] }).catch(() => {})
       return
@@ -447,22 +490,19 @@ async function proceedAfterScope(interaction, state, guild) {
     const cfg = await getOrCreateGuildConfig(guild.id)
     const repos = (await db.repository.findMany({ where: { guildConfigId: cfg.id } })) ?? []
     const links = await loadProjectLinks(db, state.projectId)
-    const { repository } = resolveTaskRepo({ projectId: state.projectId, scope: state.scope }, { links, repos })
+    const { repository, reason } = resolveTaskRepo({ projectId: state.projectId, scope: state.scope }, { links, repos })
     if (repository) {
-      state = { ...state, repo: repository, repositoryId: repository.id, repoResolved: true }
+      state = { ...state, repo: repository, repositoryId: repository.id, repoResolved: true, repoReason: reason }
     } else {
+      // The project's linked repositories, else every server repository. A bug
+      // always has at least one to pick from: bug start refuses a guild with none.
       const linkedIds = new Set(links.map((l) => String(l.repository_id)))
       const linked = repos.filter((r) => linkedIds.has(String(r.id)))
       const choices = linked.length ? linked : repos
-      if (!choices.length) {
-        // No repository anywhere in the guild: the bug goes on without one
-        // (the confirm step says "None — no issue").
-        state = { ...state, repo: null, repositoryId: null, repoResolved: true }
-      } else {
-        const next = { ...state, step: STEP_REPO }
-        flowStore.set(interaction.user.id, guild.id, FLOW_KEY, next)
-        return showRepoStep(interaction, next, choices, linked.length > 0)
-      }
+      if (!choices.length) return respond(interaction, bugStartRefusal(choices)) // all removed mid-flow
+      const next = { ...state, step: STEP_REPO }
+      flowStore.set(interaction.user.id, guild.id, FLOW_KEY, next)
+      return showRepoStep(interaction, next, choices, linked.length > 0)
     }
   }
   if (state.taggedMemberIds?.length !== undefined) {
@@ -557,6 +597,9 @@ export async function handleRepoSelect(interaction) {
       console.error('[create-task] handleRepoSelect: no guild')
       return
     }
+    // Never opens a modal (the repository step comes after scope, so the title is
+    // known); it reads the database and may fetch members before answering.
+    if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate().catch(() => {})
     const repoId = interaction.values?.[0]
     if (!repoId) {
       await respond(interaction, { content: 'No repository selected.', components: [] }).catch(() => {})
@@ -570,22 +613,15 @@ export async function handleRepoSelect(interaction) {
     }
 
     const state = flowStore.get(interaction.user.id, guild.id, FLOW_KEY)
-    if (!state || state.taskType !== 'bug') {
-      console.error('[create-task] handleRepoSelect: missing state or not bug', state?.step, state?.taskType)
+    if (!state || state.taskType !== 'bug' || !state.title) {
+      console.error('[create-task] handleRepoSelect: missing state, not bug, or no title', state?.step, state?.taskType)
       await respond(interaction, { content: SESSION_EXPIRED_MSG, components: [] }).catch(() => {})
       return
     }
 
-    const nextState = { ...state, repositoryId: repoId, repo, repoResolved: true }
-    // The repository step now comes after the rule found nothing, so the title
-    // (and scope) are known here — proceedAfterScope decides tagged/members/confirm.
-    if (state.title) {
-      await proceedAfterScope(interaction, nextState, guild)
-    } else {
-      nextState.step = STEP_MODAL
-      flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
-      await interaction.showModal(buildTaskModal(false))
-    }
+    const nextState = { ...state, repositoryId: repoId, repo, repoResolved: true, repoReason: 'picked' }
+    // proceedAfterScope decides tagged/members/confirm (repository set: no rule).
+    await proceedAfterScope(interaction, nextState, guild)
   } catch (e) {
     console.error('[create-task] handleRepoSelect error:', e)
     await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
@@ -802,13 +838,8 @@ async function showConfirmStep(interaction, state, guild) {
     embed.addFields({ name: 'Tagged', value: tagged.length ? tagged.map((id) => `<@${id}>`).join(' ') : 'None', inline: true })
   }
 
-  const repo = await confirmRepository(state, { cfg })
-  const repoScope = scopeLabel(state.scope)
-  embed.addFields({
-    name: 'Repository',
-    value: repo ? `${String(repo.name || 'Repository').slice(0, 100)}${repoScope ? ` (${repoScope})` : ''}` : 'None — no issue',
-    inline: false,
-  })
+  const { repository: repo, reason: repoReason } = await confirmRepository(state, { cfg })
+  embed.addFields({ name: 'Repository', value: repositoryFieldText(repo, repoReason, state.scope), inline: false })
 
   const rowButtons = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('create_task_create').setLabel('Create task').setStyle(ButtonStyle.Success),
@@ -881,6 +912,8 @@ export async function handleAssigneesSelect(interaction) {
       console.error('[create-task] handleAssigneesSelect: no guild')
       return
     }
+    // A user select is not deferred by index.js; the confirm re-render reads the database.
+    if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate().catch(() => {})
     const state = flowStore.get(interaction.user.id, guild.id, FLOW_KEY)
     if (!state || state.step !== STEP_CONFIRM) {
       console.error('[create-task] handleAssigneesSelect: wrong step or no state', state?.step)

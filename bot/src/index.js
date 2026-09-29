@@ -190,7 +190,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       "uth_counts", // /update-task hub: opens the test-counts modal
       "uths_add", // subtask checklist: opens the add-subtask modal
       "mt_edit", // /my-time: opens the edit-entry modal
-      "create_task_repo", // repo select → details modal for bug
+      "create_task_repo", // bug repo select (after scope); the handler defers itself
       "create_task_bug_project", // bug's project select → details modal when no title yet
       // create-task: type buttons and quick steps skip defer; repo/project step defers (async DB work)
       "create_task_type_feature",

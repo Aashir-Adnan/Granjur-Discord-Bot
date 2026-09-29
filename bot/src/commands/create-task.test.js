@@ -5,6 +5,7 @@ import * as flowStore from '../flows/store.js'
 import {
   assigneeRow, scopeRow, handleCreate, channelPlacementNote,
   bugProjectRow, issueToggleButton, issueReplyLine, confirmRepository,
+  repositoryFieldText, bugStartRefusal,
 } from './create-task.js'
 import { createTaskTicketChannel } from '../services/taskTicketChannel.js'
 import { GitHubError } from '../services/github.js'
@@ -387,16 +388,41 @@ const LINKS = [
 test('confirmRepository: a feature uses the rule on its first project, else its first picked repo', async () => {
   const db = fakeDb([], PROJECT, { repos: [API_REPO, WEB_REPO], links: LINKS })
   const cfg = { id: 'cfg1' }
-  assert.equal(await confirmRepository({ taskType: 'feature', scope: 'backend', projectIds: ['p1'], repositoryIds: ['r-web'] }, { db, cfg }), API_REPO)
-  assert.equal(await confirmRepository({ taskType: 'feature', scope: 'qa', projectIds: ['p1'], repositoryIds: ['r-web'] }, { db, cfg }), WEB_REPO)
-  assert.equal(await confirmRepository({ taskType: 'feature', scope: 'qa', projectIds: ['p1'], repositoryIds: [] }, { db, cfg }), null)
-  assert.equal(await confirmRepository({ taskType: 'feature', scope: 'backend', projectIds: [], repositoryIds: [] }, { db, cfg }), null)
+  const none = { repository: null, reason: null }
+  assert.deepEqual(await confirmRepository({ taskType: 'feature', scope: 'backend', projectIds: ['p1'], repositoryIds: ['r-web'] }, { db, cfg }), { repository: API_REPO, reason: 'scope' })
+  assert.deepEqual(await confirmRepository({ taskType: 'feature', scope: 'qa', projectIds: ['p1'], repositoryIds: ['r-web'] }, { db, cfg }), { repository: WEB_REPO, reason: 'picked' })
+  assert.deepEqual(await confirmRepository({ taskType: 'feature', scope: 'qa', projectIds: ['p1'], repositoryIds: [] }, { db, cfg }), none)
+  assert.deepEqual(await confirmRepository({ taskType: 'feature', scope: 'backend', projectIds: [], repositoryIds: [] }, { db, cfg }), none)
 })
 
-test('confirmRepository: a bug uses state.repo', async () => {
+test('confirmRepository: a feature under a project with one untagged link gets it by the only-repo rule', async () => {
+  const db = fakeDb([], PROJECT, { repos: [API_REPO], links: [{ project_id: 'p1', repository_id: 'r-api', scope: null }] })
+  assert.deepEqual(
+    await confirmRepository({ taskType: 'feature', scope: 'qa', projectIds: ['p1'], repositoryIds: [] }, { db, cfg: { id: 'cfg1' } }),
+    { repository: API_REPO, reason: 'only-repo' },
+  )
+})
+
+test('confirmRepository: a bug uses state.repo and how it was chosen', async () => {
   const db = fakeDb([], PROJECT, { repos: [API_REPO], links: LINKS })
-  assert.equal(await confirmRepository({ taskType: 'bug', scope: 'backend', repo: WEB_REPO }, { db, cfg: { id: 'cfg1' } }), WEB_REPO)
-  assert.equal(await confirmRepository({ taskType: 'bug', scope: 'backend' }, { db, cfg: { id: 'cfg1' } }), null)
+  const cfg = { id: 'cfg1' }
+  assert.deepEqual(await confirmRepository({ taskType: 'bug', scope: 'backend', repo: API_REPO, repoReason: 'scope' }, { db, cfg }), { repository: API_REPO, reason: 'scope' })
+  assert.deepEqual(await confirmRepository({ taskType: 'bug', scope: 'backend', repo: WEB_REPO, repoReason: 'picked' }, { db, cfg }), { repository: WEB_REPO, reason: 'picked' })
+  assert.deepEqual(await confirmRepository({ taskType: 'bug', scope: 'backend', repo: WEB_REPO }, { db, cfg }), { repository: WEB_REPO, reason: 'picked' })
+  assert.deepEqual(await confirmRepository({ taskType: 'bug', scope: 'backend' }, { db, cfg }), { repository: null, reason: null })
+})
+
+test('repositoryFieldText adds the scope only when the scope rule chose the repository', () => {
+  assert.equal(repositoryFieldText(API_REPO, 'scope', 'backend'), 'api (Backend)')
+  assert.equal(repositoryFieldText({ name: 'Framework_Node' }, 'only-repo', 'backend'), 'Framework_Node')
+  assert.equal(repositoryFieldText({ name: 'Framework_Node' }, 'picked', 'backend'), 'Framework_Node')
+  assert.equal(repositoryFieldText(null, null, 'backend'), 'None — no issue')
+})
+
+test('bugStartRefusal refuses a bug in a guild with no repositories, as it always did', () => {
+  assert.deepEqual(bugStartRefusal([]), { content: 'No repositories. Add with **/repos** first.', components: [] })
+  assert.deepEqual(bugStartRefusal(undefined), { content: 'No repositories. Add with **/repos** first.', components: [] })
+  assert.equal(bugStartRefusal([API_REPO]), null)
 })
 
 // --- handleCreate, a bug under a project, with the Issue toggle ----------------
