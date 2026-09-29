@@ -33,10 +33,11 @@ test('actions are immutable and targeted', () => {
   s = applyReviewAction(s, { type: 'rejectTask', taskId: 'b' })
   assert.equal(s.tasks.find((t) => t.taskId === 'b').assigneeRef, '22')
   assert.equal(s.tasks.find((t) => t.taskId === 'b').rejected, true)
-  assert.equal(s.tasks.find((t) => t.taskId === 'a').github, true)
+  // GitHub starts on (sub-project 4), so the toggle turns it off.
+  assert.equal(s.tasks.find((t) => t.taskId === 'a').github, false)
   // original untouched
   assert.equal(orig.tasks.find((t) => t.taskId === 'b').assigneeRef, null)
-  assert.equal(orig.tasks.find((t) => t.taskId === 'a').github, false)
+  assert.equal(orig.tasks.find((t) => t.taskId === 'a').github, true)
   assert.notEqual(s, orig)
   assert.notEqual(s.tasks, orig.tasks)
 })
@@ -49,7 +50,7 @@ test('page action sets page', () => {
 
 test('summarizeApproval excludes rejected, counts github', () => {
   let s = initReviewState(tasks, assignments)
-  s = applyReviewAction(s, { type: 'toggleGithub', taskId: 'a' })
+  // Both start with GitHub on; b is dropped, so only a counts.
   s = applyReviewAction(s, { type: 'rejectTask', taskId: 'b' })
   const sum = summarizeApproval(s, tasks)
   assert.equal(sum.approved.length, 1)
@@ -117,7 +118,8 @@ test('a customId string taskId still matches a numeric task', () => {
   assert.equal(assigned.tasks[0].assigneeRef, null)
 
   const toggled = applyReviewAction(assigned, { type: 'toggleGithub', taskId: '2' })
-  assert.equal(toggled.tasks[0].github, true)
+  assert.equal(toggled.tasks[0].github, false)
+  assert.equal(toggled.tasks[1].github, true)
 
   const dropped = applyReviewAction(toggled, { type: 'rejectTask', taskId: '2' })
   assert.equal(dropped.tasks[0].rejected, true)
@@ -127,7 +129,7 @@ test('a customId string taskId still matches a numeric task', () => {
 test('summarizeApproval counts numeric-id tasks against string-id state', () => {
   let state = initReviewState(NUMERIC_TASKS, STRING_ASSIGNMENTS)
   state = applyReviewAction(state, { type: 'rejectTask', taskId: '3' })
-  state = applyReviewAction(state, { type: 'toggleGithub', taskId: '2' })
+  // GitHub is on by default: the one approved task counts.
   const out = summarizeApproval(state, NUMERIC_TASKS)
   assert.equal(out.approved.length, 1)
   assert.equal(out.approved[0].task_id, 2)
@@ -237,4 +239,26 @@ test('a task with no usable scope says so; a legacy state shows no project line'
   const desc = buildReviewMessage({ job, notes: '', reportPath: null, state: initReviewState(one, []), roster: [] }).embeds[1].data.description
   assert.match(desc, /\*\*Scope:\*\* none/)
   assert.ok(!/Project:/.test(desc))
+})
+
+// --- roadmap sub-project 4 (2026-09-30): GitHub issues are on by default
+
+test('initReviewState starts every task with GitHub on', () => {
+  const s = initReviewState(tasks, assignments)
+  assert.ok(s.tasks.every((t) => t.github === true))
+  const off = applyReviewAction(s, { type: 'toggleGithub', taskId: 'b' })
+  assert.equal(off.tasks.find((t) => t.taskId === 'b').github, false)
+  assert.equal(off.tasks.find((t) => t.taskId === 'a').github, true)
+})
+
+test('the review message shows GitHub on, including for a task missing from the state', () => {
+  const job = { id: 'J', dataJson: { tasks, assignments } }
+  for (const state of [initReviewState(tasks, assignments), { tasks: [], page: 0 }]) {
+    const msg = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] })
+    const buttons = msg.components.map((c) => c.toJSON()).flatMap((r) => r.components)
+    const gh = buttons.filter((b) => String(b.custom_id).startsWith('mtg_gh:'))
+    assert.equal(gh.length, 2)
+    assert.ok(gh.every((b) => b.label === 'GitHub: on'))
+    assert.match(msg.embeds[1].data.description, /\*\*GitHub issue:\*\* yes/)
+  }
 })

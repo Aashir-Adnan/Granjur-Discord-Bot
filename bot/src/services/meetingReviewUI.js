@@ -52,7 +52,8 @@ export function initReviewState(tasks, assignments, settle) {
       return {
         taskId: taskKey(t.task_id),
         assigneeRef: asgByTask.get(taskKey(t.task_id))?.assignee_ref ?? null,
-        github: false,
+        // On by default (roadmap sub-project 4): the reviewer opts a task out.
+        github: true,
         rejected: false,
         needsProject: settled === null,
         projectId: null,
@@ -159,7 +160,7 @@ export function buildReviewMessage({ job, notes, reportPath, state, roster }) {
     const st = stByTask.get(taskKey(task.task_id)) ?? {
       taskId: task.task_id,
       assigneeRef: asgByTask.get(task.task_id)?.assignee_ref ?? null,
-      github: false,
+      github: true,
       rejected: false,
       needsProject: false,
       projectId: null,

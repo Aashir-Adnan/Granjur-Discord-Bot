@@ -14,6 +14,7 @@ import { mapMeetingTaskToRow } from './meetingTaskMap.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
 import { loadProjectContext, settledProject, resolveMeetingTaskProject, reviewProjectOptions } from './meetingTaskProject.js'
 import { buildAnalyzeLivePayload } from './liveTranscriptPayload.js'
+import { createIssue } from './github.js'
 
 // overrides is a test-only seam, never meant to carry real data: the `db`
 // facade passed at runtime (bot/src/db/index.js default export) is a plain
@@ -411,6 +412,8 @@ async function mirroredStage({ job, db, client, csaasClient }) {
       github: !!reviewTask.github,
       title: row.title,
       taskChannelId,
+      // issue_syncing opens the issue here — the repository the rule gave the row.
+      repositoryId: row.repositoryId ?? null,
     })
 
     // Persist progress after each task so a retry resumes where it stopped.
@@ -474,77 +477,85 @@ export function resolveRepoSlug(repositoryRow) {
   return { owner: m[1], repo: m[2] }
 }
 
-// issue_syncing: for mirrored tasks flagged github, group by the CSAAS task's
-// project -> resolved owner/repo, call csaasClient.issueSync per repo, and write
-// the returned issue url/number back onto the bot task rows. Best-effort:
-// failures land in dataJson.issueSyncErrors. Always advances to `done`.
-async function issueSyncingStage({ job, db, csaasClient }) {
-  const gh = (job.dataJson?.mirrored || []).filter((m) => m.github)
-  if (gh.length === 0) return { patch: {} }
+// The body of a meeting task's GitHub issue: what to do, where the code lives,
+// and which meeting it came from.
+function meetingIssueBody(csaasTask, job) {
+  const actions = Array.isArray(csaasTask?.intended_actions) ? csaasTask.intended_actions.join('\n') : ''
+  const residence = csaasTask?.code_residence ? `\n\nCode: ${csaasTask.code_residence}` : ''
+  return `${actions}${residence}\n\n---\nFrom meeting: ${job.dataJson?.title || job.meetingId}`
+}
 
-  const dataJson = { ...(job.dataJson || {}) }
+// issue_syncing (roadmap sub-project 4, 2026-09-30): the bot opens each
+// GitHub-flagged task's issue itself, in the repository `mirrored` recorded for
+// it (the project + scope rule), and writes the url/number onto the task row.
+// CSAAS's issueSync is no longer used. Idempotent: an entry already holding its
+// issue is skipped, and each opened issue is persisted at once, so a retry never
+// opens a second one. Best-effort: every failure lands in
+// dataJson.issueSyncErrors (the `done` summary lists them). Always advances.
+// `openIssue` is a test seam; production passes nothing and gets createIssue.
+async function issueSyncingStage({ job, db, openIssue = createIssue }) {
+  const mirrored = (job.dataJson?.mirrored || []).map((m) => ({ ...m }))
+  const flagged = mirrored.filter((m) => m.github && m.dbTaskId)
+  if (flagged.length === 0) return { patch: {} }
+
+  const dataJson = { ...(job.dataJson || {}), mirrored }
   const csaasTasks = Array.isArray(dataJson.tasks) ? dataJson.tasks : []
   const errors = []
 
-  let repos = []
-  try {
-    repos = await db.repository.findMany({ where: { guildConfigId: job.guildConfigId } })
-  } catch (e) {
-    console.warn('[meetingPipeline] repository.findMany failed:', e?.message || e)
-    repos = []
-  }
-  const slugByName = new Map()
-  for (const r of repos || []) {
-    const slug = resolveRepoSlug(r)
-    if (r?.name && slug) slugByName.set(r.name, slug)
-  }
-
-  // group gh entries by `owner/repo`
-  const groups = new Map() // key -> { owner, repo, entries: [] }
-  for (const entry of gh) {
-    const csaasTask = csaasTasks.find((t) => taskKey(t.task_id) === taskKey(entry.csaasTaskId))
-    const project = csaasTask?.project
-    const slug = project ? slugByName.get(project) : null
-    if (!slug) {
-      errors.push({ csaasTaskId: entry.csaasTaskId, reason: `no repo for project ${project ?? '(none)'}` })
-      continue
-    }
-    const key = `${slug.owner}/${slug.repo}`
-    if (!groups.has(key)) groups.set(key, { owner: slug.owner, repo: slug.repo, entries: [] })
-    groups.get(key).entries.push(entry)
-  }
-
-  for (const { owner, repo, entries } of groups.values()) {
-    let issues = []
+  const todo = flagged.filter((m) => !m.externalIssueUrl)
+  let repoById = new Map()
+  let repoReadError = null
+  if (todo.some((m) => m.repositoryId)) {
     try {
-      const res = await csaasClient.issueSync(job.csaasMeetingId, {
-        owner,
-        repo,
-        taskIds: entries.map((g) => g.csaasTaskId),
-      })
-      issues = Array.isArray(res?.issues) ? res.issues : []
+      const repos = await db.repository.findMany({ where: { guildConfigId: job.guildConfigId } })
+      repoById = new Map((repos || []).map((r) => [String(r.id), r]))
     } catch (e) {
-      errors.push({ owner, repo, error: e?.message || String(e) })
+      repoReadError = e?.message || String(e)
+      console.warn('[meetingPipeline] repository.findMany failed:', repoReadError)
+    }
+  }
+
+  for (const entry of todo) {
+    const { csaasTaskId } = entry
+    if (!entry.repositoryId) {
+      errors.push({ csaasTaskId, reason: 'no repository for this project and scope' })
       continue
     }
-
-    for (const issue of issues) {
-      const csaasTaskId = issue.task_id ?? issue.taskId
-      const match = entries.find((g) => g.csaasTaskId === csaasTaskId)
-      if (!match) continue
-      const url = issue.url ?? issue.github_issue_url ?? null
-      const number = issue.number ?? issue.github_issue_number ?? null
-      // mutate the mirrored entry in place so `done` can render issue links
-      // (entries hold the same object refs as dataJson.mirrored)
-      match.externalIssueUrl = url
-      match.externalIssueNumber = number
+    if (repoReadError) {
+      errors.push({ csaasTaskId, reason: `repositories could not be read: ${repoReadError}` })
+      continue
+    }
+    const repo = repoById.get(String(entry.repositoryId))
+    if (!repo?.url) {
+      errors.push({ csaasTaskId, reason: repo ? `${repo.name || 'the repository'} has no URL` : 'the repository is no longer linked' })
+      continue
+    }
+    const csaasTask = csaasTasks.find((t) => taskKey(t.task_id) === taskKey(csaasTaskId))
+    let res
+    try {
+      res = await openIssue(repo.url, entry.title || csaasTask?.goal_of_task || `Task ${csaasTaskId}`, meetingIssueBody(csaasTask, job))
+    } catch (e) {
+      errors.push({ csaasTaskId, reason: e?.message || String(e) })
+      continue
+    }
+    // The issue exists now: record it on the entry (and the saved job) first,
+    // so even a failed row update below cannot make a retry open a second one.
+    entry.externalIssueUrl = res?.url ?? null
+    entry.externalIssueNumber = res?.number ?? null
+    try {
+      await db.task.update({
+        where: { id: entry.dbTaskId },
+        data: { externalIssueUrl: entry.externalIssueUrl, externalIssueNumber: entry.externalIssueNumber },
+      })
+    } catch (e) {
+      console.warn('[meetingPipeline] task.update (issue) failed:', e?.message || e)
+    }
+    if (db.meetingPipelineJob?.update) {
       try {
-        await db.task.update({
-          where: { externalId: 'csaas:' + csaasTaskId },
-          data: { externalIssueUrl: url, externalIssueNumber: number },
-        })
+        // A snapshot: later entries are still being filled in.
+        await db.meetingPipelineJob.update(job.id, { dataJson: { ...dataJson, mirrored: mirrored.map((m) => ({ ...m })) } })
       } catch (e) {
-        console.warn('[meetingPipeline] task.update (issue sync) failed:', e?.message || e)
+        console.warn('[meetingPipeline] issue progress persist failed:', e?.message || e)
       }
     }
   }
