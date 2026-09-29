@@ -9,6 +9,10 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
    `docs/superpowers/specs/2026-09-28-identity-link-access-scoping-design.md`, knowledge
    `.claude/knowledge/identity-link.md`. Merged and pushed in all three repos; the owner
    confirmed CSAAS is deployed. Site users see and change only their projects/tasks.
+   - **Owner decision (2026-09-29): leave the org-level `Admin` role as it is** — it
+     keeps `seesAll` and link management alongside `Platform Admin`, matching what
+     shipped (`isAdmin = actorIsRoleAdmin OR org Admin role`, `identity-link.md`). Closes
+     the open question raised during this build and carried into sub-project 2.
    - **First live checks (still worth doing once):** a linked non-admin sees only their own projects; an admin (or
      anyone whose linked Discord account holds CEO/Server Manager) still sees everything;
      a `/link` code works once (a second attempt with the same code fails); unlink then
@@ -95,13 +99,28 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      - Each order tolerates the others' old version: the new bot with the old CSAAS falls
        back to the platform for scope; the old bot ignores the new CSAAS column; the site
        filter works on whatever scopes already exist.
-   - **Still open, not part of this rollout:** the owner question whether the org-level
-     `Admin` role keeps `seesAll` and link management or only `Platform Admin` does (from
-     sub-project 1). The usman@granjur.com permission fix (CSAAS `20856ae`, site `a594551`)
-     is pushed, so it deployed with those pushes.
-3. **Global channel layout** — trim `/init`'s global staff/onboarding channels to
-   announcements + casual (+ documentation); add a global feedback channel. Deletes live
-   channels: ship with a preview mode.
+   - The usman@granjur.com permission fix (CSAAS `20856ae`, site `a594551`) is pushed, so
+     it deployed with those pushes. (The org-level `Admin` role question carried from
+     sub-project 1 is resolved — see item 1 above.)
+3. **Global channel layout and feedback — BUILT, NOT DEPLOYED.** Trims `/init`'s global
+   layout to Onboarding/Announcements/Casual/Documentation/Feedback/Meetings (Rules,
+   Archive, Frontend/Backend/Database and Command channels dropped — nothing reads them);
+   adds a global `#feedback` channel (Verified only, never clients) and `/feedback`.
+   Spec `docs/superpowers/specs/2026-09-29-global-channel-layout-design.md`, knowledge
+   `.claude/knowledge/global-layout.md`. Branch `feat/global-channel-layout` (base
+   `819d334`, commits `913b8e3..997dc26`), bot repo only, migration 029
+   (`guildconfig.feedbackChannelId`). Suite 1372 tests, `fail 0`.
+   - **Rollout, in order, each step needing the owner's go-ahead:**
+     1. Push the bot's `main` — the deploy runs migration 029, and the restarted bot
+        registers `/feedback`.
+     2. Run `/setup` on the live server — `#feedback` appears (the reply's "Feedback"
+        line says "created now").
+     3. Run `/cleanup` and **read the list before confirming**: expect Rules, Archive,
+        the Frontend/Backend/Database channels, the `cmd-*` channels, their now-emptied
+        categories, plus any genuinely stray channel. `/cleanup`'s pre-existing `meet-*`
+        rule also lists leftover meeting rooms even when they sit inside the (protected)
+        📋 Meetings category — check those by name before confirming, they are not new
+        to this branch. Confirm only once the list matches expectations.
 4. **Repositories per project with a scope** — `project_repos` gains a scope; a task's scope
    picks the repo and opens the GitHub issue (today only bugs open one, `taskCreate.js`).
 5. **Clock in / out on the site** — needs sub-project 1 to know whose clock.
