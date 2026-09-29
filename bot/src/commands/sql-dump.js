@@ -14,6 +14,6 @@ export async function execute(interaction) {
 
   await interaction.editReply({
     content:
-      '**SQL dump** — Versioned SQL dumps per project are planned. For now, use **#sql-dumps** and **/project-db** to view or store schema. Full versioning (who changed what) will be added in a future update.',
+      '**SQL dump** — Versioned SQL dumps per project are planned. For now, use **/project-db** to view or store schema. Full versioning (who changed what) will be added in a future update.',
   })
 }
