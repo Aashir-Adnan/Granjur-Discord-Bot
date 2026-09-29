@@ -88,12 +88,13 @@ meetingProjectId }` once. It's used by both `awaitingReviewStage` and `mirroredS
 - `applyReviewAction` handles `{ type: 'project', taskId, projectId }`, where `none` is
   stored as `null`. `meetingReview.js` routes the new `mtg_project` kind.
 - Page size is a function of state:
-  - 1 when any non-rejected task has `needsProject`;
+  - 1 when any task has `needsProject`, rejected or not;
   - otherwise 2 (today's `PAGE_SIZE`).
 
   An unclear task uses 3 component rows (assignee, project, buttons) and the footer uses
-  1, so two such tasks would exceed Discord's 5-row limit. The builder and the page button
-  both read the same function, so page numbers stay consistent.
+  1, so two such tasks would exceed Discord's 5-row limit. A rejected task still renders
+  its rows, so it still counts. The builder and the page button both read the same
+  function, so page numbers stay consistent.
 - Approval is not blocked. An unclear task left untouched is approved with no project.
 
 **At mirror time** (`mirroredStage`):
@@ -117,8 +118,9 @@ meetingProjectId }` once. It's used by both `awaitingReviewStage` and `mirroredS
 1. A scope that, trimmed and lowercased, is one of the four becomes that value. Compare
    with `BINARY`, because the table collation is case-insensitive.
 2. A blank scope becomes `NULL`.
-3. Any other scope is appended to `modules`, unless `modules` already contains it
-   (`COALESCE(modules, JSON_ARRAY())`). Then scope is set to `NULL`.
+3. Any other scope is appended to `modules`, unless `modules` already contains it. A
+   `modules` value that is not a JSON array, including SQL `NULL`, counts as an empty
+   array. The rollout preview counts such rows first. Then scope is set to `NULL`.
 
 Afterwards every `task.scope` is one of the four or `NULL`, so a second run changes
 nothing.
@@ -135,6 +137,8 @@ nothing.
     reads as `all`.
 - People passes `scope: 'all'` explicitly (like its other overrides), so its counts are
   unaffected. Stats already builds from `DEFAULT_FILTERS`.
+- The Team header's task and blocked counts ignore the scope on tabs without the Scope
+  control, so a `?scope=` carried over from Tasks never narrows them invisibly.
 
 ## Testing
 
