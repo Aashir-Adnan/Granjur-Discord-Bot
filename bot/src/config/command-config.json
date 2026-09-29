@@ -11,6 +11,7 @@
     ],
     "verify": [],
     "link": ["Verified"],
+    "feedback": ["Verified"],
     "report-issue": ["Client"],
     "request-feature": ["Client"],
     "request-task": ["Client"],
@@ -173,6 +174,7 @@
     "scrap": true,
     "verify": true,
     "link": false,
+    "feedback": false,
     "invite": true,
     "backlog": true,
     "approve": true,
@@ -229,6 +231,11 @@
       "summary": "Link your Discord account to UBS-Doc.",
       "syntax": "`/link`",
       "detail": "Replies privately with a 6-character code. On UBS-Doc open **Team** and enter it under **Link your Discord account** within 10 minutes; it works once. Most accounts link by email automatically — you only need this if the email you verified with here differs from the one you sign in to UBS-Doc with. Running it again replaces your unused code."
+    },
+    "feedback": {
+      "summary": "Tell us what to improve.",
+      "syntax": "`/feedback message:<text> [type:Bug|Idea|Process|Other]`",
+      "detail": "Posts your message in **#feedback** as a card with your name and the type you pick (Other if you pick none). You can also type in #feedback directly. Up to 1000 characters."
     },
     "report-issue": {
       "summary": "Report something that is broken in your project.",

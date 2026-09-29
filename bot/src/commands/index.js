@@ -26,6 +26,7 @@ import * as projectSetupCmd from './project-setup.js'
 import * as reposCmd from './repos.js'
 import * as verifyCmd from './verify.js'
 import * as linkCmd from './link.js'
+import * as feedbackCmd from './feedback.js'
 import * as ticketCmd from './ticket.js'
 import * as inviteCmd from './invite.js'
 import * as backlogCmd from './backlog.js'
@@ -62,6 +63,7 @@ const commandModules = [
   initCmd,
   verifyCmd,
   linkCmd,
+  feedbackCmd,
   inviteCmd,
   backlogCmd,
   createTaskCmd,
