@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseReviewCustomId } from './meetingReview.js'
+import { parseReviewCustomId, reviewActionFor } from './meetingReview.js'
 
 test('parseReviewCustomId splits kind/job/task', () => {
   assert.deepEqual(parseReviewCustomId('mtg_assignee:job1:taskA'), { kind: 'mtg_assignee', jobId: 'job1', taskId: 'taskA' })
@@ -16,4 +16,19 @@ test('parseReviewCustomId handles gh / taskreject / reject', () => {
 
 test('parseReviewCustomId tolerates task ids containing colons', () => {
   assert.deepEqual(parseReviewCustomId('mtg_assignee:job1:a:b:c'), { kind: 'mtg_assignee', jobId: 'job1', taskId: 'a:b:c' })
+})
+
+test('reviewActionFor maps each component kind to its review action', () => {
+  assert.deepEqual(reviewActionFor('mtg_assignee', 't', ['11']), { type: 'assignee', taskId: 't', ref: '11' })
+  assert.deepEqual(reviewActionFor('mtg_assignee', 't', []), { type: 'assignee', taskId: 't', ref: null })
+  assert.deepEqual(reviewActionFor('mtg_project', 't', ['p2']), { type: 'project', taskId: 't', projectId: 'p2' })
+  assert.deepEqual(reviewActionFor('mtg_project', 't', ['none']), { type: 'project', taskId: 't', projectId: 'none' })
+  assert.deepEqual(reviewActionFor('mtg_gh', 't'), { type: 'toggleGithub', taskId: 't' })
+  assert.deepEqual(reviewActionFor('mtg_taskreject', 't'), { type: 'rejectTask', taskId: 't' })
+  assert.deepEqual(reviewActionFor('mtg_page', '2'), { type: 'page', page: 2 })
+  assert.equal(reviewActionFor('mtg_unknown', 't'), null)
+})
+
+test('parseReviewCustomId handles the project select', () => {
+  assert.deepEqual(parseReviewCustomId('mtg_project:j:7'), { kind: 'mtg_project', jobId: 'j', taskId: '7' })
 })

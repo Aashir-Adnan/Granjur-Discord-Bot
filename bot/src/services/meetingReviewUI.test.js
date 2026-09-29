@@ -6,6 +6,7 @@ import {
   summarizeApproval,
   buildReviewMessage,
   PAGE_SIZE,
+  pageSizeFor,
 } from './meetingReviewUI.js'
 
 const tasks = [
@@ -132,4 +133,108 @@ test('summarizeApproval counts numeric-id tasks against string-id state', () => 
   assert.equal(out.approved[0].task_id, 2)
   assert.equal(out.rejectedCount, 1)
   assert.equal(out.githubCount, 1)
+})
+
+// --- roadmap sub-project 2 (2026-09-29): scope, modules and the project select
+
+const settleFirstOnly = (t) => (t.task_id === 'a' ? { projectId: 'p1', projectName: 'Framework' } : null)
+const PROJECTS = [{ id: 'p1', name: 'Framework' }, { id: 'p2', name: 'Badar HMS' }]
+const rowsJson = (msg) => JSON.stringify(msg.components.map((c) => c.toJSON()))
+
+test('initReviewState marks only unsettled tasks as needing a project', () => {
+  const s = initReviewState(tasks, assignments, settleFirstOnly)
+  const a = s.tasks.find((t) => t.taskId === 'a')
+  const b = s.tasks.find((t) => t.taskId === 'b')
+  assert.deepEqual([a.needsProject, a.projectId, a.projectLabel], [false, null, 'Framework'])
+  assert.deepEqual([b.needsProject, b.projectId, b.projectLabel], [true, null, null])
+})
+
+test('initReviewState without a settle function asks about nothing (legacy callers)', () => {
+  const s = initReviewState(tasks, assignments)
+  assert.ok(s.tasks.every((t) => t.needsProject === false && t.projectId === null))
+})
+
+test('the project action sets or clears the pick, targeted and immutable', () => {
+  const s0 = initReviewState(tasks, assignments, settleFirstOnly)
+  const s1 = applyReviewAction(s0, { type: 'project', taskId: 'b', projectId: 'p2' })
+  assert.equal(s1.tasks.find((t) => t.taskId === 'b').projectId, 'p2')
+  assert.equal(s0.tasks.find((t) => t.taskId === 'b').projectId, null)
+  const s2 = applyReviewAction(s1, { type: 'project', taskId: 'b', projectId: 'none' })
+  assert.equal(s2.tasks.find((t) => t.taskId === 'b').projectId, null)
+})
+
+test('pageSizeFor is 1 while any task needs a project, even a rejected one', () => {
+  assert.equal(PAGE_SIZE, 2)
+  assert.equal(pageSizeFor(initReviewState(tasks, assignments)), 2)
+  const s = initReviewState(tasks, assignments, settleFirstOnly)
+  assert.equal(pageSizeFor(s), 1)
+  assert.equal(pageSizeFor(applyReviewAction(s, { type: 'rejectTask', taskId: 'b' })), 1)
+  assert.equal(pageSizeFor(undefined), 2)
+})
+
+test('an unclear task gets the project select; every page stays within 5 rows', () => {
+  const three = [
+    { task_id: 'a', goal_of_task: 'A' },
+    { task_id: 'b', goal_of_task: 'B' },
+    { task_id: 'c', goal_of_task: 'C' },
+  ]
+  const job = { id: 'JOB7', dataJson: { title: 'Sync', tasks: three, assignments: [], reviewProjects: PROJECTS } }
+  const state = initReviewState(three, [], settleFirstOnly)
+  // b and c are unclear, so one task per page: three pages.
+  const first = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] })
+  assert.match(first.embeds[0].data.description, /Page 1\/3/)
+  for (const page of [0, 1, 2]) {
+    const msg = buildReviewMessage({ job, notes: '', reportPath: null, state: applyReviewAction(state, { type: 'page', page }), roster: [] })
+    assert.ok(msg.components.length <= 5, `page ${page} rows ${msg.components.length}`)
+  }
+  const pageA = rowsJson(buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] }))
+  assert.ok(!pageA.includes('mtg_project:'), 'a settled task has no project select')
+  const pageB = buildReviewMessage({ job, notes: '', reportPath: null, state: applyReviewAction(state, { type: 'page', page: 1 }), roster: [] })
+  const selectRow = pageB.components.map((c) => c.toJSON()).find((r) => r.components[0].custom_id === 'mtg_project:JOB7:b')
+  assert.ok(selectRow, 'the project select for b')
+  const select = selectRow.components[0]
+  assert.equal(select.placeholder, 'Which project?')
+  assert.deepEqual(select.options.map((o) => o.value), ['p1', 'p2', 'none'])
+  assert.equal(select.options[2].label, 'No project')
+})
+
+test('the project select marks the current pick and never offers more than 25 options', () => {
+  const one = [{ task_id: 'b', goal_of_task: 'B' }]
+  const many = Array.from({ length: 30 }, (_, i) => ({ id: `id${i}`, name: `P${i}` }))
+  const job = { id: 'J', dataJson: { tasks: one, assignments: [], reviewProjects: many } }
+  let state = initReviewState(one, [], () => null)
+  state = applyReviewAction(state, { type: 'project', taskId: 'b', projectId: 'id3' })
+  const select = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] })
+    .components.map((c) => c.toJSON()).find((r) => r.components[0].custom_id === 'mtg_project:J:b').components[0]
+  assert.equal(select.options.length, 25)
+  assert.equal(select.options.find((o) => o.value === 'id3').default, true)
+})
+
+test('the task embed shows Scope, Modules and Project', () => {
+  const two = [
+    { task_id: 'a', goal_of_task: 'A', platform: 'node', feature: 'GitSync', sub_feature: 'Webhooks' },
+    { task_id: 'b', goal_of_task: 'B', scope: 'design' },
+  ]
+  const job = { id: 'J', dataJson: { tasks: two, assignments: [], reviewProjects: PROJECTS } }
+  let state = initReviewState(two, [], settleFirstOnly)
+  const pageA = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] }).embeds[1].data.description
+  assert.match(pageA, /\*\*Scope:\*\* Backend/)
+  assert.match(pageA, /\*\*Modules:\*\* GitSync, Webhooks/)
+  assert.match(pageA, /\*\*Project:\*\* Framework/)
+  state = applyReviewAction(state, { type: 'page', page: 1 })
+  let pageB = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] }).embeds[1].data.description
+  assert.match(pageB, /\*\*Scope:\*\* Design/)
+  assert.ok(!/Modules:/.test(pageB))
+  assert.match(pageB, /\*\*Project:\*\* not set, pick one below/)
+  state = applyReviewAction(state, { type: 'project', taskId: 'b', projectId: 'p2' })
+  pageB = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] }).embeds[1].data.description
+  assert.match(pageB, /\*\*Project:\*\* Badar HMS/)
+})
+
+test('a task with no usable scope says so; a legacy state shows no project line', () => {
+  const one = [{ task_id: 'x', goal_of_task: 'X', feature: 'Free text' }]
+  const job = { id: 'J', dataJson: { tasks: one, assignments: [] } }
+  const desc = buildReviewMessage({ job, notes: '', reportPath: null, state: initReviewState(one, []), roster: [] }).embeds[1].data.description
+  assert.match(desc, /\*\*Scope:\*\* none/)
+  assert.ok(!/Project:/.test(desc))
 })
