@@ -175,7 +175,17 @@ NULL, anything else is appended to `modules` (unless already there) and then cle
 `scope`. Idempotent (a second run matches no rows); SQL-only with no unit test (no test
 database — see `tests-never-touch-production.md`); a read-only preview query must run on
 production, with the owner's go-ahead, before the bot deploys it (`backlog.md` has the
-query and the `non_array_modules` guard).
+query and the `non_array_modules` guard). Every one of its four UPDATEs also sets
+`updatedAt = updatedAt`, so none of the rows it touches gets bumped to deploy time (MySQL
+skips the column's `ON UPDATE CURRENT_TIMESTAMP(3)` only when the column is set
+explicitly) — without it, every `ORDER BY updatedAt desc` view (`/update-task`,
+`/clock-in`, taskFinder, taskHub, the site's "Last updated") would misreport old meeting
+tasks as just-touched.
+
+When a guild has no projects at all (or the project read failed), `awaitingReviewStage`
+does not ask "Which project?" for anything — `initReviewState` is called with no settle
+function at all, so every task falls back to legacy behaviour (`needsProject: false`, the
+usual 2-per-page), instead of asking via a select whose only option would be "No project".
 
 **A meeting task's project is settled per task, in three rules.**
 `bot/src/services/meetingTaskProject.js`:

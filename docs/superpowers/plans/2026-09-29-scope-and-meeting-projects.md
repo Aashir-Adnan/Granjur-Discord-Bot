@@ -1512,9 +1512,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-## Rollout (after merge; each step needs the owner's go-ahead)
+## Rollout (preview runs BEFORE the bot branch is merged; each step needs the owner's go-ahead)
 
-1. **Preview migration 028 (read-only, owner's go-ahead, credentials only from env vars):**
+Merging the bot branch to `main` deploys it, and the deploy workflow runs `npm run
+db:migrate` — so the preview below must run against production, and be clean, before
+that merge happens, not "after merge" as a later step.
+
+1. **Preview migration 028 (read-only, owner's go-ahead, credentials only from env vars), BEFORE merging the bot branch:**
 
 ```sql
 SELECT
@@ -1523,13 +1527,30 @@ SELECT
   SUM(scope IS NOT NULL AND TRIM(scope) = '')                         AS blank_to_null,
   SUM(scope IS NOT NULL AND TRIM(scope) <> ''
       AND LOWER(TRIM(scope)) NOT IN ('backend','frontend','qa','design')) AS moved_to_modules,
-  SUM(modules IS NOT NULL AND JSON_TYPE(modules) <> 'ARRAY')          AS non_array_modules
+  SUM(modules IS NOT NULL AND JSON_TYPE(modules) <> 'ARRAY')          AS non_array_modules,
+  SUM(scope REGEXP '[\t\r\n]')                                        AS has_ctrl_ws,
+  SUM(scope IS NOT NULL AND (CAST(scope AS BINARY) <> CAST(LOWER(TRIM(scope)) AS BINARY)
+      OR LOWER(TRIM(scope)) NOT IN ('backend','frontend','qa','design'))) AS rows_touched
 FROM task;
 ```
 
-   `non_array_modules` must be 0; if not, stop and show the owner those rows (step 3 would replace them with an array).
-2. **Bot** deploys (runs migration 028 on start/deploy per its usual path).
+   `non_array_modules` must be 0; if not, stop and show the owner those rows (step 3 would
+   replace them with an array). `has_ctrl_ws` counts a scope with a tab/newline — MySQL's
+   `TRIM()` strips only spaces, so such a value would fail both the blank-check and the
+   fixed-value match and get moved into `modules` rather than normalise; show those rows to
+   the owner if non-zero (not itself a reason to stop). `rows_touched` is the total number of
+   rows migration 028 will rewrite.
+2. **Bot** merges to `main` and deploys (runs migration 028 on start/deploy per its usual path).
 3. **CSAAS:** run `data/migrations/20260929_2_meeting_tasks_scope.sql` first, then deploy the code (manual; the INSERT names the new column).
 4. **Site** deploys via Vercel on push.
+5. **Post-deploy check**, after the bot deploy finishes:
+
+```sql
+SELECT COUNT(*) FROM task WHERE scope IS NOT NULL AND scope NOT IN ('backend','frontend','qa','design');
+```
+
+   Must be 0 — this catches a meeting mirrored by the old process in the window between
+   `db:migrate` running and the bot process actually restarting. If it is non-zero,
+   re-running 028's four statements by hand is safe (idempotent).
 
 Each order works with the others' old versions: the new bot with the old CSAAS falls back to the platform; the old bot ignores the new column; the site filter works on whatever scopes exist.

@@ -54,15 +54,33 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
    settles asks the reviewer which project; the site's Team Board and Tasks tabs gain a
    Scope filter.
    - **Rollout, in order (bot → CSAAS by hand → site), each step needing the owner's
-     go-ahead:**
+     go-ahead. The preview runs BEFORE the bot branch is merged to `main` — merging
+     deploys the bot, and the deploy workflow runs `npm run db:migrate`, so migration 028
+     must not reach production unreviewed:**
      1. **Preview migration 028 on production first** (read-only, credentials only from env
-        vars — the query is in the plan's Rollout section). `non_array_modules` must be 0;
-        if not, stop and show the owner those rows (the migration's step 3 would replace a
-        non-array `modules` value with a fresh array). The preview should also flag a scope
-        containing a tab or newline: MySQL's `TRIM()` strips only spaces, so such a value
-        would fail both the blank-check and the fixed-value match and get moved into
-        `modules` instead of normalising — worth showing the owner alongside the
-        `non_array_modules` rows, though not itself a reason to stop.
+        vars), BEFORE merging the bot branch:
+
+       ```sql
+       SELECT
+         SUM(LOWER(TRIM(scope)) IN ('backend','frontend','qa','design')
+             AND CAST(scope AS BINARY) <> CAST(LOWER(TRIM(scope)) AS BINARY)) AS case_fixed,
+         SUM(scope IS NOT NULL AND TRIM(scope) = '')                         AS blank_to_null,
+         SUM(scope IS NOT NULL AND TRIM(scope) <> ''
+             AND LOWER(TRIM(scope)) NOT IN ('backend','frontend','qa','design')) AS moved_to_modules,
+         SUM(modules IS NOT NULL AND JSON_TYPE(modules) <> 'ARRAY')          AS non_array_modules,
+         SUM(scope REGEXP '[\t\r\n]')                                        AS has_ctrl_ws,
+         SUM(scope IS NOT NULL AND (CAST(scope AS BINARY) <> CAST(LOWER(TRIM(scope)) AS BINARY)
+             OR LOWER(TRIM(scope)) NOT IN ('backend','frontend','qa','design'))) AS rows_touched
+       FROM task;
+       ```
+
+        `non_array_modules` must be 0; if not, stop and show the owner those rows (the
+        migration's step 3 would replace a non-array `modules` value with a fresh array).
+        `has_ctrl_ws` flags a scope containing a tab or newline: MySQL's `TRIM()` strips only
+        spaces, so such a value would fail both the blank-check and the fixed-value match and
+        get moved into `modules` instead of normalising — worth showing the owner alongside
+        the `non_array_modules` rows, though not itself a reason to stop. `rows_touched` is
+        the total number of rows migration 028 will rewrite.
      2. **Bot** to `main` — runs migration 028 automatically on its usual deploy path.
      3. **CSAAS by hand** — pushes to CSAAS `main` do NOT auto-deploy (none since
         2026-09-12; same fact as the site-task-edit and identity-link rollouts). Run
@@ -70,6 +88,15 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
         deploy, not after — the CSAAS code's `meeting_tasks` INSERT already names the new
         `scope` column.
      4. **Site** to `main` — Vercel builds on push.
+     5. **Post-deploy check**, after the bot deploy finishes:
+
+       ```sql
+       SELECT COUNT(*) FROM task WHERE scope IS NOT NULL AND scope NOT IN ('backend','frontend','qa','design');
+       ```
+
+        Must be 0 — catches a meeting mirrored by the old process between `db:migrate`
+        running and the bot process restarting. If non-zero, re-running 028's four
+        statements by hand is safe (idempotent).
      - Each order tolerates the others' old version: the new bot with the old CSAAS falls
        back to the platform for scope; the old bot ignores the new CSAAS column; the site
        filter works on whatever scopes already exist.
