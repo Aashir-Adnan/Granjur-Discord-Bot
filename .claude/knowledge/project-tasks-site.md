@@ -585,6 +585,30 @@ and the activity-log actor both fall back to `actor.activityId` when there's no
 site-added subtask's parent-channel post names the actor by label, never a mention,
 with no further change needed there.
 
+## Scope filter (2026-09-29, roadmap sub-project 2 — BUILT, NOT DEPLOYED)
+
+The Team site's **Tasks and Board tabs only** (not People, Time or Stats) gain a Scope
+`FilterSelect` alongside Project/Assignee: All scopes / Backend / Frontend / QA / Design /
+No scope. `src/screens/tasksLogic.ts` gains `ScopeFilter`, `SCOPE_FILTERS`,
+`parseScopeFilter` (an unknown `?scope=` value, a typo or a stale link, reads as `'all'`)
+and `fixedScope(scope)` (the lowercased value if it's one of the four, else `null`).
+`applyFilters` matches `none` when `fixedScope(t.scope) ?? 'none'` disagrees with a named
+filter — so **`none` covers a task with no scope AND a task still carrying legacy free
+text** (pre-migration-028 CSAAS `feature` values such as "GitSync"), the same "anything not
+in the fixed four" rule the bot's own migration 028 and `meetingTaskScope` use.
+
+`TeamLayout` mirrors `scope` into `?scope=` exactly the way it already mirrors `project`
+into `?project=` (`setFilter` updates both `URLSearchParams` keys together); `scopeAppliesOn
+(tab)` gates two things at once — whether the Scope control renders on the current tab, and
+whether the Team header's task/blocked counts apply the scope filter — so a `?scope=`
+value carried over by URL from the Tasks tab can never silently narrow People/Time/Stats.
+`peopleCorpusFilters` explicitly resets `scope` to `'all'` alongside its other overrides,
+so People's per-member counts are unaffected by whatever scope is selected elsewhere.
+
+See `.claude/knowledge/csaas-meeting-workflow-integration.md` ("Scope and meeting-task
+projects") for where the four fixed values come from on the bot/CSAAS side, and
+`.claude/state/backlog.md` for the three-repo rollout order.
+
 ## Related
 
 [[project-docs]] (the other bot-to-site data path, UBS-Doc markdown into MySQL — this

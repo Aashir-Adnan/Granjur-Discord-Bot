@@ -2,48 +2,43 @@
 
 **Date:** 2026-09-29
 
+## Goal
+Roadmap sub-project 2 (scope everywhere and meeting-task projects) is now built across all
+three repos, not merged or deployed. This session's task was documentation: bot full suite,
+knowledge and state, so the rollout and open items are on record before anyone acts on them.
+
 ## Outcome
-BUILT: Identity link and access scoping (roadmap sub-project 1 of 7). Owner request
-delivered end-to-end across three repos (bot, CSAAS, UBS-Doc site) on branch
-`feat/identity-link`. Eleven tasks via subagent-driven development, all reviewed clean
-(most on the first pass). Knowledge and state written this session (Task 11); nothing
-merged or deployed.
+- Bot full suite: `npm test 2>&1 | tail -15` from the repo root — 1339 tests, `fail 0`.
+- Knowledge updated: `.claude/knowledge/csaas-meeting-workflow-integration.md` ("Scope and
+  meeting-task projects" — CSAAS `meeting_tasks.scope`/`normalizeMeetingTaskScope`, bot
+  `meetingTaskScope`/`meetingTaskModules`, the three project rules and
+  `meetingTaskProject.js`, the review's `mtg_project` select and `pageSizeFor`), and
+  `.claude/knowledge/project-tasks-site.md` ("Scope filter" — `?scope=` on Tasks/Board only,
+  `none` covers legacy free text).
+- State updated: `backlog.md` sub-project 2 marked BUILT, NOT DEPLOYED with the rollout as
+  its checklist; `completed.md` gained a 2026-09-29 entry with commit hashes per repo.
+- Committed as `docs: scope and meeting-project knowledge and state` (bot repo only — no
+  branch switch, no push, no changes to the other two repos).
 
-## What was built
-See `.claude/knowledge/identity-link.md` for the full mechanics and
-`.claude/state/completed.md`'s 2026-09-29 entry for the commit list per repo. In short:
-a stored `discord_identity_link` table in CSAAS maps a UBS-Doc account to a Discord
-member per guild, made automatically by exact verified-email match or by a `/link`
-code from Discord; `resolveIdentity` computes `isAdmin`/`seesAll`; `visibility.js`
-narrows the tasks read, the stats endpoint, and every write handler to "my project"
-(explicit member or task holder); the site shows a link card when unlinked, a
-signed-in line, hidden-ref stubs for tasks outside the caller's view, and an
-admin-only links panel on People.
+## Rollout — still to happen, each step needs the owner's go-ahead
+1. Preview migration 028 on production (read-only, env-var credentials); `non_array_modules`
+   must be 0, and the preview should also flag a scope containing a tab/newline (MySQL
+   `TRIM()` strips only spaces, so such a value would move to `modules` instead of
+   normalising).
+2. Bot to `main` (runs migration 028 automatically).
+3. CSAAS by hand: run `data/migrations/20260929_2_meeting_tasks_scope.sql` first, then
+   trigger the manual deploy (CSAAS pushes to `main` do not auto-deploy).
+4. Site to `main` (Vercel, on push).
 
-## Rollout status: OPEN
-See `backlog.md` roadmap item 1 ("built, not deployed") for the full rollout order
-(bot → site → CSAAS by hand) and first live checks. Nothing has been deployed anywhere.
-The site ships before CSAAS because the new site works against the old CSAAS (no `viewer` in the payload, so no link card and nothing changes), while the old site against the new CSAAS would leave unlinked users on an empty page with no way to link.
+Full detail: `.claude/state/backlog.md` sub-project 2.
 
-## Deferred, not part of this rollout
-- Bot: fix `verifiedAt` surviving an invite-rejoin email overwrite (root cause of the
-  admin-unlink-blocks-email-relink rule).
-- Bot: activity log should record blocker/subtask ids, not titles (CSAAS currently
-  scrubs hidden refs by title match, which is heuristic, not exact).
-- Visual check of the link card and admin links panel was never done (no portal
-  sign-in available during the build) — needed before calling this fully verified.
+## Open items (not part of this session's work)
+- Owner question, carried from sub-project 1: should the org-level `Admin` role keep
+  `seesAll` and link management, or only `Platform Admin`?
+- The usman@granjur.com permission fix (CSAAS `20856ae`, site `a594551`, both already on
+  `main`) is pushed and waiting on the same manual CSAAS deploy as this sub-project's
+  rollout — one deploy covers both.
 
-## Knowledge/skill files used this session
-- `.claude/knowledge/identity-link.md` (new, written this session)
-- `.claude/knowledge/project-tasks-site.md` (pointer added)
-- `.claude/knowledge/README.md` (index entry added)
-- Read for context: spec `docs/superpowers/specs/2026-09-28-identity-link-access-scoping-design.md`,
-  ledger `.superpowers/sdd/2026-09-28-identity-link-access-scoping/progress.md`, and the
-  actual code in all three repos (bot `commands/link.js`, `services/internalTaskRoute.js`;
-  CSAAS `identity.js`, `visibility.js`, `discordIdentity.js`, `discordTasks.js`,
-  `discordTasksWrite.js`; site `payloadLogic.ts`, `LinkCard.tsx`, `IdentityLinks.tsx`,
-  `identityLogic.ts`, `TeamLayout.tsx`).
-
-## Open questions
-None — Task 11 (this session) was the last of the eleven planned tasks. The next step
-is the owner's call on when to run the rollout.
+## Knowledge files touched this session
+- `.claude/knowledge/csaas-meeting-workflow-integration.md`
+- `.claude/knowledge/project-tasks-site.md`

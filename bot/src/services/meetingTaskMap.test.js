@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mapMeetingTaskToRow } from './meetingTaskMap.js'
+import { mapMeetingTaskToRow, meetingTaskScope, meetingTaskModules } from './meetingTaskMap.js'
 
 test('maps a csaas task + review row to a task.create payload', () => {
   const row = mapMeetingTaskToRow(
@@ -18,9 +18,13 @@ test('maps a csaas task + review row to a task.create payload', () => {
   assert.deepEqual(row.assigneeIds, ['11'])
   assert.equal(row.status, 'open')
   assert.equal(row.createdBy, 'bot')
-  assert.equal(row.projectName, 'granjur')
-  assert.equal(row.scope, 'Auth')
-  assert.deepEqual(row.modules, ['Login'])
+  // No project resolved: no name either. The name CSAAS heard is not kept
+  // (roadmap sub-project 2), so it cannot become a stray project group.
+  assert.equal(row.projectName, null)
+  // No scope from CSAAS and no platform: no scope. The free-text feature is a
+  // module now, never a scope (roadmap sub-project 2, 2026-09-29).
+  assert.equal(row.scope, null)
+  assert.deepEqual(row.modules, ['Auth', 'Login'])
   assert.equal(row.externalId, 'csaas:ct1')
   assert.equal(row.meetingId, 'M')
   assert.equal(row.discordChannelId, 'c')
@@ -62,4 +66,44 @@ test('description is capped at 4000 chars', () => {
     { guildConfigId: 'g', meetingId: 'M' },
   )
   assert.equal(row.description.length, 4000)
+})
+
+test('meetingTaskScope takes a valid CSAAS scope, in any case or padding', () => {
+  assert.equal(meetingTaskScope({ scope: 'backend' }), 'backend')
+  assert.equal(meetingTaskScope({ scope: '  Frontend ' }), 'frontend')
+  assert.equal(meetingTaskScope({ scope: 'QA' }), 'qa')
+  assert.equal(meetingTaskScope({ scope: 'design', platform: 'node' }), 'design', 'Claude wins over platform')
+})
+
+test('meetingTaskScope falls back to the platform when the scope is missing or free text', () => {
+  assert.equal(meetingTaskScope({ platform: 'node' }), 'backend')
+  assert.equal(meetingTaskScope({ platform: 'Python' }), 'backend')
+  assert.equal(meetingTaskScope({ platform: 'react' }), 'frontend')
+  assert.equal(meetingTaskScope({ scope: 'GitSync', platform: 'react-native' }), 'frontend')
+  // Platform spelled with a space or underscore still normalises to the hyphenated key.
+  assert.equal(meetingTaskScope({ platform: 'React Native' }), 'frontend')
+  assert.equal(meetingTaskScope({ platform: 'react_native' }), 'frontend')
+})
+
+test('meetingTaskScope is null with no usable scope or platform', () => {
+  assert.equal(meetingTaskScope({}), null)
+  assert.equal(meetingTaskScope({ scope: 'GitSync', platform: 'other' }), null)
+  assert.equal(meetingTaskScope(null), null)
+})
+
+test('meetingTaskModules keeps feature and sub-feature, trimmed, without blanks or duplicates', () => {
+  assert.deepEqual(meetingTaskModules({ feature: ' Auth ', sub_feature: 'Login' }), ['Auth', 'Login'])
+  assert.deepEqual(meetingTaskModules({ feature: 'Auth', sub_feature: 'auth' }), ['Auth'])
+  assert.deepEqual(meetingTaskModules({ feature: '', sub_feature: 'Login' }), ['Login'])
+  assert.deepEqual(meetingTaskModules({}), [])
+})
+
+test('mapMeetingTaskToRow stores the fixed scope', () => {
+  const row = mapMeetingTaskToRow(
+    { task_id: 'ct9', scope: 'Backend', feature: 'GitSync' },
+    { taskId: 'ct9', rejected: false },
+    { guildConfigId: 'g', meetingId: 'M' },
+  )
+  assert.equal(row.scope, 'backend')
+  assert.deepEqual(row.modules, ['GitSync'])
 })

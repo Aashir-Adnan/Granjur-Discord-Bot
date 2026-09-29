@@ -6,10 +6,21 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  StringSelectMenuBuilder,
   UserSelectMenuBuilder,
 } from 'discord.js'
+import { meetingTaskScope, meetingTaskModules } from './meetingTaskMap.js'
+import { REVIEW_PROJECT_LIMIT } from './meetingTaskProject.js'
+import { scopeLabel } from '../utils/taskScope.js'
 
 export const PAGE_SIZE = 2
+
+// A task that needs a project uses three rows (assignee, project, buttons) and
+// the footer one, so two such tasks would pass Discord's five-row limit. A
+// rejected one still renders its rows, so it still counts.
+export function pageSizeFor(state) {
+  return (state?.tasks ?? []).some((t) => t.needsProject) ? 1 : PAGE_SIZE
+}
 
 const EMBED_DESC_MAX = 4000
 
@@ -29,16 +40,25 @@ function clip(str, max = EMBED_DESC_MAX) {
 // channels. Compare task ids as strings, always.
 export const taskKey = (v) => (v == null ? '' : String(v))
 
-export function initReviewState(tasks, assignments) {
+// `settle(task)` returns the project rules 1–2 settle on ({ projectId,
+// projectName }) or null when the reviewer must be asked. Without it (a caller
+// predating project review) nothing is asked.
+export function initReviewState(tasks, assignments, settle) {
   const asgByTask = new Map()
   for (const a of assignments ?? []) asgByTask.set(taskKey(a.task_id), a)
   return {
-    tasks: (tasks ?? []).map((t) => ({
-      taskId: taskKey(t.task_id),
-      assigneeRef: asgByTask.get(taskKey(t.task_id))?.assignee_ref ?? null,
-      github: false,
-      rejected: false,
-    })),
+    tasks: (tasks ?? []).map((t) => {
+      const settled = typeof settle === 'function' ? settle(t) : undefined
+      return {
+        taskId: taskKey(t.task_id),
+        assigneeRef: asgByTask.get(taskKey(t.task_id))?.assignee_ref ?? null,
+        github: false,
+        rejected: false,
+        needsProject: settled === null,
+        projectId: null,
+        projectLabel: settled?.projectName ?? null,
+      }
+    }),
     page: 0,
   }
 }
@@ -56,6 +76,8 @@ export function applyReviewAction(state, action) {
         return { ...t, github: !t.github }
       case 'rejectTask':
         return { ...t, rejected: true }
+      case 'project':
+        return { ...t, projectId: action.projectId && action.projectId !== 'none' ? String(action.projectId) : null }
       default:
         return t
     }
@@ -82,12 +104,18 @@ export function summarizeApproval(state, tasks) {
 
 // ---- message -------------------------------------------------------------
 
-function taskEmbed(task, st, roster) {
+function taskEmbed(task, st, projects) {
   const e = new EmbedBuilder()
   e.setTitle(clip(task.goal_of_task || task.task_id || 'Task', 256))
   const lines = []
-  if (task.feature || task.sub_feature) {
-    lines.push(`**Scope:** ${[task.feature, task.sub_feature].filter(Boolean).join(' > ')}`)
+  lines.push(`**Scope:** ${scopeLabel(meetingTaskScope(task)) ?? 'none'}`)
+  const modules = meetingTaskModules(task)
+  if (modules.length) lines.push(`**Modules:** ${modules.join(', ')}`)
+  if (st?.needsProject) {
+    const picked = projects.find((p) => p.id === st.projectId)
+    lines.push(`**Project:** ${picked ? picked.name : 'not set, pick one below'}`)
+  } else if (st?.projectLabel) {
+    lines.push(`**Project:** ${st.projectLabel}`)
   }
   if (task.code_residence) lines.push(`**Code:** \`${task.code_residence}\``)
   if (st?.assigneeRef) lines.push(`**Assignee:** <@${st.assigneeRef}>`)
@@ -106,11 +134,13 @@ export function buildReviewMessage({ job, notes, reportPath, state, roster }) {
   const allTasks = job?.dataJson?.tasks ?? []
   const asgList = job?.dataJson?.assignments ?? []
   const asgByTask = new Map(asgList.map((a) => [a.task_id, a]))
+  const projects = (job?.dataJson?.reviewProjects ?? []).slice(0, REVIEW_PROJECT_LIMIT)
 
-  const pageCount = Math.max(1, Math.ceil(allTasks.length / PAGE_SIZE))
+  const size = pageSizeFor(state)
+  const pageCount = Math.max(1, Math.ceil(allTasks.length / size))
   const page = Math.min(Math.max(0, state?.page ?? 0), pageCount - 1)
-  const start = page * PAGE_SIZE
-  const pageTasks = allTasks.slice(start, start + PAGE_SIZE)
+  const start = page * size
+  const pageTasks = allTasks.slice(start, start + size)
 
   const stByTask = new Map((state?.tasks ?? []).map((t) => [taskKey(t.taskId), t]))
 
@@ -131,8 +161,11 @@ export function buildReviewMessage({ job, notes, reportPath, state, roster }) {
       assigneeRef: asgByTask.get(task.task_id)?.assignee_ref ?? null,
       github: false,
       rejected: false,
+      needsProject: false,
+      projectId: null,
+      projectLabel: null,
     }
-    embeds.push(taskEmbed({ ...task, quote: task.quote ?? asgByTask.get(task.task_id)?.quote }, st, roster))
+    embeds.push(taskEmbed({ ...task, quote: task.quote ?? asgByTask.get(task.task_id)?.quote }, st, projects))
 
     const select = new UserSelectMenuBuilder()
       .setCustomId(`mtg_assignee:${jobId}:${task.task_id}`)
@@ -140,6 +173,19 @@ export function buildReviewMessage({ job, notes, reportPath, state, roster }) {
       .setMinValues(0)
       .setMaxValues(1)
     components.push(new ActionRowBuilder().addComponents(select))
+
+    if (st.needsProject) {
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId(`mtg_project:${jobId}:${task.task_id}`)
+        .setPlaceholder('Which project?')
+        .setMinValues(1)
+        .setMaxValues(1)
+        .addOptions(
+          ...projects.map((p) => ({ label: clip(p.name, 100), value: p.id, default: st.projectId === p.id })),
+          { label: 'No project', value: 'none' },
+        )
+      components.push(new ActionRowBuilder().addComponents(menu))
+    }
 
     const btnRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()

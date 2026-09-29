@@ -8,6 +8,7 @@ import { applyReviewAction, buildReviewMessage } from '../services/meetingReview
 
 const KINDS = new Set([
   'mtg_assignee',
+  'mtg_project',
   'mtg_gh',
   'mtg_taskreject',
   'mtg_page',
@@ -35,25 +36,26 @@ function isActive(job) {
   return !!job && job.stage === 'awaiting_review' && job.status === 'blocked'
 }
 
+/** Pure. The review action a component interaction stands for, or null. */
+export function reviewActionFor(kind, taskId, values) {
+  switch (kind) {
+    case 'mtg_assignee': return { type: 'assignee', taskId, ref: values?.[0] ?? null }
+    case 'mtg_project': return { type: 'project', taskId, projectId: values?.[0] ?? null }
+    case 'mtg_gh': return { type: 'toggleGithub', taskId }
+    case 'mtg_taskreject': return { type: 'rejectTask', taskId }
+    case 'mtg_page': return { type: 'page', page: Number(taskId) }
+    default: return null
+  }
+}
+
 async function handleComponentAction(interaction, kind, jobId, taskId) {
   const job = await db.meetingPipelineJob.findById(jobId).catch(() => null)
   if (!isActive(job)) {
     return interaction.reply({ content: 'This review is no longer active.', ephemeral: true })
   }
 
-  let action
-  if (kind === 'mtg_assignee') {
-    const ref = interaction.values?.[0] ?? null
-    action = { type: 'assignee', taskId, ref }
-  } else if (kind === 'mtg_gh') {
-    action = { type: 'toggleGithub', taskId }
-  } else if (kind === 'mtg_taskreject') {
-    action = { type: 'rejectTask', taskId }
-  } else if (kind === 'mtg_page') {
-    action = { type: 'page', page: Number(taskId) }
-  } else {
-    return
-  }
+  const action = reviewActionFor(kind, taskId, interaction.values)
+  if (!action) return
 
   const newState = applyReviewAction(job.dataJson.review, action)
   const updatedJob = await db.meetingPipelineJob.update(jobId, {

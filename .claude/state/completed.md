@@ -2,6 +2,45 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-09-29 — Scope everywhere and meeting-task projects (BUILT, ON BRANCHES, NOT DEPLOYED)
+
+Owner roadmap sub-project 2 of 7. Every task carries one of `backend`/`frontend`/`qa`/
+`design` or none instead of CSAAS's free-text `feature`; a meeting task gets its meeting's
+own project automatically, and only a task the meeting/named-project rules can't settle
+asks the reviewer which project; the site's Team Board and Tasks tabs gain a Scope filter.
+Spec `docs/superpowers/specs/2026-09-29-scope-and-meeting-projects-design.md`, plan
+`docs/superpowers/plans/2026-09-29-scope-and-meeting-projects.md`.
+
+- **Bot** (`feat/scope-meeting-projects`, from `main` `96ba117`; `git log --oneline
+  96ba117..HEAD`): `06143e3` spec doc, `efe1a24` plan doc; `ee40bcf` fixed scope from
+  Claude or the platform, feature/sub_feature become Modules
+  (`bot/src/utils/taskScope.js`, `bot/src/services/meetingTaskMap.js`); `8028819`
+  project rules — meeting project, named project, reviewer's pick
+  (`bot/src/services/meetingTaskProject.js`); `d6f5b1e` review UI scope/modules lines
+  and the `mtg_project` "Which project?" select (`meetingReviewUI.js`,
+  `commands/meetingReview.js`); `a9b29c9` `awaitingReviewStage`/`mirroredStage` wired to
+  the new project rules (`meetingPipelineStages.js`); `0cb275b` migration 028 — cleans up
+  `task.scope` rows already on disk (fixed values normalised, blanks to NULL, anything
+  else moved into `modules`). Suite 1339 tests, `fail 0`
+  (`npm test 2>&1 | tail -15` from the repo root).
+- **CSAAS** (worktree `D:\Work\Granjur Technologies\CSAAS_Backend`,
+  `feat/meeting-task-scope`, from `main` `20856ae`): `76a299c` — Claude's task-generation
+  prompt gains a `scope` field, `normalizeMeetingTaskScope`
+  (`Src/Apis/ProjectSpecificApis/MeetingWorkflow/meetingTaskScope.js`) applied in
+  `generateTasks`/`addTask`/`updateTask`, migration
+  `data/migrations/20260929_2_meeting_tasks_scope.sql` adds `meeting_tasks.scope`.
+- **Site** (worktree `D:\Work\Granjur Technologies\UBS-Doc-scope-filter`,
+  `feat/scope-filter`, from `main` `a594551`): `34a7d9c` — `tasksLogic.ts` gains
+  `ScopeFilter`/`SCOPE_FILTERS`/`parseScopeFilter`/`fixedScope`; `TeamLayout.tsx` shows the
+  Scope control on Tasks and Board only, mirrors it to `?scope=` alongside `?project=`, and
+  keeps People's counts scope-blind.
+
+Knowledge: `.claude/knowledge/csaas-meeting-workflow-integration.md` gains "Scope and
+meeting-task projects"; `.claude/knowledge/project-tasks-site.md` gains "Scope filter".
+Rollout order (preview migration 028 on production first, then bot, then CSAAS by hand
+running its migration before the deploy, then site), the preview query, and what's still
+open are in `.claude/state/backlog.md` and `session.md`.
+
 ## 2026-09-29 — Identity link and access scoping (BUILT, ON BRANCHES, NOT DEPLOYED)
 
 Owner request: persist a mapping between a Discord identity and a UBS-Doc account so a
