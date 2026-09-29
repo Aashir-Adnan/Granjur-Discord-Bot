@@ -108,8 +108,9 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
    adds a global `#feedback` channel (Verified only, never clients) and `/feedback`.
    Spec `docs/superpowers/specs/2026-09-29-global-channel-layout-design.md`, knowledge
    `.claude/knowledge/global-layout.md`. Branch `feat/global-channel-layout` (base
-   `819d334`, commits `913b8e3..997dc26`), bot repo only, migration 029
-   (`guildconfig.feedbackChannelId`). Suite 1372 tests, `fail 0`.
+   `44d80a4`, commits `65e09db..997dc26`; spec `65e09db`, plan `819d334`, code
+   `913b8e3..997dc26`), bot repo only, migration 029 (`guildconfig.feedbackChannelId`).
+   Suite 1372 tests, `fail 0`.
    - **Rollout, in order, each step needing the owner's go-ahead:**
      1. Push the bot's `main` — the deploy runs migration 029, and the restarted bot
         registers `/feedback`.

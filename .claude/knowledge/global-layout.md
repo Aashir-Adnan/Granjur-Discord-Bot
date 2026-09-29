@@ -1,7 +1,8 @@
 # Global channel layout and #feedback
 
 Roadmap sub-project 3 (`docs/superpowers/specs/2026-09-29-global-channel-layout-design.md`).
-Built on branch `feat/global-channel-layout` (base `819d334`, commits `913b8e3..997dc26`).
+Built on branch `feat/global-channel-layout` (base `44d80a4`, commits `65e09db..997dc26`;
+spec `65e09db`, plan `819d334`, code `913b8e3..997dc26`).
 **Built, not deployed** — see `.claude/state/backlog.md` for the rollout.
 
 ## `services/globalLayout.js` — the one layout `/init` and `/cleanup` both read
