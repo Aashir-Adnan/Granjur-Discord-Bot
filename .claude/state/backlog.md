@@ -32,7 +32,11 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      - The visual check of the link card and the admin People-tab links panel was never
        done — no portal sign-in was available during the build (same limitation noted on
        earlier site work). Do a real sign-in pass, light and dark, before calling this done.
-2. **Scope everywhere and meeting-task projects — MERGED LOCALLY, NOT PUSHED.** Spec
+2. **Scope everywhere and meeting-task projects — DEPLOYED 2026-09-29.** Bot deploy applied
+   migration 028 (post-check: 0 scopes outside the four, all lowercase, `updatedAt`
+   preserved); CSAAS applied `20260929_2` at startup (`meeting_tasks.scope` present); site
+   pushed to Vercel. Remaining: a live meeting to see the "Which project?" select and the
+   Scope/Modules lines, and a look at the site's Scope filter. Spec
    `docs/superpowers/specs/2026-09-29-scope-and-meeting-projects-design.md`, plan
    `docs/superpowers/plans/2026-09-29-scope-and-meeting-projects.md`, knowledge
    `.claude/knowledge/csaas-meeting-workflow-integration.md` ("Scope and meeting-task

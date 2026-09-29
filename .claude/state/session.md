@@ -14,12 +14,13 @@ migration 028 overwriting `task.updatedAt`; fixed), and merged into each repo's 
 - Corrected the CSAAS deploy fact everywhere: a push to CSAAS `main` deploys
   automatically, and CSAAS runs `data/migrations/` at startup before serving.
 
-## Rollout — next, each push needs the owner's go-ahead
-1. Push bot `main` (deploy runs migration 028).
-2. Push CSAAS `main` (auto-deploys; its column migration runs at startup).
-3. Push site `main` (Vercel).
-4. Post-deploy check: `SELECT COUNT(*) FROM task WHERE scope IS NOT NULL AND scope NOT IN
-   ('backend','frontend','qa','design')` must be 0.
+## Rollout — DONE 2026-09-29
+1. Bot `main` pushed (`face2fb`); deploy applied migration 028, bot back online.
+2. CSAAS `main` pushed (`09b2f61`); it deployed without a GitHub workflow run and applied
+   `20260929_2_meeting_tasks_scope.sql` at startup (ledger `applied`, column present).
+3. Site `main` pushed (`4f6dc09`) to Vercel.
+4. Post-deploy check passed: 0 scopes outside the four; 146 tasks (121 none, 13 backend,
+   9 frontend, 2 design, 1 qa); only 5 tasks updated in the last hour, so `updatedAt` kept.
 
 Full detail: `.claude/state/backlog.md` sub-project 2.
 
