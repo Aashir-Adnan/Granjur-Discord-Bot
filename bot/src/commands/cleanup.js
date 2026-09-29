@@ -5,6 +5,7 @@ import {
   ButtonStyle,
   EmbedBuilder,
   ChannelType,
+  AttachmentBuilder,
 } from "discord.js";
 import { CATEGORY_SUPPORT } from "../constants.js";
 import { protectedCategoryNames, protectedChannelNames } from "../services/globalLayout.js";
@@ -74,7 +75,9 @@ export async function execute(
     [cfg?.onboardingChannelId, cfg?.adminChannelId, cfg?.timeReportChannelId, cfg?.feedbackChannelId].filter(Boolean),
   );
 
-  // Get user-created channels from DB (protected from cleanup)
+  // Get user-created channels from DB (protected from cleanup). A failed read
+  // must fail closed, like the project and task reads below: coming back as
+  // an empty set here used to expose every /create-channel room for deletion.
   let userCreatedIds = new Set();
   try {
     const userChannels = await dbArg.userChannel.findMany({
@@ -84,8 +87,12 @@ export async function execute(
       if (uc.voiceChannelId) userCreatedIds.add(uc.voiceChannelId);
       if (uc.textChannelId) userCreatedIds.add(uc.textChannelId);
     }
-  } catch (_) {
-    // Table might not exist yet
+  } catch (e) {
+    console.error("[cleanup] userChannel read failed:", e);
+    return interaction.editReply({
+      content:
+        "I could not read this server's user-created channels, and they are exactly what a cleanup has to leave alone. Nothing was listed. Try again in a moment.",
+    });
   }
 
   // The project rows ARE the protection. A read that fails used to come back
@@ -196,7 +203,11 @@ export async function execute(
   for (const [, ch] of channels) {
     if (!ch || ch.type !== ChannelType.GuildCategory || isProtectedCategory(ch)) continue;
     const children = [...channels.values()].filter((c) => c && (c.parentId ?? c.parent?.id ?? null) === ch.id);
-    if (children.every((c) => deleting.has(c.id))) emptyCategories.push(ch);
+    // `children.every(...)` is vacuously true for a category with NO children
+    // at all — an owner's deliberately empty category (e.g. a divider) must
+    // never be offered up; only one that is *actually* being emptied by this
+    // trim belongs here.
+    if (children.length > 0 && children.every((c) => deleting.has(c.id))) emptyCategories.push(ch);
   }
 
   if (toDelete.length === 0 && emptyCategories.length === 0) {
@@ -205,23 +216,53 @@ export async function execute(
     });
   }
 
-  const list = toDelete
-    .slice(0, 25)
-    .map((ch) => {
-      const type = ch.type === ChannelType.GuildVoice ? "voice" : "text";
-      const parent = ch.parent?.name || "no category";
-      return `- #${ch.name} (${type}, under ${parent})`;
+  // Every channel must be readable before the owner confirms — a live trim
+  // runs to 45+ channels, and a preview that hides most of them behind
+  // "…and N more" leaves the owner confirming blind (final review, F1).
+  const CHANNEL_TYPE_LABELS = {
+    [ChannelType.GuildText]: "text",
+    [ChannelType.GuildVoice]: "voice",
+    [ChannelType.GuildStageVoice]: "stage",
+    [ChannelType.GuildAnnouncement]: "announcement",
+    [ChannelType.GuildForum]: "forum",
+  };
+  const typeLabel = (ch) => CHANNEL_TYPE_LABELS[ch.type] || "channel";
+
+  // Grouped by parent category, one line per category, e.g.
+  // "**📌 Command channels** (35): #cmd-init, #cmd-scrap, …". Voice channels
+  // get a trailing " (voice)"; other types are distinguished in the full-list
+  // attachment below, where every channel gets its own line either way.
+  const byCategory = new Map();
+  for (const ch of toDelete) {
+    const parent = ch.parent?.name || "no category";
+    if (!byCategory.has(parent)) byCategory.set(parent, []);
+    byCategory.get(parent).push(ch);
+  }
+  const groupedLines = [...byCategory.entries()]
+    .map(([parent, chs]) => {
+      const names = chs.map((ch) => `#${ch.name}${ch.type === ChannelType.GuildVoice ? " (voice)" : ""}`).join(", ");
+      return `**${parent}** (${chs.length}): ${names}`;
     })
     .join("\n");
-  const remaining = toDelete.length > 25 ? `\n_… and ${toDelete.length - 25} more_` : "";
-  const categoryList = emptyCategories
-    .slice(0, 25)
-    .map((c) => `- 📁 ${c.name}`)
-    .join("\n");
-  const categoryRemaining = emptyCategories.length > 25 ? `\n_… and ${emptyCategories.length - 25} more_` : "";
+
+  const categoryList = emptyCategories.map((c) => `- ${c.name} (category)`).join("\n");
   const categoryBlock = emptyCategories.length
-    ? `\n\n**Empty categories, removed too:**\n${categoryList}${categoryRemaining}`
+    ? `\n\n**Empty categories, removed too:**\n${categoryList}`
     : "";
+
+  // Discord embed descriptions cap at 4096 chars. Past ~3800, replace the
+  // inline grouped list with per-category counts and attach the full,
+  // one-line-per-channel list instead of silently truncating it.
+  const files = [];
+  let channelsSection = groupedLines;
+  if (groupedLines.length > 3800) {
+    const summaryLines = [...byCategory.entries()].map(([parent, chs]) => `**${parent}**: ${chs.length}`).join("\n");
+    channelsSection = `${summaryLines}\n\n_Full list attached as_ \`cleanup-preview.txt\` _— read it before confirming._`;
+    const fullListText = toDelete
+      .map((ch) => `#${ch.name} (${typeLabel(ch)}) — under ${ch.parent?.name || "no category"}`)
+      .join("\n");
+    files.push(new AttachmentBuilder(Buffer.from(fullListText, "utf8"), { name: "cleanup-preview.txt" }));
+  }
 
   // Channels first, then their categories: Discord refuses nothing either way,
   // but a category deleted first would orphan its channels mid-run.
@@ -231,7 +272,7 @@ export async function execute(
   const embed = new EmbedBuilder()
     .setTitle("Cleanup — Channels to Remove")
     .setDescription(
-      `Found **${toDelete.length}** channel(s)${emptyCategories.length ? ` and **${emptyCategories.length}** empty categor${emptyCategories.length === 1 ? "y" : "ies"}` : ""} to remove:\n\n${list}${remaining}${categoryBlock}\n\nUser-created channels (from /create-channel), task tickets and project sections will NOT be removed.`,
+      `Found **${toDelete.length}** channel(s)${emptyCategories.length ? ` and **${emptyCategories.length}** empty categor${emptyCategories.length === 1 ? "y" : "ies"}` : ""} to remove:\n\n${channelsSection}${categoryBlock}\n\nUser-created channels (from /create-channel), task tickets and project sections will NOT be removed.`,
     )
     .setColor(0xed4245)
     .setFooter({ text: "This cannot be undone" });
@@ -247,7 +288,7 @@ export async function execute(
       .setStyle(ButtonStyle.Secondary),
   );
 
-  await interaction.editReply({ embeds: [embed], components: [row] });
+  await interaction.editReply({ embeds: [embed], components: [row], files });
 }
 
 export async function handleConfirm(interaction) {
