@@ -99,6 +99,21 @@ channels the design never intended to keep forever), but the owner must read the
 list before confirming a live trim, in case a `meet-*` name is doing double duty as
 something else.
 
+**The preview shows every channel now (final-review fix wave, 2026-09-29, F1).** The old
+preview sliced `toDelete` at 25 with "… and N more" while the confirm button still
+deleted all of it — on the live trim (≈45+ channels) that hid most of the list,
+including exactly the `meet-*` rooms above that the owner has to check by name. It now
+groups every channel by parent category, one line per category (`**📌 Command
+channels** (35): #cmd-init, #cmd-scrap, …`, voice channels marked ` (voice)`), and only
+falls back to a per-category count plus an attached `cleanup-preview.txt` (one line per
+channel, with its real type — text/voice/stage/announcement/forum) when the grouped text
+would blow Discord's 4096-char embed cap. Same fix wave: the empty-category check now
+requires `children.length > 0` (F2) — a category with *no* children at all (an owner's
+deliberately empty divider) was vacuously "everything in it is going" before, and got
+offered up alongside genuinely emptied ones; and the `/create-channel` (`userChannel`)
+read now fails closed like the project/task reads (F3) — a throw used to be swallowed
+into an empty set, exposing every `/create-channel` room instead of protecting them.
+
 ## #feedback
 
 - **Found by id first**: `guildconfig.feedbackChannelId` (migration
@@ -148,4 +163,8 @@ go-ahead: push the bot's `main` (deploy runs migration 029; the restarted bot re
 → `/cleanup`, read the list (expect Rules, Archive, the Frontend/Backend/Database
 channels, `cmd-*` channels, their now-empty categories, plus any leftover `meet-*` rooms
 and stray channels — read this list before confirming, per the known gap above) →
-confirm only then.
+confirm only then. The preview now shows every one of those channels, grouped by
+category (or, past Discord's embed size limit, as counts plus an attached full list) —
+see the F1 note above — so the `meet-*` rooms can actually be checked by name before
+confirming; `/cleanup` also now fails closed if the `/create-channel` read errors (F3)
+and never offers up a category that was already empty before the trim (F2).

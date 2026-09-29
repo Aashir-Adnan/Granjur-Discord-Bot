@@ -110,7 +110,7 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
    `.claude/knowledge/global-layout.md`. Branch `feat/global-channel-layout` (base
    `44d80a4`, commits `65e09db..997dc26`; spec `65e09db`, plan `819d334`, code
    `913b8e3..997dc26`), bot repo only, migration 029 (`guildconfig.feedbackChannelId`).
-   Suite 1372 tests, `fail 0`.
+   Suite 1375 tests (final-review fix wave 2026-09-29 added 3 to `cleanup.test.js`), `fail 0`.
    - **Rollout, in order, each step needing the owner's go-ahead:**
      1. Push the bot's `main` — the deploy runs migration 029, and the restarted bot
         registers `/feedback`.
@@ -122,6 +122,14 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
         rule also lists leftover meeting rooms even when they sit inside the (protected)
         📋 Meetings category — check those by name before confirming, they are not new
         to this branch. Confirm only once the list matches expectations.
+        **Final-review fix wave (2026-09-29):** the preview now shows every channel,
+        grouped by category (or, past Discord's embed size limit, as per-category counts
+        plus an attached `cleanup-preview.txt` with the full list) — the old preview cut
+        off at 25 channels with "…and N more" while the confirm button still deleted all
+        of them, so the `meet-*` rooms above could not actually be checked by name before.
+        `/cleanup` also now fails closed if the `/create-channel` read errors, and never
+        lists a category that was already empty before the trim (only ones this trim is
+        actually emptying out).
 4. **Repositories per project with a scope** — `project_repos` gains a scope; a task's scope
    picks the repo and opens the GitHub issue (today only bugs open one, `taskCreate.js`).
 5. **Clock in / out on the site** — needs sub-project 1 to know whose clock.
