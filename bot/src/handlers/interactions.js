@@ -179,6 +179,10 @@ export default async function handleInteractions(interaction) {
       return runCreateTaskHandler(interaction, (i) =>
         createTaskCmd.handleCancel(i),
       );
+    if (customId === "create_task_issue_toggle")
+      return runCreateTaskHandler(interaction, (i) =>
+        createTaskCmd.handleIssueToggle(i),
+      );
     if (customId === "repos_add" || customId === "repos_list")
       return reposCmd.handleChoice(interaction);
     if (customId === "repos_confirm_add")
@@ -328,6 +332,10 @@ export default async function handleInteractions(interaction) {
     if (customId === "create_task_repo")
       return runCreateTaskHandler(interaction, (i) =>
         createTaskCmd.handleRepoSelect(i),
+      );
+    if (customId === "create_task_bug_project")
+      return runCreateTaskHandler(interaction, (i) =>
+        createTaskCmd.handleBugProjectSelect(i),
       );
     if (customId === "create_task_select_repos")
       return runCreateTaskHandler(interaction, (i) =>
