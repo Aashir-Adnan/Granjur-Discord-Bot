@@ -34,8 +34,8 @@ function fakeInteraction(guild) {
   }
 }
 
-/** A db that knows only the two tables `/cleanup` reads, and throws on any other. */
-function seams(projects = [], { projectThrows = false, userChannels = [] } = {}) {
+/** A db that knows only the three tables `/cleanup` reads, and throws on any other. */
+function seams(projects = [], { projectThrows = false, userChannels = [], tasks = [], taskThrows = false } = {}) {
   const db = new Proxy(
     {
       userChannel: { findMany: async () => userChannels },
@@ -43,6 +43,13 @@ function seams(projects = [], { projectThrows = false, userChannels = [] } = {})
         findMany: async ({ where }) => {
           if (projectThrows) throw new Error('read timeout')
           return projects.filter((p) => p.guildConfigId === where.guildConfigId)
+        },
+      },
+      task: {
+        findMany: async ({ where }) => {
+          if (taskThrows) throw new Error('read timeout')
+          assert.equal(where.guildConfigId, CFG.id)
+          return tasks
         },
       },
     },
@@ -61,6 +68,13 @@ function listedForDeletion(reply) {
   if (!reply.embeds) return []
   const description = reply.embeds[0].data.description
   return [...description.matchAll(/^- #(\S+)/gm)].map((m) => m[1])
+}
+
+/** The category names the confirm button would delete, from the reply. */
+function categoriesListed(reply) {
+  if (!reply.embeds) return []
+  const description = reply.embeds[0].data.description
+  return [...description.matchAll(/^- 📁 (.+)$/gm)].map((m) => m[1])
 }
 
 async function run(projects, channels, opts) {
@@ -155,10 +169,15 @@ test('a channel from /create-channel is still protected by id', async () => {
   assert.match(reply.content, /No leftover channels found/)
 })
 
-test('categories themselves are never listed for deletion', async () => {
+test('a category is listed only once every channel in it is listed', async () => {
   const stray = category('cat-stray', 'Some Old Category')
-  const reply = await run([], [stray, chan('junk', 'random-leftover', { parent: stray })])
-  assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
+  const kept = category('cat-kept', 'Has A Room')
+  const reply = await run([], [
+    stray, chan('junk', 'random-leftover', { parent: stray }),
+    kept, chan('u1', 'aashir-room', { parent: kept }), chan('junk2', 'old-notes', { parent: kept }),
+  ], { userChannels: [{ textChannelId: 'u1', voiceChannelId: null }] })
+  assert.deepEqual(listedForDeletion(reply), ['random-leftover', 'old-notes'])
+  assert.deepEqual(categoriesListed(reply), ['Some Old Category'], 'the category keeping a /create-channel room stays')
 })
 
 test('the support pair and its category are protected by id', async () => {
@@ -200,4 +219,77 @@ test('the archive divider is protected by its id, like every other section chann
     [cat, chan('div', 'the-line'), chan('tc1', 'feature-0145e3', { parent: cat }), chan('junk', 'random-leftover')]
   )
   assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
+})
+
+// The live server before the trim (roadmap sub-project 3): the new layout, the
+// categories being trimmed, the global ticket categories, and stored channels.
+function liveServer() {
+  const cats = {
+    onboarding: category('c-on', '📥 Onboarding'),
+    rules: category('c-rules', '📜 Rules'),
+    docs: category('c-docs', '📚 Documentation'),
+    meetings: category('c-meet', '📋 Meetings'),
+    casual: category('c-cas', '💬 Casual'),
+    archive: category('c-arch', '📁 Archive'),
+    ann: category('c-ann', '📢 Announcements'),
+    frontend: category('c-fe', '⚛️ Frontend'),
+    cmds: category('c-cmd', '📌 Command channels'),
+    features: category('c-feat', '<==== ✨ FEATURES ✨ ====>'),
+    bugs: category('c-bugs', 'Bugs'),
+    feedback: category('c-fb', '💡 Feedback'),
+  }
+  return [
+    ...Object.values(cats),
+    chan('on1', 'welcome-and-verify', { parent: cats.onboarding }),
+    chan('r1', 'rules', { parent: cats.rules }),
+    chan('d1', 'documentation', { parent: cats.docs }),
+    chan('m1', 'general-meetings', { parent: cats.meetings }),
+    chan('m2', 'standup-k9-text', { parent: cats.meetings }),
+    chan('ca1', 'casual-chat', { parent: cats.casual }),
+    chan('a1', 'meeting-metadata', { parent: cats.archive }),
+    chan('a2', 'sql-dumps', { parent: cats.archive }),
+    chan('an1', 'admin', { parent: cats.ann }),
+    chan('fe1', 'frontend-chat', { parent: cats.frontend }),
+    chan('fe2', 'frontend-voice', { type: ChannelType.GuildVoice, parent: cats.frontend }),
+    chan('cmd1', 'cmd-create-task', { parent: cats.cmds }),
+    chan('t1', 'feature-0145e3', { parent: cats.features }),
+    chan('t2', 'bug-9a9a9a', { parent: cats.bugs }),
+    chan('fb1', 'feedback', { parent: cats.feedback }),
+    chan('tr', 'time-reports'),
+  ]
+}
+
+test('the live trim lists exactly the removed channels and their now-empty categories', async () => {
+  const guild = fakeGuild(liveServer())
+  const it = fakeInteraction(guild)
+  const { db } = seams([])
+  const cfg = { ...CFG, timeReportChannelId: 'tr', adminChannelId: 'an1', feedbackChannelId: 'fb1' }
+  const error = console.error
+  console.error = () => {}
+  try { await execute(it, { db, getConfig: async () => cfg }) } finally { console.error = error }
+  const reply = it.replies.at(-1)
+  assert.deepEqual(listedForDeletion(reply).sort(), ['cmd-create-task', 'frontend-chat', 'frontend-voice', 'meeting-metadata', 'rules', 'sql-dumps'])
+  assert.deepEqual(categoriesListed(reply).sort(), ['⚛️ Frontend', '📁 Archive', '📌 Command channels', '📜 Rules'])
+})
+
+test('a ticket channel a task points at is protected by id, wherever it sits', async () => {
+  const reply = await run([], [chan('t9', 'feature-9f9f9f'), chan('junk', 'random-leftover')], {
+    tasks: [{ discordChannelId: 't9', discordThreadId: null }],
+  })
+  assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
+})
+
+test('a failed task read lists nothing at all, rather than every ticket', async () => {
+  const reply = await run([], [chan('t9', 'feature-9f9f9f')], { taskThrows: true })
+  assert.equal(reply.embeds, undefined, 'no confirm button was offered')
+  assert.match(reply.content, /could not read this server's tasks/)
+})
+
+test('channels whose ids the config stores are protected by id', async () => {
+  const guild = fakeGuild([chan('tr', 'time-reports'), chan('fb', 'renamed-feedback'), chan('junk', 'random-leftover')])
+  const it = fakeInteraction(guild)
+  const { db } = seams([])
+  const cfg = { ...CFG, timeReportChannelId: 'tr', feedbackChannelId: 'fb' }
+  await execute(it, { db, getConfig: async () => cfg })
+  assert.deepEqual(listedForDeletion(it.replies.at(-1)), ['random-leftover'])
 })
