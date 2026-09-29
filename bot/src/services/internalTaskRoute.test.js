@@ -116,6 +116,7 @@ function routeDb(extra = {}) {
     },
     guildConfig: { findById: async () => ({ id: 'g1', guildId: 'G1' }) },
     repository: { findMany: async () => [{ id: 'R1', name: 'bot', url: 'https://github.com/g/bot' }] },
+    projectRepos: { findMany: async () => [] },
     ...extra,
   }
 }
@@ -203,6 +204,7 @@ test('create: validated fields, the bug repo row and a site actor reach createTa
   assert.deepEqual(seen.fields.repositoryIds, ['R1'])
   assert.deepEqual(seen.repo, { id: 'R1', name: 'bot', url: 'https://github.com/g/bot' })
   assert.deepEqual(seen.actor, { discordId: null, label: 'Nobody (via the site)', viaSite: true })
+  assert.equal(seen.createIssue, true)
   assert.deepEqual(r.body.task, { id: 'N1', type: 'bug', status: 'pending', projectId: 'P1' })
   assert.equal(r.body.channelId, 'ch9')
   assert.equal(r.body.fellBack, 'missing')
@@ -211,6 +213,34 @@ test('create: validated fields, the bug repo row and a site actor reach createTa
 test('create: an unknown member is a 400', async () => {
   const r = await handleCreateRequest({ headers: H, body: { type: 'feature', title: 'x', projectId: 'P1', holderIds: ['u9'] }, db: routeDb(), client: guildClient, secret: 's3cret' })
   assert.equal(r.status, 400); assert.equal(r.body.message, 'Member …u9 is not a member of this Discord server.')
+})
+test('create: a bug with no resolvable repo and no repositoryIds is a 400, before create runs', async () => {
+  const r = await handleCreateRequest({
+    headers: H, body: { type: 'bug', title: 'Crash', projectId: 'P1', holderIds: ['u1'] },
+    db: routeDb(), client: guildClient, secret: 's3cret',
+    create: async () => { throw new Error('must not run') },
+  })
+  assert.equal(r.status, 400)
+  assert.equal(r.body.message, 'This project has no repository for this scope — pick a repository for the bug.')
+})
+test('create: createIssue: false is forwarded to createTask, and the response carries issue', async () => {
+  let seen
+  const r = await handleCreateRequest({
+    headers: H, body: { type: 'bug', title: 'Crash', projectId: 'P1', holderIds: ['u1'], repositoryIds: ['R1'], createIssue: false },
+    db: routeDb(), client: guildClient, secret: 's3cret',
+    create: async (a) => { seen = a; return { task: { id: 'N1', type: 'bug', status: 'pending', projectId: 'P1' }, channel: { id: 'ch9' }, fellBack: null, issueUrl: '', issue: { skipped: 'x' } } },
+  })
+  assert.equal(seen.createIssue, false)
+  assert.equal(r.status, 200)
+  assert.deepEqual(r.body.issue, { skipped: 'x' })
+})
+test('create: issue defaults to null in the response when createTask reports none', async () => {
+  const r = await handleCreateRequest({
+    headers: H, body: { type: 'bug', title: 'Crash', projectId: 'P1', holderIds: ['u1'], repositoryIds: ['R1'] },
+    db: routeDb(), client: guildClient, secret: 's3cret',
+    create: async () => ({ task: { id: 'N1', type: 'bug', status: 'pending', projectId: 'P1' }, channel: { id: 'ch9' }, fellBack: null, issueUrl: '' }),
+  })
+  assert.equal(r.body.issue, null)
 })
 
 test('subtask: title required, 404 for an unknown parent, members checked', async () => {
