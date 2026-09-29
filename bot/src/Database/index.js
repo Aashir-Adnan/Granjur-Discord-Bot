@@ -112,6 +112,10 @@ export async function updateGuildConfig(guildId, data) {
     sets.push("supportVoiceChannelId = ?");
     vals.push(data.supportVoiceChannelId);
   }
+  if (data.feedbackChannelId !== undefined) {
+    sets.push("feedbackChannelId = ?");
+    vals.push(data.feedbackChannelId);
+  }
   if (sets.length === 0) return getGuildConfig(guildId);
   vals.push(guildId);
   await query(

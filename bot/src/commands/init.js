@@ -18,41 +18,19 @@ import {
   ROLE_VERIFIED,
   ROLE_CLIENT,
   ROLE_COLORS,
-  CATEGORY_MEETINGS,
-  CHANNEL_MEETINGS_TEXT,
-  CHANNEL_MEETINGS_VOICE,
-  CHANNEL_UPCOMING_MEETINGS,
-  CATEGORY_CASUAL,
-  CHANNEL_CASUAL_CHAT,
-  CHANNEL_OFF_TOPIC,
-  CHANNEL_VOICE_LOUNGE,
-  CATEGORY_RULES,
-  CHANNEL_RULES,
-  CATEGORY_DOCUMENTATION,
   CHANNEL_DOCUMENTATION,
-  CATEGORY_ARCHIVE,
-  CHANNEL_ARCHIVE_METADATA,
-  CHANNEL_ARCHIVE_SQL,
   CATEGORY_ANNOUNCEMENTS,
   CHANNEL_ANNOUNCEMENTS_ALL,
   CHANNEL_ANNOUNCEMENTS_VERIFIED,
   CHANNEL_ANNOUNCEMENTS_LEADERSHIP,
   CHANNEL_ADMIN,
-  CATEGORY_FRONTEND,
-  CHANNEL_FRONTEND_CHAT,
-  CHANNEL_FRONTEND_VOICE,
-  CATEGORY_BACKEND,
-  CHANNEL_BACKEND_CHAT,
-  CHANNEL_BACKEND_VOICE,
-  CATEGORY_DATABASE,
-  CHANNEL_DATABASE_CHAT,
-  CHANNEL_DATABASE_VOICE,
-  CATEGORY_COMMAND_CHANNELS,
+  CHANNEL_FEEDBACK,
 } from '../constants.js'
 import { EPHEMERAL } from '../constants.js'
 import { config } from '../config.js'
-import { getDedicatedChannelCommands, getCommandDescription, getCommandRoles, getChannelPinnedMessage } from '../config/commands.js'
+import { getChannelPinnedMessage } from '../config/commands.js'
 import { ensureSupportChannels } from '../services/clientAccess.js'
+import { GLOBAL_LAYOUT, createGlobalCategories } from '../services/globalLayout.js'
 
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true'
 function debug(...args) {
@@ -83,11 +61,9 @@ export async function execute(interaction) {
       .setTitle('Server setup')
       .setDescription(
         'This will create:\n' +
-          '• **Onboarding**, **Rules**, **Documentation** (in-chat doc traversal), **Meetings**, **Casual**, **Archive**\n' +
-          '• **Announcements** (all, verified, leadership + **admin** for backlog pings)\n' +
-          '• **Frontend** / **Backend** / **Database** (role-locked)\n' +
+          '• **Onboarding**, **Announcements** (all, verified, leadership + **admin** for backlog pings), **Casual**, **Documentation** (in-chat doc traversal), **Feedback**, **Meetings**, **Support**\n' +
           '• **Holding** and **Verified** roles + hierarchy & discipline roles\n\n' +
-          'Categories are ordered (Onboarding → Rules → Documentation → …). New members see onboarding until they verify via **/verify** (OTP). When someone enters holding, server owner and CEOs are tagged in **admin**.'
+          'New members see onboarding until they verify via **/verify** (OTP). When someone enters holding, server owner and CEOs are tagged in **admin**.'
       )
       .setColor(0x5865f2)
       .setFooter({ text: 'Step 1 of 2 — Confirm to continue' })
@@ -161,123 +137,24 @@ export async function runInit(guild) {
     }
   })()
 
-  const frontendRole = guild.roles.cache.find((r) => r.name === 'Frontend')
-  const backendRole = guild.roles.cache.find((r) => r.name === 'Backend')
-  const databaseRole = guild.roles.cache.find((r) => r.name === 'Database')
-
-  debug('runInit: Rules and Documentation (cascade order)', Date.now() - t0, 'ms')
-  const rulesCategory = await wrapStep('Creating Rules category', () =>
-    guild.channels.create({ name: CATEGORY_RULES, type: ChannelType.GuildCategory, position: 1 })
+  debug('runInit: global categories', Date.now() - t0, 'ms')
+  // Everything after Onboarding, from the one layout /cleanup also reads.
+  const made = await wrapStep('Creating global categories', () =>
+    createGlobalCategories(guild, GLOBAL_LAYOUT.filter((e) => e.category !== CATEGORY_ONBOARDING))
   )()
-  const rulesChannel = await wrapStep('Creating rules channel', () =>
-    guild.channels.create({
-      name: CHANNEL_RULES,
-      type: ChannelType.GuildText,
-      parent: rulesCategory.id,
-      topic: 'Server rules — read before participating',
-    })
-  )()
-  const documentationCategory = await wrapStep('Creating Documentation category', () =>
-    guild.channels.create({ name: CATEGORY_DOCUMENTATION, type: ChannelType.GuildCategory, position: 2 })
-  )()
-  let documentationChannel = null
-  documentationChannel = await wrapStep('Creating documentation channel', () =>
-    guild.channels.create({
-      name: CHANNEL_DOCUMENTATION,
-      type: ChannelType.GuildText,
-      parent: documentationCategory.id,
-      topic: 'Browse project documentation — select a project below',
-    })
-  )()
-
-  debug('runInit: extra categories and channels', Date.now() - t0, 'ms')
-  await wrapStep('Creating Meetings category', async () => {
-    const cat = await guild.channels.create({ name: CATEGORY_MEETINGS, type: ChannelType.GuildCategory })
-    await guild.channels.create({ name: CHANNEL_MEETINGS_TEXT, type: ChannelType.GuildText, parent: cat.id, topic: 'General meetings and sync' })
-    await guild.channels.create({ name: CHANNEL_MEETINGS_VOICE, type: ChannelType.GuildVoice, parent: cat.id })
-    await guild.channels.create({ name: CHANNEL_UPCOMING_MEETINGS, type: ChannelType.GuildText, parent: cat.id, topic: 'Reminders 10 min before meetings — tagged here' })
-  })()
-  await wrapStep('Creating Casual category', async () => {
-    const cat = await guild.channels.create({ name: CATEGORY_CASUAL, type: ChannelType.GuildCategory })
-    await guild.channels.create({ name: CHANNEL_CASUAL_CHAT, type: ChannelType.GuildText, parent: cat.id })
-    await guild.channels.create({ name: CHANNEL_OFF_TOPIC, type: ChannelType.GuildText, parent: cat.id })
-    await guild.channels.create({ name: CHANNEL_VOICE_LOUNGE, type: ChannelType.GuildVoice, parent: cat.id })
-  })()
-  await wrapStep('Creating Archive category', async () => {
-    const cat = await guild.channels.create({ name: CATEGORY_ARCHIVE, type: ChannelType.GuildCategory })
-    await guild.channels.create({ name: CHANNEL_ARCHIVE_METADATA, type: ChannelType.GuildText, parent: cat.id, topic: 'Meeting metadata and notes' })
-    await guild.channels.create({ name: CHANNEL_ARCHIVE_SQL, type: ChannelType.GuildText, parent: cat.id, topic: 'SQL dumps and schema archives' })
-  })()
-  await wrapStep('Creating Announcements category (tiers + admin)', async () => {
-    const cat = await guild.channels.create({ name: CATEGORY_ANNOUNCEMENTS, type: ChannelType.GuildCategory })
-    await guild.channels.create({ name: CHANNEL_ANNOUNCEMENTS_ALL, type: ChannelType.GuildText, parent: cat.id, topic: 'Announcements for everyone' })
-    await guild.channels.create({ name: CHANNEL_ANNOUNCEMENTS_VERIFIED, type: ChannelType.GuildText, parent: cat.id, topic: 'Announcements for verified members' })
-    await guild.channels.create({ name: CHANNEL_ANNOUNCEMENTS_LEADERSHIP, type: ChannelType.GuildText, parent: cat.id, topic: 'Announcements for leadership' })
-    await guild.channels.create({ name: CHANNEL_ADMIN, type: ChannelType.GuildText, parent: cat.id, topic: 'Backlog notifications — server owner & CEOs tagged when someone enters holding' })
-  })()
-  await wrapStep('Creating Frontend category (role-locked)', async () => {
-    const cat = await guild.channels.create({ name: CATEGORY_FRONTEND, type: ChannelType.GuildCategory })
-    await guild.channels.create({ name: CHANNEL_FRONTEND_CHAT, type: ChannelType.GuildText, parent: cat.id })
-    await guild.channels.create({ name: CHANNEL_FRONTEND_VOICE, type: ChannelType.GuildVoice, parent: cat.id })
-  })()
-  await wrapStep('Creating Backend category (role-locked)', async () => {
-    const cat = await guild.channels.create({ name: CATEGORY_BACKEND, type: ChannelType.GuildCategory })
-    await guild.channels.create({ name: CHANNEL_BACKEND_CHAT, type: ChannelType.GuildText, parent: cat.id })
-    await guild.channels.create({ name: CHANNEL_BACKEND_VOICE, type: ChannelType.GuildVoice, parent: cat.id })
-  })()
-  await wrapStep('Creating Database category (role-locked)', async () => {
-    const cat = await guild.channels.create({ name: CATEGORY_DATABASE, type: ChannelType.GuildCategory })
-    await guild.channels.create({ name: CHANNEL_DATABASE_CHAT, type: ChannelType.GuildText, parent: cat.id })
-    await guild.channels.create({ name: CHANNEL_DATABASE_VOICE, type: ChannelType.GuildVoice, parent: cat.id })
-  })()
-
-  await wrapStep('Creating Command channels category', async () => {
-    const cat = await guild.channels.create({ name: CATEGORY_COMMAND_CHANNELS, type: ChannelType.GuildCategory })
-    const cmdNames = getDedicatedChannelCommands()
-    for (const cmdName of cmdNames) {
-      const ch = await guild.channels.create({
-        name: `cmd-${cmdName}`,
-        type: ChannelType.GuildText,
-        parent: cat.id,
-        topic: `Use /${cmdName} here — see message below for details`,
-      })
-      const desc = getCommandDescription(cmdName)
-      const roles = getCommandRoles(cmdName)
-      const roleText = roles.length ? `**Allowed roles:** ${roles.join(', ')}` : '**Allowed:** Everyone'
-      const embed = new EmbedBuilder()
-        .setTitle(`/${cmdName}`)
-        .setDescription(desc.detail || desc.summary)
-        .addFields(
-          { name: 'Syntax', value: desc.syntax || `\`/${cmdName}\``, inline: false },
-          { name: 'Permission', value: roleText, inline: false }
-        )
-        .setColor(0x5865f2)
-      await ch.send({ content: '**Command usage**', embeds: [embed] }).catch(() => {})
-    }
-  })()
+  const documentationChannel = made.get(CHANNEL_DOCUMENTATION) ?? null
+  const feedbackChannel = made.get(CHANNEL_FEEDBACK) ?? null
 
   const everyoneId = guild.id
   debug('runInit: fetch channels and set permissions', Date.now() - t0, 'ms')
   const channels = await guild.channels.fetch()
   const onboardingIds = new Set([category.id, onboardingChannel.id])
-  const roleLockedCategories = new Map() // category name prefix -> role id (only that role can view)
-  if (frontendRole) roleLockedCategories.set('Frontend', frontendRole.id)
-  if (backendRole) roleLockedCategories.set('Backend', backendRole.id)
-  if (databaseRole) roleLockedCategories.set('Database', databaseRole.id)
 
   await wrapStep('Setting channel permissions', async () => {
     for (const [, ch] of channels) {
       if (ch.isThread()) continue
       const parentName = ch.parent?.name ?? ''
       const isOnboarding = onboardingIds.has(ch.id) || onboardingIds.has(ch.parent?.id)
-      const isRules = parentName === CATEGORY_RULES
-      const isDocumentation = parentName === CATEGORY_DOCUMENTATION
-      const isAnnouncements = parentName === CATEGORY_ANNOUNCEMENTS
-      const isRoleLocked = [...roleLockedCategories.entries()].some(([name]) => parentName.includes(name))
-      const roleIdForCategory = isRoleLocked && ch.parent
-        ? [...roleLockedCategories.entries()].find(([name]) => (ch.parent?.name ?? '').includes(name))?.[1]
-        : null
-
       if (isOnboarding) {
         if (ch.id === category.id || ch.id === onboardingChannel.id) {
           await ch.permissionOverwrites.edit(everyoneId, { ViewChannel: true, ReadMessageHistory: true }).catch(() => {})
@@ -287,28 +164,19 @@ export async function runInit(guild) {
         }
         continue
       }
-      if (isRules || (ch.type === ChannelType.GuildCategory && ch.name === CATEGORY_RULES)) {
-        await ch.permissionOverwrites.edit(everyoneId, { ViewChannel: true, ReadMessageHistory: true }).catch(() => {})
-        continue
-      }
-      if (isDocumentation || (ch.type === ChannelType.GuildCategory && ch.name === CATEGORY_DOCUMENTATION)) {
-        await ch.permissionOverwrites.edit(everyoneId, { ViewChannel: false }).catch(() => {})
-        await ch.permissionOverwrites.edit(verifiedRole.id, { ViewChannel: true, ReadMessageHistory: true }).catch(() => {})
-        continue
-      }
-      if (isAnnouncements) continue
+      // Announcements get their tier permissions below.
+      if (parentName === CATEGORY_ANNOUNCEMENTS) continue
+      // Everything else — Casual, Documentation, Feedback, Meetings — is
+      // Verified-only. Clients never hold Verified, so they see none of it.
       try {
         await ch.permissionOverwrites.edit(everyoneId, { ViewChannel: false })
-        if (roleIdForCategory) {
-          await ch.permissionOverwrites.edit(roleIdForCategory, { ViewChannel: true, ReadMessageHistory: true })
-          if (ch.type === ChannelType.GuildVoice) {
-            await ch.permissionOverwrites.edit(roleIdForCategory, { Connect: true, Speak: true }).catch(() => {})
-          }
-        } else {
-          await ch.permissionOverwrites.edit(verifiedRole.id, { ViewChannel: true, ReadMessageHistory: true })
-          if (ch.type === ChannelType.GuildVoice) {
-            await ch.permissionOverwrites.edit(verifiedRole.id, { Connect: true, Speak: true }).catch(() => {})
-          }
+        await ch.permissionOverwrites.edit(verifiedRole.id, { ViewChannel: true, ReadMessageHistory: true })
+        if (ch.type === ChannelType.GuildVoice) {
+          await ch.permissionOverwrites.edit(verifiedRole.id, { Connect: true, Speak: true }).catch(() => {})
+        }
+        // Constraint: #feedback — Verified also gets SendMessages, matching ensureFeedbackChannel.
+        if (feedbackChannel && ch.id === feedbackChannel.id) {
+          await ch.permissionOverwrites.edit(verifiedRole.id, { SendMessages: true }).catch(() => {})
         }
       } catch (_) {}
     }
@@ -346,6 +214,10 @@ export async function runInit(guild) {
       dashboardRoleIds: [...new Set([...existingDashboard, ceoRole?.id, serverMgrRole?.id].filter(Boolean))],
     })
   )()
+
+  if (feedbackChannel) {
+    await wrapStep('Saving feedback channel', () => updateGuildConfig(guild.id, { feedbackChannelId: feedbackChannel.id }))()
+  }
 
   await wrapStep('Creating Support category', async () => {
     const cfgNow = await getGuildConfig(guild.id)

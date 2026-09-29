@@ -51,7 +51,7 @@ Commands are slash commands. Permission is enforced by **role**: if a command ha
 
 | Command   | Required roles        | Description |
 |----------|------------------------|-------------|
-| **/init**   | CEO, Server Manager  | Set up server: roles, onboarding channel, verification flow, categories (Onboarding, Rules, Documentation, Announcements, Meetings, Casual, Pet Pictures, Foodie, Archive), role-locked Frontend/Backend/Database categories, and Command channels. Run once per server; use `/scrap` first if already initialized. |
+| **/init**   | CEO, Server Manager  | Set up server: roles, onboarding channel, verification flow, and the global categories (Onboarding, Announcements, Casual, Documentation, Feedback, Meetings). Run once per server; use `/scrap` first if already initialized. |
 | **/scrap**  | CEO, Server Manager  | Reset server to bare bones: one text channel (`general`), one voice channel (`voice`). Deletes all custom roles and Granjur-created channels. Use before re-running `/init`. |
 | **/invite** | CEO, Server Manager  | Send a server invite to an @granjur.com email. Button opens modal to enter email; invite is sent by email and by DM if the user is already in the server. |
 | **/backlog**| CEO, Server Manager  | View users in Holding; select a user and approve via modal (roles comma-separated + optional notes). Assigns roles, removes Holding, adds Verified, and notifies in admin channel. |
@@ -92,25 +92,34 @@ Commands are slash commands. Permission is enforced by **role**: if a command ha
 | **/faq**       | Verified                          | Ask or search FAQs: **Ask** (submit question, optional repo) or **Search** (query existing FAQs). |
 | **/project-db**| Verified                          | View or save project database schema. Select project to view schema, or “New project” to paste and store a schema. |
 | **/edit-docs** | CEO, Server Manager, Senior Dev   | Edit project or repo documentation (README). Select project or repo, then submit new README/content. Projects: stored in DB; repos: use GitHub. |
-| **/sql-dump**  | Senior Dev, CEO, Server Manager   | Placeholder: “Versioned SQL dumps per project are planned.” Currently points users to #sql-dumps and `/project-db`. |
+| **/sql-dump**  | Senior Dev, CEO, Server Manager   | Placeholder: “Versioned SQL dumps per project are planned.” Currently points users to `/project-db`. |
 
-### 2.6 Personal & evaluation
+### 2.6 Feedback (Verified)
+
+| Command       | Required roles | Description |
+|--------------|-----------------|-------------|
+| **/feedback**  | Verified       | Submit feedback from any channel: `message` (required, ≤1000 chars) and `type` (Bug/Idea/Process/Other, default Other). Posts an embed in **#feedback** and replies privately; no `#feedback` channel → tells the user to ask an admin to run `/setup`. Clients never see #feedback (they never hold Verified). |
+
+### 2.7 Personal & evaluation
 
 | Command     | Required roles                    | Description |
 |------------|------------------------------------|-------------|
 | **/fetch-my** | Verified                         | Get your bugs, features, and meetings: select category (bugs/tickets, features, meeting schedules, or all), then view list. |
 | **/evaluate** | Senior Dev, CEO, Server Manager  | Evaluate a user (select user; flow is implementation-specific). |
 
-### 2.7 Dedicated command channels
+### 2.8 Dedicated command channels (removed)
 
-The following commands get a dedicated channel under the category **📌 Command channels** when `/init` runs (from `command-config.json`):
+Earlier versions of `/init` created a `cmd-<name>` channel per command under a **📌 Command
+channels** category. The global-channel-layout rollout (2026-09-29) dropped that category from
+`/init` — no command reads or is gated to running inside its own dedicated channel, so nothing
+in the bot depended on it. A server that predates the change may still have leftover `cmd-*`
+channels and the now-empty category; `/cleanup` removes them (see §3.1).
 
-- init, scrap, verify, invite, backlog, approve  
-- bug, ticket, feature  
-- schedule, project-db, docs, faq, repos, dashboard, edit-docs  
-- clock-in, clock-out, sql-dump  
+A permission-denied reply now names the actual required roles directly (e.g. "This command
+needs one of these roles: CEO, Server Manager.") instead of pointing at a channel description.
 
-`close-feature` and `resolve-bug` do **not** have dedicated channels; they are valid only inside the relevant ticket channel.
+`close-feature` and `resolve-bug` are valid only inside the relevant ticket channel, dedicated
+channel or not.
 
 ---
 
@@ -118,32 +127,34 @@ The following commands get a dedicated channel under the category **📌 Command
 
 ### 3.1 Categories and channels
 
+This is the global layout `/init` builds (`bot/src/services/globalLayout.js`'s `GLOBAL_LAYOUT`,
+shared with `/cleanup` so the two can never disagree). Categories append at the bottom in this
+order — Rules, Archive, the role-locked Frontend/Backend/Database categories, Pet Pictures,
+Foodie and the Command channels category from earlier versions are gone: nothing in the bot read
+any of them, and `/cleanup` removes leftovers of each on a server that predates the trim.
+
 | Category / Channel | Purpose |
 |--------------------|--------|
 | **📥 Onboarding** | |
 | `welcome-and-verify` | Welcome message; instructs users to use `/verify`. Pinned message explains OTP flow and Holding. |
-| **📜 Rules** | |
-| `rules` | Server rules; pinned message references `/verify` and approval. |
-| **📚 Documentation** | |
-| `documentation` | Browse/search project docs, repo READMEs, meeting notes. Dropdown for doc traversal (repo/project). Edit with `/edit-docs`. |
-| **📋 Meetings** | |
-| `general-meetings` | General meeting channel; schedule with `/schedule`. |
-| `upcoming-meetings` | Reminders posted here ~10 minutes before each meeting, tagging invitees. |
-| `meeting-voice` | Voice for meetings. |
-| **💬 Casual** | |
-| `casual-chat`, `off-topic`, `voice-lounge` | Casual and off-topic. |
-| **🐾 Pet Pictures** | `pet-pics` |
-| **🍴 Foodie** | `foodie-blog` |
-| **📁 Archive** | |
-| `meeting-metadata` | Meeting notes and metadata archived here. |
-| `sql-dumps` | Versioned SQL dumps; use `/sql-dump` to view/search/submit. |
 | **📢 Announcements** | |
 | `announcements-all` | Server-wide. |
 | `announcements-verified` | Verified members only. |
 | `announcements-leadership` | Leadership only (dashboard roles). |
 | `admin` | Backlog notifications: when someone enters Holding, server owner and dashboard roles are tagged. Use `/backlog` to approve. |
-| **⚛️ Frontend** / **🔧 Backend** / **🗄️ Database** | Role-locked: only the matching discipline role (and Verified) can view. Each has chat + voice. |
-| **📌 Command channels** | One channel per command (see above); pinned message describes the command and allowed roles. |
+| **💬 Casual** | |
+| `casual-chat`, `off-topic`, `voice-lounge` | Casual and off-topic. |
+| **📚 Documentation** | |
+| `documentation` | Browse/search project docs, repo READMEs, meeting notes. Dropdown for doc traversal (repo/project). Edit with `/edit-docs`. |
+| **💡 Feedback** | |
+| `feedback` | Verified-only; post with `/feedback` from any channel. Never visible to clients. Found by stored id first, falls back to a channel named `feedback` in this category. |
+| **📋 Meetings** | |
+| `general-meetings` | General meeting channel; schedule with `/schedule`. |
+| `meeting-voice` | Voice for meetings. |
+| `upcoming-meetings` | Reminders posted here ~10 minutes before each meeting, tagging invitees. |
+
+**🛟 Support** is built separately by `/setup` (`ensureSupportChannels`), not by `/init` — it is
+not part of the global layout, and `/cleanup` protects it by id and by name.
 
 ### 3.2 Project categories
 

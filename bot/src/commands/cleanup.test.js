@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType } from 'discord.js'
-import { execute } from './cleanup.js'
+import { execute, handleConfirm } from './cleanup.js'
 
 const CFG = { id: 'cfg1' }
 
@@ -34,15 +34,33 @@ function fakeInteraction(guild) {
   }
 }
 
-/** A db that knows only the two tables `/cleanup` reads, and throws on any other. */
-function seams(projects = [], { projectThrows = false, userChannels = [] } = {}) {
+/** A db that knows only the three tables `/cleanup` reads, and throws on any other. */
+function seams(
+  projects = [],
+  { projectThrows = false, userChannels = [], userChannelThrows = false, tasks = [], taskThrows = false } = {}
+) {
   const db = new Proxy(
     {
-      userChannel: { findMany: async () => userChannels },
+      userChannel: {
+        findMany: async () => {
+          if (userChannelThrows) throw new Error('read timeout')
+          return userChannels
+        },
+      },
       project: {
         findMany: async ({ where }) => {
           if (projectThrows) throw new Error('read timeout')
           return projects.filter((p) => p.guildConfigId === where.guildConfigId)
+        },
+      },
+      task: {
+        findMany: async ({ where, take }) => {
+          if (taskThrows) throw new Error('read timeout')
+          assert.equal(where.guildConfigId, CFG.id)
+          // The default LIMIT is 500 — a cleanup must ask for every ticket, or
+          // the cap silently drops older tasks back into toDelete.
+          assert.ok(take >= 1_000_000, `task read must not be capped: take=${take}`)
+          return tasks
         },
       },
     },
@@ -56,11 +74,35 @@ function seams(projects = [], { projectThrows = false, userChannels = [] } = {})
   return { db, getConfig: async (gid) => { assert.equal(gid, 'G1'); return CFG } }
 }
 
-/** The channel names the confirm button would delete, from the reply. */
+/**
+ * Every channel name an owner could actually read before confirming: from the
+ * grouped embed description when it fits, or from the attached
+ * `cleanup-preview.txt` when the list was too long for the embed (F1). A
+ * channel name never contains `,` or whitespace, so `#name` tokens are safe
+ * to pull out of either surface with one pattern.
+ */
 function listedForDeletion(reply) {
   if (!reply.embeds) return []
+  let text = reply.embeds[0].data.description
+  for (const file of reply.files || []) {
+    const buf = file.attachment
+    if (Buffer.isBuffer(buf)) text += '\n' + buf.toString('utf8')
+  }
+  return [...text.matchAll(/#([^\s,]+)/g)].map((m) => m[1])
+}
+
+/** The category names the confirm button would delete, from the reply (F4: no icon). */
+function categoriesListed(reply) {
+  if (!reply.embeds) return []
   const description = reply.embeds[0].data.description
-  return [...description.matchAll(/^- #(\S+)/gm)].map((m) => m[1])
+  return [...description.matchAll(/^- (.+) \(category\)$/gm)].map((m) => m[1])
+}
+
+/** The count on the confirm button's label, e.g. "Delete 47 item(s)". */
+function confirmButtonCount(reply) {
+  const button = reply.components?.[0]?.components?.[0]
+  const label = button?.data?.label ?? button?.label
+  return Number(label.match(/Delete (\d+) item/)[1])
 }
 
 async function run(projects, channels, opts) {
@@ -155,10 +197,42 @@ test('a channel from /create-channel is still protected by id', async () => {
   assert.match(reply.content, /No leftover channels found/)
 })
 
-test('categories themselves are never listed for deletion', async () => {
+// F3: the userChannel read used to swallow a throw into an empty set (fail
+// open), so a transient failure exposed every /create-channel room for
+// deletion. It must fail closed like the project and task reads do.
+test('a failed /create-channel read lists nothing at all, rather than every room', async () => {
+  const reply = await run([], [chan('u1', 'aashir-room'), chan('junk', 'random-leftover')], {
+    userChannelThrows: true,
+  })
+  assert.equal(reply.embeds, undefined, 'no confirm button was offered')
+  assert.match(reply.content, /could not read this server's user-created channels/)
+})
+
+test('a category is listed only once every channel in it is listed', async () => {
   const stray = category('cat-stray', 'Some Old Category')
-  const reply = await run([], [stray, chan('junk', 'random-leftover', { parent: stray })])
+  const kept = category('cat-kept', 'Has A Room')
+  const reply = await run([], [
+    stray, chan('junk', 'random-leftover', { parent: stray }),
+    kept, chan('u1', 'aashir-room', { parent: kept }), chan('junk2', 'old-notes', { parent: kept }),
+  ], { userChannels: [{ textChannelId: 'u1', voiceChannelId: null }] })
+  assert.deepEqual(listedForDeletion(reply), ['random-leftover', 'old-notes'])
+  assert.deepEqual(categoriesListed(reply), ['Some Old Category'], 'the category keeping a /create-channel room stays')
+})
+
+// F2: `children.every(...)` is vacuously true for a category with NO children
+// at all, so an owner's deliberately empty category (e.g. a divider) used to
+// be offered up right alongside genuinely emptied-out ones.
+test('an empty stray category with no children at all is not offered up', async () => {
+  const empty = category('cat-empty', '──── PROJECTS ────')
+  const reply = await run([], [empty, chan('junk', 'random-leftover')])
   assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
+  assert.deepEqual(categoriesListed(reply), [], 'a category with nothing in it, ever, is left alone')
+  // Format-agnostic: whatever the "removed too" rendering looks like, the
+  // empty category's own name must never appear in it at all.
+  assert.ok(
+    !reply.embeds[0].data.description.includes('PROJECTS'),
+    'the empty category was offered up alongside genuinely emptied ones'
+  )
 })
 
 test('the support pair and its category are protected by id', async () => {
@@ -200,4 +274,224 @@ test('the archive divider is protected by its id, like every other section chann
     [cat, chan('div', 'the-line'), chan('tc1', 'feature-0145e3', { parent: cat }), chan('junk', 'random-leftover')]
   )
   assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
+})
+
+// The live server before the trim (roadmap sub-project 3): the new layout, the
+// categories being trimmed, the global ticket categories, and stored channels.
+function liveServer() {
+  const cats = {
+    onboarding: category('c-on', '📥 Onboarding'),
+    rules: category('c-rules', '📜 Rules'),
+    docs: category('c-docs', '📚 Documentation'),
+    meetings: category('c-meet', '📋 Meetings'),
+    casual: category('c-cas', '💬 Casual'),
+    archive: category('c-arch', '📁 Archive'),
+    ann: category('c-ann', '📢 Announcements'),
+    frontend: category('c-fe', '⚛️ Frontend'),
+    cmds: category('c-cmd', '📌 Command channels'),
+    features: category('c-feat', '<==== ✨ FEATURES ✨ ====>'),
+    bugs: category('c-bugs', 'Bugs'),
+    feedback: category('c-fb', '💡 Feedback'),
+  }
+  return [
+    ...Object.values(cats),
+    chan('on1', 'welcome-and-verify', { parent: cats.onboarding }),
+    chan('r1', 'rules', { parent: cats.rules }),
+    chan('d1', 'documentation', { parent: cats.docs }),
+    chan('m1', 'general-meetings', { parent: cats.meetings }),
+    chan('m2', 'standup-k9-text', { parent: cats.meetings }),
+    chan('ca1', 'casual-chat', { parent: cats.casual }),
+    chan('a1', 'meeting-metadata', { parent: cats.archive }),
+    chan('a2', 'sql-dumps', { parent: cats.archive }),
+    chan('an1', 'admin', { parent: cats.ann }),
+    chan('fe1', 'frontend-chat', { parent: cats.frontend }),
+    chan('fe2', 'frontend-voice', { type: ChannelType.GuildVoice, parent: cats.frontend }),
+    chan('cmd1', 'cmd-create-task', { parent: cats.cmds }),
+    chan('t1', 'feature-0145e3', { parent: cats.features }),
+    chan('t2', 'bug-9a9a9a', { parent: cats.bugs }),
+    chan('fb1', 'feedback', { parent: cats.feedback }),
+    chan('tr', 'time-reports'),
+  ]
+}
+
+test('the live trim lists exactly the removed channels and their now-empty categories', async () => {
+  const guild = fakeGuild(liveServer())
+  const it = fakeInteraction(guild)
+  const { db } = seams([])
+  const cfg = { ...CFG, timeReportChannelId: 'tr', adminChannelId: 'an1', feedbackChannelId: 'fb1' }
+  const error = console.error
+  console.error = () => {}
+  try { await execute(it, { db, getConfig: async () => cfg }) } finally { console.error = error }
+  const reply = it.replies.at(-1)
+  assert.deepEqual(listedForDeletion(reply).sort(), ['cmd-create-task', 'frontend-chat', 'frontend-voice', 'meeting-metadata', 'rules', 'sql-dumps'])
+  assert.deepEqual(categoriesListed(reply).sort(), ['⚛️ Frontend', '📁 Archive', '📌 Command channels', '📜 Rules'])
+})
+
+// F1: the same live-shaped server, but at the size the real trim actually is —
+// 30 `cmd-*` channels plus 12 leftover `meet-*` rooms the owner has to check
+// by name. The old preview sliced at 25 and hid the button-delete count of
+// everything past it; every one of these 51 leftover channels, plus the 6
+// categories emptied by removing them, must be readable in the reply (embed
+// or attachment `cleanup-preview.txt`), and the confirm button's count must
+// match all 57 items exactly.
+function liveServerAtScale({ cmdCount = 30, meetCount = 12 } = {}) {
+  const cats = {
+    rules: category('c-rules', '📜 Rules'),
+    archive: category('c-arch', '📁 Archive'),
+    frontend: category('c-fe', '⚛️ Frontend'),
+    backend: category('c-be', '🔧 Backend'),
+    database: category('c-db', '🗄️ Database'),
+    cmds: category('c-cmd', '📌 Command channels'),
+    meetings: category('c-meet', '📋 Meetings'),
+  }
+  const channels = [...Object.values(cats)]
+  // The 9 channels trimmed alongside Rules/Archive/Frontend/Backend/Database.
+  channels.push(
+    chan('r1', 'rules', { parent: cats.rules }),
+    chan('a1', 'meeting-metadata', { parent: cats.archive }),
+    chan('a2', 'sql-dumps', { parent: cats.archive }),
+    chan('fe1', 'frontend-chat', { parent: cats.frontend }),
+    chan('fe2', 'frontend-voice', { type: ChannelType.GuildVoice, parent: cats.frontend }),
+    chan('be1', 'backend-chat', { parent: cats.backend }),
+    chan('be2', 'backend-voice', { type: ChannelType.GuildVoice, parent: cats.backend }),
+    chan('db1', 'database-chat', { parent: cats.database }),
+    chan('db2', 'database-voice', { type: ChannelType.GuildVoice, parent: cats.database }),
+  )
+  for (let i = 0; i < cmdCount; i++) channels.push(chan(`cmd${i}`, `cmd-command-${i}`, { parent: cats.cmds }))
+  // Genuine leftover meeting rooms, outside every category — the ones the
+  // owner has to be able to check by name (spec's "known gap": a `meet-*`
+  // name inside 📋 Meetings would list too, but keeping these outside it
+  // matches the existing 'meet- channel outside every project section' case).
+  for (let i = 0; i < meetCount; i++) channels.push(chan(`meet${i}`, `meet-standup-${i}`))
+  // The protected meeting text channel stays, so 📋 Meetings itself is never
+  // offered up as an empty category.
+  channels.push(chan('m1', 'general-meetings', { parent: cats.meetings }))
+  return channels
+}
+
+test('the trim preview shows every channel past the old 25-item slice, not just "and N more" (F1)', async () => {
+  const trimmedNine = [
+    'rules', 'meeting-metadata', 'sql-dumps', 'frontend-chat', 'frontend-voice',
+    'backend-chat', 'backend-voice', 'database-chat', 'database-voice',
+  ]
+  const cmdNames = Array.from({ length: 30 }, (_, i) => `cmd-command-${i}`)
+  const meetNames = Array.from({ length: 12 }, (_, i) => `meet-standup-${i}`)
+  const expectedChannels = [...trimmedNine, ...cmdNames, ...meetNames]
+
+  const guild = fakeGuild(liveServerAtScale())
+  const it = fakeInteraction(guild)
+  const { db } = seams([])
+  const reply = await (async () => {
+    const error = console.error
+    console.error = () => {}
+    try { await execute(it, { db, getConfig: async () => CFG }) } finally { console.error = error }
+    return it.replies.at(-1)
+  })()
+
+  const listed = listedForDeletion(reply)
+  assert.equal(listed.length, expectedChannels.length, `expected ${expectedChannels.length} channels visible, got ${listed.length}`)
+  for (const name of expectedChannels) assert.ok(listed.includes(name), `${name} is not visible to the owner before they confirm`)
+
+  // Rules, Archive, Frontend, Backend, Database and Command channels are all
+  // emptied out by the trim; 📋 Meetings keeps general-meetings and stays.
+  assert.deepEqual(
+    categoriesListed(reply).sort(),
+    ['⚛️ Frontend', '🔧 Backend', '🗄️ Database', '📁 Archive', '📌 Command channels', '📜 Rules'].sort()
+  )
+
+  // 51 channels + 6 emptied categories — the button must delete exactly what was shown.
+  assert.equal(confirmButtonCount(reply), expectedChannels.length + 6)
+})
+
+test('a ticket channel a task points at is protected by id, wherever it sits', async () => {
+  const reply = await run([], [chan('t9', 'feature-9f9f9f'), chan('junk', 'random-leftover')], {
+    tasks: [{ discordChannelId: 't9', discordThreadId: null }],
+  })
+  assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
+})
+
+test('a failed task read lists nothing at all, rather than every ticket', async () => {
+  const reply = await run([], [chan('t9', 'feature-9f9f9f')], { taskThrows: true })
+  assert.equal(reply.embeds, undefined, 'no confirm button was offered')
+  assert.match(reply.content, /could not read this server's tasks/)
+})
+
+test('channels whose ids the config stores are protected by id', async () => {
+  const guild = fakeGuild([chan('tr', 'time-reports'), chan('fb', 'renamed-feedback'), chan('junk', 'random-leftover')])
+  const it = fakeInteraction(guild)
+  const { db } = seams([])
+  const cfg = { ...CFG, timeReportChannelId: 'tr', feedbackChannelId: 'fb' }
+  await execute(it, { db, getConfig: async () => cfg })
+  assert.deepEqual(listedForDeletion(it.replies.at(-1)), ['random-leftover'])
+})
+
+test('a legacy plain "Meetings" category and its room are protected too', async () => {
+  // /migrate bolds '📋 Meetings' and plain 'Meetings' to the same bold name —
+  // a server that never renamed from the old plain name is still ours.
+  const cat = category('cat-meet-legacy', 'Meetings')
+  const reply = await run([], [cat, chan('m1', 'standup-k9-text', { parent: cat })])
+  assert.deepEqual(listedForDeletion(reply), [])
+  assert.deepEqual(categoriesListed(reply), [])
+})
+
+test('an empty project category renamed by hand is not offered up', async () => {
+  // The rename defeats the name rule; only the recorded discordCategoryId
+  // still says this is ours — and it now holds nothing at all.
+  const cat = category('cat-renamed', 'Renamed By The Client')
+  const legacy = { id: 'p9', name: 'Original Project Name', guildConfigId: CFG.id, discordCategoryId: 'cat-renamed' }
+  const reply = await run([legacy], [cat, chan('junk', 'random-leftover')])
+  assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
+  assert.deepEqual(categoriesListed(reply), [])
+})
+
+test('an empty support category, known only by name, is not offered up', async () => {
+  // No support ids stored yet (pre-/init window) — only the name fallback
+  // marks this category as ours, and it holds nothing at all.
+  const supportCat = category('supcat', '🛟 Support')
+  const reply = await run([], [supportCat, chan('junk', 'random-leftover')])
+  assert.deepEqual(listedForDeletion(reply), ['random-leftover'])
+  assert.deepEqual(categoriesListed(reply), [])
+})
+
+/** A guild whose channels.fetch(id) returns a live, deletable channel object,
+ * and whose channels.fetch() (no id) returns the current state of the server —
+ * so a failed delete is still visible to the next check. */
+function fakeGuildWithDelete(channels, { failIds = [] } = {}) {
+  const map = new Map(channels.map((c) => [c.id, c]))
+  const deleteCalls = []
+  const guild = {
+    id: 'G1',
+    channels: {
+      fetch: async (id) => {
+        if (id === undefined) return new Map(map)
+        const ch = map.get(id)
+        if (!ch) return null
+        return {
+          ...ch,
+          delete: async () => {
+            deleteCalls.push(ch.id)
+            if (failIds.includes(ch.id)) throw new Error('missing permissions')
+            map.delete(ch.id)
+          },
+        }
+      },
+    },
+  }
+  return { guild, deleteCalls }
+}
+
+test('handleConfirm keeps a category whose channel failed to delete, and reports the skip', async () => {
+  const cat = category('cat-empty', 'Some Old Category')
+  const leftover = chan('junk', 'random-leftover', { parent: cat })
+  const { guild, deleteCalls } = fakeGuildWithDelete([cat, leftover], { failIds: ['junk'] })
+  const it = fakeInteraction(guild)
+  const { db } = seams([])
+  await execute(it, { db, getConfig: async () => CFG })
+  assert.deepEqual(listedForDeletion(it.replies.at(-1)), ['random-leftover'])
+  assert.deepEqual(categoriesListed(it.replies.at(-1)), ['Some Old Category'])
+
+  await handleConfirm(it)
+  const final = it.replies.at(-1)
+  assert.ok(!deleteCalls.includes('cat-empty'), `category delete was called: ${deleteCalls}`)
+  assert.match(final.content, /Kept 1 category\(ies\) that still had channels\./)
 })

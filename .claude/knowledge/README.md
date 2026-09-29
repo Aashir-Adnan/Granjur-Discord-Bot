@@ -46,6 +46,12 @@
   scoping what a site user sees/changes to their own projects: `resolveIdentity`'s
   `isAdmin`/`seesAll` split, `visibility.js`'s "my project" rule and hidden-ref stubs,
   the no-cross-database-string-JOIN rule, and the site's link card and admin panel.
+- [global-layout.md](global-layout.md) — the shared global channel layout
+  (`services/globalLayout.js`) `/init` and `/cleanup` both read: category/channel order,
+  what was trimmed (Rules, Archive, Frontend/Backend/Database, Command channels) and why
+  nothing depends on it, `/cleanup`'s by-id protections and empty-category rule, and the
+  new #feedback channel (`feedbackChannelId`, Verified-only, `/feedback`, `/setup`
+  creating it idempotently). The live server is never reordered.
 - [client-role.md](client-role.md) — the `Client` role and `guildmember.kind`:
   why a client never gets `Verified`, the two `/verify` acceptance paths, the
   shared `approveMember`, `/set-roles`' refusal, the deny-by-default command

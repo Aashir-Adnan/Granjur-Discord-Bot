@@ -5,6 +5,7 @@ import { parseWhen } from "../utils/parseWhen.js";
 import { discordDateTime } from "../utils/discordTime.js";
 import { syncGuildNow } from "../services/docsSync.js";
 import { ensureSupportChannels, upgradeGlobalTicketAllows } from "../services/clientAccess.js";
+import { ensureFeedbackChannel } from "../services/feedback.js";
 
 export const data = new SlashCommandBuilder()
   .setName("setup")
@@ -75,6 +76,17 @@ export async function execute(interaction) {
     console.warn("[setup] ticket channels:", e?.message ?? e);
   }
 
+  // #feedback, for a server set up before it existed. Idempotent like the
+  // support pair: creates the category and channel only when missing.
+  let feedback = null;
+  let feedbackError = null;
+  try {
+    feedback = await ensureFeedbackChannel(guild, cfg);
+  } catch (e) {
+    feedbackError = e?.message ?? String(e);
+    console.warn("[setup] feedback channel:", feedbackError);
+  }
+
   if (tzInput) {
     if (!isValidZone(tzInput)) {
       return interaction
@@ -136,6 +148,14 @@ export async function execute(interaction) {
     value: tickets
       ? `Ticket channels upgraded: ${tickets.upgraded.length}${tickets.failed.length ? ` (${tickets.failed.length} refused — check the bot's Manage Channels permission)` : ""}`
       : "_could not be checked_",
+    inline: false,
+  });
+
+  embed.addFields({
+    name: "Feedback",
+    value: feedback
+      ? `<#${feedback.channel.id}>${feedback.created ? " — created now" : ""}`
+      : `_could not be set up — ${feedbackError ?? "unknown error"}_`,
     inline: false,
   });
 

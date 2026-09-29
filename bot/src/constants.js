@@ -75,6 +75,10 @@ export const CHANNEL_RULES = 'rules'
 export const CATEGORY_DOCUMENTATION = '📚 Documentation'
 export const CHANNEL_DOCUMENTATION = 'documentation'
 
+/** Feedback category — staff tell us what to improve (typed, or via /feedback). */
+export const CATEGORY_FEEDBACK = '💡 Feedback'
+export const CHANNEL_FEEDBACK = 'feedback'
+
 export const CATEGORY_MEETINGS = '📋 Meetings'
 export const CHANNEL_MEETINGS_TEXT = 'general-meetings'
 export const CHANNEL_MEETINGS_VOICE = 'meeting-voice'

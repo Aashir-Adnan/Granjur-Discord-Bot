@@ -2,6 +2,48 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-09-29 — Global channel layout and feedback (BUILT, NOT DEPLOYED)
+
+Owner roadmap sub-project 3 of 7: "Trim staff/onboarding channels global level to only
+announcement and casual (with documentation following)" plus a global feedback channel.
+Spec `docs/superpowers/specs/2026-09-29-global-channel-layout-design.md`, plan
+`docs/superpowers/plans/2026-09-29-global-channel-layout.md`, knowledge
+`.claude/knowledge/global-layout.md`. Bot repo only, branch
+`feat/global-channel-layout` (base `44d80a4`; `git log --oneline main..HEAD`):
+`65e09db` spec doc, `819d334` plan doc; `913b8e3` `services/globalLayout.js` — one
+shared layout (`GLOBAL_LAYOUT`, `protectedCategoryNames`/`protectedChannelNames`,
+`createGlobalCategories`) read by both `/init` and `/cleanup`; `37069a2` `#feedback`
+channel + `feedbackChannelId` (migration `029_guild_feedback_channel.sql`) +
+`ensureFeedbackChannel`, wired into `/setup`; `0d9f8db` `/feedback` command (message +
+type, embed card, private reply, "run /setup" fallback when the channel is missing,
+never available to clients); `2190398` `/init` builds the trimmed layout from
+`globalLayout.js` and stores `feedbackChannelId`; `cd167df` fix — `/init` explicitly
+grants Verified `SendMessages` on `#feedback` to match `ensureFeedbackChannel`;
+`423625b` `/cleanup` reads the layout instead of its own duplicated name lists, and
+protects tickets/stored channels by id, removing a category only once every channel in
+it is being removed; `997dc26` fix — `/cleanup` reads every task (explicit
+`take: 1_000_000`, since the default caps at 500), protects legacy aliases of layout
+categories (a plain `Meetings` category via `CATEGORY_BOLD_NAMES`), and at confirm time
+skips a category a child delete failure left non-empty, reporting "Kept N
+category(ies)…". Suite 1372 tests, `fail 0` (`npm test 2>&1 | tail -9`, run from the
+repo root).
+
+Removed from `/init`'s old layout (confirmed dead first): Rules, Archive, the
+Frontend/Backend/Database categories, and the Command channels category — nothing in
+the bot reads any of those channels; the discipline roles and `dedicatedChannels`/
+`commandDescriptions` config stay for other features. The live server is never
+reordered (no `setPositions` call anywhere in this branch).
+
+Not merged, not deployed. Rollout (bot push → `/setup` → `/cleanup`, read the list,
+confirm) is in `.claude/state/backlog.md` roadmap item 3, each step needing the owner's
+go-ahead — `/cleanup`'s pre-existing `meet-*` rule still lists leftover meeting rooms
+even inside the protected Meetings category, so the owner must read the live list
+before confirming.
+
+Also recorded under roadmap item 1: the owner decided (2026-09-29) to leave the
+org-level `Admin` role as it is, closing the open question carried from sub-project 1
+through sub-project 2.
+
 ## 2026-09-29 — Scope everywhere and meeting-task projects (BUILT, ON BRANCHES, NOT DEPLOYED)
 
 Owner roadmap sub-project 2 of 7. Every task carries one of `backend`/`frontend`/`qa`/

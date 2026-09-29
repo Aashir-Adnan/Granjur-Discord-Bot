@@ -5,116 +5,12 @@ import {
   ButtonStyle,
   EmbedBuilder,
   ChannelType,
+  AttachmentBuilder,
 } from "discord.js";
-import {
-  CATEGORY_ONBOARDING,
-  CHANNEL_ONBOARDING,
-  CATEGORY_RULES,
-  CATEGORY_SUPPORT,
-  CHANNEL_RULES,
-  CATEGORY_DOCUMENTATION,
-  CHANNEL_DOCUMENTATION,
-  CATEGORY_MEETINGS,
-  CHANNEL_MEETINGS_TEXT,
-  CHANNEL_MEETINGS_VOICE,
-  CHANNEL_UPCOMING_MEETINGS,
-  CATEGORY_CASUAL,
-  CHANNEL_CASUAL_CHAT,
-  CHANNEL_OFF_TOPIC,
-  CHANNEL_VOICE_LOUNGE,
-  CATEGORY_PET_PICS,
-  CHANNEL_PET_PICS,
-  CATEGORY_FOODIE,
-  CHANNEL_FOODIE_BLOG,
-  CATEGORY_ARCHIVE,
-  CHANNEL_ARCHIVE_METADATA,
-  CHANNEL_ARCHIVE_SQL,
-  CATEGORY_ANNOUNCEMENTS,
-  CHANNEL_ANNOUNCEMENTS_ALL,
-  CHANNEL_ANNOUNCEMENTS_VERIFIED,
-  CHANNEL_ANNOUNCEMENTS_LEADERSHIP,
-  CHANNEL_ADMIN,
-  CATEGORY_FRONTEND,
-  CHANNEL_FRONTEND_CHAT,
-  CHANNEL_FRONTEND_VOICE,
-  CATEGORY_BACKEND,
-  CHANNEL_BACKEND_CHAT,
-  CHANNEL_BACKEND_VOICE,
-  CATEGORY_DATABASE,
-  CHANNEL_DATABASE_CHAT,
-  CHANNEL_DATABASE_VOICE,
-  CATEGORY_COMMAND_CHANNELS,
-  CHANNEL_BARE_TEXT,
-  CHANNEL_BARE_VOICE,
-  CATEGORY_BOLD_NAMES,
-} from "../constants.js";
-import { getDedicatedChannelCommands } from "../config/commands.js";
+import { CATEGORY_SUPPORT } from "../constants.js";
+import { protectedCategoryNames, protectedChannelNames } from "../services/globalLayout.js";
 import { claimedSectionIds } from "../services/projectSection.js";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
-
-// All channel names that /init creates (lowercased for matching)
-function getProtectedChannelNames() {
-  const names = new Set([
-    CHANNEL_ONBOARDING,
-    CHANNEL_RULES,
-    CHANNEL_DOCUMENTATION,
-    CHANNEL_MEETINGS_TEXT,
-    CHANNEL_MEETINGS_VOICE,
-    CHANNEL_UPCOMING_MEETINGS,
-    CHANNEL_CASUAL_CHAT,
-    CHANNEL_OFF_TOPIC,
-    CHANNEL_VOICE_LOUNGE,
-    CHANNEL_PET_PICS,
-    CHANNEL_FOODIE_BLOG,
-    CHANNEL_ARCHIVE_METADATA,
-    CHANNEL_ARCHIVE_SQL,
-    CHANNEL_ANNOUNCEMENTS_ALL,
-    CHANNEL_ANNOUNCEMENTS_VERIFIED,
-    CHANNEL_ANNOUNCEMENTS_LEADERSHIP,
-    CHANNEL_ADMIN,
-    CHANNEL_FRONTEND_CHAT,
-    CHANNEL_FRONTEND_VOICE,
-    CHANNEL_BACKEND_CHAT,
-    CHANNEL_BACKEND_VOICE,
-    CHANNEL_DATABASE_CHAT,
-    CHANNEL_DATABASE_VOICE,
-    CHANNEL_BARE_TEXT,
-    CHANNEL_BARE_VOICE,
-  ].map((n) => n.toLowerCase()));
-
-  // Add cmd-* dedicated channels
-  for (const cmd of getDedicatedChannelCommands()) {
-    names.add(`cmd-${cmd}`);
-  }
-
-  return names;
-}
-
-// All category names that /init creates (including bold variants from /migrate)
-function getProtectedCategoryNames() {
-  const names = new Set([
-    CATEGORY_ONBOARDING,
-    CATEGORY_RULES,
-    CATEGORY_DOCUMENTATION,
-    CATEGORY_MEETINGS,
-    CATEGORY_CASUAL,
-    CATEGORY_PET_PICS,
-    CATEGORY_FOODIE,
-    CATEGORY_ARCHIVE,
-    CATEGORY_ANNOUNCEMENTS,
-    CATEGORY_FRONTEND,
-    CATEGORY_BACKEND,
-    CATEGORY_DATABASE,
-    CATEGORY_COMMAND_CHANNELS,
-  ].map((n) => n.toLowerCase()));
-
-  // Also protect bold/renamed variants from /migrate
-  for (const name of Object.values(CATEGORY_BOLD_NAMES)) {
-    names.add(name.toLowerCase());
-  }
-
-  return names;
-}
 
 export const data = new SlashCommandBuilder()
   .setName("cleanup")
@@ -170,10 +66,18 @@ export async function execute(
     return interaction.editReply({ content: "Use this in a server." });
 
   const cfg = await getConfig(guild.id);
-  const protectedChannels = getProtectedChannelNames();
-  const protectedCategories = getProtectedCategoryNames();
+  // From the one global layout /init builds (services/globalLayout.js).
+  const protectedChannels = protectedChannelNames();
+  const protectedCategories = protectedCategoryNames();
+  // Channels the bot stores by id — whatever they are called and wherever
+  // they sit. #time-reports lives at the root, outside every category.
+  const storedIds = new Set(
+    [cfg?.onboardingChannelId, cfg?.adminChannelId, cfg?.timeReportChannelId, cfg?.feedbackChannelId].filter(Boolean),
+  );
 
-  // Get user-created channels from DB (protected from cleanup)
+  // Get user-created channels from DB (protected from cleanup). A failed read
+  // must fail closed, like the project and task reads below: coming back as
+  // an empty set here used to expose every /create-channel room for deletion.
   let userCreatedIds = new Set();
   try {
     const userChannels = await dbArg.userChannel.findMany({
@@ -183,8 +87,12 @@ export async function execute(
       if (uc.voiceChannelId) userCreatedIds.add(uc.voiceChannelId);
       if (uc.textChannelId) userCreatedIds.add(uc.textChannelId);
     }
-  } catch (_) {
-    // Table might not exist yet
+  } catch (e) {
+    console.error("[cleanup] userChannel read failed:", e);
+    return interaction.editReply({
+      content:
+        "I could not read this server's user-created channels, and they are exactly what a cleanup has to leave alone. Nothing was listed. Try again in a moment.",
+    });
   }
 
   // The project rows ARE the protection. A read that fails used to come back
@@ -202,6 +110,22 @@ export async function execute(
   }
   const section = projectSectionGuards(projects);
 
+  // Every task's ticket channel, by id. Tickets for tasks with no project live
+  // in the global Features/Bugs categories, and a trim must never offer one up.
+  let tasks;
+  try {
+    // Every ticket id must be read — taskFindMany defaults to LIMIT 500, and a
+    // silent cap here would drop older tasks' tickets right back into toDelete.
+    tasks = (await dbArg.task.findMany({ where: { guildConfigId: cfg.id }, take: 1_000_000 })) ?? [];
+  } catch (e) {
+    console.error("[cleanup] task read failed:", e);
+    return interaction.editReply({
+      content:
+        "I could not read this server's tasks, and their ticket channels are exactly what a cleanup has to leave alone. Nothing was listed. Try again in a moment.",
+    });
+  }
+  const ticketIds = new Set(tasks.flatMap((t) => [t?.discordChannelId, t?.discordThreadId]).filter(Boolean));
+
   const channels = await guild.channels.fetch();
   // The global support pair, by id, and whatever category holds it.
   const supportIds = new Set([cfg?.supportChannelId, cfg?.supportVoiceChannelId].filter(Boolean));
@@ -215,11 +139,28 @@ export async function execute(
   for (const [, ch] of channels) {
     if (ch?.type === ChannelType.GuildCategory && ch.name === CATEGORY_SUPPORT) supportCategoryIds.add(ch.id);
   }
+
+  // A category that is ours or a project's: never removed, and its channels
+  // are judged by the protected-name rule below.
+  const isProtectedCategory = (ch) => {
+    const name = ch.name.toLowerCase();
+    const stripped = name.replace(/^[^\w]+/, "").trim();
+    return (
+      section.sectionIds.has(ch.id) ||
+      section.categoryIds.has(ch.id) ||
+      supportCategoryIds.has(ch.id) ||
+      protectedCategories.has(name) ||
+      section.names.has(name) ||
+      section.names.has(stripped)
+    );
+  };
+
   const toDelete = [];
 
   for (const [, ch] of channels) {
     if (!ch) continue;
     if (userCreatedIds.has(ch.id)) continue;
+    if (storedIds.has(ch.id) || ticketIds.has(ch.id)) continue;
     // By id, before any name is looked at.
     if (section.sectionIds.has(ch.id)) continue;
     const parentId = ch.parentId ?? ch.parent?.id ?? null;
@@ -230,15 +171,8 @@ export async function execute(
 
     const name = ch.name.toLowerCase();
 
-    if (ch.type === ChannelType.GuildCategory) {
-      if (protectedCategories.has(name)) continue;
-      // Protect project categories
-      if (section.names.has(name)) continue;
-      // Check if it's a project category with emoji prefix
-      const stripped = name.replace(/^[^\w]+/, "").trim();
-      if (section.names.has(stripped)) continue;
-      continue; // Don't delete categories directly — only their orphan channels
-    }
+    // Categories are decided after the loop, once their channels are known.
+    if (ch.type === ChannelType.GuildCategory) continue;
 
     // Check if channel is under a protected category
     const parentName = ch.parent?.name?.toLowerCase() || "";
@@ -260,29 +194,85 @@ export async function execute(
     }
   }
 
-  if (toDelete.length === 0) {
+  // A category goes only when it is not protected and every channel in it is
+  // going — the trim would otherwise leave Rules, Archive and the rest behind
+  // as empty shells. One protected channel inside (a /create-channel room, a
+  // ticket) keeps it.
+  const deleting = new Set(toDelete.map((c) => c.id));
+  const emptyCategories = [];
+  for (const [, ch] of channels) {
+    if (!ch || ch.type !== ChannelType.GuildCategory || isProtectedCategory(ch)) continue;
+    const children = [...channels.values()].filter((c) => c && (c.parentId ?? c.parent?.id ?? null) === ch.id);
+    // `children.every(...)` is vacuously true for a category with NO children
+    // at all — an owner's deliberately empty category (e.g. a divider) must
+    // never be offered up; only one that is *actually* being emptied by this
+    // trim belongs here.
+    if (children.length > 0 && children.every((c) => deleting.has(c.id))) emptyCategories.push(ch);
+  }
+
+  if (toDelete.length === 0 && emptyCategories.length === 0) {
     return interaction.editReply({
       content: "No leftover channels found. Everything looks clean.",
     });
   }
 
-  const list = toDelete
-    .slice(0, 25)
-    .map((ch) => {
-      const type = ch.type === ChannelType.GuildVoice ? "voice" : "text";
-      const parent = ch.parent?.name || "no category";
-      return `- #${ch.name} (${type}, under ${parent})`;
+  // Every channel must be readable before the owner confirms — a live trim
+  // runs to 45+ channels, and a preview that hides most of them behind
+  // "…and N more" leaves the owner confirming blind (final review, F1).
+  const CHANNEL_TYPE_LABELS = {
+    [ChannelType.GuildText]: "text",
+    [ChannelType.GuildVoice]: "voice",
+    [ChannelType.GuildStageVoice]: "stage",
+    [ChannelType.GuildAnnouncement]: "announcement",
+    [ChannelType.GuildForum]: "forum",
+  };
+  const typeLabel = (ch) => CHANNEL_TYPE_LABELS[ch.type] || "channel";
+
+  // Grouped by parent category, one line per category, e.g.
+  // "**📌 Command channels** (35): #cmd-init, #cmd-scrap, …". Voice channels
+  // get a trailing " (voice)"; other types are distinguished in the full-list
+  // attachment below, where every channel gets its own line either way.
+  const byCategory = new Map();
+  for (const ch of toDelete) {
+    const parent = ch.parent?.name || "no category";
+    if (!byCategory.has(parent)) byCategory.set(parent, []);
+    byCategory.get(parent).push(ch);
+  }
+  const groupedLines = [...byCategory.entries()]
+    .map(([parent, chs]) => {
+      const names = chs.map((ch) => `#${ch.name}${ch.type === ChannelType.GuildVoice ? " (voice)" : ""}`).join(", ");
+      return `**${parent}** (${chs.length}): ${names}`;
     })
     .join("\n");
 
-  const remaining = toDelete.length > 25 ? `\n_… and ${toDelete.length - 25} more_` : "";
+  const categoryList = emptyCategories.map((c) => `- ${c.name} (category)`).join("\n");
+  const categoryBlock = emptyCategories.length
+    ? `\n\n**Empty categories, removed too:**\n${categoryList}`
+    : "";
 
-  pendingCleanups.set(guild.id, toDelete.map((ch) => ch.id));
+  // Discord embed descriptions cap at 4096 chars. Past ~3800, replace the
+  // inline grouped list with per-category counts and attach the full,
+  // one-line-per-channel list instead of silently truncating it.
+  const files = [];
+  let channelsSection = groupedLines;
+  if (groupedLines.length > 3800) {
+    const summaryLines = [...byCategory.entries()].map(([parent, chs]) => `**${parent}**: ${chs.length}`).join("\n");
+    channelsSection = `${summaryLines}\n\n_Full list attached as_ \`cleanup-preview.txt\` _— read it before confirming._`;
+    const fullListText = toDelete
+      .map((ch) => `#${ch.name} (${typeLabel(ch)}) — under ${ch.parent?.name || "no category"}`)
+      .join("\n");
+    files.push(new AttachmentBuilder(Buffer.from(fullListText, "utf8"), { name: "cleanup-preview.txt" }));
+  }
 
+  // Channels first, then their categories: Discord refuses nothing either way,
+  // but a category deleted first would orphan its channels mid-run.
+  pendingCleanups.set(guild.id, [...toDelete.map((ch) => ch.id), ...emptyCategories.map((c) => c.id)]);
+
+  const total = toDelete.length + emptyCategories.length;
   const embed = new EmbedBuilder()
     .setTitle("Cleanup — Channels to Remove")
     .setDescription(
-      `Found **${toDelete.length}** channel(s) to remove:\n\n${list}${remaining}\n\nUser-created channels (from /create-channel) will NOT be removed.`,
+      `Found **${toDelete.length}** channel(s)${emptyCategories.length ? ` and **${emptyCategories.length}** empty categor${emptyCategories.length === 1 ? "y" : "ies"}` : ""} to remove:\n\n${channelsSection}${categoryBlock}\n\nUser-created channels (from /create-channel), task tickets and project sections will NOT be removed.`,
     )
     .setColor(0xed4245)
     .setFooter({ text: "This cannot be undone" });
@@ -290,7 +280,7 @@ export async function execute(
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("cleanup_confirm")
-      .setLabel(`Delete ${toDelete.length} channel(s)`)
+      .setLabel(`Delete ${total} item(s)`)
       .setStyle(ButtonStyle.Danger),
     new ButtonBuilder()
       .setCustomId("cleanup_cancel")
@@ -298,7 +288,7 @@ export async function execute(
       .setStyle(ButtonStyle.Secondary),
   );
 
-  await interaction.editReply({ embeds: [embed], components: [row] });
+  await interaction.editReply({ embeds: [embed], components: [row], files });
 }
 
 export async function handleConfirm(interaction) {
@@ -318,21 +308,34 @@ export async function handleConfirm(interaction) {
 
   let deleted = 0;
   let failed = 0;
+  let skipped = 0;
 
   for (const id of channelIds) {
     try {
       const ch = await guild.channels.fetch(id).catch(() => null);
-      if (ch) {
-        await ch.delete("Cleanup command");
-        deleted++;
+      if (!ch) continue;
+      if (ch.type === ChannelType.GuildCategory) {
+        // A channel earlier in this same run may have failed to delete and be
+        // still parented here — deleting the category now would orphan it.
+        const current = await guild.channels.fetch();
+        const stillHasChildren = [...current.values()].some(
+          (c) => c && c.id !== id && (c.parentId ?? c.parent?.id ?? null) === id,
+        );
+        if (stillHasChildren) {
+          skipped++;
+          continue;
+        }
       }
+      await ch.delete("Cleanup command");
+      deleted++;
     } catch (_) {
       failed++;
     }
   }
 
+  const skipNote = skipped ? ` Kept ${skipped} category(ies) that still had channels.` : "";
   await interaction.editReply({
-    content: `Cleanup complete. Deleted **${deleted}** channel(s).${failed ? ` Failed: ${failed}.` : ""}`,
+    content: `Cleanup complete. Deleted **${deleted}** item(s).${failed ? ` Failed: ${failed}.` : ""}${skipNote}`,
     embeds: [],
     components: [],
   });
