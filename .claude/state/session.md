@@ -3,42 +3,31 @@
 **Date:** 2026-09-29
 
 ## Goal
-Roadmap sub-project 2 (scope everywhere and meeting-task projects) is now built across all
-three repos, not merged or deployed. This session's task was documentation: bot full suite,
-knowledge and state, so the rollout and open items are on record before anyone acts on them.
+Roadmap sub-project 2 (scope everywhere and meeting-task projects): built via
+subagent-driven development, reviewed per task and as a whole (the final review caught
+migration 028 overwriting `task.updatedAt`; fixed), and merged into each repo's local
+`main` (bot `f62baa4`, CSAAS `09b2f61`, site `4f6dc09`). Not pushed yet.
 
-## Outcome
-- Bot full suite: `npm test 2>&1 | tail -15` from the repo root — 1339 tests, `fail 0`.
-- Knowledge updated: `.claude/knowledge/csaas-meeting-workflow-integration.md` ("Scope and
-  meeting-task projects" — CSAAS `meeting_tasks.scope`/`normalizeMeetingTaskScope`, bot
-  `meetingTaskScope`/`meetingTaskModules`, the three project rules and
-  `meetingTaskProject.js`, the review's `mtg_project` select and `pageSizeFor`), and
-  `.claude/knowledge/project-tasks-site.md` ("Scope filter" — `?scope=` on Tasks/Board only,
-  `none` covers legacy free text).
-- State updated: `backlog.md` sub-project 2 marked BUILT, NOT DEPLOYED with the rollout as
-  its checklist; `completed.md` gained a 2026-09-29 entry with commit hashes per repo.
-- Committed as `docs: scope and meeting-project knowledge and state` (bot repo only — no
-  branch switch, no push, no changes to the other two repos).
+## Done this session
+- Read-only preview of migration 028 on production: 146 tasks, 81 rows touched (2 case
+  fixes, 79 free-text scopes to modules), `non_array_modules` 0, `has_ctrl_ws` 0 — safe.
+- Corrected the CSAAS deploy fact everywhere: a push to CSAAS `main` deploys
+  automatically, and CSAAS runs `data/migrations/` at startup before serving.
 
-## Rollout — still to happen, each step needs the owner's go-ahead
-1. Preview migration 028 on production (read-only, env-var credentials); `non_array_modules`
-   must be 0, and the preview should also flag a scope containing a tab/newline (MySQL
-   `TRIM()` strips only spaces, so such a value would move to `modules` instead of
-   normalising).
-2. Bot to `main` (runs migration 028 automatically).
-3. CSAAS by hand: run `data/migrations/20260929_2_meeting_tasks_scope.sql` first, then
-   trigger the manual deploy (CSAAS pushes to `main` do not auto-deploy).
-4. Site to `main` (Vercel, on push).
+## Rollout — next, each push needs the owner's go-ahead
+1. Push bot `main` (deploy runs migration 028).
+2. Push CSAAS `main` (auto-deploys; its column migration runs at startup).
+3. Push site `main` (Vercel).
+4. Post-deploy check: `SELECT COUNT(*) FROM task WHERE scope IS NOT NULL AND scope NOT IN
+   ('backend','frontend','qa','design')` must be 0.
 
 Full detail: `.claude/state/backlog.md` sub-project 2.
 
-## Open items (not part of this session's work)
+## Open items
 - Owner question, carried from sub-project 1: should the org-level `Admin` role keep
   `seesAll` and link management, or only `Platform Admin`?
-- The usman@granjur.com permission fix (CSAAS `20856ae`, site `a594551`, both already on
-  `main`) is pushed and waiting on the same manual CSAAS deploy as this sub-project's
-  rollout — one deploy covers both.
 
 ## Knowledge files touched this session
 - `.claude/knowledge/csaas-meeting-workflow-integration.md`
 - `.claude/knowledge/project-tasks-site.md`
+- `.claude/knowledge/identity-link.md`

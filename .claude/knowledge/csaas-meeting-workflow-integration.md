@@ -148,10 +148,12 @@ mysqld_stmt_execute`. Inline a clamped integer instead. Seven other `LIMIT ?` si
 its `requestMethod: { Add: "POST", List: "GET" }` map reached `requestMethodValidator`
 raw and matched nothing. It must be a plain array: `requestMethod: ["POST", "GET"]`.
 
-## Scope and meeting-task projects (2026-09-29, roadmap sub-project 2 — BUILT, NOT DEPLOYED)
+## Scope and meeting-task projects (2026-09-29, roadmap sub-project 2)
 
-Two changes riding the same three-repo rollout (bot → CSAAS manual → site — see
-`backlog.md`). Spec `docs/superpowers/specs/2026-09-29-scope-and-meeting-projects-design.md`.
+Two changes riding the same three-repo rollout (bot → CSAAS → site — see `backlog.md`).
+A push to CSAAS `main` deploys automatically, and CSAAS applies `data/migrations/` at
+startup (`runMigrationsOnStart`, before serving), so its column migration needs no
+separate step. Spec `docs/superpowers/specs/2026-09-29-scope-and-meeting-projects-design.md`.
 
 **Scope is one of four values or NULL, never free text.** CSAAS `meeting_tasks.scope`
 (migration `data/migrations/20260929_2_meeting_tasks_scope.sql`) holds `backend` /

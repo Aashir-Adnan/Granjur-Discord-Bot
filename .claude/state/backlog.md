@@ -5,20 +5,11 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 ---
 
 ## Owner roadmap, 2026-09-28 — seven sub-projects, in build order (each: spec → plan → build)
-1. **Identity link and access scoping — BUILT, NOT DEPLOYED.** Spec
+1. **Identity link and access scoping — DEPLOYED (2026-09-29).** Spec
    `docs/superpowers/specs/2026-09-28-identity-link-access-scoping-design.md`, knowledge
-   `.claude/knowledge/identity-link.md`. Branch `feat/identity-link` in all three repos;
-   nothing merged or deployed. Site users see and change only their projects/tasks.
-   - **Rollout, in order (bot → site → CSAAS):**
-     1. Bot to `main`. Migration 027 (`discordlinkcode`) runs automatically on deploy.
-     2. Site to `main` — Vercel builds on push.
-     3. CSAAS by hand — pushes to CSAAS `main` do NOT auto-deploy; someone must trigger
-        the deploy directly. Its migration (`discord_identity_link` +
-        `discord_identity_link_block`) runs at CSAAS startup, before it serves requests.
-     - Why this order: the site ships before CSAAS because the new site works against the old CSAAS (no `viewer` in the payload, so no link card and nothing changes), while the old site against the new CSAAS would leave unlinked users on an empty page with no way to link.
-     - Scoping has no effect until CSAAS is live; until then the site behaves exactly as
-       before this feature.
-   - **First live checks:** a linked non-admin sees only their own projects; an admin (or
+   `.claude/knowledge/identity-link.md`. Merged and pushed in all three repos; the owner
+   confirmed CSAAS is deployed. Site users see and change only their projects/tasks.
+   - **First live checks (still worth doing once):** a linked non-admin sees only their own projects; an admin (or
      anyone whose linked Discord account holds CEO/Server Manager) still sees everything;
      a `/link` code works once (a second attempt with the same code fails); unlink then
      re-link needs a fresh `/link` code (email auto-link is blocked after an admin unlink).
@@ -41,24 +32,25 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      - The visual check of the link card and the admin People-tab links panel was never
        done — no portal sign-in was available during the build (same limitation noted on
        earlier site work). Do a real sign-in pass, light and dark, before calling this done.
-2. **Scope everywhere and meeting-task projects — BUILT, NOT DEPLOYED.** Spec
+2. **Scope everywhere and meeting-task projects — MERGED LOCALLY, NOT PUSHED.** Spec
    `docs/superpowers/specs/2026-09-29-scope-and-meeting-projects-design.md`, plan
    `docs/superpowers/plans/2026-09-29-scope-and-meeting-projects.md`, knowledge
    `.claude/knowledge/csaas-meeting-workflow-integration.md` ("Scope and meeting-task
    projects") and `.claude/knowledge/project-tasks-site.md` ("Scope filter"). Branch
    `feat/scope-meeting-projects` (bot), `feat/meeting-task-scope` (CSAAS), `feat/scope-filter`
-   (site); nothing merged or deployed. Every task carries one of
+   (site), merged into each local `main` on 2026-09-29 (bot `f62baa4`, CSAAS `09b2f61`, site
+   `4f6dc09`); not pushed yet. Every task carries one of
    `backend`/`frontend`/`qa`/`design` or none (Claude picks, the platform falls back by
    language, old free text moves into Modules); a meeting task gets the meeting's own
    project automatically, falling back to the project Claude named, and only a task neither
    settles asks the reviewer which project; the site's Team Board and Tasks tabs gain a
    Scope filter.
-   - **Rollout, in order (bot → CSAAS by hand → site), each step needing the owner's
-     go-ahead. The preview runs BEFORE the bot branch is merged to `main` — merging
+   - **Rollout, in order (bot → CSAAS → site), each step needing the owner's go-ahead. The preview runs BEFORE the bot's `main` is pushed — pushing
      deploys the bot, and the deploy workflow runs `npm run db:migrate`, so migration 028
      must not reach production unreviewed:**
      1. **Preview migration 028 on production first** (read-only, credentials only from env
-        vars), BEFORE merging the bot branch:
+        vars), BEFORE pushing the bot. **DONE 2026-09-29:** 146 tasks, rows_touched 81
+        (case_fixed 2, moved_to_modules 79, blank 0), non_array_modules 0, has_ctrl_ws 0.
 
        ```sql
        SELECT
@@ -82,11 +74,10 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
         the `non_array_modules` rows, though not itself a reason to stop. `rows_touched` is
         the total number of rows migration 028 will rewrite.
      2. **Bot** to `main` — runs migration 028 automatically on its usual deploy path.
-     3. **CSAAS by hand** — pushes to CSAAS `main` do NOT auto-deploy (none since
-        2026-09-12; same fact as the site-task-edit and identity-link rollouts). Run
-        `data/migrations/20260929_2_meeting_tasks_scope.sql` **before** triggering the
-        deploy, not after — the CSAAS code's `meeting_tasks` INSERT already names the new
-        `scope` column.
+     3. **CSAAS** to `main` — a push deploys automatically (the "Deploy to Azure"
+        workflow), and `Src/server.js` runs `runMigrationsOnStart()` before serving, so
+        `data/migrations/20260929_2_meeting_tasks_scope.sql` adds the column before the new
+        code (whose `meeting_tasks` INSERT names it) handles a request. No separate step.
      4. **Site** to `main` — Vercel builds on push.
      5. **Post-deploy check**, after the bot deploy finishes:
 
@@ -102,9 +93,8 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
        filter works on whatever scopes already exist.
    - **Still open, not part of this rollout:** the owner question whether the org-level
      `Admin` role keeps `seesAll` and link management or only `Platform Admin` does (from
-     sub-project 1); the usman@granjur.com permission fix (CSAAS `20856ae`, site `a594551`,
-     both already the base `main` commits this sub-project branched from) is pushed and
-     also waiting on the same manual CSAAS deploy.
+     sub-project 1). The usman@granjur.com permission fix (CSAAS `20856ae`, site `a594551`)
+     is pushed, so it deployed with those pushes.
 3. **Global channel layout** — trim `/init`'s global staff/onboarding channels to
    announcements + casual (+ documentation); add a global feedback channel. Deletes live
    channels: ship with a preview mode.

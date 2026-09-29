@@ -215,9 +215,9 @@ preference — see `identity.js`'s module comment and every function in it.
 
 ## Rollout
 
-Bot (migration 027 runs on deploy) → site (Vercel, builds on push) → CSAAS (**manual
-deploy** — pushes to CSAAS's `main` do not auto-deploy; migration runs at CSAAS startup,
-before it serves any request). The site ships before CSAAS because the new site works against the old CSAAS (no `viewer` in the payload, so no link card and nothing changes), while the old site against the new CSAAS would leave unlinked users on an empty page with no way to link. Scoping has no effect until CSAAS is live;
+Bot (migration 027 runs on deploy) → site (Vercel, builds on push) → CSAAS (a push to
+`main` deploys automatically; migration runs at CSAAS startup, before it serves any
+request). Deployed 2026-09-29. The site ships before CSAAS because the new site works against the old CSAAS (no `viewer` in the payload, so no link card and nothing changes), while the old site against the new CSAAS would leave unlinked users on an empty page with no way to link. Scoping has no effect until CSAAS is live;
 until then the site behaves exactly as before this feature. See `backlog.md` for the
 full rollout/first-live-check list.
 
