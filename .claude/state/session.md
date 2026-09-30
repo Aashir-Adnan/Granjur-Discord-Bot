@@ -10,8 +10,10 @@ All seven roadmap sub-projects are now built.
 ## State
 - Branch `feat/doc-tasks` in the bot and in CSAAS (`D:\Work\Granjur Technologies\CSAAS_Backend`).
   Bot commits: spec `48f1f06`, plan `5597828`, `4d6782a`, `16334b3`, `b08b81e`, `24ad422`,
-  `6e9d492`, `5ff14ec`, `826a127`, `be182b4`, then this docs commit. CSAAS: `6a159cf`.
-- Suites on these heads: bot `npm test` 1677 tests, `ℹ fail 0`; CSAAS `create.test.js OK`,
+  `6e9d492`, `5ff14ec`, `826a127`, `be182b4`, `d1cd476` (docs), then the final-review fix
+  wave `fix(meetings): no mentions from user text, fresh job rows per tick, report once, size
+  and channel checks`. CSAAS: `6a159cf`.
+- Suites on these heads: bot `npm test` 1696 tests, `ℹ fail 0`; CSAAS `create.test.js OK`,
   `utterance.test.js OK`.
 - No migration. Rollout when the owner approves: merge, push CSAAS `main`, then the bot's
   `main` (see `backlog.md` item 7).

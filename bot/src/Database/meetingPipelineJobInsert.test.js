@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { meetingPipelineJobInsertSql } from './index.js'
+import { meetingPipelineJobInsertSql, meetingPipelineJobUnfinishedByGuildSql } from './index.js'
+
+test("a guild's unfinished jobs: everything not done or failed, for that guild only", () => {
+  const { sql, params } = meetingPipelineJobUnfinishedByGuildSql('cfg1')
+  assert.equal(sql, "SELECT * FROM `meeting_pipeline_job` WHERE guildConfigId = ? AND status NOT IN ('done', 'failed')")
+  assert.deepEqual(params, ['cfg1'])
+})
 
 test('a job created without dataJson writes exactly the statement it always did', () => {
   const { sql, params } = meetingPipelineJobInsertSql('j1', { guildConfigId: 'cfg1', meetingId: 'm1' })

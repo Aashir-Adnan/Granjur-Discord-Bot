@@ -3,7 +3,7 @@
 // .claude/rules/tests-never-touch-production.md.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MessageFlags } from 'discord.js'
+import { MessageFlags, PermissionFlagsBits, PermissionsBitField } from 'discord.js'
 import { data, execute, autocomplete } from './tasks-from-doc.js'
 import { DocTextError } from '../services/docText.js'
 import { isModalFirstCommand, isPublicReplyCommand, handleCommand } from './index.js'
@@ -11,9 +11,20 @@ import { isModalFirstCommand, isPublicReplyCommand, handleCommand } from './inde
 const CFG = { id: 'cfg1' }
 const FILE = { name: 'Sprint plan.pdf', url: 'https://cdn/x', size: 10 }
 
-function fakeInteraction({ values = {}, file = FILE, channelId = 'chan1', guild = { id: 'guild1' } } = {}) {
+const POST_PERMS = [
+  PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles,
+]
+const BOT_USER = { id: 'bot1' }
+
+function fakeInteraction({ values = {}, file = FILE, channelId = 'chan1', guild = { id: 'guild1' }, botPerms = POST_PERMS } = {}) {
+  const permsAsked = []
   const ix = {
-    guild, channelId, replies: [], edits: [], deleted: 0, followUps: [],
+    guild, channelId, replies: [], edits: [], deleted: 0, followUps: [], permsAsked,
+    client: { user: BOT_USER },
+    channel: {
+      id: channelId,
+      permissionsFor: (who) => { permsAsked.push(who); return new PermissionsBitField(botPerms) },
+    },
     options: { getString: (n) => values[n] ?? null, getAttachment: (n) => (n === 'file' ? file : null) },
     reply: async (p) => { ix.replies.push(p) },
     deleteReply: async () => { ix.deleted += 1 },
@@ -23,13 +34,14 @@ function fakeInteraction({ values = {}, file = FILE, channelId = 'chan1', guild 
   return ix
 }
 
-function fakeDb({ projects = [] } = {}) {
-  const calls = { meeting: [], job: [], jobUpdate: [] }
+function fakeDb({ projects = [], openJobs = [] } = {}) {
+  const calls = { meeting: [], job: [], jobUpdate: [], openQuery: [] }
   return {
     calls,
     project: { findFirst: async ({ where }) => projects.find((p) => p.id === where.id) ?? null, findMany: async () => projects },
     meeting: { create: async (a) => { calls.meeting.push(a); return { id: 'm1' } } },
     meetingPipelineJob: {
+      findUnfinishedByGuild: async (guildConfigId) => { calls.openQuery.push(guildConfigId); return openJobs },
       create: async (a) => { calls.job.push(a); return { id: 'j1' } },
       update: async (id, patch) => { calls.jobUpdate.push([id, patch]); return {} },
     },
@@ -174,7 +186,92 @@ test('accepted: creates the meeting and the job, replies publicly through the de
     dataJson: { source: 'document', reviewChannelId: 'chan1', documentName: 'Sprint plan.pdf', title: 'Sprint plan' },
   } }], 'exactly one create call, carrying the dataJson')
   assert.deepEqual(db.calls.jobUpdate, [], 'no follow-up update')
-  assert.deepEqual(ix.edits, [{ content: 'Reading **Sprint plan.pdf** — the proposed tasks will be posted here for review.' }])
+  assert.deepEqual(ix.edits, [{
+    content: 'Reading **Sprint plan.pdf** — the proposed tasks will be posted here for review.',
+    allowedMentions: { parse: [] },
+  }])
+})
+
+// ---- final fix wave (2026-10-01) ----
+
+test('the accepted reply pings nobody, even for a file named after a mention', async () => {
+  const ix = fakeInteraction({ file: { ...FILE, name: '@everyone.md' } })
+  await execute(ix, deps(fakeDb()))
+  assert.equal(ix.edits[0].content, 'Reading **@everyone.md** — the proposed tasks will be posted here for review.')
+  assert.deepEqual(ix.edits[0].allowedMentions, { parse: [] })
+})
+
+const TOO_LONG = '**Sprint plan.pdf** is too long to store. Split it into smaller files.'
+
+test('text within 64 bytes of the 65,535-byte column is refused (CSAAS prefixes its own marker)', async () => {
+  const text = 'a'.repeat(65535 - 63)
+  const ix = fakeInteraction()
+  const db = fakeDb()
+  await execute(ix, deps(db, { extract: async () => ({ text, chars: text.length }) }))
+  assertRefused(ix, TOO_LONG)
+  assert.equal(db.calls.meeting.length, 0)
+
+  const fits = 'a'.repeat(65535 - 64)
+  const ok = fakeInteraction()
+  await execute(ok, deps(fakeDb(), { extract: async () => ({ text: fits, chars: fits.length }) }))
+  assert.equal(ok.edits.length, 1)
+})
+
+test('text whose JSON escaping would pass 95,000 bytes is refused, though its own bytes fit', async () => {
+  const text = '"'.repeat(48000) // 48,000 bytes; JSON.stringify doubles every quote -> 96,002
+  assert.ok(Buffer.byteLength(text, 'utf8') < 65535 - 64)
+  assert.ok(Buffer.byteLength(JSON.stringify(text), 'utf8') > 95_000)
+  const ix = fakeInteraction()
+  const db = fakeDb()
+  await execute(ix, deps(db, { extract: async () => ({ text, chars: text.length }) }))
+  assertRefused(ix, TOO_LONG)
+  assert.equal(db.calls.meeting.length, 0)
+})
+
+const docJobRow = (status) => ({ id: `j-${status}`, status, dataJson: { source: 'document' } })
+
+test('2 document jobs in progress: a third is accepted', async () => {
+  const openJobs = [docJobRow('pending'), docJobRow('blocked'), { id: 'rec', status: 'pending', dataJson: {} }]
+  const ix = fakeInteraction()
+  const db = fakeDb({ openJobs })
+  await execute(ix, deps(db))
+  assert.deepEqual(db.calls.openQuery, ['cfg1'])
+  assert.equal(db.calls.job.length, 1)
+  assert.equal(ix.edits.length, 1)
+})
+
+test('3 document jobs in progress: refused ephemerally, before any download', async () => {
+  const openJobs = [docJobRow('pending'), docJobRow('working'), docJobRow('blocked'), docJobRow('done'), docJobRow('failed')]
+  const ix = fakeInteraction()
+  const db = fakeDb({ openJobs })
+  let downloaded = false
+  await execute(ix, deps(db, { download: async () => { downloaded = true; return Buffer.from('x') } }))
+  assertRefused(ix, 'This server already has 3 documents being turned into tasks. Try again when one is reviewed.')
+  assert.equal(downloaded, false)
+  assert.equal(db.calls.meeting.length, 0)
+})
+
+test("refused ephemerally when the bot can't attach files in this channel, before any download", async () => {
+  for (const botPerms of [
+    [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
+    [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.AttachFiles],
+    [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles],
+  ]) {
+    const ix = fakeInteraction({ botPerms })
+    const db = fakeDb()
+    let downloaded = false
+    await execute(ix, deps(db, { download: async () => { downloaded = true; return Buffer.from('x') } }))
+    assertRefused(ix, "I can't post in this channel — run /tasks-from-doc where I can send messages and attach files.")
+    assert.equal(downloaded, false)
+    assert.equal(db.calls.meeting.length, 0)
+  }
+})
+
+test('the channel check asks about the bot itself, and passes with all three permissions', async () => {
+  const ix = fakeInteraction()
+  await execute(ix, deps(fakeDb()))
+  assert.deepEqual(ix.permsAsked, [BOT_USER])
+  assert.equal(ix.edits.length, 1)
 })
 
 test('accepted with a project and a title: the project id goes on the meeting and the title on the job', async () => {

@@ -685,7 +685,33 @@ test('mirrored creates a task per non-rejected review task and pings assignees',
   assert.equal(out.patch.dataJson.mirrored[0].github, true)
   assert.equal(out.patch.dataJson.mirrored[0].title, 'Do A')
   assert.equal(sent.length, 1)
-  assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\*/)
+  assert.match(sent[0].content, /<@11> you've been assigned: \*\*Do A\*\*/)
+})
+
+test('the assignee ping mentions only the assignee, even when a task title holds a mention', async () => {
+  const sent = []
+  const channel = { id: 'tc1', send: async (m) => { sent.push(m); return { id: 'x' } } }
+  const client = { user: { id: 'bot' }, channels: { fetch: async () => channel } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
+    task: { findFirst: async () => null, create: async () => ({ id: 'db1' }) },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 'a', goal_of_task: 'Tell @everyone and <@&42> and <@77>' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: '11', rejected: false }] },
+    },
+  }
+  await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(sent.length, 1)
+  assert.match(sent[0].content, /^<@11> you've been assigned: \*\*Tell @everyone/)
+  assert.deepEqual(sent[0].allowedMentions, { users: ['11'] })
 })
 
 test('mirrored is idempotent on re-run: reuses existing task, no re-ping when pinged', async () => {
@@ -812,7 +838,7 @@ test('mirrored gives each assigned task its own channel, DMs the assignee, and r
   assert.match(dms[0][1], /<#task-2>/)
 
   // The review-channel summary links the new channel.
-  assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\* \(<#task-2>\)/)
+  assert.match(sent[0].content, /<@11> you've been assigned: \*\*Do A\*\* \(<#task-2>\)/)
 })
 
 test('mirrored gives a matched task its channel inside the project, named after its title', async () => {
@@ -1421,6 +1447,77 @@ test('reporting does not call CSAAS again when already reported', async () => {
   assert.equal(out.patch.dataJson.reported, true)
 })
 
+// ---- final fix wave (2026-10-01): /report is marked BEFORE it is called ----
+
+function reportingDb() {
+  const writes = []
+  return { writes, db: { meetingPipelineJob: { update: async (id, patch) => { writes.push([id, structuredClone(patch)]); return {} } } } }
+}
+
+test('reporting saves reported:true on the job before it calls /report', async () => {
+  const { db, writes } = reportingDb()
+  let writesAtCall = null
+  const csaasClient = { generateReport: async () => { writesAtCall = writes.length; return {} } }
+  const job = { id: 'j', csaasMeetingId: 'm7', dataJson: { title: 'T' } }
+  await stageRunners.reporting({ job, db, csaasClient })
+  assert.equal(writesAtCall, 1, 'the write happened before the call')
+  assert.deepEqual(writes[0], ['j', { dataJson: { title: 'T', reported: true } }])
+})
+
+test('a retry after an aborted /report (stage timeout) advances without calling it again', async () => {
+  const { db, writes } = reportingDb()
+  let calls = 0
+  // First run: the call never returns (the worker's stage timeout abandons it).
+  const hung = { generateReport: () => { calls += 1; return new Promise(() => {}) } }
+  const job = { id: 'j', csaasMeetingId: 'm7', dataJson: { title: 'T' } }
+  void stageRunners.reporting({ job, db, csaasClient: hung })
+  await new Promise((r) => setImmediate(r))
+  assert.equal(calls, 1)
+  // The worker's error path keeps the saved dataJson; the retry reads it.
+  const saved = writes.at(-1)[1].dataJson
+  const retry = { generateReport: async () => { calls += 1; return {} } }
+  const out = await stageRunners.reporting({ job: { ...job, dataJson: saved }, db, csaasClient: retry })
+  assert.equal(calls, 1, '/report was not called a second time')
+  assert.notEqual(out.advance, false)
+  assert.equal(out.patch.dataJson.reported, true)
+})
+
+test('a retry after a thrown /report advances without calling it again', async () => {
+  const { db, writes } = reportingDb()
+  let calls = 0
+  const realWarn = console.warn
+  console.warn = () => {}
+  try {
+    const job = { id: 'j', csaasMeetingId: 'm7', dataJson: {} }
+    const aborting = { generateReport: async () => { calls += 1; throw new Error('This operation was aborted') } }
+    await stageRunners.reporting({ job, db, csaasClient: aborting })
+    const out = await stageRunners.reporting({ job: { ...job, dataJson: writes.at(-1)[1].dataJson }, db, csaasClient: aborting })
+    assert.equal(calls, 1)
+    assert.notEqual(out.advance, false)
+  } finally {
+    console.warn = realWarn
+  }
+})
+
+test('the /report timeout is clamped to 30 s under the worker stage timeout', async () => {
+  const prev = process.env.MEETING_STAGE_TIMEOUT_MS
+  const seen = []
+  const csaasClient = { generateReport: async (id, opts) => { seen.push(opts?.timeoutMs); return {} } }
+  const run = () => stageRunners.reporting({ job: { id: 'j', csaasMeetingId: 'm7', dataJson: {} }, db: reportingDb().db, csaasClient })
+  try {
+    delete process.env.MEETING_STAGE_TIMEOUT_MS
+    await run() // default stage timeout 360 s -> min(300 s, 330 s)
+    process.env.MEETING_STAGE_TIMEOUT_MS = '200000'
+    await run() // min(300 s, 170 s)
+    process.env.MEETING_STAGE_TIMEOUT_MS = '900000'
+    await run() // min(300 s, 870 s)
+  } finally {
+    if (prev === undefined) delete process.env.MEETING_STAGE_TIMEOUT_MS
+    else process.env.MEETING_STAGE_TIMEOUT_MS = prev
+  }
+  assert.deepEqual(seen, [300_000, 170_000, 300_000])
+})
+
 test('meetingNotesFileNames uses the UTC date, and today when the date is unusable', () => {
   assert.deepEqual(meetingNotesFileNames('2026-09-30T23:30:00Z'), {
     notes: 'meeting-notes-2026-09-30.md', report: 'meeting-report-2026-09-30.html',
@@ -1477,6 +1574,16 @@ test('awaiting_review posts the notes message with both files before the review'
   assert.equal(out.patch.reviewMessageId, 'review-msg')
   assert.match(h.sent.at(-1).embeds[0].data.description, /Full notes are attached above\./)
   assert.equal(out.block, true)
+})
+
+test('the notes message pings nobody, whatever the title says', async () => {
+  const h = notesHarness({ notes: '# Notes', html: null, dataJson: { title: '@everyone <@&123>' } })
+  await stageRunners.awaiting_review(h)
+  const [m] = notesMessages(h)
+  assert.equal(m.content, '**Meeting notes — @everyone <@&123>**')
+  assert.deepEqual(m.allowedMentions, { parse: [] })
+  // The review message carries no content at all (embeds only), so nothing in it pings.
+  assert.equal(h.sent.at(-1).content, undefined)
 })
 
 test('awaiting_review attaches only the notes when there is no html', async () => {

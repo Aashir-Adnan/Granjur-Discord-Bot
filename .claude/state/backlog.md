@@ -317,8 +317,18 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
    - **Not yet done:** a live pass: `/tasks-from-doc` with a small .md and a PDF, a
      `/record start` with a document, and a finished meeting showing the notes and report files.
    - **Deferred:**
-     - The VM's Node version must be >= 22 for PDF reading (`unpdf` declares it; on an older
-       Node only PDFs fail, with a sentence). Unknown today.
+     - The VM's Node version must be >= 22 for PDF reading (`unpdf` declares it; on Node
+       below 22 PDF reading may fail; the failure is contained to that file). Unknown today.
+     - Extraction runs in-process: a crafted .docx could exhaust the bot's memory. A
+       `worker_thread` with resource limits would contain it.
+     - `/report` adds ~3 Claude calls and minutes per meeting, and truncates long
+       transcripts in the HTML report.
+     - Participant names show blank in the HTML report: the bot sends names as strings;
+       CSAAS's report expects objects.
+     - Anyone who can see a review can approve it (pre-existing).
+     - The worker's claim does not check `nextAttemptAt`: across two processes a job that
+       failed on the same stage between the batch read and the claim runs before its
+       backoff (in one process the in-flight guard rules this out).
      - `/record start` waits for the document read, up to 20 s, before recording starts.
      - `Using <file> as background` is shown even when the brief is later lost (the brief
        is not stored, so a CSAAS that cannot create the meeting at the start drops it).

@@ -15,6 +15,8 @@ import { loadProjectContext, settledProject, resolveMeetingTaskProject, reviewPr
 import { buildAnalyzeLivePayload } from './liveTranscriptPayload.js'
 import { createIssue } from './github.js'
 import { repoReasonText } from './taskRepo.js'
+import { REPORT_TIMEOUT_MS } from './csaasClient.js'
+import { stageTimeoutMs } from '../Database/meetingPipelineJob.helpers.js'
 
 // overrides is a test-only seam, never meant to carry real data: the `db`
 // facade passed at runtime (bot/src/db/index.js default export) is a plain
@@ -226,20 +228,33 @@ export async function resolveMeetingChannel(client, db, job) {
   return null
 }
 
+// The /report call's timeout: its own 300 s, but always 30 s inside the
+// worker's stage cap, so the call gives up before the worker does.
+export function reportTimeoutMs() {
+  return Math.max(1, Math.min(REPORT_TIMEOUT_MS, stageTimeoutMs() - 30_000))
+}
+
 // reporting: ask CSAAS to write the meeting notes and the HTML report (its
 // /report step; /notes is empty until this has run). Best-effort and never
-// throws: a failed report must not stop the tasks reaching review. The outcome
-// is recorded so a retry does not ask twice.
-async function reportingStage({ job, csaasClient }) {
+// throws: a failed report must not stop the tasks reaching review. Asked once:
+// `reported` is saved BEFORE the call, because the worker saves nothing from a
+// stage its timeout abandons — the retry then moves on instead of asking again.
+async function reportingStage({ job, db, csaasClient }) {
   const data = { ...(job.dataJson || {}) }
   if (data.reported) return { patch: { dataJson: data } }
+  data.reported = true
+  if (db?.meetingPipelineJob?.update) {
+    try {
+      await db.meetingPipelineJob.update(job.id, { dataJson: { ...data } })
+    } catch (e) {
+      console.warn('[meetingPipeline] report marker persist failed:', e?.message || e)
+    }
+  }
   try {
-    await csaasClient.generateReport(job.csaasMeetingId)
-    data.reported = true
+    await csaasClient.generateReport(job.csaasMeetingId, { timeoutMs: reportTimeoutMs() })
   } catch (e) {
     const message = e?.message || String(e)
     console.warn('[meetingPipeline] report failed:', message)
-    data.reported = true
     data.reportError = message
   }
   return { patch: { dataJson: data } }
@@ -302,7 +317,12 @@ async function awaitingReviewStage({ job, db, client, csaasClient }) {
         const files = []
         if (notes) files.push(new AttachmentBuilder(Buffer.from(notes, 'utf8'), { name: names.notes }))
         if (html) files.push(new AttachmentBuilder(Buffer.from(html, 'utf8'), { name: names.report }))
-        const sentNotes = await channel.send({ content: `**Meeting notes — ${data.title || 'Meeting'}**`, files })
+        // The title is user text (a document job's `title` option): it must not ping.
+        const sentNotes = await channel.send({
+          content: `**Meeting notes — ${data.title || 'Meeting'}**`,
+          files,
+          allowedMentions: { parse: [] },
+        })
         data.notesMessageId = sentNotes.id
         data.notesChannelId = channel.id
         // Saved BEFORE the review goes out: a crash between the two sends then
@@ -523,11 +543,14 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     }
     for (const [ref, items] of byRef) {
       try {
-        await channel.send(
-          `<@${ref}> you've been assigned: ${items
+        // Task titles are Claude's words, steerable by a document's text: only
+        // the assignee this line is for may be pinged.
+        await channel.send({
+          content: `<@${ref}> you've been assigned: ${items
             .map((m) => (m.taskChannelId ? `**${m.title}** (<#${m.taskChannelId}>)` : `**${m.title}**`))
             .join(', ')} — /update-task for details`,
-        )
+          allowedMentions: { users: [ref] },
+        })
       } catch (e) {
         console.warn('[meetingPipeline] assignee ping failed:', e?.message || e)
       }

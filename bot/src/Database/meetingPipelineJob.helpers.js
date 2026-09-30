@@ -6,6 +6,12 @@ export function backoffMs(attempt) {
 
 export const MAX_ATTEMPTS = 6
 
+// The worker's cap on one stage run. Stages that make a long call (reporting's
+// /report) size their own timeout under it, so they read the same value.
+export function stageTimeoutMs() {
+  return Number(process.env.MEETING_STAGE_TIMEOUT_MS) || 360_000
+}
+
 // Strict truthiness for the pipeline kill switch: only 1/true/yes/on enable it.
 // MEETING_PIPELINE_ENABLED="false" / "0" / "" -> disabled.
 export function meetingPipelineEnabled() {

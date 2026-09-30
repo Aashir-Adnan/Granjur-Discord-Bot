@@ -1,4 +1,4 @@
-import { SlashCommandBuilder } from 'discord.js'
+import { PermissionFlagsBits, SlashCommandBuilder } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as csaasClient from '../services/csaasClient.js'
 import { meetingPipelineEnabled } from '../Database/meetingPipelineJob.helpers.js'
@@ -25,8 +25,20 @@ export const data = new SlashCommandBuilder()
 
 const NOT_AVAILABLE = 'Tasks from documents are not available on this server yet.'
 const NO_PROJECT = 'No project matches that name.'
-// meeting.transcript is a TEXT column: 65,535 bytes, not characters.
-const MAX_TRANSCRIPT_BYTES = 65535
+const CANT_POST = "I can't post in this channel — run /tasks-from-doc where I can send messages and attach files."
+const QUEUE_FULL = 'This server already has 3 documents being turned into tasks. Try again when one is reviewed.'
+// meeting.transcript (here and in CSAAS) is a TEXT column: 65,535 bytes, not
+// characters. CSAAS stores "[segment_0]\n" + text, so leave room for its marker.
+const MAX_TRANSCRIPT_BYTES = 65535 - 64
+// CSAAS parses request bodies up to 100 KB; JSON escaping can grow the text a lot.
+const MAX_JSON_BYTES = 95_000
+const MAX_OPEN_DOCUMENT_JOBS = 3
+// The review, the notes files and the pings all go to the command's channel.
+const POST_PERMISSIONS = [
+  PermissionFlagsBits.ViewChannel,
+  PermissionFlagsBits.SendMessages,
+  PermissionFlagsBits.AttachFiles,
+]
 
 const withoutExtension = (name) => String(name || 'document').replace(/\.[^./\\]+$/, '') || 'document'
 
@@ -57,6 +69,15 @@ export async function execute(
   const cfg = await getConfig(guild.id)
   if (!cfg) return refuse(interaction, 'Server not initialized. Run **/init** first.')
 
+  const perms = interaction.channel?.permissionsFor?.(interaction.client.user)
+  if (!perms?.has(POST_PERMISSIONS)) return refuse(interaction, CANT_POST)
+
+  const unfinished = await dbArg.meetingPipelineJob.findUnfinishedByGuild(cfg.id)
+  const openDocuments = unfinished.filter(
+    (j) => j.dataJson?.source === 'document' && j.status !== 'done' && j.status !== 'failed',
+  )
+  if (openDocuments.length >= MAX_OPEN_DOCUMENT_JOBS) return refuse(interaction, QUEUE_FULL)
+
   const rawProject = String(interaction.options.getString('project') || '').trim()
   let project = null
   if (rawProject) {
@@ -70,7 +91,10 @@ export async function execute(
   try {
     const buffer = await download(attachment)
     ;({ text } = await extract({ buffer, fileName }))
-    if (Buffer.byteLength(text, 'utf8') > MAX_TRANSCRIPT_BYTES) {
+    if (
+      Buffer.byteLength(text, 'utf8') > MAX_TRANSCRIPT_BYTES ||
+      Buffer.byteLength(JSON.stringify(text), 'utf8') > MAX_JSON_BYTES
+    ) {
       throw new DocTextError(`**${fileName}** is too long to store. Split it into smaller files.`)
     }
   } catch (e) {
@@ -105,8 +129,10 @@ export async function execute(
     throw e
   }
 
+  // A public message holding a user-chosen file name: it must not ping anyone.
   return interaction.editReply({
     content: `Reading **${fileName}** — the proposed tasks will be posted here for review.`,
+    allowedMentions: { parse: [] },
   })
 }
 

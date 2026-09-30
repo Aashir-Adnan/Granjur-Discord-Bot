@@ -16,10 +16,16 @@ Rollout when approved: CSAAS, then the bot (`npm install --production` installs 
   `/tasks-from-doc` (defer first, ephemeral refusals, byte cap, one-insert job, cleanup on
   failure); `826a127` + `be182b4` a document at `/record start` (an unreadable or stalled
   document never holds back the recording); plus `docs: tasks from documents and meeting
-  notes — knowledge and state`.
+  notes — knowledge and state`; then the final-review fix wave `fix(meetings): no mentions
+  from user text, fresh job rows per tick, report once, size and channel checks` (notes
+  message, accepted reply and assignee pings no longer ping from user/Claude text; the worker
+  re-reads each claimed job and runs one tick at a time; `reported` saved before `/report`,
+  whose timeout sits 30 s inside the stage cap; CSAAS size limits, a 3-document queue cap and
+  a channel permission check on `/tasks-from-doc`; the failure notice no longer shows the
+  raw error).
 - **CSAAS:** `6a159cf` `/create` accepts the pre-meeting brief (`pre_meeting_notes`, at most
   20,000 characters, else 400).
-- Suites: bot `npm test` 1677 tests, 1677 pass, `ℹ fail 0`; CSAAS `create.test.js OK` and
+- Suites: bot `npm test` 1696 tests, 1696 pass, `ℹ fail 0` (1677 before the fix wave); CSAAS `create.test.js OK` and
   `utterance.test.js OK` (run with `OPENAI_API_KEY=dummy`).
 - Not exercised live (no deploy). Deferred items and the VM Node >= 22 check for PDFs are
   under roadmap item 7 in `backlog.md`.

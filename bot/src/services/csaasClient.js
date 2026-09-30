@@ -124,8 +124,9 @@ export const fetchNotes = async (meetingId) => {
 // under the worker default 360 s stage cap.
 export const REPORT_TIMEOUT_MS = 300_000
 
-export const generateReport = (meetingId) =>
-  postJson('/meeting/workflow/report', { meeting_id: meetingId }, { timeoutMs: REPORT_TIMEOUT_MS })
+// `timeoutMs` lets the reporting stage keep the call inside the worker's stage cap.
+export const generateReport = (meetingId, { timeoutMs = REPORT_TIMEOUT_MS } = {}) =>
+  postJson('/meeting/workflow/report', { meeting_id: meetingId }, { timeoutMs })
 
 export const fetchMeeting = (meetingId) =>
   getJson('/meeting/workflow/meeting', { meeting_id: meetingId })

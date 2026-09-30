@@ -1960,6 +1960,19 @@ async function meetingPipelineJobFindById(jobId) {
   return _mpjRow(await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE id = ?", [jobId]));
 }
 
+/** A guild's jobs that are still in the pipeline: every status but 'done' and 'failed'. */
+export function meetingPipelineJobUnfinishedByGuildSql(guildConfigId) {
+  return {
+    sql: "SELECT * FROM `meeting_pipeline_job` WHERE guildConfigId = ? AND status NOT IN ('done', 'failed')",
+    params: [guildConfigId],
+  };
+}
+
+async function meetingPipelineJobFindUnfinishedByGuild(guildConfigId) {
+  const { sql, params } = meetingPipelineJobUnfinishedByGuildSql(guildConfigId);
+  return (await query(sql, params)).map(_mpjRow);
+}
+
 function _mpjStaleSeconds() {
   return Math.max(1, Math.round((Number(process.env.MEETING_STAGE_TIMEOUT_MS) || 360000) / 1000));
 }
@@ -2548,6 +2561,7 @@ const db = {
     create: meetingPipelineJobCreate,
     findByMeeting: meetingPipelineJobFindByMeeting,
     findById: meetingPipelineJobFindById,
+    findUnfinishedByGuild: meetingPipelineJobFindUnfinishedByGuild,
     claimBatch: meetingPipelineJobClaimBatch,
     claim: meetingPipelineJobClaim,
     update: meetingPipelineJobUpdate,

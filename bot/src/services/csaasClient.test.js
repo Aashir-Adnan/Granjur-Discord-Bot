@@ -226,6 +226,22 @@ test('generateReport posts meeting_id to /report with a 300 s timeout', async ()
   }
 })
 
+test('generateReport takes a shorter timeout when the caller passes one', async () => {
+  const realFetch = globalThis.fetch
+  const realTimeout = AbortSignal.timeout
+  const timeouts = []
+  AbortSignal.timeout = (ms) => { timeouts.push(ms); return realTimeout.call(AbortSignal, ms) }
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: 200, payload: { return: { ok: true } } }), { status: 200 })
+  try {
+    const { generateReport } = await import('./csaasClient.js')
+    await generateReport('m1', { timeoutMs: 170_000 })
+    assert.deepEqual(timeouts, [170_000])
+  } finally {
+    globalThis.fetch = realFetch
+    AbortSignal.timeout = realTimeout
+  }
+})
+
 test('createMeeting sends pre_meeting_notes when given a non-empty brief', async () => {
   await createMeeting({ title: 'T', participants: ['Ali'], preMeetingNotes: 'Background text' })
   const body = JSON.parse(calls[0].opts.body)

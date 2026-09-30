@@ -22,8 +22,11 @@ fetches the Discord attachment (20 s timeout, `DOWNLOAD_TIMEOUT_MS`).
   and joined with blank lines, else the whole value is pretty-printed.
 - PDF uses `unpdf` (`extractText`, pages merged), `.docx` uses `mammoth` (`extractRawText`).
   Both are imported lazily inside the extractor, so a missing or incompatible library only
-  breaks that file type. `unpdf` declares Node >= 22; on an older Node only PDF reading fails,
-  with the "could not be read" sentence. The VM's Node version is unknown (owner check).
+  breaks that file type. `unpdf` declares Node >= 22; on Node below 22 PDF reading may fail;
+  the failure is contained to that file (the "could not be read" sentence). The VM's Node
+  version is unknown (owner check).
+- Extraction runs in the bot's own process (no worker thread), so a crafted `.docx` could
+  exhaust its memory (deferred, `backlog.md` item 7).
 - Tests pass `download` and `extract` fakes; none downloads or parses a real file through
   the network.
 
@@ -37,12 +40,26 @@ deferred publicly first; unexpected errors are masked as for `/explain`.
   `refuse()` does `deleteReply()` then `followUp({ flags: EPHEMERAL })`. The accepted reply
   stays public: `Reading **<file>** — the proposed tasks will be posted here for review.`
   A role denial happens before the command runs and is public (as for `/explain`).
-- Extra limit: 65,535 UTF-8 bytes of text (the `meeting.transcript` TEXT column holds bytes,
-  not characters), so a file can pass the 60,000-character cap and still be refused as
-  `too long to store`.
+- Extra size limits, both refused as `too long to store`: more than 65,535 − 64 UTF-8 bytes
+  of text, or more than 95,000 bytes once JSON-encoded. Why: `meeting.transcript` is a TEXT
+  column (65,535 bytes, not characters) in the bot AND in CSAAS, and CSAAS stores
+  `"[segment_0]\n" + text` there (the 64 bytes leave room for that marker); CSAAS parses
+  request bodies up to 100 KB, and JSON escaping (quotes, newlines, control characters)
+  inflates the text. So a file can pass the 60,000-character cap and still be refused.
+- Before any download, it also refuses (ephemerally):
+  - when the bot lacks View Channel, Send Messages or Attach Files in the channel
+    (`interaction.channel.permissionsFor(client.user)`): `I can't post in this channel — run
+    /tasks-from-doc where I can send messages and attach files.` (The review, the notes files
+    and the pings all go to that channel.)
+  - when the guild already has 3 document jobs in progress (`dataJson.source === 'document'`,
+    status not `done`/`failed`, read with `db.meetingPipelineJob.findUnfinishedByGuild`):
+    `This server already has 3 documents being turned into tasks. Try again when one is
+    reviewed.`
 - Also refuses: outside a server, pipeline disabled or CSAAS not configured
   (`Tasks from documents are not available on this server yet.`), no guild config, a
   `project` that is not this guild's.
+- Mention safety: the public `Reading **<file>**` reply is sent with
+  `allowedMentions: { parse: [] }`, so a file named `@everyone.md` pings nobody.
 - What it writes: a `meeting` row (`channelId` = the channel the command ran in, `transcript`
   = the text, `projectId` if a project was picked), then a `meeting_pipeline_job` row created
   in ONE insert with `dataJson { source: 'document', reviewChannelId, documentName, title }`.
@@ -102,10 +119,19 @@ is empty until `/report` has run.
 - `STAGE_ORDER` (`meetingPipelineWorker.js`): `created, transcribing, analyzing,
   generating_tasks, assigning, reporting, awaiting_review, approved, mirrored, issue_syncing,
   done`. `reporting` sits between `assigning` and `awaiting_review`.
-- `reportingStage` calls `csaasClient.generateReport(meetingId)` (`/report`, 300 s timeout).
-  Best-effort and once: success sets `dataJson.reported = true`; a failure is logged, sets
-  `reported = true` and `reportError = <message>`, and the job carries on, so a failed report
-  never stops tasks reaching review.
+- `reportingStage` calls `csaasClient.generateReport(meetingId, { timeoutMs })` (`/report`).
+  Best-effort and once: `dataJson.reported = true` is written to the job (a mid-stage
+  `meetingPipelineJob.update`) BEFORE the call, because the worker saves nothing from a stage
+  its timeout abandons; a retry after a stage timeout sees `reported` and advances without
+  calling `/report` again. A failed call is logged and sets `reportError = <message>`; the
+  job carries on, so a failed report never stops tasks reaching review.
+- The call's timeout is `reportTimeoutMs()` = `min(REPORT_TIMEOUT_MS (300 s), stage timeout
+  − 30 s)`; the stage timeout comes from `stageTimeoutMs()` in
+  `Database/meetingPipelineJob.helpers.js` (`MEETING_STAGE_TIMEOUT_MS`, default 360 s), the
+  same helper the worker uses.
+- Cost: `/report` adds ~3 Claude calls and minutes per meeting, and truncates long
+  transcripts in the HTML. Participant names show blank in the HTML report (the bot sends
+  names as strings; CSAAS's report expects objects). Both deferred (`backlog.md` item 7).
 - `awaitingReviewStage` fetches `/notes` and posts `**Meeting notes — <title>**` with
   `meeting-notes-<date>.md` and `meeting-report-<date>.html` attached (each only when
   non-empty; no message at all when both are empty). `<date>` is UTC `YYYY-MM-DD` of the
@@ -118,6 +144,37 @@ is empty until `/report` has run.
   (`notesMessageId` set and `notesChannelId` equals the channel). `/meeting-review` re-posts
   use it too, so a review re-posted elsewhere does not claim notes above it.
 - The on-disk report (`MEETING_REPORTS_DIR`) is gone.
+
+## Safety in public messages and in the worker (final fix wave, 2026-10-01)
+
+The client sets no default `allowedMentions` (`bot/src/index.js`), so every public send that
+carries user- or Claude-written text sets its own:
+
+- The notes message (`**Meeting notes — <title>**`; a document job's title is the free-text
+  `title` option): `allowedMentions: { parse: [] }`.
+- The assignee ping in `mirroredStage` (`<@ref> you've been assigned: **<task title>**`; the
+  title is Claude's, steerable by a document): `allowedMentions: { users: [ref] }`, so only
+  that assignee is pinged.
+- The review message has no `content` (embeds only), so nothing in it pings; the unassigned
+  summary line holds only a count.
+- `notifyFailure` no longer posts the raw error (it could hold internal URLs): the channel
+  gets `The meeting pipeline stopped at **<stage>** after several attempts. An admin can retry
+  it with /meeting-retry <meetingId>.` The full error stays in the job's `lastError`.
+
+Worker (`meetingPipelineWorker.js`):
+
+- `runTick` has an in-flight guard (a module-level flag set and cleared in `try/finally`): a
+  tick that starts while the previous one is still running returns at once. `/report` can
+  hold a tick for minutes and `setInterval` does not wait.
+- `claimBatch` returns a snapshot of up to 3 jobs, run one after another, and `claim` checks
+  only the status. After a successful claim the worker re-reads the job (`findById`) and runs
+  the stage from that fresh row; if its `stage` differs from the snapshot's, it sets the job
+  back to `pending` (the status the claim found) and leaves it for a later tick. Before this,
+  a later job in the batch could be re-run from its old stage and `dataJson` (duplicate
+  Claude runs, a second review, re-mirrored tasks).
+- Known gap: the claim does not check `nextAttemptAt`, so a job that failed in another
+  process between the batch read and the claim, on the same stage, runs without waiting out
+  its backoff. The in-process guard makes this a multi-process case only.
 
 ## Rollout (nothing merged or deployed yet)
 
@@ -133,8 +190,10 @@ is empty until `/report` has run.
 ## Tests
 
 Bot: `docText.test.js`, `tasks-from-doc.test.js`, `record.test.js`,
-`meetingPipelineStages.test.js` (document branches, `reporting`, notes message),
-`meetingReview.test.js` (`notesAttachedIn`), `csaasClient.test.js`; all with `db`, `getConfig`,
+`meetingPipelineStages.test.js` (document branches, `reporting`, notes message, mention
+options), `meetingPipelineWorker.test.js` (fresh row per claim, in-flight guard, masked
+notice), `meetingReview.test.js` (`notesAttachedIn`), `csaasClient.test.js`,
+`Database/meetingPipelineJobInsert.test.js` (the unfinished-jobs SQL); all with `db`, `getConfig`,
 `download`, `extract` and `csaasClient` fakes (see
 `.claude/rules/tests-never-touch-production.md`). CSAAS: `meeting-test/create.test.js` and
 `meeting-test/utterance.test.js` (run with `OPENAI_API_KEY=dummy node <file>`; plain assert
