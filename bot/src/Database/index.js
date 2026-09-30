@@ -1938,7 +1938,8 @@ export function meetingPipelineJobInsertSql(pk, data = {}) {
   }
   return {
     sql: "INSERT INTO `meeting_pipeline_job` (id, guildConfigId, meetingId, dataJson) VALUES (?, ?, ?, ?)",
-    params: [pk, data.guildConfigId, data.meetingId, JSON.stringify(data.dataJson)],
+    // Serialised only when it is an object, as meetingPipelineJobUpdate does.
+    params: [pk, data.guildConfigId, data.meetingId, typeof data.dataJson === "object" ? JSON.stringify(data.dataJson) : data.dataJson],
   };
 }
 

@@ -183,12 +183,8 @@ export async function loadCommands(client) {
   return map
 }
 
-// Commands index.js does NOT defer, because they acknowledge the interaction
-// themselves. (Originally for commands that show a modal; every slash command
-// else is deferred ephemerally so we stay under 3s.) /tasks-from-doc needs a
-// public accepted reply but ephemeral refusals, and Discord fixes the
-// ephemeral flag at the first acknowledgement, so it replies or defers itself.
-const MODAL_FIRST_COMMANDS = new Set(['tasks-from-doc'])
+// Commands that show a modal — we defer all slash commands so we stay under 3s; modal is shown via a button
+const MODAL_FIRST_COMMANDS = new Set([])
 
 export function isModalFirstCommand(name) {
   return MODAL_FIRST_COMMANDS.has(name)
@@ -196,7 +192,9 @@ export function isModalFirstCommand(name) {
 
 // Commands whose reply should be visible to the channel, not only to the
 // invoker. Every other slash command is deferred ephemerally in index.js.
-const PUBLIC_REPLY_COMMANDS = new Set(['explain'])
+// /tasks-from-doc is public for its accepted reply; its refusals are sent as
+// ephemeral follow-ups by the command itself.
+const PUBLIC_REPLY_COMMANDS = new Set(['explain', 'tasks-from-doc'])
 
 export function isPublicReplyCommand(name) {
   return PUBLIC_REPLY_COMMANDS.has(name)

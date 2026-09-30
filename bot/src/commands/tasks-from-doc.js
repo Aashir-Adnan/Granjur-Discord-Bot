@@ -25,15 +25,20 @@ export const data = new SlashCommandBuilder()
 
 const NOT_AVAILABLE = 'Tasks from documents are not available on this server yet.'
 const NO_PROJECT = 'No project matches that name.'
+// meeting.transcript is a TEXT column: 65,535 bytes, not characters.
+const MAX_TRANSCRIPT_BYTES = 65535
 
 const withoutExtension = (name) => String(name || 'document').replace(/\.[^./\\]+$/, '') || 'document'
 
-// The accepted reply is public, and Discord fixes the ephemeral flag when the
-// interaction is first acknowledged. So this command is NOT deferred by
-// index.js (see MODAL_FIRST_COMMANDS in commands/index.js): the cheap refusals
-// go out as ephemeral replies, and only then is the reply deferred publicly
-// for the download and extraction. A DocTextError after that point is sent
-// with editReply, so it is public.
+// index.js has already deferred this command PUBLICLY (PUBLIC_REPLY_COMMANDS),
+// so the accepted reply is the deferred one. Discord fixes the ephemeral flag
+// at the first acknowledgement, so a refusal removes the public placeholder and
+// sends an ephemeral follow-up instead.
+async function refuse(interaction, content) {
+  await interaction.deleteReply().catch(() => {})
+  return interaction.followUp({ content, flags: EPHEMERAL })
+}
+
 export async function execute(
   interaction,
   {
@@ -46,34 +51,33 @@ export async function execute(
   } = {},
 ) {
   const guild = interaction.guild
-  if (!guild) return interaction.reply({ content: 'Use this command inside a server.', flags: EPHEMERAL })
-  if (!enabled() || !configured()) return interaction.reply({ content: NOT_AVAILABLE, flags: EPHEMERAL })
+  if (!guild) return refuse(interaction, 'Use this command inside a server.')
+  if (!enabled() || !configured()) return refuse(interaction, NOT_AVAILABLE)
 
   const cfg = await getConfig(guild.id)
-  if (!cfg) return interaction.reply({ content: 'Server not initialized. Run **/init** first.', flags: EPHEMERAL })
+  if (!cfg) return refuse(interaction, 'Server not initialized. Run **/init** first.')
 
   const rawProject = String(interaction.options.getString('project') || '').trim()
   let project = null
   if (rawProject) {
     project = await dbArg.project.findFirst({ where: { id: rawProject } }).catch(() => null)
-    if (!project || project.guildConfigId !== cfg.id) {
-      return interaction.reply({ content: NO_PROJECT, flags: EPHEMERAL })
-    }
+    if (!project || project.guildConfigId !== cfg.id) return refuse(interaction, NO_PROJECT)
   }
 
-  await interaction.deferReply()
-
   const attachment = interaction.options.getAttachment('file')
+  const fileName = attachment.name
   let text
   try {
     const buffer = await download(attachment)
-    ;({ text } = await extract({ buffer, fileName: attachment.name }))
+    ;({ text } = await extract({ buffer, fileName }))
+    if (Buffer.byteLength(text, 'utf8') > MAX_TRANSCRIPT_BYTES) {
+      throw new DocTextError(`**${fileName}** is too long to store. Split it into smaller files.`)
+    }
   } catch (e) {
-    if (e instanceof DocTextError) return interaction.editReply({ content: e.message })
+    if (e instanceof DocTextError) return refuse(interaction, e.message)
     throw e
   }
 
-  const fileName = attachment.name
   const title = String(interaction.options.getString('title') || '').trim() || withoutExtension(fileName)
 
   const meeting = await dbArg.meeting.create({
@@ -84,14 +88,22 @@ export async function execute(
       transcript: text,
     },
   })
-  // One write, so the worker can never claim the job before it knows it is a document job.
-  await dbArg.meetingPipelineJob.create({
-    data: {
-      guildConfigId: cfg.id,
-      meetingId: meeting.id,
-      dataJson: { source: 'document', reviewChannelId: interaction.channelId, documentName: fileName, title },
-    },
-  })
+  try {
+    // One write, so the worker can never claim the job before it knows it is a document job.
+    await dbArg.meetingPipelineJob.create({
+      data: {
+        guildConfigId: cfg.id,
+        meetingId: meeting.id,
+        dataJson: { source: 'document', reviewChannelId: interaction.channelId, documentName: fileName, title },
+      },
+    })
+  } catch (e) {
+    // No job will ever read this meeting; do not leave it behind.
+    await dbArg.meeting.delete({ where: { id: meeting.id } }).catch((err) => {
+      console.warn('[tasks-from-doc] could not remove the meeting after the job failed:', err?.message || err)
+    })
+    throw e
+  }
 
   return interaction.editReply({
     content: `Reading **${fileName}** — the proposed tasks will be posted here for review.`,

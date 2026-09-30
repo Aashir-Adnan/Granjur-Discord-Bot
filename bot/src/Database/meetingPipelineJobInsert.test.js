@@ -8,6 +8,11 @@ test('a job created without dataJson writes exactly the statement it always did'
   assert.deepEqual(params, ['j1', 'cfg1', 'm1'])
 })
 
+test('a dataJson that is already a string is written as given, not serialised twice', () => {
+  const { params } = meetingPipelineJobInsertSql('j3', { guildConfigId: 'cfg1', meetingId: 'm3', dataJson: '{"a":1}' })
+  assert.equal(params[3], '{"a":1}')
+})
+
 test('a job created with dataJson writes it, serialised, in the same INSERT', () => {
   const dataJson = { source: 'document', reviewChannelId: 'c1', title: 'Plan' }
   const { sql, params } = meetingPipelineJobInsertSql('j2', { guildConfigId: 'cfg1', meetingId: 'm2', dataJson })

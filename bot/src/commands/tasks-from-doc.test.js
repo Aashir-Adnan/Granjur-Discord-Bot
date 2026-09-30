@@ -6,17 +6,18 @@ import assert from 'node:assert/strict'
 import { MessageFlags } from 'discord.js'
 import { data, execute, autocomplete } from './tasks-from-doc.js'
 import { DocTextError } from '../services/docText.js'
-import { isModalFirstCommand } from './index.js'
+import { isModalFirstCommand, isPublicReplyCommand, handleCommand } from './index.js'
 
 const CFG = { id: 'cfg1' }
 const FILE = { name: 'Sprint plan.pdf', url: 'https://cdn/x', size: 10 }
 
 function fakeInteraction({ values = {}, file = FILE, channelId = 'chan1', guild = { id: 'guild1' } } = {}) {
   const ix = {
-    guild, channelId, replies: [], edits: [], deferred: 0,
+    guild, channelId, replies: [], edits: [], deleted: 0, followUps: [],
     options: { getString: (n) => values[n] ?? null, getAttachment: (n) => (n === 'file' ? file : null) },
     reply: async (p) => { ix.replies.push(p) },
-    deferReply: async () => { ix.deferred += 1 },
+    deleteReply: async () => { ix.deleted += 1 },
+    followUp: async (p) => { ix.followUps.push(p) },
     editReply: async (p) => { ix.edits.push(p) },
   }
   return ix
@@ -45,7 +46,7 @@ const deps = (db, over = {}) => ({
   ...over,
 })
 
-test('definition: file required, project autocomplete, title max 100, no default permissions, not deferred by index.js', () => {
+test('definition: file required, project autocomplete, title max 100, no default permissions; index.js defers it publicly', () => {
   const json = data.toJSON()
   assert.equal(json.name, 'tasks-from-doc')
   assert.equal(json.default_member_permissions ?? null, null)
@@ -53,37 +54,56 @@ test('definition: file required, project autocomplete, title max 100, no default
   assert.deepEqual([file.name, file.type, file.required], ['file', 11, true])
   assert.deepEqual([project.name, project.autocomplete, !!project.required], ['project', true, false])
   assert.deepEqual([title.name, title.max_length, !!title.required], ['title', 100, false])
-  assert.equal(isModalFirstCommand('tasks-from-doc'), true)
+  assert.equal(isModalFirstCommand('tasks-from-doc'), false, 'index.js must acknowledge it first')
+  assert.equal(isPublicReplyCommand('tasks-from-doc'), true)
 })
 
-test('refuses ephemerally, before deferring, when the pipeline is off', async () => {
+test('an unexpected error is masked by handleCommand, never shown publicly', async () => {
+  const ix = fakeInteraction()
+  ix.user = { id: 'u1' }
+  ix.commandName = 'tasks-from-doc'
+  ix.deferred = true
+  ix.guild = null
+  const commands = new Map([['tasks-from-doc', { execute: async () => { throw new Error('ER_SECRET db detail') } }]])
+  const realError = console.error
+  console.error = () => {}
+  try { await handleCommand(ix, commands) } finally { console.error = realError }
+  assert.deepEqual(ix.edits, [{ content: 'Something went wrong. Try again in a minute.' }])
+})
+
+// A refusal removes the public placeholder and sends an ephemeral follow-up.
+const assertRefused = (ix, content) => {
+  assert.equal(ix.deleted, 1)
+  assert.deepEqual(ix.followUps, [{ content, flags: MessageFlags.Ephemeral }])
+  assert.deepEqual(ix.edits, [])
+  assert.deepEqual(ix.replies, [])
+}
+
+test('refuses ephemerally when the pipeline is off', async () => {
   const ix = fakeInteraction()
   const db = fakeDb()
   await execute(ix, deps(db, { enabled: () => false }))
-  assert.deepEqual(ix.replies, [{ content: 'Tasks from documents are not available on this server yet.', flags: MessageFlags.Ephemeral }])
-  assert.equal(ix.deferred, 0)
+  assertRefused(ix, 'Tasks from documents are not available on this server yet.')
   assert.equal(db.calls.meeting.length, 0)
 })
 
 test('refuses the same way when CSAAS is not configured', async () => {
   const ix = fakeInteraction()
   await execute(ix, deps(fakeDb(), { configured: () => false }))
-  assert.equal(ix.replies[0].content, 'Tasks from documents are not available on this server yet.')
-  assert.equal(ix.deferred, 0)
+  assertRefused(ix, 'Tasks from documents are not available on this server yet.')
 })
 
-test('an unknown project, or one from another server, is refused ephemerally before deferring', async () => {
+test('an unknown project, or one from another server, is refused ephemerally', async () => {
   for (const values of [{ project: 'nope' }, { project: 'p-other' }]) {
     const ix = fakeInteraction({ values })
     const db = fakeDb({ projects: [{ id: 'p-other', name: 'Other', guildConfigId: 'cfg-x' }] })
     await execute(ix, deps(db))
-    assert.deepEqual(ix.replies, [{ content: 'No project matches that name.', flags: MessageFlags.Ephemeral }])
-    assert.equal(ix.deferred, 0)
+    assertRefused(ix, 'No project matches that name.')
     assert.equal(db.calls.meeting.length, 0)
   }
 })
 
-test('a DocTextError is shown verbatim and nothing is created', async () => {
+test('a DocTextError is shown verbatim, ephemerally, and nothing is created', async () => {
   const ix = fakeInteraction()
   const db = fakeDb()
   const seen = []
@@ -92,24 +112,62 @@ test('a DocTextError is shown verbatim and nothing is created', async () => {
     extract: async () => { throw new DocTextError('**Sprint plan.pdf** has no text.') },
   }))
   assert.deepEqual(seen, [FILE])
-  assert.equal(ix.deferred, 1)
-  assert.deepEqual(ix.edits, [{ content: '**Sprint plan.pdf** has no text.' }])
+  assertRefused(ix, '**Sprint plan.pdf** has no text.')
   assert.equal(db.calls.meeting.length, 0)
   assert.equal(db.calls.job.length, 0)
 })
 
-test('a download DocTextError is shown verbatim too', async () => {
+test('a download DocTextError is shown verbatim too, and no meeting or job row is created', async () => {
   const ix = fakeInteraction()
-  await execute(ix, deps(fakeDb(), { download: async () => { throw new DocTextError('**Sprint plan.pdf** is larger than 10 MB.') } }))
-  assert.equal(ix.edits[0].content, '**Sprint plan.pdf** is larger than 10 MB.')
+  const db = fakeDb()
+  await execute(ix, deps(db, { download: async () => { throw new DocTextError('**Sprint plan.pdf** is larger than 10 MB.') } }))
+  assertRefused(ix, '**Sprint plan.pdf** is larger than 10 MB.')
+  assert.equal(db.calls.meeting.length, 0)
+  assert.equal(db.calls.job.length, 0)
 })
 
-test('accepted: defers publicly, creates the meeting and the job, replies publicly; title defaults to the file name without its extension', async () => {
+test('text under 60,000 characters but over 65,535 bytes is refused before any row is written', async () => {
+  const text = '—'.repeat(30000) // 30,000 characters, 90,000 bytes
+  assert.ok(text.length < 60000 && Buffer.byteLength(text, 'utf8') > 65535)
+  const ix = fakeInteraction()
+  const db = fakeDb()
+  await execute(ix, deps(db, { extract: async () => ({ text, chars: text.length }) }))
+  assertRefused(ix, '**Sprint plan.pdf** is too long to store. Split it into smaller files.')
+  assert.equal(db.calls.meeting.length, 0)
+  assert.equal(db.calls.job.length, 0)
+})
+
+test('if the job cannot be created the meeting row is removed and the error propagates', async () => {
+  const ix = fakeInteraction()
+  const db = fakeDb()
+  const deleted = []
+  db.meeting.delete = async (a) => { deleted.push(a) }
+  db.meetingPipelineJob.create = async () => { throw new Error('insert failed') }
+  await assert.rejects(() => execute(ix, deps(db)), /insert failed/)
+  assert.deepEqual(deleted, [{ where: { id: 'm1' } }])
+  assert.deepEqual(ix.edits, [])
+})
+
+test('a failing cleanup delete is logged and does not hide the original error', async () => {
+  const db = fakeDb()
+  db.meeting.delete = async () => { throw new Error('delete failed') }
+  db.meetingPipelineJob.create = async () => { throw new Error('insert failed') }
+  const warns = []
+  const realWarn = console.warn
+  console.warn = (...a) => warns.push(a)
+  try {
+    await assert.rejects(() => execute(fakeInteraction(), deps(db)), /insert failed/)
+  } finally { console.warn = realWarn }
+  assert.equal(warns.length, 1)
+})
+
+test('accepted: creates the meeting and the job, replies publicly through the deferred reply; title defaults to the file name without its extension', async () => {
   const ix = fakeInteraction()
   const db = fakeDb()
   await execute(ix, deps(db))
-  assert.equal(ix.deferred, 1)
-  assert.deepEqual(ix.replies, [], 'the accepted reply is the deferred one, never an ephemeral reply')
+  assert.deepEqual(ix.replies, [])
+  assert.equal(ix.deleted, 0)
+  assert.deepEqual(ix.followUps, [])
   assert.deepEqual(db.calls.meeting, [{ data: { guildConfigId: 'cfg1', channelId: 'chan1', transcript: 'the document text' } }])
   assert.deepEqual(db.calls.job, [{ data: {
     guildConfigId: 'cfg1', meetingId: 'm1',
