@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createTask } from './taskCreate.js'
-import { handleStatusRequest, handleUpdateRequest, handleCreateRequest, handleSubtaskRequest } from './internalTaskRoute.js'
+import { handleStatusRequest, handleUpdateRequest, handleCreateRequest, handleSubtaskRequest, handleImportCheckRequest } from './internalTaskRoute.js'
 
 const task = { id: 'A', guildConfigId: 'g1', title: 'Git Sync', status: 'open' }
 const db = {
@@ -423,4 +423,66 @@ test('subtask: a bad scope, an over-long description or a bad status is a 400', 
   assert.equal(d.status, 400); assert.equal(d.body.message, 'The description can be at most 2000 characters.')
   const t = await run({ status: 'closed' })
   assert.equal(t.status, 400); assert.equal(t.body.message, 'status must be open, in_progress or done.')
+})
+
+// ------------------------------------------------ a soft-deleted project ----
+
+const DELETED = 'This project is deleted.'
+const DELETED_P = { id: 'PD', name: 'Apollo', guildConfigId: 'g1', deletedAt: new Date('2026-10-01T09:00:00Z') }
+const TD = { ...T, id: 'TD', projectId: 'PD', projectName: 'Apollo' }
+/** routeDb plus a deleted project PD and a task TD inside it. */
+function deletedDb() {
+  const base = routeDb()
+  return {
+    ...base,
+    task: { ...base.task, findFirst: async ({ where }) => (where.id === 'TD' ? { ...TD } : base.task.findFirst({ where })) },
+    project: { findFirst: async ({ where }) => (where.id === 'PD' ? DELETED_P : base.project.findFirst({ where })) },
+  }
+}
+const mustNotRun = async () => { throw new Error('must not run') }
+
+test('status: a task in a deleted project is refused with 409 and nothing is applied', async () => {
+  const r = await handleStatusRequest({ headers: H, body: { taskId: 'TD', status: 'done', actor }, db: deletedDb(), client: {}, secret: 's3cret', apply: mustNotRun })
+  assert.equal(r.status, 409)
+  assert.deepEqual(r.body, { ok: false, message: DELETED })
+})
+test('status: a task in a live project still applies', async () => {
+  let applied = 0
+  const r = await handleStatusRequest({ headers: H, body: { taskId: 'T', status: 'done', actor }, db: deletedDb(), client: {}, secret: 's3cret', apply: async () => { applied++; return { warning: '' } } })
+  assert.equal(r.status, 200)
+  assert.equal(applied, 1)
+})
+test('update: editing a task in a deleted project is refused with 409', async () => {
+  const r = await handleUpdateRequest({ headers: H, body: { taskId: 'TD', changes: { title: 'Renamed' }, actor }, db: deletedDb(), client: {}, secret: 's3cret', edit: mustNotRun })
+  assert.equal(r.status, 409)
+  assert.equal(r.body.message, DELETED)
+})
+test('update: moving a task INTO a deleted project is refused with 409', async () => {
+  const r = await handleUpdateRequest({ headers: H, body: { taskId: 'T', changes: { projectId: 'PD' }, actor }, db: deletedDb(), client: {}, secret: 's3cret', edit: mustNotRun })
+  assert.equal(r.status, 409)
+  assert.equal(r.body.message, DELETED)
+})
+test("update: the blocker lookup sees a blocker whose project is deleted, so the task's blocked state stays right", async () => {
+  const db = deletedDb()
+  const asked = []
+  db.task.findByIds = async ({ where }) => { asked.push(where); return [] }
+  db.taskDependency = { findManyForGuild: async () => [] }
+  await handleUpdateRequest({ headers: H, body: { taskId: 'T', changes: { blockerIds: ['B'] }, actor }, db, client: {}, secret: 's3cret', edit: async () => ({ dep: { lines: [] } }) })
+  assert.equal(asked.length, 1)
+  assert.equal(asked[0].includeDeleted, true)
+})
+test('create: a deleted project is refused with 409 and nothing is created', async () => {
+  const r = await handleCreateRequest({ headers: H, body: { type: 'feature', title: 'x', projectId: 'PD' }, db: deletedDb(), client: guildClient, secret: 's3cret', create: mustNotRun })
+  assert.equal(r.status, 409)
+  assert.equal(r.body.message, DELETED)
+})
+test('subtask: a parent in a deleted project is refused with 409 and nothing is created', async () => {
+  const r = await handleSubtaskRequest({ headers: H, body: { parentId: 'TD', title: 'x' }, db: deletedDb(), client: guildClient, secret: 's3cret', addSubtask: mustNotRun })
+  assert.equal(r.status, 409)
+  assert.equal(r.body.message, DELETED)
+})
+test('import-check: a deleted project is refused with 409 and nothing is checked', async () => {
+  const r = await handleImportCheckRequest({ headers: H, body: { projectId: 'PD', tasks: [{ title: 'x' }] }, db: deletedDb(), client: guildClient, secret: 's3cret', check: mustNotRun })
+  assert.equal(r.status, 409)
+  assert.equal(r.body.message, DELETED)
 })

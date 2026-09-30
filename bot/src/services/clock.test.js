@@ -236,3 +236,28 @@ test('clockedInNow lists open entries longest-running first with names, falling 
   assert.equal(out[1].projectId, 'p1')
   assert.equal(out[1].projectName, 'Alpha')
 })
+
+// --- a soft-deleted project -----------------------------------------------
+
+const GONE = { id: 'p1', name: 'Alpha', deletedAt: new Date('2026-09-30T09:00:00Z') }
+/** fakeDb whose project list hides a deleted project unless the read opts in, as the real one does. */
+function hidingDb(opts = {}) {
+  const db = fakeDb({ projects: [GONE], ...opts })
+  db.project.findMany = async ({ where }) => [GONE].filter((p) => where.includeDeleted === true || !p.deletedAt)
+  return db
+}
+
+test('clockIn on a task in a deleted project is refused with the sentence, and nothing starts', async () => {
+  const db = hidingDb(); const guild = fakeGuild({ admin: true })
+  await assert.rejects(() => clockIn(base(db, guild, { taskId: 'H' })), (e) => e instanceof ClockError && e.message === 'This project is deleted.')
+  assert.deepEqual(db.calls, [])
+  assert.deepEqual(guild.roleCalls, [])
+})
+
+test("a running timer on a deleted project's task still names its project", async () => {
+  const db = hidingDb({ entries: [{ id: 'e1', guildConfigId: 'g1', discordId: 'u1', taskId: 'H', clockInAt: minsAgo(10), clockOutAt: null }] })
+  const status = await clockStatus({ db, cfg, guild: fakeGuild(), discordId: 'u1', now: NOW })
+  assert.equal(status.projectName, 'Alpha')
+  const [row] = await clockedInNow({ db, cfg, now: NOW })
+  assert.equal(row.projectName, 'Alpha')
+})

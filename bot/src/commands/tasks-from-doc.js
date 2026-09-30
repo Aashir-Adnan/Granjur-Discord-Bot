@@ -5,6 +5,7 @@ import { meetingPipelineEnabled } from '../Database/meetingPipelineJob.helpers.j
 import { extractDocText, downloadAttachment, DocTextError } from '../services/docText.js'
 import { projectChoices } from './update-task.js'
 import { EPHEMERAL } from '../constants.js'
+import { PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
 
 export const data = new SlashCommandBuilder()
   .setName('tasks-from-doc')
@@ -83,6 +84,7 @@ export async function execute(
   if (rawProject) {
     project = await dbArg.project.findFirst({ where: { id: rawProject } }).catch(() => null)
     if (!project || project.guildConfigId !== cfg.id) return refuse(interaction, NO_PROJECT)
+    if (isDeletedProject(project)) return refuse(interaction, PROJECT_DELETED)
   }
 
   const attachment = interaction.options.getAttachment('file')

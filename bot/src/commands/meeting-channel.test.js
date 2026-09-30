@@ -564,3 +564,13 @@ test('a refused overwrite edit does not fail the command', async () => {
   try { await execute(it, seams([project]).deps) } finally { console.warn = warn }
   assert.match(it.replies[0].content, /Created a dedicated meeting pair/)
 })
+
+test('a named project that is deleted creates nothing and says so', async () => {
+  const guild = fakeGuild({ channels: [globalCategory(), category(PROJ_CAT)] })
+  const { deps, meetingCalls } = seams([{ ...FRAMEWORK, deletedAt: new Date('2026-10-01T09:00:00Z') }])
+  const i = fakeInteraction(guild, { project: 'p1' })
+  await execute(i, deps)
+  assert.equal(guild.created.length, 0)
+  assert.equal(meetingCalls.length, 0)
+  assert.equal(i.replies[0].content, 'This project is deleted.')
+})

@@ -57,7 +57,7 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
     try {
       const rows = await dbArg.taskDependency.findByTask({ where: { taskId: task.id } })
       const blockers = rows.length
-        ? await dbArg.task.findByIds({ where: { guildConfigId: task.guildConfigId, ids: rows.map((r) => r.blockedByTaskId) } })
+        ? await dbArg.task.findByIds({ where: { guildConfigId: task.guildConfigId, ids: rows.map((r) => r.blockedByTaskId), includeDeleted: true } })
         : []
       const byId = Object.fromEntries(blockers.map((b) => [b.id, b]))
       const open = openBlockers(task.id, rows, byId)

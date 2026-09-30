@@ -19,6 +19,7 @@ import { setupOneProject } from './project-setup.js'
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
 import { linkRepo, unlinkRepo, linkRefusalText, accessLine, linkUpdatedText } from '../services/projectRepoLinks.js'
 import { checkRepoAccess } from '../services/github.js'
+import { DELETED_NAME_HELD, DELETED_SLUG_HELD, PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
 
 const NO_SCOPE_VALUE = 'none'
 
@@ -29,9 +30,11 @@ export const data = new SlashCommandBuilder()
   .setName('projects')
   .setDescription('(CEO/Server Manager) List projects, add a project, link a repo')
 
-async function listPayload(cfg) {
-  const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
-  const counts = await db.docPage.countsByProject({ guildConfigId: cfg.id })
+export async function listPayload(cfg, { db: dbArg = db } = {}) {
+  // Every project, soft-deleted ones included; the list below shows the live ones.
+  const all = await dbArg.project.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true } })
+  const projects = all.filter((p) => !isDeletedProject(p))
+  const counts = await dbArg.docPage.countsByProject({ guildConfigId: cfg.id })
   const byId = new Map(counts.map((c) => [c.projectId, Number(c.n)]))
 
   const embed = new EmbedBuilder()
@@ -136,18 +139,24 @@ export async function handleAddModal(
     .map((s) => s.trim().replace(/^\/+|\/+$/g, ''))
     .filter(Boolean)
 
+  // `findByName` returns a soft-deleted project too: its name stays reserved.
   const existing = await dbArg.project.findByName({ guildConfigId: cfg.id, name })
   if (existing) {
-    return interaction.editReply({ content: `**${name}** already exists.` }).catch(() => {})
+    const content = isDeletedProject(existing) ? DELETED_NAME_HELD : `**${name}** already exists.`
+    return interaction.editReply({ content }).catch(() => {})
   }
 
-  const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })
+  // Deleted projects included: a deleted project's slug stays reserved too.
+  const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true } })
   // Against the EFFECTIVE slug, not the stored column. A legacy project with a
   // NULL `docsSlug` still occupies `slugify(name)` — that is what its ten
   // section channels are named after — so comparing `p.docsSlug` lets `UBS-Doc`
   // in beside a NULL-slugged `UBS Doc`, and then each `/project-setup` run
   // drags the same ten channels into whichever category ran last.
   const slugConflict = projects.find((p) => projectSlug(p) === slug)
+  if (slugConflict && isDeletedProject(slugConflict)) {
+    return interaction.editReply({ content: DELETED_SLUG_HELD }).catch(() => {})
+  }
   if (slugConflict) {
     return interaction
       .editReply({ content: `Docs folder \`${slug}\` is already used by **${slugConflict.name}** — pick another slug.` })
@@ -267,6 +276,11 @@ export async function handleLinkScopeSelect(interaction) {
   }
   const cfg = await getOrCreateGuildConfig(interaction.guild.id)
   const scope = interaction.values[0] === NO_SCOPE_VALUE ? null : interaction.values[0]
+  // Picked before it was soft-deleted: the select hides it now, but this flow carries its id.
+  if (isDeletedProject(await db.project.findFirst({ where: { id: state.projectId } }))) {
+    flowStore.clear(interaction.user.id, interaction.guild.id, 'projects_link')
+    return interaction.editReply({ content: PROJECT_DELETED, components: [] }).catch(() => {})
+  }
   const result = await linkRepo({ db, projectId: state.projectId, repositoryId: state.repositoryId, scope })
   flowStore.clear(interaction.user.id, interaction.guild.id, 'projects_link')
 

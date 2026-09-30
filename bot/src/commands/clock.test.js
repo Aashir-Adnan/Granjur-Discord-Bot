@@ -229,3 +229,12 @@ test('autocomplete filters by what was typed and never exceeds 25 choices', asyn
   await clockInAutocomplete(some, { db, getConfig })
   assert.ok(some.responses[0].slice(1).every((c) => /Task 3/.test(c.name)))
 })
+
+test('clock-in on a task in a deleted project says so, and starts nothing', async () => {
+  const db = fakeDb()
+  db.project.findMany = async ({ where }) => (where.includeDeleted === true ? [{ id: 'p1', name: 'Alpha', deletedAt: new Date('2026-09-30T09:00:00Z') }] : [])
+  const it = fakeInteraction({ task: 'H' })
+  await clockIn(it, { db, getConfig })
+  assert.deepEqual(db.calls, [])
+  assert.equal(it.replies[0].content, 'This project is deleted.')
+})

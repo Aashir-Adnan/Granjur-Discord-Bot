@@ -4,6 +4,8 @@ import { isLeadershipFor, memberProjectIdsOf } from '../utils/timeAccess.js'
 import { clockableTasks } from '../utils/timeTaskPicker.js'
 import { BAD_DURATION, MAX_STORABLE_MINUTES, entryMinutes, formatDuration, overlaps, parseDuration } from '../utils/timeTracking.js'
 import { GENERAL } from './clock-in.js'
+import { projectIsDeleted } from '../services/clock.js'
+import { PROJECT_DELETED } from '../utils/projectDeleted.js'
 
 // The same task picker as /clock-in: same access rule, same choices.
 export { autocomplete } from './clock-in.js'
@@ -121,6 +123,7 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
         }).length > 0
       : false
     if (!allowed) return interaction.editReply({ content: NOT_AVAILABLE })
+    if (await projectIsDeleted(dbArg, cfg, task.projectId)) return interaction.editReply({ content: PROJECT_DELETED })
   }
   const taskId = task ? task.id : null
 

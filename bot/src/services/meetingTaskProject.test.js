@@ -142,3 +142,40 @@ test('reviewProjectOptions sorts by name, drops unnamed rows, and caps at 24', (
   assert.equal(out[23].name, 'Proj 23')
   assert.deepEqual(reviewProjectOptions(undefined), [])
 })
+
+// --- a soft-deleted project is never matched -------------------------------
+
+const P_GONE = { id: 'pGone', name: 'Apollo', deletedAt: new Date('2026-10-01T09:00:00Z') }
+/** A db whose project list hides a deleted project unless the read opts in, as the real one does. */
+function hidingDb({ links = [], repos = [], meetingProjectId = null } = {}) {
+  return {
+    project: { findMany: async ({ where }) => [P1, P2, P_GONE].filter((p) => where.includeDeleted === true || !p.deletedAt) },
+    repository: { findMany: async () => repos },
+    projectRepos: { findMany: async () => links },
+    meeting: { findUnique: async () => ({ id: 'M', projectId: meetingProjectId }) },
+  }
+}
+
+test('a deleted project is never matched: not by its name, and not as the meeting project', async () => {
+  const ctx = await loadProjectContext(hidingDb({ meetingProjectId: 'pGone' }), { guildConfigId: 'g', meetingId: 'M' })
+  assert.deepEqual(ctx.projects.map((p) => p.id), ['p1', 'p2'])
+  assert.equal(settledProject({ project: 'Apollo' }, ctx), null)
+  assert.equal(resolveMeetingTaskProject({ project: 'Apollo' }, { projectId: 'pGone' }, ctx).projectId, null)
+})
+
+test('a live repository linked only to a deleted project resolves to no project', async () => {
+  const ctx = await loadProjectContext(hidingDb({
+    repos: [{ id: 'r-apollo', name: 'apollo-api' }, { id: 'r-fw', name: 'framework-backend' }],
+    links: [
+      { project_id: 'pGone', repository_id: 'r-apollo', scope: 'backend' },
+      { project_id: 'p1', repository_id: 'r-fw', scope: 'backend' },
+    ],
+  }), { guildConfigId: 'g', meetingId: 'M' })
+  assert.deepEqual(ctx.links.map((l) => l.project_id), ['p1'], "the deleted project's link is dropped")
+  assert.equal(settledProject({ project: 'apollo_api' }, ctx), null)
+  const out = resolveMeetingTaskProject({ project: 'apollo_api', platform: 'node' }, {}, ctx)
+  assert.equal(out.projectId, null)
+  assert.equal(out.repositoryId, null)
+  // A live project's own link still resolves.
+  assert.deepEqual(settledProject({ project: 'framework-backend' }, ctx), { projectId: 'p1', projectName: 'Framework' })
+})

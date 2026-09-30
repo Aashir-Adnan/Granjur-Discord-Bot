@@ -152,9 +152,11 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
   const rows = (await dbArg.clockEntry.findMany({ where, take: FETCH_LIMIT })) || []
 
   const ids = [...new Set(rows.map((e) => e.taskId).filter(Boolean).map(String))]
+  // Deleted projects included: time already logged on a soft-deleted project
+  // still counts, under its task's title and its project's name.
   const [tasks, projects, totalRows] = await Promise.all([
-    ids.length ? dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids } }) : [],
-    dbArg.project.findMany({ where: { guildConfigId: cfg.id } }),
+    ids.length ? dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids, includeDeleted: true } }) : [],
+    dbArg.project.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true } }),
     ids.length ? dbArg.clockEntry.sumByTask({ guildConfigId: cfg.id, taskIds: ids }) : [],
   ])
 

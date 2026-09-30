@@ -5,6 +5,7 @@ import { ClockError, clockIn, closeEntry } from '../services/clock.js'
 import { clockableTasks } from '../utils/timeTaskPicker.js'
 import { taskChoiceLabel, holdersOf } from '../utils/taskLabel.js'
 import { formatDuration } from '../utils/timeTracking.js'
+import { PROJECT_DELETED } from '../utils/projectDeleted.js'
 
 /** The "no task" sentinel: time logged against general work. */
 export const GENERAL = '-'
@@ -41,7 +42,9 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
       member: interaction.member,
     })
   } catch (e) {
-    if (e instanceof ClockError) return interaction.editReply({ content: NOT_AVAILABLE })
+    // Only a task the caller may use gets as far as the deleted-project check,
+    // so saying so reveals nothing the generic refusal hides.
+    if (e instanceof ClockError) return interaction.editReply({ content: e.message === PROJECT_DELETED ? PROJECT_DELETED : NOT_AVAILABLE })
     throw e
   }
 

@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
-import { handleAddModal } from './projects.js'
+import { handleAddModal, listPayload } from './projects.js'
 
 // --- fakes ------------------------------------------------------------------
 
@@ -347,4 +347,60 @@ test('a normalised slug is caught by the effective-slug conflict check', async (
   assert.equal(ran, 0)
   assert.deepEqual(db.calls.filter((c) => c[0] === 'project.create'), [])
   assert.match(it.replies.at(-1).content, /`ubs-doc` is already used by \*\*UBS Doc\*\*/)
+})
+
+// ---------------------------------------------------------------------------
+// A soft-deleted project keeps its name and its slug reserved
+// ---------------------------------------------------------------------------
+
+const DELETED_AT = new Date('2026-10-01T09:00:00Z')
+
+/** fakeDb whose project list hides a deleted project unless the read opts in, as the real one does. */
+function hidingDb(projects) {
+  const db = fakeDb({ projects })
+  db.reads = []
+  db.project.findMany = async ({ where }) => {
+    db.reads.push(where)
+    return db.rows.filter((p) => where.includeDeleted === true || !p.deletedAt)
+  }
+  return db
+}
+
+test('Add refuses a name a deleted project holds, and creates and builds nothing', async () => {
+  const db = hidingDb([{ id: 'p1', name: 'Apollo', docsSlug: 'apollo', guildConfigId: 'g1', deletedAt: DELETED_AT }])
+  const it = fakeInteraction({ guild: fakeGuild(), name: 'Apollo' })
+  let ran = 0
+  await handleAddModal(it, { db, getConfig, reattribute, setup: async () => ran++ })
+  assert.equal(ran, 0)
+  assert.deepEqual(db.calls.filter((c) => c[0] === 'project.create'), [])
+  assert.equal(it.replies.at(-1).content, 'A deleted project has that name — reactivate it or pick another name.')
+})
+
+test('Add refuses a slug a deleted project holds, and creates and builds nothing', async () => {
+  const db = hidingDb([{ id: 'p1', name: 'Apollo Old', docsSlug: 'apollo', guildConfigId: 'g1', deletedAt: DELETED_AT }])
+  const it = fakeInteraction({ guild: fakeGuild(), name: 'Apollo' })
+  let ran = 0
+  await handleAddModal(it, { db, getConfig, reattribute, setup: async () => ran++ })
+  assert.equal(ran, 0)
+  assert.deepEqual(db.calls.filter((c) => c[0] === 'project.create'), [])
+  assert.equal(it.replies.at(-1).content, 'A deleted project uses that slug — reactivate it or pick another slug.')
+})
+
+test('Add refuses a deleted project’s EFFECTIVE slug too (a NULL docsSlug still holds slugify(name))', async () => {
+  const db = hidingDb([{ id: 'p1', name: 'UBS Doc', docsSlug: null, guildConfigId: 'g1', deletedAt: DELETED_AT }])
+  const it = fakeInteraction({ guild: fakeGuild(), name: 'UBS-Doc' })
+  await quiet(() => handleAddModal(it, { db, getConfig, reattribute, setup: async () => { throw new Error('must not run') } }))
+  assert.deepEqual(db.calls.filter((c) => c[0] === 'project.create'), [])
+  assert.equal(it.replies.at(-1).content, 'A deleted project uses that slug — reactivate it or pick another slug.')
+})
+
+test('the /projects list reads deleted projects too, and lists the live ones', async () => {
+  const db = hidingDb([
+    { id: 'p1', name: 'Framework', docsSlug: 'framework', guildConfigId: 'g1', deletedAt: null },
+    { id: 'p2', name: 'Apollo', docsSlug: 'apollo', guildConfigId: 'g1', deletedAt: DELETED_AT },
+  ])
+  db.docPage = { countsByProject: async () => [{ projectId: 'p1', n: 3 }] }
+  const payload = await listPayload(CFG, { db })
+  assert.deepEqual(db.reads, [{ guildConfigId: 'g1', includeDeleted: true }])
+  assert.match(payload.embeds[0].data.description, /\*\*Framework\*\* — `framework` — 3 doc page\(s\)/)
 })

@@ -78,7 +78,7 @@ async function loadHub(interaction, taskId, d) {
     d.db.task.findMany({ where: { guildConfigId: cfg.id }, orderBy: { updatedAt: 'desc' }, take: 200 }),
   ])
   const blockerIds = deps.filter((x) => x.taskId === task.id).map((x) => String(x.blockedByTaskId))
-  const blockers = blockerIds.length ? await d.db.task.findByIds({ where: { guildConfigId: cfg.id, ids: blockerIds } }) : []
+  const blockers = blockerIds.length ? await d.db.task.findByIds({ where: { guildConfigId: cfg.id, ids: blockerIds, includeDeleted: true } }) : []
   const candidates = blockerCandidates(task, recent, deps, blockerIds)
 
   // Hierarchy: a top-level task has subtasks; a subtask has a parent (which this

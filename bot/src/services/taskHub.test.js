@@ -674,3 +674,13 @@ test('finishing a parent from the details modal while a subtask is open is refus
   assert.equal(db.tasks.find((t) => t.id === 'P').status, 'in_progress')
   assert.deepEqual(db.calls, [])
 })
+
+test("the hub reads a task's blockers by id with deleted projects included, so its blocked state stays right", async () => {
+  const db = fakeDb(fresh(), { deps: [{ taskId: 'H', blockedByTaskId: 'O' }] })
+  const asked = []
+  const byIds = db.task.findByIds
+  db.task.findByIds = async (q) => { asked.push(q.where); return byIds(q) }
+  await showHub(fakeInteraction(), 'H', { db, getConfig })
+  assert.equal(asked.length, 1)
+  assert.equal(asked[0].includeDeleted, true)
+})

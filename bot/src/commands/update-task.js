@@ -6,6 +6,7 @@ import { showFinder } from '../services/taskFinder.js'
 import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
 import { applyDependencyChange, applyEdit, projectMoveNote } from '../services/taskEdit.js'
+import { PROJECT_DELETED, isDeletedProject, projectIdIsDeleted } from '../utils/projectDeleted.js'
 
 export { applyDependencyChange, projectMoveNote }
 
@@ -137,6 +138,8 @@ export async function execute(interaction, { db: dbArg = db, notify = notifyTask
     // that isn't theirs must not be able to tell the two apart.
     return notFoundReply()
   }
+  // A task in a soft-deleted project cannot be changed until it is reactivated.
+  if (await projectIdIsDeleted(dbArg, task.projectId)) return interaction.editReply({ content: PROJECT_DELETED })
 
   const updates = {}
   const status = interaction.options.getString('status')
@@ -174,6 +177,7 @@ export async function execute(interaction, { db: dbArg = db, notify = notifyTask
       if (!row || row.guildConfigId !== cfg.id) {
         return interaction.editReply({ content: `No project matches **${projectOpt.slice(0, 80)}**. Start typing a project name and pick one from the list.` })
       }
+      if (isDeletedProject(row)) return interaction.editReply({ content: PROJECT_DELETED })
       updates.projectId = row.id
       updates.projectName = row.name
     }
@@ -310,7 +314,9 @@ export async function autocomplete(interaction, { db: dbArg = db, getConfig = ge
       if (known.length) {
         const deps = await dbArg.taskDependency.findByTask({ where: { taskId } })
         const ids = deps.map((d) => d.blockedByTaskId)
-        rows = ids.length ? await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids } }) : []
+        // The task's current blockers by id, deleted projects included: a
+        // blocker whose project was deleted still holds it and can be removed.
+        rows = ids.length ? await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids, includeDeleted: true } }) : []
       }
     }
     // Members are resolved from cache only — autocomplete has ~3 seconds and a

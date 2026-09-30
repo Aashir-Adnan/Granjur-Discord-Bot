@@ -21,7 +21,7 @@ export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById 
   const lines = []
   if (blockedById) {
     if (String(blockedById) === String(task.id)) return { lines, error: 'A task cannot be blocked by itself.' }
-    const [blocker] = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: [blockedById] } })
+    const [blocker] = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: [blockedById], includeDeleted: true } })
     if (!blocker) return { lines, error: `No task matches **${String(blockedById).slice(0, 80)}**. Start typing a title and pick one from the list.` }
     const deps = await dbArg.taskDependency.findManyForGuild({ where: { guildConfigId: cfg.id } })
     if (wouldCycle(task.id, blocker.id, deps)) {
@@ -34,7 +34,7 @@ export async function applyDependencyChange({ db: dbArg, cfg, task, blockedById 
     await record({ db: dbArg, task, changes: [{ field: 'blocked_by', action: 'added', title: blocker.title || blocker.id }], actor: { discordId: actorId, label: actorLabel } })
   }
   if (unblockId) {
-    const [blocker] = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: [unblockId] } })
+    const [blocker] = await dbArg.task.findByIds({ where: { guildConfigId: cfg.id, ids: [unblockId], includeDeleted: true } })
     const { removed } = await dbArg.taskDependency.remove({ where: { taskId: task.id, blockedByTaskId: String(unblockId) } })
     const name = blocker?.title || unblockId
     // The reply names a blocker the site caller cannot see generically; the activity row keeps the real title.

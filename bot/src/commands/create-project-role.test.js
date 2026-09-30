@@ -300,6 +300,36 @@ test('a refused run does not tell the operator to grant Manage Channels', async 
   assert.match(content, /slug/)
 })
 
+// ---------------------------------------------------------------------------
+// A soft-deleted project is refused, whether the name is exact or folded
+// ---------------------------------------------------------------------------
+
+const APOLLO_DELETED = { id: 'p9', name: 'Apollo', docsSlug: 'apollo', guildConfigId: 'g1', deletedAt: new Date('2026-10-01T09:00:00Z') }
+
+/** fakeDb whose project list hides a deleted project unless the read opts in, as the real one does. */
+function hidingDb(projects) {
+  const db = fakeDb(projects)
+  db.project.findMany = async ({ where }) => {
+    db.calls.push(['project.findMany', where])
+    return projects.filter((p) => where.includeDeleted === true || !p.deletedAt)
+  }
+  return db
+}
+
+for (const typed of ['Apollo', 'apollo']) {
+  test(`a deleted project named "${typed}" is refused: nothing is built`, async () => {
+    const db = hidingDb([FRAMEWORK, APOLLO_DELETED])
+    const guild = fakeGuild()
+    const it = fakeInteraction(guild, typed)
+    let ran = 0
+    await execute(it, { db, getConfig: async () => CFG, setup: async () => ran++ })
+    assert.equal(ran, 0)
+    assert.equal(it.replies.at(-1).content, 'This project is deleted.')
+    assert.equal(guild.roles.calls.length, 0)
+    assert.equal(guild.channels.calls.length, 0)
+  })
+}
+
 test('a genuine build failure still points at the permissions', async () => {
   const db = fakeDb([FRAMEWORK])
   const it = fakeInteraction(fakeGuild(), 'Framework')

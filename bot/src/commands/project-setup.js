@@ -30,6 +30,7 @@ import {
 } from '../services/projectSection.js'
 import { ensureMembersPanel } from '../services/projectMembersPanel.js'
 import { isClientRole } from '../utils/clientRoles.js'
+import { PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
 
 /** Discord's hard limit on a message. */
 const REPLY_LIMIT = 2000
@@ -447,6 +448,11 @@ async function pickProjects(interaction, cfg, dbArg, { all, picked }) {
     })
     return null
   }
+  // Reactivation rebuilds a section through `setupOneProject`, never through here.
+  if (isDeletedProject(row)) {
+    await interaction.editReply({ content: PROJECT_DELETED })
+    return null
+  }
   return [row]
 }
 
@@ -517,7 +523,11 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   // project A stores its brand-new category id partway through the walk, so a
   // list loaded before the walk would let project B adopt that category by
   // name, and the slug check below would miss a project added mid-run.
-  const siblings = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })) ?? []
+  //
+  // Soft-deleted projects included: a deleted project still holds its slug,
+  // and any stored ids it still carries are claimed. A just-reactivated project
+  // (un-marked before this runs) is read here like any other.
+  const siblings = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true } })) ?? []
   const slug = projectSlug(project)
   const clashes = siblings.filter((p) => p && p.id !== project.id && projectSlug(p) === slug)
   if (clashes.length) {
@@ -546,9 +556,11 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   }
   const claimedIds = claimedSectionIds(siblings, project.id)
 
+  // Every task of this project, whatever the project's state: a rebuild right
+  // after reactivation must see (and move back) all of its task channels.
   const tasks =
     (await dbArg.task.findMany({
-      where: { guildConfigId: cfg.id, projectId: project.id },
+      where: { guildConfigId: cfg.id, projectId: project.id, includeDeleted: true },
       take: TASK_LIMIT,
     })) ?? []
   // `taskFindMany` orders by `createdAt DESC`, so a project past the limit

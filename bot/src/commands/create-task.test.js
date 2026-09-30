@@ -326,6 +326,23 @@ test('handleCreate writes a null scope for a bug ticket that never had one set',
   assert.doesNotMatch(it.replies.at(-1).embeds[0].toJSON().description, /must not be reached/)
 })
 
+test('handleCreate refuses a project deleted since it was picked, and creates nothing', async () => {
+  for (const extra of [{}, { taskType: 'bug', projectId: 'p1', projectIds: undefined, repositoryId: null }]) {
+    const log = []
+    const guild = { id: `guild-ct-deleted-${extra.taskType ?? 'feature'}` }
+    seedState(guild, extra)
+    const it = fakeInteraction(guild)
+    await handleCreate(it, {
+      db: fakeDb(log, { ...PROJECT, deletedAt: new Date('2026-10-01T09:00:00Z') }),
+      getConfig,
+      createChannel: async () => { throw new Error('createChannel must not be reached') },
+      openIssue: noIssue,
+    })
+    assert.deepEqual(log, [], 'no task row, no ticket doc, no channel')
+    assert.equal(it.replies.at(-1).content, 'This project is deleted.')
+  }
+})
+
 test('channelPlacementNote says where the channel went and why', () => {
   const p = { name: 'Framework' }
   assert.equal(channelPlacementNote('<#1>', null, null), 'Channel: <#1>\nUse **/close-feature** there when done.')

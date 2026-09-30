@@ -11,6 +11,7 @@ import { CATEGORY_SUPPORT } from "../constants.js";
 import { protectedCategoryNames, protectedChannelNames } from "../services/globalLayout.js";
 import { claimedSectionIds } from "../services/projectSection.js";
 import db, { getOrCreateGuildConfig } from "../db/index.js";
+import { ARCHIVE_CATEGORY_BASE } from "../utils/projectDeleted.js";
 
 export const data = new SlashCommandBuilder()
   .setName("cleanup")
@@ -98,9 +99,11 @@ export async function execute(
   // The project rows ARE the protection. A read that fails used to come back
   // as `[]`, which does not mean "no projects" — it means every project
   // section in the guild was about to be offered up for deletion.
+  // Soft-deleted projects included (they are hidden by default): whatever ids
+  // a deleted project still carries stay protected.
   let projects;
   try {
-    projects = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })) ?? [];
+    projects = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true } })) ?? [];
   } catch (e) {
     console.error("[cleanup] project read failed:", e);
     return interaction.editReply({
@@ -116,7 +119,8 @@ export async function execute(
   try {
     // Every ticket id must be read — taskFindMany defaults to LIMIT 500, and a
     // silent cap here would drop older tasks' tickets right back into toDelete.
-    tasks = (await dbArg.task.findMany({ where: { guildConfigId: cfg.id }, take: 1_000_000 })) ?? [];
+    // Deleted projects' tasks included: their archived ticket channels stay.
+    tasks = (await dbArg.task.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true }, take: 1_000_000 })) ?? [];
   } catch (e) {
     console.error("[cleanup] task read failed:", e);
     return interaction.editReply({
@@ -149,6 +153,8 @@ export async function execute(
       section.sectionIds.has(ch.id) ||
       section.categoryIds.has(ch.id) ||
       supportCategoryIds.has(ch.id) ||
+      // `🗄 ARCHIVED PROJECTS`, `🗄 ARCHIVED PROJECTS 2`, …: a deleted project's task channels.
+      ch.name.startsWith(ARCHIVE_CATEGORY_BASE) ||
       protectedCategories.has(name) ||
       section.names.has(name) ||
       section.names.has(stripped)
