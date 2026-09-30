@@ -335,3 +335,17 @@ test('the default in-progress move goes through applyTaskUpdate without telling 
   assert.deepEqual(writes, [['task1', { status: 'in_progress' }]])
   assert.equal(r.task.status, 'in_progress')
 })
+
+test('an in-progress bug whose status change succeeds comes back in progress', async () => {
+  const db = fakeDb()
+  const moves = []
+  const r = await createTask({
+    db, guild: { id: 'G' }, cfg, project,
+    fields: { ...baseFields, type: 'bug', modules: [], status: 'in_progress' },
+    createChannel: fakeChannelMaker().maker,
+    setStatus: async (a) => { moves.push(a) },
+  })
+  assert.equal(moves.length, 1)
+  assert.equal(r.task.status, 'in_progress')
+  assert.equal(r.task.id, 'task1')
+})
