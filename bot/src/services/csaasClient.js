@@ -116,6 +116,13 @@ export const fetchNotes = async (meetingId) => {
   return { notes, html }
 }
 
+// /report has Claude write the meeting notes and the HTML report: a generation
+// call like /analyze, so it gets the same 180 s ceiling.
+export const REPORT_TIMEOUT_MS = 180_000
+
+export const generateReport = (meetingId) =>
+  postJson('/meeting/workflow/report', { meeting_id: meetingId }, { timeoutMs: REPORT_TIMEOUT_MS })
+
 export const fetchMeeting = (meetingId) =>
   getJson('/meeting/workflow/meeting', { meeting_id: meetingId })
 

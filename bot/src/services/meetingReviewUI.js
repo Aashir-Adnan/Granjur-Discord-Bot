@@ -129,7 +129,7 @@ function taskEmbed(task, st, projects) {
   return e
 }
 
-export function buildReviewMessage({ job, notes, reportPath, state, roster }) {
+export function buildReviewMessage({ job, notes, notesAttached = false, state, roster }) {
   const jobId = job?.id
   const title = job?.dataJson?.title || 'Meeting'
   const allTasks = job?.dataJson?.tasks ?? []
@@ -149,7 +149,7 @@ export function buildReviewMessage({ job, notes, reportPath, state, roster }) {
   const header = new EmbedBuilder().setTitle(clip(title, 256))
   const headerLines = []
   if (notes) headerLines.push(clip(notes, EMBED_DESC_MAX - 200))
-  if (reportPath) headerLines.push(`\nFull report: \`${reportPath}\` (on the VM)`)
+  if (notesAttached) headerLines.push('\nFull notes are attached above.')
   headerLines.push(`\nPage ${page + 1}/${pageCount} — ${allTasks.length} task(s)`)
   header.setDescription(clip(headerLines.join('\n')))
 

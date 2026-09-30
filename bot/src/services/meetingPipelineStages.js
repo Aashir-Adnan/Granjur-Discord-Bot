@@ -4,8 +4,7 @@
 // - advance: when false, the job stays on the same stage (e.g. polling)
 // - block:   when true, status becomes 'blocked' instead of 'pending'/'done'
 import fs from 'node:fs/promises'
-import path from 'node:path'
-import { EmbedBuilder } from 'discord.js'
+import { AttachmentBuilder, EmbedBuilder } from 'discord.js'
 import { getGuildConfigById } from '../Database/index.js'
 import { buildRoster } from './meetingRoster.js'
 import { deriveMeetingName, formatMeetingDate } from '../commands/playback.js'
@@ -200,8 +199,40 @@ export async function resolveMeetingChannel(client, db, job) {
   return null
 }
 
-// awaiting_review: fetch notes, write the HTML report to disk (best-effort),
-// post the Discord review UI, and block the job for human review.
+// reporting: ask CSAAS to write the meeting notes and the HTML report (its
+// /report step; /notes is empty until this has run). Best-effort and never
+// throws: a failed report must not stop the tasks reaching review. The outcome
+// is recorded so a retry does not ask twice.
+async function reportingStage({ job, csaasClient }) {
+  const data = { ...(job.dataJson || {}) }
+  if (data.reported) return { patch: { dataJson: data } }
+  try {
+    await csaasClient.generateReport(job.csaasMeetingId)
+    data.reported = true
+  } catch (e) {
+    const message = e?.message || String(e)
+    console.warn('[meetingPipeline] report failed:', message)
+    data.reported = true
+    data.reportError = message
+  }
+  return { patch: { dataJson: data } }
+}
+
+// YYYY-MM-DD in UTC, or today's date when the value is missing or unparseable.
+function utcDateStamp(value) {
+  const d = value ? new Date(value) : new Date()
+  return (Number.isNaN(d.getTime()) ? new Date() : d).toISOString().slice(0, 10)
+}
+
+// The two attachment names for a meeting held on `date` (the date the job's
+// title uses).
+export function meetingNotesFileNames(date) {
+  const stamp = utcDateStamp(date)
+  return { notes: `meeting-notes-${stamp}.md`, report: `meeting-report-${stamp}.html` }
+}
+
+// awaiting_review: fetch notes, post them (and the HTML report) as files, post
+// the Discord review UI, and block the job for human review.
 async function awaitingReviewStage({ job, db, client, csaasClient }) {
   const data = { ...(job.dataJson || {}) }
   const tasks = data.tasks || []
@@ -209,20 +240,6 @@ async function awaitingReviewStage({ job, db, client, csaasClient }) {
   const roster = data.roster || []
 
   const { notes, html } = await csaasClient.fetchNotes(job.csaasMeetingId)
-
-  let reportPath = null
-  if (html) {
-    try {
-      const dir = process.env.MEETING_REPORTS_DIR || 'bot/meeting-reports'
-      await fs.mkdir(dir, { recursive: true })
-      const file = path.resolve(dir, `${job.meetingId}.html`)
-      await fs.writeFile(file, html)
-      reportPath = file
-    } catch (e) {
-      console.warn('[meetingPipeline] failed to write meeting report:', e?.message || e)
-      reportPath = null
-    }
-  }
 
   // Settle each task's project now (meeting project, else the project Claude
   // named) so the review can ask only about the unclear ones. The choices are
@@ -243,8 +260,41 @@ async function awaitingReviewStage({ job, db, client, csaasClient }) {
 
   const channel = await resolveMeetingChannel(client, db, job)
   if (channel) {
+    if (!data.notesMessageId && (notes || html)) {
+      try {
+        // The date the title uses: the first recording's start, else the meeting's.
+        let when = null
+        try {
+          const meeting = await db.meeting.findUnique({ where: { id: job.meetingId } })
+          const recs = await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } })
+          when = recs[0]?.startedAt || meeting?.createdAt || null
+        } catch (e) {
+          console.warn('[meetingPipeline] meeting date lookup failed:', e?.message || e)
+        }
+        const names = meetingNotesFileNames(when)
+        const files = []
+        if (notes) files.push(new AttachmentBuilder(Buffer.from(notes, 'utf8'), { name: names.notes }))
+        if (html) files.push(new AttachmentBuilder(Buffer.from(html, 'utf8'), { name: names.report }))
+        const sentNotes = await channel.send({ content: `**Meeting notes — ${data.title || 'Meeting'}**`, files })
+        data.notesMessageId = sentNotes.id
+        // Saved BEFORE the review goes out: a crash between the two sends then
+        // retries without posting the notes a second time. (The worker only
+        // saves the patch once this whole stage returns.)
+        if (db.meetingPipelineJob?.update) {
+          try {
+            await db.meetingPipelineJob.update(job.id, { dataJson: { ...data } })
+          } catch (e) {
+            console.warn('[meetingPipeline] notes message persist failed:', e?.message || e)
+          }
+        }
+      } catch (e) {
+        console.warn('[meetingPipeline] failed to post meeting notes:', e?.message || e)
+      }
+    }
     try {
-      const payload = buildReviewMessage({ job: { ...job, dataJson: data }, notes, reportPath, state, roster })
+      const payload = buildReviewMessage({
+        job: { ...job, dataJson: data }, notes, notesAttached: !!data.notesMessageId, state, roster,
+      })
       const msg = await channel.send(payload)
       patch.reviewMessageId = msg.id
       // Remember WHERE it went. doneStage edits this message into the final
@@ -673,6 +723,7 @@ export const stageRunners = {
   analyzing: analyzingStage,
   generating_tasks: generatingTasksStage,
   assigning: assigningStage,
+  reporting: reportingStage,
   awaiting_review: awaitingReviewStage,
   approved: approvedStage,
   mirrored: mirroredStage,

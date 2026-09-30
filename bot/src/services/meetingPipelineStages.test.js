@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ChannelType } from 'discord.js'
-import { stageRunners, resolveRepoSlug, clampSummary } from './meetingPipelineStages.js'
+import { stageRunners, resolveRepoSlug, clampSummary, meetingNotesFileNames } from './meetingPipelineStages.js'
 
 test('resolveRepoSlug parses ssh + https', () => {
   assert.deepEqual(resolveRepoSlug({ url: 'git@github.com:granjur/bot.git' }), { owner: 'granjur', repo: 'bot' })
@@ -571,7 +571,7 @@ test('awaiting_review posts a message and blocks', async () => {
   const out = await stageRunners.awaiting_review({ job: reviewJob(), db, csaasClient, client })
   assert.equal(out.block, true)
   assert.equal(out.patch.reviewMessageId, 'msg1')
-  assert.equal(sent.length, 1)
+  assert.equal(sent.length, 2)
   assert.equal(fetched[0], 'tc1')
   assert.equal(typeof out.patch.dataJson.review, 'object')
   assert.ok(Array.isArray(out.patch.dataJson.review.tasks))
@@ -592,8 +592,8 @@ test('awaiting_review posts even without html report', async () => {
   const out = await stageRunners.awaiting_review({ job: reviewJob(), db, csaasClient, client })
   assert.equal(out.block, true)
   assert.equal(out.patch.reviewMessageId, 'msg2')
-  assert.equal(sent.length, 1)
-  const desc = sent[0].embeds[0].data.description
+  assert.equal(sent.length, 2)
+  const desc = sent[1].embeds[0].data.description
   assert.ok(!/Full report:/.test(desc))
 })
 
@@ -1304,7 +1304,7 @@ test('awaiting_review asks for a project only where the rules settle none, and s
   assert.deepEqual([b.needsProject, b.projectId], [true, null])
   assert.deepEqual(out.patch.dataJson.reviewProjects, [{ id: 'p2', name: 'Badar HMS' }, { id: 'p1', name: 'Framework' }])
   // One task per page while b needs a project: page 1 is a, with no select.
-  assert.match(sent[0].embeds[0].data.description, /Page 1\/2/)
+  assert.match(sent[1].embeds[0].data.description, /Page 1\/2/)
 })
 
 test('awaiting_review asks nothing when the guild has no projects to offer', async () => {
@@ -1317,7 +1317,7 @@ test('awaiting_review asks nothing when the guild has no projects to offer', asy
   assert.ok(out.patch.dataJson.review.tasks.every((t) => t.needsProject === false))
   assert.deepEqual(out.patch.dataJson.reviewProjects, [])
   // No task needs a project, so the legacy page size (2) applies to both tasks: one page.
-  assert.match(sent[0].embeds[0].data.description, /Page 1\/1/)
+  assert.match(sent[1].embeds[0].data.description, /Page 1\/1/)
 })
 
 test("awaiting_review asks nothing when the meeting has a project", async () => {
@@ -1380,4 +1380,166 @@ test('mirrored entries carry the repositoryId the row was created with (null whe
   assert.deepEqual(out.patch.dataJson.mirrored.map((m) => m.repositoryId), ['r-fw', null])
   // F4: the rule's reason rides along, so issue_syncing can say why there is no repository.
   assert.deepEqual(out.patch.dataJson.mirrored.map((m) => m.repoReason), ['only-repo', 'no-project'])
+})
+
+// ---------------------------------------------------------------------------
+// Meeting notes as files (2026-09-30): reporting stage + notes message
+// ---------------------------------------------------------------------------
+
+test('reporting asks CSAAS for the report once and records it', async () => {
+  const calls = []
+  const csaasClient = { generateReport: async (id) => { calls.push(id); return {} } }
+  const job = { id: 'j', csaasMeetingId: 'm7', dataJson: { title: 'T' } }
+  const out = await stageRunners.reporting({ job, csaasClient })
+  assert.deepEqual(calls, ['m7'])
+  assert.equal(out.patch.dataJson.reported, true)
+  assert.equal(out.patch.dataJson.reportError, undefined)
+  assert.equal(out.patch.dataJson.title, 'T')
+  assert.notEqual(out.advance, false)
+  assert.notEqual(out.block, true)
+})
+
+test('reporting advances when the report fails, recording the error and logging once', async () => {
+  const warns = []
+  const realWarn = console.warn
+  console.warn = (...a) => warns.push(a)
+  try {
+    const csaasClient = { generateReport: async () => { throw new Error('claude down') } }
+    const out = await stageRunners.reporting({ job: { id: 'j', csaasMeetingId: 'm7', dataJson: {} }, csaasClient })
+    assert.equal(out.patch.dataJson.reported, true)
+    assert.equal(out.patch.dataJson.reportError, 'claude down')
+    assert.notEqual(out.advance, false)
+    assert.equal(warns.length, 1)
+    assert.equal(warns[0][0], '[meetingPipeline] report failed:')
+  } finally {
+    console.warn = realWarn
+  }
+})
+
+test('reporting does not call CSAAS again when already reported', async () => {
+  let called = false
+  const csaasClient = { generateReport: async () => { called = true } }
+  const out = await stageRunners.reporting({
+    job: { id: 'j', csaasMeetingId: 'm7', dataJson: { reported: true } }, csaasClient,
+  })
+  assert.equal(called, false)
+  assert.equal(out.patch.dataJson.reported, true)
+})
+
+test('meetingNotesFileNames uses the UTC date, and today when the date is unusable', () => {
+  assert.deepEqual(meetingNotesFileNames('2026-09-30T23:30:00Z'), {
+    notes: 'meeting-notes-2026-09-30.md', report: 'meeting-report-2026-09-30.html',
+  })
+  assert.equal(meetingNotesFileNames(new Date('2026-01-05T00:00:00Z')).notes, 'meeting-notes-2026-01-05.md')
+  const today = new Date().toISOString().slice(0, 10)
+  assert.equal(meetingNotesFileNames(null).notes, `meeting-notes-${today}.md`)
+  assert.equal(meetingNotesFileNames('nonsense').report, `meeting-report-${today}.html`)
+})
+
+// One channel + db fake that logs the order of sends and job writes.
+function notesHarness({ notes, html, dataJson = {}, failNotes = false, startedAt = '2026-03-02T10:00:00Z' } = {}) {
+  const events = []
+  const sent = []
+  const channel = {
+    id: 'tc1',
+    send: async (payload) => {
+      if (payload.files && failNotes) throw new Error('upload refused')
+      const id = payload.files ? 'notes-msg' : 'review-msg'
+      sent.push(payload)
+      events.push(`send:${id}`)
+      return { id }
+    },
+  }
+  const client = { channels: { fetch: async () => channel } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1', createdAt: '2020-01-01T00:00:00Z' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    meetingRecording: { findMany: async () => [{ startedAt }] },
+    meetingPipelineJob: {
+      update: async (id, patch) => { events.push(`update:${patch.dataJson.notesMessageId ?? 'none'}`); return {} },
+    },
+  }
+  const csaasClient = { fetchNotes: async () => ({ notes, html }) }
+  const job = reviewJob()
+  job.dataJson = { ...job.dataJson, ...dataJson }
+  return { events, sent, client, db, csaasClient, job }
+}
+
+const notesMessages = (h) => h.sent.filter((p) => p.files)
+const fileNames = (p) => p.files.map((f) => f.name)
+
+test('awaiting_review posts the notes message with both files before the review', async () => {
+  const h = notesHarness({ notes: '# Notes', html: '<html>r</html>' })
+  const out = await stageRunners.awaiting_review(h)
+  const [m] = notesMessages(h)
+  assert.equal(notesMessages(h).length, 1)
+  assert.equal(m.content, '**Meeting notes — T**')
+  assert.deepEqual(fileNames(m), ['meeting-notes-2026-03-02.md', 'meeting-report-2026-03-02.html'])
+  assert.equal(m.files[0].attachment.toString('utf8'), '# Notes')
+  assert.equal(m.files[1].attachment.toString('utf8'), '<html>r</html>')
+  assert.equal(out.patch.dataJson.notesMessageId, 'notes-msg')
+  assert.equal(out.patch.reviewMessageId, 'review-msg')
+  assert.match(h.sent.at(-1).embeds[0].data.description, /Full notes are attached above\./)
+  assert.equal(out.block, true)
+})
+
+test('awaiting_review attaches only the notes when there is no html', async () => {
+  const h = notesHarness({ notes: 'just notes', html: null })
+  await stageRunners.awaiting_review(h)
+  assert.deepEqual(fileNames(notesMessages(h)[0]), ['meeting-notes-2026-03-02.md'])
+})
+
+test('awaiting_review attaches only the report when there are no notes', async () => {
+  const h = notesHarness({ notes: '', html: '<html></html>' })
+  const out = await stageRunners.awaiting_review(h)
+  assert.deepEqual(fileNames(notesMessages(h)[0]), ['meeting-report-2026-03-02.html'])
+  assert.equal(out.patch.dataJson.notesMessageId, 'notes-msg')
+})
+
+test('awaiting_review posts no notes message when notes and html are both empty', async () => {
+  const h = notesHarness({ notes: '', html: null })
+  const out = await stageRunners.awaiting_review(h)
+  assert.equal(notesMessages(h).length, 0)
+  assert.equal(out.patch.dataJson.notesMessageId, undefined)
+  assert.doesNotMatch(h.sent[0].embeds[0].data.description, /attached above/)
+  assert.equal(out.patch.reviewMessageId, 'review-msg')
+})
+
+test('awaiting_review uses the meeting creation date when there is no recording', async () => {
+  const h = notesHarness({ notes: 'n', html: null })
+  h.db.meetingRecording.findMany = async () => []
+  await stageRunners.awaiting_review(h)
+  assert.deepEqual(fileNames(notesMessages(h)[0]), ['meeting-notes-2020-01-01.md'])
+})
+
+test('awaiting_review saves notesMessageId before it sends the review', async () => {
+  const h = notesHarness({ notes: 'n', html: '<p/>' })
+  await stageRunners.awaiting_review(h)
+  assert.deepEqual(h.events, ['send:notes-msg', 'update:notes-msg', 'send:review-msg'])
+})
+
+test('awaiting_review does not post the notes again when notesMessageId is already set (a retry)', async () => {
+  const h = notesHarness({ notes: 'n', html: '<p/>', dataJson: { notesMessageId: 'earlier' } })
+  const out = await stageRunners.awaiting_review(h)
+  assert.equal(notesMessages(h).length, 0)
+  assert.equal(h.sent.length, 1)
+  assert.equal(out.patch.dataJson.notesMessageId, 'earlier')
+  assert.match(h.sent[0].embeds[0].data.description, /Full notes are attached above\./)
+})
+
+test('awaiting_review still posts the review when the notes send throws', async () => {
+  const warns = []
+  const realWarn = console.warn
+  console.warn = (...a) => warns.push(a)
+  try {
+    const h = notesHarness({ notes: 'n', html: '<p/>', failNotes: true })
+    const out = await stageRunners.awaiting_review(h)
+    assert.equal(out.patch.reviewMessageId, 'review-msg')
+    assert.equal(out.patch.dataJson.notesMessageId, undefined)
+    assert.equal(out.block, true)
+    assert.doesNotMatch(h.sent[0].embeds[0].data.description, /attached above/)
+    assert.ok(warns.some((w) => /failed to post meeting notes/.test(w[0])))
+  } finally {
+    console.warn = realWarn
+  }
 })

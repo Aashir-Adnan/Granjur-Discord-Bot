@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runTick, nextStage, notifyFailure } from './meetingPipelineWorker.js'
+import { runTick, nextStage, notifyFailure, STAGE_ORDER } from './meetingPipelineWorker.js'
 
 function fakeDb(job, { claim } = {}) {
   const store = { ...job }
@@ -95,7 +95,7 @@ test('stage that returns {block:true} sets status blocked', async () => {
   const db = fakeDb({ id: 'j1', stage: 'assigning', status: 'pending', attempts: 0, dataJson: {} })
   const stageRunners = { assigning: async () => ({ patch: {}, block: true, advance: true }) }
   await runTick({ db, stageRunners, client: {}, now: () => new Date('2026-01-01') })
-  assert.equal(db._store.stage, 'awaiting_review')
+  assert.equal(db._store.stage, 'reporting')
   assert.equal(db._store.status, 'blocked')
 })
 
@@ -114,4 +114,13 @@ test('a hung stage runner times out and flows into the retry path', async () => 
     if (prev === undefined) delete process.env.MEETING_STAGE_TIMEOUT_MS
     else process.env.MEETING_STAGE_TIMEOUT_MS = prev
   }
+})
+
+test('STAGE_ORDER puts reporting between assigning and awaiting_review', () => {
+  assert.deepEqual(STAGE_ORDER, [
+    'created', 'transcribing', 'analyzing', 'generating_tasks', 'assigning',
+    'reporting', 'awaiting_review', 'approved', 'mirrored', 'issue_syncing', 'done',
+  ])
+  assert.equal(nextStage('assigning'), 'reporting')
+  assert.equal(nextStage('reporting'), 'awaiting_review')
 })

@@ -5,7 +5,7 @@ import { stageRunners as defaultRunners, resolveMeetingChannel } from './meeting
 
 export const STAGE_ORDER = [
   'created', 'transcribing', 'analyzing', 'generating_tasks', 'assigning',
-  'awaiting_review', 'approved', 'mirrored', 'issue_syncing', 'done',
+  'reporting', 'awaiting_review', 'approved', 'mirrored', 'issue_syncing', 'done',
 ]
 
 export function nextStage(stage) {

@@ -262,3 +262,15 @@ test('the review message shows GitHub on, including for a task missing from the 
     assert.match(msg.embeds[1].data.description, /\*\*GitHub issue:\*\* yes/)
   }
 })
+
+test('buildReviewMessage points at the attached notes when notesAttached, with no report-path line', () => {
+  const job = { id: 'J', dataJson: { title: 'Sync', tasks, assignments } }
+  const state = initReviewState(tasks, assignments)
+  const on = buildReviewMessage({ job, notes: 'the notes', notesAttached: true, state, roster: [] })
+  const off = buildReviewMessage({ job, notes: 'the notes', notesAttached: false, state, roster: [] })
+  const desc = (m) => m.embeds[0].data.description
+  assert.match(desc(on), /the notes\n+Full notes are attached above\./)
+  assert.doesNotMatch(desc(off), /attached above/)
+  assert.doesNotMatch(desc(on), /Full report|on the VM/)
+  assert.doesNotMatch(desc(off), /Full report|on the VM/)
+})

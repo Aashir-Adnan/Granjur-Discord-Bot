@@ -66,7 +66,7 @@ async function handleComponentAction(interaction, kind, jobId, taskId) {
     buildReviewMessage({
       job: updatedJob,
       notes: job.dataJson.notes,
-      reportPath: null,
+      notesAttached: !!job.dataJson.notesMessageId,
       state: newState,
       roster: job.dataJson.roster,
     }),
@@ -164,7 +164,7 @@ export async function execute(interaction) {
     const payload = buildReviewMessage({
       job,
       notes: job.dataJson?.notes,
-      reportPath: null,
+      notesAttached: !!job.dataJson?.notesMessageId,
       state: job.dataJson?.review,
       roster: job.dataJson?.roster,
     })
