@@ -346,3 +346,57 @@ test('create: a bug with no repositoryIds is accepted when the project link reso
   assert.deepEqual(seen.repo, { id: 'R2', name: 'site', url: 'https://github.com/g/site' }, 'the ruled repository reaches createTask')
   assert.equal(r.body.note, 'Issue: https://github.com/g/site/issues/1')
 })
+
+// ------------------------------------------------ status on create / subtask ----
+
+test('create: status done passes through to createTask, the body says done and the note is empty', async () => {
+  let seen
+  const r = await handleCreateRequest({
+    headers: H, body: { type: 'feature', title: 'Old work', projectId: 'P1', status: 'done' },
+    db: routeDb(), client: guildClient, secret: 's3cret',
+    create: async (a) => { seen = a; return { task: { id: 'N2', type: 'feature', status: 'done', projectId: 'P1' }, channel: null, fellBack: null, issueUrl: null, issue: null } },
+  })
+  assert.equal(r.status, 200)
+  assert.equal(seen.fields.status, 'done')
+  assert.equal(r.body.task.status, 'done')
+  assert.equal(r.body.channelId, null)
+  assert.equal(r.body.note, '')
+})
+test('create: no status reaches createTask as none at all; a bad status is a 400 with the sentence', async () => {
+  let seen
+  await handleCreateRequest({
+    headers: H, body: { type: 'feature', title: 'x', projectId: 'P1' }, db: routeDb(), client: guildClient, secret: 's3cret',
+    create: async (a) => { seen = a; return { task: { id: 'N3', status: 'open' }, channel: { id: 'c' }, issue: null } },
+  })
+  assert.equal('status' in seen.fields, false)
+  const r = await handleCreateRequest({
+    headers: H, body: { type: 'feature', title: 'x', projectId: 'P1', status: 'nope' }, db: routeDb(), client: guildClient, secret: 's3cret',
+    create: async () => { throw new Error('must not run') },
+  })
+  assert.equal(r.status, 400)
+  assert.equal(r.body.message, 'status must be open, in_progress or done.')
+})
+test('subtask: description, scope and status reach the addSubtask seam', async () => {
+  let seen
+  const r = await handleSubtaskRequest({
+    headers: H, body: { parentId: 'T', title: 'x', description: ' Cover it ', scope: 'qa', status: 'done' }, db: routeDb(), client: guildClient, secret: 's3cret',
+    addSubtask: async (a) => { seen = a; return { id: 'S2', status: 'done', parentTaskId: 'T' } },
+  })
+  assert.equal(r.status, 200)
+  assert.equal(seen.fields.description, 'Cover it')
+  assert.equal(seen.fields.scope, 'qa')
+  assert.equal(seen.fields.status, 'done')
+  assert.equal(r.body.task.status, 'done')
+})
+test('subtask: a bad scope, an over-long description or a bad status is a 400', async () => {
+  const run = (extra) => handleSubtaskRequest({
+    headers: H, body: { parentId: 'T', title: 'x', ...extra }, db: routeDb(), client: guildClient, secret: 's3cret',
+    addSubtask: async () => { throw new Error('must not run') },
+  })
+  const s = await run({ scope: 'mars' })
+  assert.equal(s.status, 400); assert.match(s.body.message, /^scope must be one of/)
+  const d = await run({ description: 'x'.repeat(2001) })
+  assert.equal(d.status, 400); assert.equal(d.body.message, 'The description can be at most 2000 characters.')
+  const t = await run({ status: 'closed' })
+  assert.equal(t.status, 400); assert.equal(t.body.message, 'status must be open, in_progress or done.')
+})

@@ -13,6 +13,7 @@
 import { holdersOf, idList } from '../utils/taskLabel.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
 import { isTicketChannel } from '../utils/taskChannelName.js'
+import { isFinished } from '../utils/taskHierarchy.js'
 import { openBlockers, TERMINAL_STATUSES, unblockNotice } from '../utils/taskDeps.js'
 import { formatDuration } from '../utils/timeTracking.js'
 import { requestStatusLabel } from '../utils/clientRequestView.js'
@@ -179,7 +180,14 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
   // /create-task and the meeting mirror do. Look up its project (if any) so
   // the new channel lands in that project's section instead of the global
   // Features/Bugs category.
-  if (!channel && !isSubtask && holders.length) {
+  //
+  // Not for a task that was already finished and stays finished: imported
+  // history is recorded done with no channel, and a later edit must not open
+  // one that nothing would ever lock or sweep. `task` is the row before this
+  // update. Reopening it, or finishing it in the update that first assigns it,
+  // still creates the channel.
+  const staysFinished = isFinished(before?.status ?? task.status) && isFinished(updates?.status ?? task.status)
+  if (!channel && !isSubtask && holders.length && !staysFinished) {
     let project = null
     if (task.projectId) {
       try {

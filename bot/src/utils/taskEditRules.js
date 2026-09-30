@@ -25,6 +25,8 @@ export const MAX_IDS = 50
 export const MAX_REPOSITORIES = 20
 export const MAX_MODULES = 20
 export const MODULE_MAX = 100
+/** The statuses a task may be created in (a bulk import records work already done or under way). */
+export const IMPORT_STATUSES = ['open', 'in_progress', 'done']
 
 export const EDIT_KEYS = [
   'status', 'title', 'description', 'scope', 'implementationStatus', 'projectId',
@@ -42,23 +44,30 @@ function stringList(value) {
 
 const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x))
 
-function titleOf(value) {
+export function titleOf(value) {
   if (typeof value !== 'string' || !value.trim()) return ['A task needs a title.']
   const t = value.trim()
   if (t.length > TITLE_MAX) return [`The title can be at most ${TITLE_MAX} characters.`]
   return [null, t]
 }
 
-function descriptionOf(value) {
+export function descriptionOf(value) {
   if (value !== null && value !== undefined && typeof value !== 'string') return ['The description must be text.']
   const d = String(value ?? '').trim()
   if (d.length > DESCRIPTION_MAX) return [`The description can be at most ${DESCRIPTION_MAX} characters.`]
   return [null, d || null]
 }
 
-function scopeOf(value) {
+export function scopeOf(value) {
   if (value === null || value === undefined || value === '') return [null, null]
   if (!SCOPE_VALUES.includes(value)) return [`scope must be one of ${SCOPE_VALUES.join(', ')}, or empty`]
+  return [null, value]
+}
+
+/** A create's `status`: missing or null is open; `[error|null, status]`. */
+export function statusOf(value) {
+  if (value === null || value === undefined) return [null, 'open']
+  if (!IMPORT_STATUSES.includes(value)) return [`status must be ${IMPORT_STATUSES.slice(0, -1).join(', ')} or ${IMPORT_STATUSES.at(-1)}.`]
   return [null, value]
 }
 
@@ -200,6 +209,10 @@ export function validateCreate(input, ctx = {}) {
   if (sErr) return bad(sErr)
   const [hErr, holderIds] = holdersFrom(f.holderIds ?? [], memberIds)
   if (hErr) return bad(hErr)
+  // Kept off `fields` when the request names none, so a create without a status
+  // hands createTask exactly the fields it always got (absent means open there).
+  const [stErr, status] = statusOf(f.status)
+  if (stErr) return bad(stErr)
 
   const modules = stringList(f.modules ?? [])
   if (!modules) return bad('modules must be a list of names.')
@@ -218,7 +231,7 @@ export function validateCreate(input, ctx = {}) {
   return {
     error: null,
     fields: {
-      type: f.type, title, description, scope, modules, holderIds, repositoryIds,
+      type: f.type, title, description, scope, ...(f.status !== undefined && { status }), modules, holderIds, repositoryIds,
       tracks: { apiTests: t.apiTests === true, qaTests: t.qaTests === true, acceptanceCriteria: t.acceptanceCriteria === true },
     },
   }

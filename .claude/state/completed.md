@@ -2,6 +2,40 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-09-30 — JSON task import on the site (BUILT, NOT DEPLOYED, NOT MERGED)
+
+Owner roadmap sub-project 6 of 7: import a JSON file of tasks and subtasks into a project
+from the site, with a check step first and each task created through the ordinary routes.
+Spec `docs/superpowers/specs/2026-09-30-json-task-import-design.md`, knowledge
+`.claude/knowledge/task-import.md` (new). Branch `feat/task-import` in all three repos;
+nothing merged or pushed. No migration. Rollout when approved: bot, then CSAAS, then site.
+Decisions that differ from the spec text: the file cap is 90 KB (CSAAS's body parser
+refuses more than 100 KB), there is no `imported` flag, a done subtask does not re-sync its
+parent.
+
+- **Bot:** `3b0fe06` spec, `3e7ec19` plan; `661f248` feat(tasks) — create a task or subtask
+  with a status, a done task gets no channel and no issue; `80eab9d` fix(tasks) — a done
+  subtask neither notifies nor re-syncs its parent; `42bb8cd` feat(import) — check a file
+  of tasks without creating anything (`services/taskImport.js`, the import-check route,
+  the 512 KB per-route cap); `0773409` fix(import) — a repeated title, the file's tracks
+  and other review fixes; plus the docs commit `docs: JSON task import — knowledge and
+  state`.
+- **CSAAS:** `1f5a3d2` feat(discord-tasks) — check a task import file, create with a status;
+  `0edeca5` fix(discord-tasks) — cap the import file at 90 KB, under the body parser's limit.
+- **Site** (worktree `UBS-Doc-task-import`): `a4ed386` feat(team) — task import: parsing,
+  the import queue and the API wrappers; `8af25c8` feat(team) — the task import screen;
+  `37b93ee` and `43c9e88` fix(team) — review fixes (unconfirmed steps, the blocking overlay
+  in a body portal, StrictMode, file read); `8617380` fix(team) — final-review wave: no
+  links while running, 700 ms pacing with a 429 wait-and-retry, the create note shown.
+- **Final-review wave, bot:** fix(tasks) — an edit of a finished task no longer creates a
+  channel for it (`taskUpdateNotify.js`; commit on `feat/task-import`, see `git log`).
+- Suites on these heads, all green: bot `npm test` 1590 tests, `fail 0`; CSAAS
+  `import.test.js` "all assertions passed", the `discord-tasks-test/*.test.js` loop with no
+  `FAILED` line, `portalAnyUrddPermission` jest `Tests: 5 passed, 5 total`; site
+  `npx vitest run` 456 tests in 36 files, `npx tsc --noEmit` clean. After the final-review
+  wave: site 463 tests in 36 files; bot `npm test` 1594 tests, `fail 0`.
+- Deferred items are in `backlog.md` under roadmap item 6.
+
 ## 2026-09-30 — Clock in and out on the site (MERGED AND PUSHED 2026-09-30)
 
 Owner roadmap sub-project 5 of 7: clock in and out from the site, and see who is clocked

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { validateEdit, validateCreate, MAX_TEST_COUNT, EDIT_KEYS } from './taskEditRules.js'
+import { validateEdit, validateCreate, statusOf, IMPORT_STATUSES, MAX_TEST_COUNT, EDIT_KEYS } from './taskEditRules.js'
 import { BAD_DURATION } from './timeTracking.js'
 
 const task = {
@@ -140,4 +140,23 @@ test('a bug with one repository and no lists is fine', () => {
   assert.deepEqual(r.fields.repositoryIds, ['R1'])
   assert.deepEqual(r.fields.holderIds, [])
   assert.deepEqual(r.fields.modules, [])
+})
+
+test('statusOf: missing or null is open, the three statuses pass, anything else is refused', () => {
+  assert.deepEqual(IMPORT_STATUSES, ['open', 'in_progress', 'done'])
+  assert.deepEqual(statusOf(undefined), [null, 'open'])
+  assert.deepEqual(statusOf(null), [null, 'open'])
+  for (const s of IMPORT_STATUSES) assert.deepEqual(statusOf(s), [null, s])
+  for (const bad of ['closed', '', 5, 'pending']) {
+    assert.deepEqual(statusOf(bad), ['status must be open, in_progress or done.'])
+  }
+})
+test('validateCreate: no status leaves fields unchanged, passes the three values, refuses the rest', () => {
+  assert.equal('status' in create({ type: 'feature', title: 'x' }).fields, false)
+  assert.equal(create({ type: 'feature', title: 'x', status: null }).fields.status, 'open')
+  assert.equal(create({ type: 'bug', title: 'x', status: 'done', repositoryIds: ['R1'] }).fields.status, 'done')
+  assert.equal(create({ type: 'feature', title: 'x', status: 'in_progress' }).fields.status, 'in_progress')
+  const r = create({ type: 'feature', title: 'x', status: 'closed' })
+  assert.equal(r.error, 'status must be open, in_progress or done.')
+  assert.equal(r.fields, null)
 })

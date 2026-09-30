@@ -630,6 +630,13 @@ The Team header gains a clock control, the task page a clock button and the Time
 "Clocked in now" card. See `.claude/knowledge/site-clock.md` for the bot service, the
 `/internal/clock/*` routes, CSAAS's link-only endpoints and the site behaviour.
 
+## JSON task import (2026-09-30, roadmap sub-project 6 — BUILT, NOT DEPLOYED)
+
+The Tasks list gains an Import button: a JSON file is checked by the bot through CSAAS
+(nothing written), then created task by task through the ordinary routes. See
+`.claude/knowledge/task-import.md` for the file format, the check service, `status` on
+create, CSAAS's endpoint, the site's queue and the rollout order.
+
 ## Related
 
 [[project-docs]] (the other bot-to-site data path, UBS-Doc markdown into MySQL — this

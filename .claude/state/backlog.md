@@ -273,7 +273,29 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      - The bot's clock routes accept only an approved, non-client `guildmember`; Discord's
        `/clock-in` lets any non-client through. A pending member sees the bot's sentence
        in the header pill instead of a clock.
-6. **JSON task import** on the site with a documented format — only into the user's projects.
+6. **JSON task import** on the site with a documented format — only into the user's
+   projects. **BUILT, NOT DEPLOYED (not merged either), 2026-09-30.** Branch
+   `feat/task-import` in all three repos (the site in worktree `UBS-Doc-task-import`).
+   Spec `docs/superpowers/specs/2026-09-30-json-task-import-design.md`, knowledge
+   `.claude/knowledge/task-import.md`. No migration.
+   - **Rollout order: bot, then CSAAS, then site.** The bot MUST be live before CSAAS: a
+     CSAAS that forwards `status` to an older bot would create a done task as an open one
+     with a channel. Each push needs the owner's go-ahead.
+   - **Deferred:**
+     - A done feature is stored with `implementationStatus: 'not_started'`.
+     - An edit of a task that was already finished no longer creates a channel for it
+       (reopening still does; a task closed in the same update that first assigns it still
+       gets one, as before).
+     - A 50-task import can fill a project's section (49 channels) and then the global Features/Bugs category (Discord's 50-per-category limit is not checked there); the create then fails after the row is written and the site shows it as unconfirmed — pre-existing, reachable in one import.
+     - Each open or in-progress imported subtask with assignees sends a DM, unspaced.
+     - The site UI was never exercised in a browser against a live backend.
+     - The browser's Back button is not blocked during an import (the app's own navigation
+       and closing the tab are).
+     - A CSAAS 404 for an unknown project on the check shows `Import is not available yet.`
+     - CSAAS's declared `fields` lists for Create/Subtask do not name the new keys
+       (documentation only).
+     - A file with many long descriptions must be split to fit 90 KB (CSAAS's body parser
+       limit, deliberately left alone).
 7. **Meeting docs/JSON → Claude → tasks** without a meeting, plus a document field when a
    meeting starts (today only a voice recording enqueues the pipeline; channel attachments
    land in `meeting.notes` and are never read).

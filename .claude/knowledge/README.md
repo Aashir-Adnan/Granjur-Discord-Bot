@@ -72,3 +72,8 @@
   `/internal/clock/*` routes; CSAAS's link-only clock endpoints (no admin bypass), guild
   resolution, `/time/active` scope and redaction; the site's header control, task-page
   button and "Clocked in now" card, and why elapsed ticks from `elapsedSeconds`.
+- [task-import.md](task-import.md) — JSON task import on the site (roadmap sub-project 6):
+  the user-facing file format and limits (90 KB, 50 tasks), the bot's `checkImport` and
+  verdict shape, `status` on create/subtask (done = no channel, no issue, no notify), the
+  per-route body cap, CSAAS's `import-check` endpoint, the site's sequential queue,
+  unconfirmed steps and leftover file, and the rollout order (bot first).

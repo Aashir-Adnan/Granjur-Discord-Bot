@@ -6,12 +6,13 @@ import db from '../db/index.js'
 import { applyTaskUpdate } from './taskStatusChange.js'
 import { TASK_STATUSES } from '../utils/taskDeps.js'
 import { TaskRuleError } from '../utils/taskHierarchy.js'
-import { validateCreate, validateEdit } from '../utils/taskEditRules.js'
+import { validateCreate, validateEdit, statusOf, descriptionOf, scopeOf } from '../utils/taskEditRules.js'
 import { applyEdit, projectMoveNote } from './taskEdit.js'
 import { createTask, issueReplyLine } from './taskCreate.js'
 import { resolveTaskRepo, loadProjectLinks } from './taskRepo.js'
 import { createSubtask } from './taskHierarchy.js'
 import { notifyTaskUpdate } from './taskUpdateNotify.js'
+import { checkImport, MAX_IMPORT_TASKS } from './taskImport.js'
 
 export function safeEqual(a, b) {
   const x = Buffer.from(String(a ?? '')); const y = Buffer.from(String(b ?? ''))
@@ -210,7 +211,7 @@ export async function handleCreateRequest({ headers = {}, body = {}, db: dbArg =
         fellBack: made.fellBack ?? null,
         // CSAAS forwards only `note` to the site, so the issue outcome rides
         // on it, in the words the Discord reply uses.
-        note: [placementNote(project, v.fields.type, made.fellBack ?? null), issueReplyLine(made.issue ?? null)].filter(Boolean).join('\n'),
+        note: v.fields.status === 'done' ? '' : [placementNote(project, v.fields.type, made.fellBack ?? null), issueReplyLine(made.issue ?? null)].filter(Boolean).join('\n'),
         issue: made.issue ?? null,
       },
     }
@@ -229,6 +230,12 @@ export async function handleSubtaskRequest({ headers = {}, body = {}, db: dbArg 
     const title = typeof b.title === 'string' ? b.title.trim() : ''
     if (!title) return bad('A subtask needs a title.')
     if (title.length > 200) return bad('The title can be at most 200 characters.')
+    const [dErr, description] = descriptionOf(b.description)
+    if (dErr) return bad(dErr)
+    const [scErr, scope] = scopeOf(b.scope)
+    if (scErr) return bad(scErr)
+    const [stErr, status] = statusOf(b.status)
+    if (stErr) return bad(stErr)
     const parent = await dbArg.task.findFirst({ where: { id: parentId } })
     if (!parent) return { status: 404, body: { ok: false, message: 'Task not found' } }
     let assigneeIds = []
@@ -240,9 +247,28 @@ export async function handleSubtaskRequest({ headers = {}, body = {}, db: dbArg 
     const actor = await siteActor(dbArg, parent.guildConfigId, b.actor)
     const { guild } = await guildOf(dbArg, client, parent.guildConfigId)
     const child = await addSubtask({
-      db: dbArg, client, guild, parent, fields: { title, assigneeIds }, actor,
+      db: dbArg, client, guild, parent, fields: { title, assigneeIds, ...(b.description !== undefined && { description }), ...(b.scope !== undefined && { scope }), ...(b.status !== undefined && { status }) }, actor,
       notify: notifyTaskUpdate, apply: applyTaskUpdate, redact: redactSetFrom(b.hiddenTaskIds),
     })
     return { status: 200, body: { ok: true, task: { id: child.id, status: child.status, parentId: child.parentTaskId ?? parent.id } } }
+  })
+}
+
+/**
+ * The site's import preview: a verdict per task of a parsed file, nothing
+ * written. `check` is the seam (a fake in tests).
+ */
+export async function handleImportCheckRequest({ headers = {}, body = {}, db: dbArg = db, client, secret, check = checkImport }) {
+  return guarded({ headers, body, secret, route: 'import-check' }, async (b) => {
+    const [idErr, projectId] = idFrom(b.projectId, 'projectId')
+    if (idErr) return bad(idErr)
+    if (!Array.isArray(b.tasks) || !b.tasks.length) return bad('The file needs a list of at least one task.')
+    if (b.tasks.length > MAX_IMPORT_TASKS) return bad(`A file can hold at most ${MAX_IMPORT_TASKS} tasks.`)
+    const project = await dbArg.project.findFirst({ where: { id: projectId } })
+    if (!project) return bad('No project matches that id.')
+    const { cfg, guild } = await guildOf(dbArg, client, project.guildConfigId)
+    if (!cfg || !guild) return { status: 500, body: { ok: false, message: 'The Discord server is not available to the bot right now.' } }
+    const { tasks } = await check({ db: dbArg, cfg, project, tasks: b.tasks, createIssues: b.createIssues !== false })
+    return { status: 200, body: { ok: true, tasks } }
   })
 }

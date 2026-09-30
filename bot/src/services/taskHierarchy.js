@@ -75,7 +75,9 @@ export async function createSubtask({
       is_feature: 1,
       title: title.slice(0, 200),
       description: fields?.description ? String(fields.description).slice(0, 2000) : null,
-      status: 'open',
+      // The site route validates the status first (statusOf); anything unknown
+      // reaching here is written as open rather than stored as-is.
+      status: fields?.status === 'done' || fields?.status === 'in_progress' ? fields.status : 'open',
       createdBy: actor.discordId ?? actor.activityId ?? null,
       assigneeIds,
       scope: fields?.scope || null,
@@ -90,6 +92,10 @@ export async function createSubtask({
     db: dbArg, task: parent, changes: [{ field: 'subtask', action: 'added', title: child.title }],
     actor: { discordId: actor.discordId ?? actor.activityId ?? null, label: actor.label ?? null },
   })
+
+  // A subtask recorded as already done is a record of finished work, not an
+  // event: nobody is told and the parent keeps the status it has.
+  if (child.status === 'done') return child
 
   // Tell the parent's channel, and DM whoever was assigned. Best-effort.
   try {
