@@ -283,8 +283,11 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      with a channel. Each push needs the owner's go-ahead.
    - **Deferred:**
      - A done feature is stored with `implementationStatus: 'not_started'`.
-     - A later assignee edit on a channel-less done task may create a channel for it (the
-       update notifier opens one when an assignment finds none) — to be checked.
+     - An edit of a task that was already finished no longer creates a channel for it
+       (reopening still does; a task closed in the same update that first assigns it still
+       gets one, as before).
+     - A 50-task import can fill a project's section (49 channels) and then the global Features/Bugs category (Discord's 50-per-category limit is not checked there); the create then fails after the row is written and the site shows it as unconfirmed — pre-existing, reachable in one import.
+     - Each open or in-progress imported subtask with assignees sends a DM, unspaced.
      - The site UI was never exercised in a browser against a live backend.
      - The browser's Back button is not blocked during an import (the app's own navigation
        and closing the tab are).

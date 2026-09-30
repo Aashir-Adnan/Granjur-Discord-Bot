@@ -89,7 +89,7 @@ one verdict per file entry, in order.
   well as in the query, so another guild's member can never match.
 - `ok: true` verdicts carry `fields`: the task's validated fields, an explicit `status`
   (`checkImport` always puts one in, `open` when the file named none), `repositoryIds: []`,
-  and `subtasks: [{ title, description, scope, status, holderIds }]`. `ok: false` verdicts
+  `tracks` (`apiTests`, `qaTests`, `acceptanceCriteria`, all false), and `subtasks: [{ title, description, scope, status, holderIds }]`. `ok: false` verdicts
   carry `errors` and `fields: null`; subtask errors are prefixed `Subtask N: `.
 - `resolveAssignees(entries, members)` is exported (email, then name, then username).
 - `MAX_IMPORT_TASKS = 50`.
@@ -172,7 +172,7 @@ pure `src/screens/team/importLogic.ts`; the API wrappers are in
 - A task that fails marks its subtasks `skipped` (`The task was not created.`).
 - A create that fails with a 5xx or a network error is `unconfirmed` (`createMayHaveSucceeded`):
   it may have been created, so it is kept OUT of the leftover file, counted separately in the
-  summary (`N could not be confirmed - check the Tasks list.`), never retried, and its
+  summary (`N could not be confirmed — check the Tasks list.`), never retried, and its
   subtasks are skipped.
 - **Leftover file:** `leftoverFile` returns the original entries that were invalid or whose
   task failed, unchanged and in file order, as `{ tasks }`; downloaded as
@@ -186,6 +186,24 @@ pure `src/screens/team/importLogic.ts`; the API wrappers are in
 - The screen also downloads the sample file, shows the format table and rules
   (`FORMAT_TASK_FIELDS`, `FORMAT_SUBTASK_FIELDS`, `FORMAT_RULES`) and refreshes the task
   payload when the run ends.
+
+### Final-review fixes (2026-09-30)
+
+- **Pacing and rate limit:** the queue starts consecutive requests at least 700 ms apart
+  (`IMPORT_PACE_MS`, `paceDelay`). CSAAS allows 100 requests a minute per IP and answers the
+  rest with a 429 before any handler runs, so a 429 step created nothing: the queue waits
+  20 s and retries the same step, at most 3 times (`retryDelayFor`; the row shows
+  `Waiting — the server is busy…`). Still 429 after that: a plain `failed` step
+  (`The server is busy — too many requests. Try again in a minute.`), so it goes to the
+  leftover file.
+- **"Created" is a link only after the import finishes.** While it runs it is plain text
+  (a link would unmount the screen and abandon the queue), and `#root` is `inert` so focus
+  cannot reach the sidebar; the overlay is portalled to `document.body`, outside `#root`.
+- **The create `note`** (a failed GitHub issue, a full section falling back) is kept on the
+  created step (`createdResult`) and shown under its row in amber.
+- **Bot notifier:** `notifyTaskUpdate` does not create a channel for a task that was already
+  finished and stays finished, so editing imported history opens nothing. Reopening a done
+  task, or closing a task in the update that first assigns it, still creates the channel.
 
 ## Rollout order: bot, then CSAAS, then site
 
@@ -201,5 +219,5 @@ pure `src/screens/team/importLogic.ts`; the API wrappers are in
 Bot: `bot/src/services/taskImport.test.js`, `internalTaskRoute.test.js`,
 `taskCreate.test.js` and `taskHierarchy.test.js` (status cases), all with `db`/`getConfig`
 fakes (see `.claude/rules/tests-never-touch-production.md`). CSAAS:
-`discord-tasks-test/import.test.js` (plus the whole `discord-tasks-test/*.test.js` loop).
+`CSAAS_Backend/Services/SysScripts/TestScripts/discord-tasks-test/import.test.js` (plus the whole `discord-tasks-test/*.test.js` loop).
 Site: `src/screens/team/importLogic.test.ts`.

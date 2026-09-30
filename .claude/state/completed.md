@@ -25,11 +25,15 @@ parent.
 - **Site** (worktree `UBS-Doc-task-import`): `a4ed386` feat(team) — task import: parsing,
   the import queue and the API wrappers; `8af25c8` feat(team) — the task import screen;
   `37b93ee` and `43c9e88` fix(team) — review fixes (unconfirmed steps, the blocking overlay
-  in a body portal, StrictMode, file read).
+  in a body portal, StrictMode, file read); `8617380` fix(team) — final-review wave: no
+  links while running, 700 ms pacing with a 429 wait-and-retry, the create note shown.
+- **Final-review wave, bot:** fix(tasks) — an edit of a finished task no longer creates a
+  channel for it (`taskUpdateNotify.js`; commit on `feat/task-import`, see `git log`).
 - Suites on these heads, all green: bot `npm test` 1590 tests, `fail 0`; CSAAS
   `import.test.js` "all assertions passed", the `discord-tasks-test/*.test.js` loop with no
   `FAILED` line, `portalAnyUrddPermission` jest `Tests: 5 passed, 5 total`; site
-  `npx vitest run` 456 tests in 36 files, `npx tsc --noEmit` clean.
+  `npx vitest run` 456 tests in 36 files, `npx tsc --noEmit` clean. After the final-review
+  wave: site 463 tests in 36 files; bot `npm test` 1594 tests, `fail 0`.
 - Deferred items are in `backlog.md` under roadmap item 6.
 
 ## 2026-09-30 — Clock in and out on the site (MERGED AND PUSHED 2026-09-30)

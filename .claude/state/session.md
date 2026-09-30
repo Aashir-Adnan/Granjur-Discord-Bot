@@ -10,9 +10,9 @@ site) is built and reviewed on branch `feat/task-import` in the bot, CSAAS and t
 
 ## State
 - Bot: `3b0fe06` spec, `3e7ec19` plan, `661f248`, `80eab9d`, `42bb8cd`, `0773409`, and the
-  docs commit. CSAAS: `1f5a3d2`, `0edeca5`. Site: `a4ed386`, `8af25c8`, `37b93ee`, `43c9e88`.
+  docs commit, and the final-review fix `fix(tasks): an edit of a finished task no longer creates a channel for it`. CSAAS: `1f5a3d2`, `0edeca5`. Site: `a4ed386`, `8af25c8`, `37b93ee`, `43c9e88`, `8617380` (final-review wave).
 - Suites: bot `npm test` 1590 tests, `fail 0`; CSAAS `import.test.js` and the
-  `discord-tasks-test` loop clean, jest 5/5; site vitest 456 tests in 36 files, `tsc` clean.
+  `discord-tasks-test` loop clean, jest 5/5; site vitest 456 tests in 36 files, `tsc` clean. After the final-review wave: site 463 tests, bot 1594 tests, `fail 0`.
 - File cap is 90 KB (CSAAS's body parser), not the spec's original 256 KB.
 
 ## Open items

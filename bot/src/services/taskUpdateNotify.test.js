@@ -534,6 +534,59 @@ test('an unassigned task with no channel notifies nobody and creates nothing', a
   assert.equal(h.created.length, 0)
 })
 
+// --- a finished task's channel ------------------------------------------------
+// Imported history is recorded as done with no channel. A later edit of such a
+// task must not open one; reopening it, or closing it in the same update that
+// first assigns it, still does.
+
+const doneNoChannel = (h, over = {}) => ({ id: h.taskId, title: 'Old work', type: 'feature', status: 'done', assigneeIds: ['11'], discordChannelId: null, ...over })
+
+test('an edit of a task that was already done creates no channel for it', async () => {
+  const h = harness()
+  const task = doneNoChannel(h)
+  const out = await notifyTaskUpdate({
+    client: h.client, guild: h.guild, task, before: task,
+    updates: { title: 'Old work, fixed typo' }, actorId: '99', db: noQueryDb,
+  })
+  assert.equal(out.created, false)
+  assert.equal(out.channelId, null)
+  assert.equal(h.created.length, 0)
+})
+
+test('a done task with no channel that gains a holder while staying done creates no channel', async () => {
+  const h = harness()
+  const task = doneNoChannel(h, { assigneeIds: [] })
+  const out = await notifyTaskUpdate({
+    client: h.client, guild: h.guild, task, before: task,
+    updates: { assigneeIds: ['11'] }, actorId: '99', db: noQueryDb,
+  })
+  assert.equal(out.created, false)
+  assert.equal(out.channelId, null)
+  assert.equal(h.created.length, 0)
+})
+
+test('reopening a done task with holders and no channel still creates its channel', async () => {
+  const h = harness()
+  const task = doneNoChannel(h)
+  const out = await notifyTaskUpdate({
+    client: h.client, guild: h.guild, task, before: task,
+    updates: { status: 'open' }, actorId: '99', db: noQueryDb,
+  })
+  assert.equal(out.created, true)
+  assert.equal(out.channelId, 'newchan')
+})
+
+test('an edit of an open task with holders and no channel still creates its channel', async () => {
+  const h = harness()
+  const task = doneNoChannel(h, { status: 'open' })
+  const out = await notifyTaskUpdate({
+    client: h.client, guild: h.guild, task, before: task,
+    updates: { title: 'Renamed' }, actorId: '99', db: noQueryDb,
+  })
+  assert.equal(out.created, true)
+  assert.equal(out.channelId, 'newchan')
+})
+
 // --- unblockNotices ---------------------------------------------------------
 
 test('unblockNotices: one notice per task the blocker was holding, counting what remains open', async () => {
