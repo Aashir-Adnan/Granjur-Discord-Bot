@@ -46,17 +46,37 @@ export function documentReplyLines({ fileName, chars, error }) {
   return lines;
 }
 
-// Reads the attached document. A refusal never stops the recording: it comes back
-// as the sentence to show the user. Anything that is not a DocTextError is a bug
-// and propagates.
-export async function readBrief(attachment, { download = downloadAttachment, extract = extractDocText } = {}) {
+// The whole document read (download + extraction) gets this long before the
+// recording starts without it.
+export const READ_TIMEOUT_MS = 20_000;
+
+// Reads the attached document. Nothing here may stop the recording, so every
+// failure comes back as the sentence to show the user: a DocTextError keeps its
+// own, anything else is logged and becomes a generic one.
+export async function readBrief(
+  attachment,
+  { download = downloadAttachment, extract = extractDocText, timeoutMs = READ_TIMEOUT_MS } = {},
+) {
+  const fileName = attachment.name;
+  let timer;
+  const timedOut = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ error: `**${fileName}** took too long to read.` }), timeoutMs);
+  });
+  const read = (async () => {
+    try {
+      const buffer = await download(attachment);
+      const { text } = await extract({ buffer, fileName });
+      return { fileName, text: text.slice(0, MAX_BRIEF_CHARS), chars: text.length };
+    } catch (e) {
+      if (e instanceof DocTextError) return { error: e.message };
+      console.warn("[record] document read failed:", e?.message || e);
+      return { error: `**${fileName}** could not be read.` };
+    }
+  })();
   try {
-    const buffer = await download(attachment);
-    const { text } = await extract({ buffer, fileName: attachment.name });
-    return { fileName: attachment.name, text: text.slice(0, MAX_BRIEF_CHARS), chars: text.length };
-  } catch (e) {
-    if (e instanceof DocTextError) return { error: e.message };
-    throw e;
+    return await Promise.race([read, timedOut]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -72,6 +92,7 @@ export async function execute(
     download = downloadAttachment,
     extract = extractDocText,
     db: dbArg = db,
+    readTimeoutMs = READ_TIMEOUT_MS,
   } = {},
 ) {
   const guild = interaction.guild;
@@ -99,7 +120,7 @@ export async function execute(
     // with the meeting. It is not stored (meeting.notes is the channel chat log), so
     // a meeting CSAAS cannot create at the start goes without its brief.
     const attachment = interaction.options.getAttachment("document");
-    const brief = attachment ? await readBrief(attachment, { download, extract }) : null;
+    const brief = attachment ? await readBrief(attachment, { download, extract, timeoutMs: readTimeoutMs }) : null;
     // The unified session: per-user capture, MeetingRecordingStatus row, empty-channel
     // grace timer, and the meeting-pipeline enqueue when the session ends.
     await start(

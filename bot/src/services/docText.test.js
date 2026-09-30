@@ -98,6 +98,21 @@ test('downloadAttachment', async () => {
     '**a.txt** could not be downloaded.',
   )
 
+  for (const name of ['TimeoutError', 'AbortError']) {
+    await fails(
+      downloadAttachment({ name: 'a.txt', url: 'u' }, {
+        fetchImpl: async () => { throw new DOMException('aborted', name) },
+      }),
+      '**a.txt** could not be downloaded.',
+    )
+  }
+
+  let signal
+  await downloadAttachment({ name: 'a.txt', url: 'u' }, {
+    fetchImpl: async (_url, opts) => { signal = opts?.signal; return { ok: true, arrayBuffer: async () => new ArrayBuffer(0) } },
+  })
+  assert.ok(signal instanceof AbortSignal, 'the fetch carries a timeout signal')
+
   let asked
   const bytes = new Uint8Array([104, 105])
   const out = await downloadAttachment(

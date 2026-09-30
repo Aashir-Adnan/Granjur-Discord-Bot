@@ -71,17 +71,43 @@ test('readBrief caps the text at 20,000 characters but reports the full length',
   assert.equal(out.fileName, 'agenda.md')
 })
 
-test('readBrief turns a DocTextError into its sentence and rethrows anything else', async () => {
+// Silences and restores console.warn around a logging path; returns what was logged.
+async function quietWarn(fn) {
+  const logged = []
+  const orig = console.warn
+  console.warn = (...args) => { logged.push(args.join(' ')) }
+  try { await fn() } finally { console.warn = orig }
+  return logged
+}
+
+test('readBrief turns a DocTextError into its sentence', async () => {
   const refused = await readBrief(attachment, {
     download: async () => { throw new DocTextError('**agenda.md** could not be downloaded.') },
     extract: async () => { throw new Error('unreachable') },
   })
   assert.deepEqual(refused, { error: '**agenda.md** could not be downloaded.' })
+})
 
-  await assert.rejects(
-    () => readBrief(attachment, { download: async () => { throw new Error('bug') }, extract: async () => ({}) }),
-    /bug/,
-  )
+test('readBrief logs any other error and answers with a generic sentence', async () => {
+  let out
+  const logged = await quietWarn(async () => {
+    out = await readBrief(attachment, {
+      download: async () => { throw new Error('bug') },
+      extract: async () => ({}),
+    })
+  })
+  assert.deepEqual(out, { error: '**agenda.md** could not be read.' })
+  assert.equal(logged.length, 1)
+  assert.equal(logged[0], "[record] document read failed: bug")
+})
+
+test('readBrief gives up on a read that never finishes', async () => {
+  const out = await readBrief(attachment, {
+    download: () => new Promise(() => {}),
+    extract: async () => ({}),
+    timeoutMs: 5,
+  })
+  assert.deepEqual(out, { error: '**agenda.md** took too long to read.' })
 })
 
 test('start with a document passes the text to the recording and says so in the reply', async () => {
@@ -142,4 +168,24 @@ test('not in a voice channel: the document is not read', async () => {
   assert.equal(h.calls.download.length, 0)
   assert.equal(h.calls.start.length, 0)
   assert.equal(h.replies[0].content, 'Join a voice channel first, then run this command.')
+})
+
+test('a plain Error from extraction still starts the recording and explains', async () => {
+  const h = harness({ doc: attachment, extractError: new Error('parser blew up') })
+  const logged = await quietWarn(() => execute(h.interaction, h.deps))
+
+  assert.equal(h.calls.start.length, 1)
+  assert.deepEqual(h.calls.start[0][4], {})
+  assert.match(description(h.replies), /\nThe document was not used: \*\*agenda\.md\*\* could not be read\.$/)
+  assert.equal(logged.length, 1)
+})
+
+test('a download that never finishes does not hold the recording back', async () => {
+  const h = harness({ doc: attachment })
+  h.deps.download = () => new Promise(() => {})
+  await execute(h.interaction, { ...h.deps, readTimeoutMs: 5 })
+
+  assert.equal(h.calls.start.length, 1)
+  assert.deepEqual(h.calls.start[0][4], {})
+  assert.match(description(h.replies), /\nThe document was not used: \*\*agenda\.md\*\* took too long to read\.$/)
 })

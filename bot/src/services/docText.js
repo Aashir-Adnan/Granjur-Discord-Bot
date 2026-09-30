@@ -5,6 +5,7 @@
 export const DOC_TYPES = ['.txt', '.md', '.json', '.pdf', '.docx']
 export const MAX_DOC_BYTES = 10 * 1024 * 1024
 export const MAX_DOC_CHARS = 60_000
+export const DOWNLOAD_TIMEOUT_MS = 20_000
 
 export class DocTextError extends Error {
   constructor(message) {
@@ -89,7 +90,7 @@ export async function downloadAttachment(attachment, { fetchImpl = fetch } = {})
     throw new DocTextError(`**${name}** is larger than 10 MB.`)
   }
   try {
-    const res = await fetchImpl(attachment.url)
+    const res = await fetchImpl(attachment.url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return Buffer.from(await res.arrayBuffer())
   } catch {
