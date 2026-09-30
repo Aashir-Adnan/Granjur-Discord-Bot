@@ -26,7 +26,7 @@ const bad = (message) => ({ status: 400, body: { ok: false, message } })
  * before anything reads it, a TaskRuleError is the caller's to fix (409), and
  * anything else thrown is a logged 500 — never a hung response.
  */
-async function guarded({ headers = {}, body, secret, route }, handler) {
+export async function guarded({ headers = {}, body, secret, route }, handler) {
   if (!secret) return { status: 503, body: { ok: false, message: 'internal route not configured' } }
   if (!safeEqual(headers['x-internal-secret'], secret)) return { status: 401, body: { ok: false, message: 'unauthorized' } }
   try {
@@ -94,7 +94,7 @@ async function memberIdsOf(dbArg, guildConfigId) {
   return new Set((rows || []).map((m) => String(m.discordId)))
 }
 
-async function guildOf(dbArg, client, guildConfigId) {
+export async function guildOf(dbArg, client, guildConfigId) {
   const cfg = await dbArg.guildConfig.findById(guildConfigId)
   return { cfg, guild: cfg ? client?.guilds?.cache?.get(cfg.guildId) ?? null : null }
 }

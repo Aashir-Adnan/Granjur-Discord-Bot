@@ -1,7 +1,7 @@
 import { SlashCommandBuilder } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import { formatDuration } from '../utils/timeTracking.js'
-import { closeEntry } from './clock-in.js'
+import { ClockError, clockOut } from '../services/clock.js'
 
 export const data = new SlashCommandBuilder()
   .setName('clock-out')
@@ -16,36 +16,27 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
   const cfg = await getConfig(guild.id)
   if (!cfg) return interaction.editReply({ content: 'Server not initialized. Run **/init** first.' })
 
-  const active = await dbArg.clockEntry.findActive(guild.id, interaction.user.id)
-  if (!active) {
-    return interaction.editReply({ content: 'You are not clocked in. Use **/clock-in** first.' })
+  let result
+  try {
+    result = await clockOut({
+      db: dbArg,
+      cfg,
+      guild,
+      discordId: interaction.user.id,
+      note: interaction.options?.getString?.('note'),
+      member: interaction.member,
+    })
+  } catch (e) {
+    if (e instanceof ClockError) return interaction.editReply({ content: 'You are not clocked in. Use **/clock-in** first.' })
+    throw e
   }
 
-  const note = String(interaction.options?.getString?.('note') ?? '').trim() || null
-  const minutes = await closeEntry(dbArg, active, { at: new Date(), note })
-
-  if (cfg.clockedInRoleId) {
-    const member = interaction.member ?? await guild.members.fetch(interaction.user.id).catch(() => null)
-    if (member) await member.roles.remove(cfg.clockedInRoleId).catch(() => {})
-  }
-
-  const session = formatDuration(minutes)
-  if (!active.taskId) {
+  const session = formatDuration(result.minutes)
+  if (!result.task) {
     return interaction.editReply({ content: `**Clocked out** of general work. Session: **${session}**.` })
   }
-
-  const task = await dbArg.task.findFirst({ where: { id: active.taskId, guildConfigId: cfg.id } }).catch(() => null)
-  // The total is a SQL SUM, not a sum over a capped list of entries, so a busy
-  // task is never understated. The entry just closed is already included.
-  let totalLine = ''
-  try {
-    const rows = await dbArg.clockEntry.sumByTask({ guildConfigId: cfg.id, taskIds: [active.taskId] })
-    const total = (rows || []).reduce((n, r) => n + Number(r.minutes || 0), 0)
-    totalLine = ` Task total: **${formatDuration(total)}**.`
-  } catch (e) {
-    console.error('[clock-out] task total:', e?.message ?? e)
-  }
+  const totalLine = result.taskTotalMinutes === null ? '' : ` Task total: **${formatDuration(result.taskTotalMinutes)}**.`
   await interaction.editReply({
-    content: `**Clocked out** of **${task?.title ?? 'a task'}**. Session: **${session}**.${totalLine}`,
+    content: `**Clocked out** of **${result.task.title}**. Session: **${session}**.${totalLine}`,
   })
 }

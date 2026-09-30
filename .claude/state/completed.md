@@ -2,6 +2,32 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-09-30 — Clock in and out on the site (BUILT, NOT DEPLOYED)
+
+Owner roadmap sub-project 5 of 7: clock in and out from the site, and see who is clocked
+in. Spec `docs/superpowers/specs/2026-09-30-site-clock-in-out-design.md`, knowledge
+`.claude/knowledge/site-clock.md` (new). Built across all three repos on branch
+`feat/site-clock`; **not merged, not deployed.** No migration.
+
+- **Bot:** `6293d31` spec, `acf2ae1` plan; `db00433` refactor(clock) — one clock service
+  (`services/clock.js`) shared by `/clock-in`, `/clock-out` and the site; `3059e16`
+  feat(internal) — clock in, out, status and who-is-clocked-in routes
+  (`services/internalClockRoute.js`, wired in `server.js`).
+- **CSAAS:** `4923a51` feat(discord-clock) — clock in, out, status and who-is-clocked-in
+  for the site (`DiscordTasks/discordClock.js`); `be3f821` fix(discord-clock) — identity
+  hook (`actorIsRoleAdmin`), tolerant per-guild probe, report guild scope.
+- **Site** (worktree `UBS-Doc-site-clock`): `bde1fd8` feat(team) — clock in and out from
+  the site, who is clocked in now; `d9a8c2c` fix(team) — keep the clock usable after a
+  failed refresh, reset stale dialogs, label hidden tasks; `2e496ac` fix(team) — refresh
+  after a failed action, after linking and on tab focus (no poll in hidden tabs), and say
+  why the clock is refused (final-review fix wave; bot doc `5ff617e`).
+- Suites, all green: bot `npm test` 1543 tests, `fail 0`; CSAAS `clock.test.js` and the
+  whole `discord-tasks-test` loop clean, `portalAnyUrddPermission` jest 5/5; site
+  `npx vitest run` 408 tests in 35 files, `tsc --noEmit` clean.
+- Knowledge and state docs: `.claude/knowledge/site-clock.md`, `.claude/knowledge/README.md`,
+  `.claude/knowledge/project-tasks-site.md`, `.claude/state/backlog.md`,
+  `.claude/state/completed.md`, `.claude/state/session.md`.
+
 ## 2026-09-30 — Repositories per scope, and a GitHub issue for every task (BUILT, NOT DEPLOYED)
 
 Owner roadmap sub-project 4 of 7: "Let a project have multiple repositories and be
