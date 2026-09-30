@@ -1,8 +1,8 @@
 # Clock in and out on the site
 
 Roadmap sub-project 5 of 7 (owner roadmap, `.claude/state/backlog.md`). Built across the
-bot, CSAAS and the site on branch `feat/site-clock` in each — **not merged, not
-deployed.** No migration anywhere. Spec:
+bot, CSAAS and the site; merged and pushed 2026-09-30 (bot `b219a65`, CSAAS `59d84af`,
+site `03d8da3`). No migration anywhere. Spec:
 `docs/superpowers/specs/2026-09-30-site-clock-in-out-design.md`. The bot owns the clock
 (its `clockentry` table and every rule about it); CSAAS only works out who the caller is
 in Discord and asks the bot over loopback; the site renders it. Same trust shape as the

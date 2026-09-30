@@ -240,17 +240,20 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      run individually with `node <file>.test.js` (as `completed.md` has done for every
      prior CSAAS build in this series). Not new to this build — see the pre-existing
      backlog item under "Time reporting follow-ups" ("The 7 assert-based scripts …").
-5. **Clock in / out on the site** — **BUILT, NOT DEPLOYED (2026-09-30; not merged
-   either).** Spec `docs/superpowers/specs/2026-09-30-site-clock-in-out-design.md`,
-   knowledge `.claude/knowledge/site-clock.md`. Branch `feat/site-clock` in all three
-   repos: bot `db00433` (one clock service for `/clock-in`, `/clock-out` and the site),
-   `3059e16` (the four `/internal/clock/*` routes); CSAAS `4923a51`, `be3f821`; site
-   (worktree `UBS-Doc-site-clock`) `bde1fd8`, `d9a8c2c`, `2e496ac`. No migration.
-   - **Rollout, in order (bot → CSAAS → site), each step needing the owner's go-ahead:**
-     1. Push the bot's `main` (no migration).
-     2. Push CSAAS `main` (auto-deploys).
-     3. Push the site (Vercel) — last.
-   - **Deferred (not required for rollout):**
+5. **Clock in / out on the site** — **MERGED AND PUSHED 2026-09-30.** Spec
+   `docs/superpowers/specs/2026-09-30-site-clock-in-out-design.md`, knowledge
+   `.claude/knowledge/site-clock.md`. Merges: bot `b219a65` (commits `db00433` one clock
+   service for `/clock-in`, `/clock-out` and the site; `3059e16` the four
+   `/internal/clock/*` routes), CSAAS `59d84af` (`4923a51`, `be3f821`), site `03d8da3`
+   (`bde1fd8`, `d9a8c2c`, `2e496ac`). No migration.
+   - **Deploy evidence:** bot "Deploy to VM" run succeeded; site Vercel status success.
+     CSAAS was pushed (it auto-deploys) but its deploy was NOT observed — with no
+     migration there is no ledger row to check; the site's header reading "Clock
+     unavailable" for everyone would mean CSAAS is still on the old build.
+   - **Not yet done:** a live pass in a browser (clock in on general work, switch to a
+     task, clock out with a note, the Time tab card), and a Discord smoke test of
+     `/clock-in`, a task switch and `/clock-out` on the new service.
+   - **Deferred:**
      - A clock-in with no task uses the caller's first link only, so someone linked in two
        guilds can end up with a second clock running in another guild.
      - `clockedInNow` has no row cap override and does its task lookups one at a time.

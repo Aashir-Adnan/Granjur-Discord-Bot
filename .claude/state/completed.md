@@ -2,12 +2,14 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
-## 2026-09-30 — Clock in and out on the site (BUILT, NOT DEPLOYED)
+## 2026-09-30 — Clock in and out on the site (MERGED AND PUSHED 2026-09-30)
 
 Owner roadmap sub-project 5 of 7: clock in and out from the site, and see who is clocked
 in. Spec `docs/superpowers/specs/2026-09-30-site-clock-in-out-design.md`, knowledge
 `.claude/knowledge/site-clock.md` (new). Built across all three repos on branch
-`feat/site-clock`; **not merged, not deployed.** No migration.
+`feat/site-clock`; merged and pushed 2026-09-30 — bot `b219a65` (Deploy to VM run
+succeeded), CSAAS `59d84af` (auto-deploys; deploy not observed), site `03d8da3` (Vercel
+success). No migration. Not yet exercised live in a browser.
 
 - **Bot:** `6293d31` spec, `acf2ae1` plan; `db00433` refactor(clock) — one clock service
   (`services/clock.js`) shared by `/clock-in`, `/clock-out` and the site; `3059e16`
