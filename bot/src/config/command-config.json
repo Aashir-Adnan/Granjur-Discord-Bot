@@ -128,6 +128,9 @@
     "meeting-channel": [
       "Verified"
     ],
+    "tasks-from-doc": [
+      "Verified"
+    ],
     "admin-panel": [
       "CEO",
       "Server Manager"
@@ -406,6 +409,11 @@
       "summary": "Create a dedicated meeting voice + text channel pair.",
       "syntax": "`/meeting-channel [name] [project]`",
       "detail": "Creates a linked voice and text channel for a meeting, and stores text messages in the meeting notes table with a user tag and timestamp. Pick a `project`, or run it inside one of a project's channels, and the meeting belongs to that project: its channels go in the project's section, visible only to its members. With no project the channels go in the public 📋 Meetings category. If the project has no section yet, or its section is full, the channels go to 📋 Meetings and the reply says why."
+    },
+    "tasks-from-doc": {
+      "summary": "Turn a document into proposed tasks, reviewed here like a meeting.",
+      "syntax": "`/tasks-from-doc file:<attachment> [project] [title]`",
+      "detail": "Attach a .txt, .md, .json, .pdf or .docx file (up to 10 MB and 60,000 characters of text). Its text goes through the same pipeline as a recorded meeting: proposed tasks are posted in this channel for review, and approved ones become real tasks. Pick a `project` to file them under it; `title` defaults to the file name."
     },
     "admin-panel": {
       "summary": "Admin panel for viewing recordings, meetings, and members.",

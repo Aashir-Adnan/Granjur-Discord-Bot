@@ -34,23 +34,28 @@ async function guildIdFor(guildConfigId, overrides) {
 }
 
 // created: create the CSaaS meeting, snapshot the roster and title onto the job.
+// A document job (/tasks-from-doc) has no recordings: its title is the one the
+// command stored, dated with the job's creation time, and everyone verified is
+// on the roster (buildRoster falls back to that when no recording matches).
 async function createdStage({ job, db, csaasClient, client }) {
   const meeting = await db.meeting.findUnique({ where: { id: job.meetingId } })
-  const recs = await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } })
+  const isDocument = job.dataJson?.source === 'document'
+  const recs = isDocument ? [] : await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } })
 
   const guildId = await guildIdFor(job.guildConfigId, db)
   const guild = await client.guilds.fetch(guildId)
   const roster = await buildRoster({
     guild,
     guildConfigId: job.guildConfigId,
-    meetingId: job.meetingId,
+    meetingId: isDocument ? null : job.meetingId,
     db,
   })
 
-  const title =
-    deriveMeetingName(recs[0]?.filePath, job.meetingId) +
-    ' — ' +
-    formatMeetingDate(recs[0]?.startedAt || meeting?.createdAt)
+  const title = isDocument
+    ? `${job.dataJson.title || job.dataJson.documentName || 'Document'} — ${formatMeetingDate(job.createdAt || meeting?.createdAt)}`
+    : deriveMeetingName(recs[0]?.filePath, job.meetingId) +
+      ' — ' +
+      formatMeetingDate(recs[0]?.startedAt || meeting?.createdAt)
 
   // startMeetingRecording creates the CSAAS meeting so the live transcript has
   // somewhere to post. Only create one here when that did not happen.
@@ -74,6 +79,20 @@ async function createdStage({ job, db, csaasClient, client }) {
 // One successful upload per tick (advance:false) so each upload is short and
 // independently retryable; advances only once every rec is uploaded-or-missing.
 async function transcribingStage({ job, db, csaasClient }) {
+  // A document job has its text already: hand it to analyze-live as one segment.
+  // Never the /transcribe path and never the liveTranscriptFailed fallback — any
+  // error is rethrown so the worker retries the stage.
+  if (job.dataJson?.source === 'document') {
+    const meeting = await db.meeting.findUnique({ where: { id: job.meetingId } })
+    const text = String(meeting?.transcript || '').trim()
+    if (!text) throw new Error('document job has no text')
+    const analysis = await csaasClient.analyzeLive(job.csaasMeetingId, {
+      meetingNotes: { segment_0: { time_range: '', transcription: text } },
+      totalDurationSec: 0,
+    })
+    return { patch: { dataJson: { ...job.dataJson, liveTranscript: true, analysis } } }
+  }
+
   // Live path: the bot transcribed each turn as it was spoken, so CSAAS gets a
   // real conversation instead of one whole file per speaker. analyze-live both
   // stores the transcript and runs the analysis, so `analyzing` then no-ops.
@@ -178,10 +197,18 @@ export async function resolveMeetingChannel(client, db, job) {
   const meeting = await db.meeting.findUnique({ where: { id: job.meetingId } })
   const candidates = []
 
+  // A document job lives in the channel /tasks-from-doc was run in (a text
+  // channel, so there is no meetingchannel row to look up). Recorded meetings
+  // keep the lookup below.
+  const isDocument = job.dataJson?.source === 'document'
+  if (isDocument && job.dataJson.reviewChannelId) candidates.push(job.dataJson.reviewChannelId)
+
   try {
-    const mc = await db.meetingChannel.findFirst({
-      where: { guildConfigId: job.guildConfigId, voiceChannelId: meeting?.channelId },
-    })
+    const mc = isDocument
+      ? null
+      : await db.meetingChannel.findFirst({
+        where: { guildConfigId: job.guildConfigId, voiceChannelId: meeting?.channelId },
+      })
     if (mc?.textChannelId) candidates.push(mc.textChannelId)
   } catch (e) {
     console.warn('[meetingPipeline] meetingChannel lookup failed:', e?.message || e)

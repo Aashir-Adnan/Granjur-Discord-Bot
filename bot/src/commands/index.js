@@ -58,6 +58,7 @@ import * as recordCmd from './record.js'
 import * as explainCmd from './explain.js'
 import * as clientRequestCmd from './client-request.js'
 import * as clientTrackingCmd from './client-tracking.js'
+import * as tasksFromDocCmd from './tasks-from-doc.js'
 
 const commandModules = [
   initCmd,
@@ -110,6 +111,7 @@ const commandModules = [
   recordCmd,
   clientRequestCmd,
   clientTrackingCmd,
+  tasksFromDocCmd,
 ]
 
 // A module's `data` may be a single SlashCommandBuilder or an array of them
@@ -181,8 +183,12 @@ export async function loadCommands(client) {
   return map
 }
 
-// Commands that show a modal — we defer all slash commands so we stay under 3s; modal is shown via a button
-const MODAL_FIRST_COMMANDS = new Set([])
+// Commands index.js does NOT defer, because they acknowledge the interaction
+// themselves. (Originally for commands that show a modal; every slash command
+// else is deferred ephemerally so we stay under 3s.) /tasks-from-doc needs a
+// public accepted reply but ephemeral refusals, and Discord fixes the
+// ephemeral flag at the first acknowledgement, so it replies or defers itself.
+const MODAL_FIRST_COMMANDS = new Set(['tasks-from-doc'])
 
 export function isModalFirstCommand(name) {
   return MODAL_FIRST_COMMANDS.has(name)

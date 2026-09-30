@@ -4,7 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ChannelType } from 'discord.js'
-import { stageRunners, resolveRepoSlug, clampSummary, meetingNotesFileNames } from './meetingPipelineStages.js'
+import { stageRunners, resolveRepoSlug, clampSummary, meetingNotesFileNames, resolveMeetingChannel } from './meetingPipelineStages.js'
+import { formatMeetingDate } from '../commands/playback.js'
 
 test('resolveRepoSlug parses ssh + https', () => {
   assert.deepEqual(resolveRepoSlug({ url: 'git@github.com:granjur/bot.git' }), { owner: 'granjur', repo: 'bot' })
@@ -1537,4 +1538,110 @@ test('awaiting_review still posts the review when the notes send throws', async 
   } finally {
     console.warn = realWarn
   }
+})
+
+// ---- document jobs (/tasks-from-doc) ----
+
+const docJob = (extra = {}, dataExtra = {}) => ({
+  id: 'j', meetingId: 'm', guildConfigId: 'g', csaasMeetingId: 'csaas-1',
+  createdAt: new Date('2026-09-07T10:00:00Z'),
+  dataJson: { source: 'document', reviewChannelId: 'tc1', documentName: 'spec.pdf', title: 'spec', ...dataExtra },
+  ...extra,
+})
+
+test('created for a document job: titled from dataJson.title and the job date, roster is all verified members, dataJson kept', async () => {
+  let createArgs = null
+  let rosterQuery = null
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', csaasMeetingId: null, transcript: 'text' }) },
+    // A document job has no recordings; reading them would be a bug.
+    meetingRecording: { findMany: async () => { throw new Error('no recordings for a document job') } },
+    guildMember: { findMany: async (q) => { rosterQuery = q; return [{ discordId: 'u1', email: 'ali@x.io' }, { discordId: 'u2', email: 'sara@x.io' }] } },
+    getGuildConfigById: async () => ({ guildId: 'g' }),
+  }
+  const csaasClient = { createMeeting: async (a) => { createArgs = a; return { meeting_id: 'csaas-new' } } }
+  const client = { guilds: { fetch: async () => ({ id: 'g', members: { fetch: async (id) => ({ displayName: id === 'u1' ? 'Ali' : 'Sara' }) } }) } }
+  const out = await stageRunners.created({ job: docJob({ csaasMeetingId: null }), db, client, csaasClient })
+  const when = formatMeetingDate(new Date('2026-09-07T10:00:00Z'))
+  assert.equal(out.patch.dataJson.title, `spec — ${when}`)
+  assert.equal(createArgs.title, `spec — ${when}`)
+  assert.deepEqual(createArgs.participants, ['Ali', 'Sara'])
+  assert.deepEqual(out.patch.dataJson.roster.map((r) => r.ref), ['u1', 'u2'])
+  assert.equal(rosterQuery.where.verifiedAt.not, null)
+  assert.equal(out.patch.csaasMeetingId, 'csaas-new')
+  assert.equal(out.patch.dataJson.source, 'document')
+  assert.equal(out.patch.dataJson.reviewChannelId, 'tc1')
+  assert.equal(out.patch.dataJson.documentName, 'spec.pdf')
+})
+
+test('transcribing for a document job sends the transcript to analyze-live as one segment and never touches /transcribe', async () => {
+  let args = null
+  const db = { meeting: { findUnique: async () => ({ id: 'm', transcript: 'Ali: ship it by Friday.' }) } }
+  const csaasClient = {
+    analyzeLive: async (id, payload) => { args = [id, payload]; return { summary: 'ok' } },
+    transcribeSegment: async () => { throw new Error('transcribeSegment must not be called') },
+  }
+  const out = await stageRunners.transcribing({ job: docJob(), db, csaasClient, client: {} })
+  assert.deepEqual(args, ['csaas-1', {
+    meetingNotes: { segment_0: { time_range: '', transcription: 'Ali: ship it by Friday.' } },
+    totalDurationSec: 0,
+  }])
+  assert.equal(out.patch.dataJson.liveTranscript, true)
+  assert.deepEqual(out.patch.dataJson.analysis, { summary: 'ok' })
+  assert.equal(out.patch.dataJson.source, 'document')
+  assert.notEqual(out.advance, false)
+})
+
+test('transcribing for a document job rethrows an analyze-live failure, never falls back or flags liveTranscriptFailed', async () => {
+  const db = { meeting: { findUnique: async () => ({ id: 'm', transcript: 'some text' }) } }
+  const csaasClient = {
+    analyzeLive: async () => { throw new Error('csaas 502') },
+    transcribeSegment: async () => { throw new Error('transcribeSegment must not be called') },
+  }
+  await assert.rejects(() => stageRunners.transcribing({ job: docJob(), db, csaasClient, client: {} }), /csaas 502/)
+})
+
+test('transcribing for a document job with an empty transcript throws', async () => {
+  const db = { meeting: { findUnique: async () => ({ id: 'm', transcript: '  ' }) } }
+  const csaasClient = { analyzeLive: async () => { throw new Error('must not be called') } }
+  await assert.rejects(() => stageRunners.transcribing({ job: docJob(), db, csaasClient, client: {} }), /document job has no text/)
+})
+
+test('resolveMeetingChannel: a document job uses dataJson.reviewChannelId even with no meetingchannel row', async () => {
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', channelId: 'tc1' }) },
+    meetingChannel: { findFirst: async () => { throw new Error('no lookup for a document job') } },
+  }
+  const sent = { id: 'tc1', send: async () => {} }
+  const client = { channels: { fetch: async (id) => (id === 'tc1' ? sent : null) } }
+  assert.equal(await resolveMeetingChannel(client, db, docJob()), sent)
+})
+
+test('resolveMeetingChannel: a recorded meeting keeps the meetingchannel lookup, ignoring reviewChannelId', async () => {
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'text-mc' }) },
+  }
+  const fetched = []
+  const client = { channels: { fetch: async (id) => { fetched.push(id); return { id, send: async () => {} } } } }
+  const ch = await resolveMeetingChannel(client, db, { meetingId: 'm', guildConfigId: 'g', dataJson: { reviewChannelId: 'elsewhere' } })
+  assert.equal(ch.id, 'text-mc')
+  assert.deepEqual(fetched, ['text-mc'])
+})
+
+test('awaiting_review for a document job posts into dataJson.reviewChannelId with no meetingchannel row', async () => {
+  const sends = []
+  const channel = { id: 'tc1', send: async (p) => { sends.push(p); return { id: `msg${sends.length}` } } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', channelId: 'tc1' }) },
+    meetingChannel: { findFirst: async () => { throw new Error('no lookup for a document job') } },
+    meetingRecording: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+  }
+  const csaasClient = { fetchNotes: async () => ({ notes: null, html: null }) }
+  const client = { channels: { fetch: async () => channel } }
+  const job = docJob({}, { tasks: [{ task_id: 1, goal_of_task: 'Do it' }], assignments: [], roster: [] })
+  const out = await stageRunners.awaiting_review({ job, db, client, csaasClient })
+  assert.equal(out.patch.reviewMessageId, 'msg1')
+  assert.equal(out.patch.dataJson.reviewChannelId, 'tc1')
 })
