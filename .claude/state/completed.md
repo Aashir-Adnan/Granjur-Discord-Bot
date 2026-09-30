@@ -2,7 +2,13 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
-## 2026-10-01 — Tasks from a document, a meeting-start document, meeting notes as files (BUILT, NOT DEPLOYED)
+## 2026-10-01 — Tasks from a document, a meeting-start document, meeting notes as files (MERGED AND DEPLOYED 2026-10-01)
+
+Merged and pushed 2026-10-01, CSAAS first: CSAAS `1c9eb0c` (auto-deploys; not observed), bot
+`4cf460d`. The bot's first deploy failed at `git pull` (the VM's npm-rewritten
+`package-lock.json`); `bfb60af` fixed `.github/workflows/deploy.yml` (discard the VM's
+lockfile before pulling; print `node --version`) and its deploy succeeded — Node v24.13.0, bot
+online. Not yet exercised live. The text below was written before the merge.
 
 Owner roadmap sub-project 7 of 7, built 2026-09-30 to 2026-10-01 subagent-driven. Branch
 `feat/doc-tasks` in the bot and CSAAS; nothing merged, pushed or deployed. No migration.

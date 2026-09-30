@@ -300,25 +300,22 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      - A file with many long descriptions must be split to fit 90 KB (CSAAS's body parser
        limit, deliberately left alone).
 7. **Meeting docs/JSON → Claude → tasks** without a meeting, plus a document field when a
-   meeting starts, plus meeting notes as files — **BUILT, NOT DEPLOYED (not merged either),
-   2026-10-01.** Branch `feat/doc-tasks` in the bot and CSAAS. Spec
+   meeting starts, plus meeting notes as files — **MERGED AND DEPLOYED 2026-10-01**: CSAAS
+   `1c9eb0c` (auto-deploys; not observed), bot `4cf460d` then `bfb60af` (see below). Spec
    `docs/superpowers/specs/2026-09-30-doc-tasks-and-meeting-notes-design.md`, plan
    `docs/superpowers/plans/2026-09-30-doc-tasks-and-meeting-notes.md`, knowledge
    `.claude/knowledge/doc-tasks.md`. No migration. `/tasks-from-doc` (Verified), a document
    at `/record start` (sent to CSAAS as `pre_meeting_notes`), and the `reporting` stage that
    finally makes the meeting notes and HTML report exist (posted as files).
-   - **Rollout, in order (CSAAS → bot), each step needing the owner's go-ahead:**
-     1. Merge, then push CSAAS `main` (auto-deploys; harmless alone, `/create` just accepts
-        `pre_meeting_notes`).
-     2. Merge, then push the bot's `main`: the deploy runs `npm install --production`
-        (installs `unpdf` and `mammoth`), `npm run db:migrate` (nothing new) and restarts
-        pm2; `loadCommands` re-registers the slash commands at startup when the list changed.
-     3. Owner check: `node --version` on the VM must be >= 22 for PDFs (`unpdf`).
+   - **Deploy:** the first bot deploy (`4cf460d`) failed at `git pull` — the VM's
+     `package-lock.json` had local changes written by earlier `npm install --production` runs,
+     and this merge changed the lockfile. Fixed in `.github/workflows/deploy.yml` (`bfb60af`):
+     `git checkout -- package-lock.json` before the pull, and `node --version` printed. The
+     re-run deployed: VM Node **v24.13.0** (PDFs work), 23 packages added, migrations already
+     applied, pm2 `granjur-bot` online.
    - **Not yet done:** a live pass: `/tasks-from-doc` with a small .md and a PDF, a
      `/record start` with a document, and a finished meeting showing the notes and report files.
    - **Deferred:**
-     - The VM's Node version must be >= 22 for PDF reading (`unpdf` declares it; on Node
-       below 22 PDF reading may fail; the failure is contained to that file). Unknown today.
      - Extraction runs in-process: a crafted .docx could exhaust the bot's memory. A
        `worker_thread` with resource limits would contain it.
      - `/report` adds ~3 Claude calls and minutes per meeting, and truncates long

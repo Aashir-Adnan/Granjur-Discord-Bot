@@ -1,7 +1,7 @@
 # Tasks from a document, a meeting-start document, and meeting notes as files
 
-Roadmap sub-project 7 of 7 (owner roadmap, `.claude/state/backlog.md`). BUILT, NOT DEPLOYED
-and not merged (2026-10-01): bot and CSAAS branch `feat/doc-tasks`. No migration anywhere.
+Roadmap sub-project 7 of 7 (owner roadmap, `.claude/state/backlog.md`). Merged and deployed
+2026-10-01 (bot `4cf460d` + deploy fix `bfb60af`, CSAAS `1c9eb0c`). No migration anywhere.
 Three features sharing one text reader and one pipeline:
 
 1. `/tasks-from-doc` turns an attached document into proposed tasks, reviewed like a meeting.
@@ -185,7 +185,11 @@ Worker (`meetingPipelineWorker.js`):
    Slash commands register at bot startup: `loadCommands` (`commands/index.js`) compares the
    live command list with the new one and re-registers when it differs, so `/tasks-from-doc`
    and the new `/record` option appear after the restart without `scripts/deploy-commands.js`.
-3. Owner check before trusting PDFs: the VM's `node --version` must be >= 22.
+3. The VM runs Node v24.13.0 (checked in the 2026-10-01 deploy log; the deploy now prints
+   `node --version`), so `unpdf` works there.
+4. Gotcha: `npm install --production` rewrites `package-lock.json` on the VM. Before
+   2026-10-01 any commit that changed the lockfile made the deploy's `git pull` refuse; the
+   deploy now runs `git checkout -- package-lock.json` first.
 
 ## Tests
 
