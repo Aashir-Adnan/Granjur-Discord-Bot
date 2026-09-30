@@ -17,7 +17,10 @@ jobs:
           script: |
             set -e
             cd ~/Granjur-Discord-Bot || exit 1
+            # npm install rewrites package-lock.json on the VM; the repo's copy wins.
+            git checkout -- package-lock.json
             git pull origin main
+            node --version
             npm install --production
             npm run db:migrate
             pm2 restart granjur-bot || pm2 start bot/src/index.js --name granjur-bot
