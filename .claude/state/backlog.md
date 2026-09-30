@@ -4,6 +4,20 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Project soft delete — BUILT, NOT DEPLOYED (not merged), 2026-10-01
+Delete and Reactivate in `/projects`; a deleted project and its tasks are hidden, nothing is
+removed. Bot branch `feat/project-soft-delete` (`2c6e5e3` .. `f160bce`), CSAAS branch
+`feat/project-soft-delete` (`605a582`). Knowledge `.claude/knowledge/project-soft-delete.md`.
+- **Rollout, each push needing the owner's go-ahead:** (1) merge and push the bot's `main`; the
+  deploy runs `npm run db:migrate` (031) before the restart. (2) merge and push CSAAS `main`
+  (auto-deploys). The column check makes either order safe.
+- **Then a live pass:** delete a scratch project (a clock running on a task, a few task
+  channels), check the archive category and the reply, reactivate it, check channels and
+  overwrites.
+- **Deferred (known limits):** the per-project lock is per process; a restored channel lands
+  below the archive divider until the next `/project-setup`; tasks beyond the 2000-row read are
+  not visited on delete or reactivation.
+
 ## Owner roadmap, 2026-09-28 — seven sub-projects, in build order (each: spec → plan → build)
 1. **Identity link and access scoping — DEPLOYED (2026-09-29).** Spec
    `docs/superpowers/specs/2026-09-28-identity-link-access-scoping-design.md`, knowledge
