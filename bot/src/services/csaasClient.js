@@ -89,8 +89,11 @@ export const CREATE_MEETING_TIMEOUT_MS = 20_000
 
 // CSAAS create returns { meeting: <meetings row>, scope_repo_ids }. The id lives
 // at meeting.meeting_id (verified in meetingWorkflow.js createMeeting -> getMeeting).
-export const createMeeting = async ({ title, participants }) => {
-  const out = await postJson('/meeting/workflow/create', { title, participants }, { timeoutMs: CREATE_MEETING_TIMEOUT_MS })
+// preMeetingNotes is the optional pre-meeting brief; the key is left out when empty.
+export const createMeeting = async ({ title, participants, preMeetingNotes }) => {
+  const body = { title, participants }
+  if (typeof preMeetingNotes === 'string' && preMeetingNotes) body.pre_meeting_notes = preMeetingNotes
+  const out = await postJson('/meeting/workflow/create', body, { timeoutMs: CREATE_MEETING_TIMEOUT_MS })
   return { meeting_id: out?.meeting?.meeting_id ?? out?.meeting_id }
 }
 

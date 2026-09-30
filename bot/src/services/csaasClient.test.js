@@ -225,3 +225,18 @@ test('generateReport posts meeting_id to /report with a 300 s timeout', async ()
     AbortSignal.timeout = realTimeout
   }
 })
+
+test('createMeeting sends pre_meeting_notes when given a non-empty brief', async () => {
+  await createMeeting({ title: 'T', participants: ['Ali'], preMeetingNotes: 'Background text' })
+  const body = JSON.parse(calls[0].opts.body)
+  assert.equal(body.pre_meeting_notes, 'Background text')
+})
+
+test('createMeeting without a brief sends exactly the old body', async () => {
+  await createMeeting({ title: 'T', participants: ['Ali'] })
+  await createMeeting({ title: 'T', participants: ['Ali'], preMeetingNotes: '' })
+  await createMeeting({ title: 'T', participants: ['Ali'], preMeetingNotes: null })
+  for (const c of calls) {
+    assert.deepEqual(JSON.parse(c.opts.body), { title: 'T', participants: ['Ali'], actionPerformerURDD: '999' })
+  }
+})
