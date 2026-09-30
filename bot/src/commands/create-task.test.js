@@ -5,7 +5,7 @@ import * as flowStore from '../flows/store.js'
 import {
   assigneeRow, scopeRow, handleCreate, channelPlacementNote,
   bugProjectRow, issueToggleButton, issueReplyLine, confirmRepository,
-  repositoryFieldText, bugStartRefusal,
+  repositoryFieldText, resolveBugRepo, pickBugRepo, bugRepoStep, NO_REPO_VALUE, emptyServerRefusal,
 } from './create-task.js'
 import { createTaskTicketChannel } from '../services/taskTicketChannel.js'
 import { GitHubError } from '../services/github.js'
@@ -419,10 +419,84 @@ test('repositoryFieldText adds the scope only when the scope rule chose the repo
   assert.equal(repositoryFieldText(null, null, 'backend'), 'None — no issue')
 })
 
-test('bugStartRefusal refuses a bug in a guild with no repositories, as it always did', () => {
-  assert.deepEqual(bugStartRefusal([]), { content: 'No repositories. Add with **/repos** first.', components: [] })
-  assert.deepEqual(bugStartRefusal(undefined), { content: 'No repositories. Add with **/repos** first.', components: [] })
-  assert.equal(bugStartRefusal([API_REPO]), null)
+// --- a bug never needs a repository (2026-09-30) -------------------------------
+
+test('resolveBugRepo: the rule finds the scope repository, nothing is asked', () => {
+  const r = resolveBugRepo({ projectId: 'p1', scope: 'backend' }, { links: LINKS, repos: [API_REPO, WEB_REPO] })
+  assert.equal(r.ask, undefined)
+  assert.equal(r.state.repositoryId, 'r-api')
+  assert.equal(r.state.repoResolved, true)
+  assert.equal(r.state.repoReason, 'scope')
+})
+
+test('resolveBugRepo: a project with linked repositories but none for the scope is offered only its own, optionally', () => {
+  const r = resolveBugRepo({ projectId: 'p1', scope: 'qa' }, { links: LINKS, repos: [API_REPO, WEB_REPO, { id: 'r-other', name: 'other' }] })
+  assert.deepEqual(r.ask.choices.map((c) => c.id), ['r-api', 'r-web'])
+  assert.equal(r.ask.fromProject, true)
+  assert.equal(r.state.repoResolved, undefined)
+})
+
+test('resolveBugRepo: a project with no linked repositories asks nothing and files the bug with none (no server-wide fallback)', () => {
+  const r = resolveBugRepo({ projectId: 'p1', scope: 'backend' }, { links: [], repos: [API_REPO, WEB_REPO] })
+  assert.equal(r.ask, undefined)
+  assert.equal(r.state.repoResolved, true)
+  assert.equal(r.state.repositoryId, null)
+  assert.equal(r.state.repo, null)
+  assert.equal(r.state.repoReason, null)
+})
+
+test('resolveBugRepo: a bug with no project is offered the server repositories, optionally', () => {
+  const r = resolveBugRepo({ projectId: null, scope: 'backend' }, { links: [], repos: [API_REPO, WEB_REPO] })
+  assert.deepEqual(r.ask.choices.map((c) => c.id), ['r-api', 'r-web'])
+  assert.equal(r.ask.fromProject, false)
+})
+
+test('resolveBugRepo: a bug with no project on a server with no repositories is never refused, the step is skipped', () => {
+  const r = resolveBugRepo({ projectId: null, scope: 'backend' }, { links: [], repos: [] })
+  assert.equal(r.ask, undefined)
+  assert.equal(r.state.repoResolved, true)
+  assert.equal(r.state.repositoryId, null)
+})
+
+test('pickBugRepo: the No repository sentinel settles the bug with none; a repository settles it with that one', () => {
+  assert.equal(NO_REPO_VALUE, '__none__')
+  assert.deepEqual(pickBugRepo({ title: 't' }, NO_REPO_VALUE, null), { title: 't', repositoryId: null, repo: null, repoResolved: true, repoReason: null })
+  assert.deepEqual(pickBugRepo({ title: 't' }, 'r-web', WEB_REPO), { title: 't', repositoryId: 'r-web', repo: WEB_REPO, repoResolved: true, repoReason: 'picked' })
+})
+
+test('bugRepoStep: the select keeps its custom id, says the repository is optional, and ends with No repository', () => {
+  for (const fromProject of [true, false]) {
+    const { embeds, components } = bugRepoStep({ title: 'Crash', scope: 'qa' }, [API_REPO, WEB_REPO], fromProject)
+    const menu = components[0].toJSON().components[0]
+    assert.equal(menu.custom_id, 'create_task_repo')
+    assert.deepEqual(menu.options.map((o) => o.value), ['r-api', 'r-web', '__none__'])
+    assert.equal(menu.options.at(-1).label, 'No repository')
+    const e = embeds[0].toJSON()
+    assert.match(e.description, /optional/i)
+    assert.match(e.description, /No repository/)
+    assert.equal(e.footer.text, 'Step — Repository')
+  }
+})
+
+test('bugRepoStep: at most 24 repositories plus No repository (Discord allows 25 options)', () => {
+  const many = Array.from({ length: 40 }, (_, i) => ({ id: `r${i}`, name: `repo${i}` }))
+  const opts = bugRepoStep({ title: 't' }, many, false).components[0].toJSON().components[0].options
+  assert.equal(opts.length, 25)
+  assert.equal(opts.at(-1).value, '__none__')
+})
+
+test('emptyServerRefusal: a server with no repositories and no projects refuses a feature, never a bug', () => {
+  const msg = { content: 'No repositories or projects. Add repos with **/repos** or a project with **/projects**.', components: [] }
+  assert.deepEqual(emptyServerRefusal('feature', [], []), msg)
+  assert.deepEqual(emptyServerRefusal('feature', undefined, undefined), msg)
+  assert.equal(emptyServerRefusal('bug', [], []), null)
+  assert.equal(emptyServerRefusal('feature', [API_REPO], []), null)
+  assert.equal(emptyServerRefusal('feature', [], [PROJECT]), null)
+})
+
+test('confirmRepository: a bug settled with no repository shows none', async () => {
+  const db = fakeDb([], PROJECT, { repos: [API_REPO], links: LINKS })
+  assert.deepEqual(await confirmRepository({ taskType: 'bug', scope: 'qa', repoResolved: true, repo: null, repositoryId: null }, { db, cfg: { id: 'cfg1' } }), { repository: null, reason: null })
 })
 
 // --- handleCreate, a bug under a project, with the Issue toggle ----------------
@@ -476,6 +550,39 @@ test('handleCreate files a bug under its project, opens the issue in the scope r
   assert.match(description, /<#chanP>/)
   assert.match(description, /Issue: https:\/\/github\.com\/o\/r\/issues\/42$/)
   assert.equal(flowStore.get('u-assigner', guild.id, 'create_task'), null)
+})
+
+test('handleCreate files a bug under a project with no repository: no repository on the row, no issue, the reply says why', async () => {
+  const log = []
+  const guild = { id: 'guild-ct-norepo1' }
+  seedBugWithProject(guild, { repositoryId: null, repo: null, scope: 'qa' })
+  const it = fakeInteraction(guild)
+
+  await handleCreate(it, { db: fakeDb(log, PROJECT, { repos: [API_REPO], links: [] }), getConfig, createChannel: projectChannelMaker([]), openIssue: noIssue })
+
+  const row = log.find((e) => e[0] === 'bugTicket.create')[1]
+  assert.equal(row.repositoryId, null)
+  assert.equal(row.projectId, 'p1')
+  const reply = it.replies.at(-1).embeds[0].toJSON()
+  assert.equal(reply.title, 'Bug task created')
+  assert.equal(reply.description, 'Channel: <#chanP>\nIssue: not opened — the project has no repository for this scope')
+})
+
+test('handleCreate files a project-less bug with no repository: global Bugs channel, no issue, the reply says why', async () => {
+  const log = []
+  const guild = fakeBugGuild()
+  flowStore.set('u-assigner', guild.id, 'create_task', {
+    step: 'confirm', taskType: 'bug', title: 'Login 500s', description: '', scope: 'backend',
+    projectId: null, repositoryId: null, repo: null, repoResolved: true, taggedMemberIds: [],
+  })
+  const it = fakeInteraction(guild)
+
+  await handleCreate(it, { db: fakeDb(log), getConfig, openIssue: noIssue })
+
+  assert.equal(log.find((e) => e[0] === 'bugTicket.create')[1].repositoryId, null)
+  assert.equal(guild.created.at(-1).topic, 'Bug: Login 500s | Repo: —')
+  assert.deepEqual(guild.sends[0].embeds[0].toJSON().fields.find((f) => f.name === 'Repository'), { name: 'Repository', value: '—', inline: false })
+  assert.equal(it.replies.at(-1).embeds[0].toJSON().description, 'Channel: <#chanBug>\nIssue: not opened — no repository was picked')
 })
 
 test('handleCreate with the Issue toggle off opens no issue and says Issue: off', async () => {

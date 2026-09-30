@@ -71,9 +71,8 @@ a missing model or a failed read, never throws) — used everywhere the rule is 
 - `bot/src/commands/create-task.js` (`confirmRepository`, `proceedAfterScope`) — see
   "As built" below;
 - `bot/src/services/internalTaskRoute.js` `handleCreateRequest` (the site's create
-  route) — runs the rule for a bug up front and refuses with 400 ("This project has no
-  repository for this scope — pick a repository for the bug.") when it finds nothing and
-  the site sent no `repositoryIds[0]` either;
+  route) — runs the rule for a bug up front; when it finds nothing it uses the site's
+  `repositoryIds[0]`, else the bug has **no repository** (never a 400 since 2026-09-30);
 - the meeting pipeline — `bot/src/services/meetingTaskProject.js`
   `resolveMeetingTaskProject(csaasTask, reviewTask, ctx)` calls `resolveTaskRepo` with
   the settled project and `meetingTaskScope(csaasTask)`, replacing the old "match's
@@ -143,17 +142,30 @@ open an issue against, even when the scope rule itself came up empty.
 
 ### `/create-task`, as built (behaviour that changed during review)
 
-- **A bug in a guild with no repositories is refused at the very start**, before the
-  first step: `bugStartRefusal(repos)` → `NO_REPOSITORIES_MSG` = `"No repositories. Add
-  with **/repos** first."` (`bot/src/commands/create-task.js`).
+- **A bug never needs a repository (2026-09-30).** It used to be refused at the start in a
+  guild with no repositories (`bugStartRefusal` / `NO_REPOSITORIES_MSG`, removed) and to
+  force a repository pick; neither exists now. A bug with no repository gets **no GitHub
+  issue** and says so through the existing `issueReplyLine` path (see below). Everything
+  else about the bug (channel, tagged members, status, section) is unchanged.
 - **Bugs pick a project first** (or "No project") — `showBugProjectStep` /
   `handleBugProjectSelect` — before scope, so the rule has a project to check.
 - **Once scope is known, the rule runs** (`proceedAfterScope`): repository found →
   the repository step is skipped entirely, confirm shows it. Repository not found →
-  a **bug** still asks for a repository, but only from **the project's linked
-  repositories, falling back to every server repository if the project has none**
-  (`showRepoStep`, `fromProject` flag controls the wording); a **feature** with no
-  repository just has no repository and no issue — it is never asked.
+  a **bug** is offered an **optional** picker (`resolveBugRepo` decides, `bugRepoStep`
+  builds it: custom id `create_task_repo`, last option "No repository" = `NO_REPO_VALUE`
+  `__none__`, at most 24 repositories): inside a project only **that project's own linked
+  repositories** (there is no server-wide fallback any more); a bug with no project gets
+  the server's repositories. **With nothing to offer the step is skipped** and the bug has
+  no repository (a project with no links; a server with no repositories). `pickBugRepo`
+  settles the state for a pick or "No repository". A **feature** with no repository just
+  has no repository and no issue — it is never asked. Without a repository the reply's
+  issue line is whatever `openTaskIssue` reports: `Issue: not opened — the project has no
+  repository for this scope` (a bug in a project), or `Issue: not opened — no repository was
+  picked` (a project-less bug with no pick; the project-less branch of `createTask` passes
+  that reason itself). The in-project wording is the existing `repoReasonText` one.
+  `/create-task` refuses a server with no repositories and no projects only for a
+  FEATURE (`emptyServerRefusal`); a bug proceeds ("No project" only, repository step
+  skipped, global Bugs category).
 - **The confirm step's "Repository" field** (`repositoryFieldText(repository, reason,
   scope)`) shows the name plus `(<Scope>)` **only when `reason === 'scope'`** — i.e.
   only when the scope rule itself chose it, never for `'only-repo'` (which says nothing
@@ -176,11 +188,11 @@ open an issue against, even when the scope rule itself came up empty.
 about the task's own scope). `No repository for this project and scope — no issue` when
 none. An **Open a GitHub issue** checkbox, on by default, disabled when there's no
 repository, sends `create_issue` (`taskFormLogic.ts`: `create_issue: !!resolvedRepo &&
-f.createIssue`). **A bug the rule gives no repository now shows a required Repository
-picker** (`bugRepoChoices` in `repoLogic.ts`: the project's linked repositories, else
-every repository) and sends `repository_ids: [picked]`; the form refuses only when there
-is nothing to pick ("This project has no repository — add one in Discord with /repos
-add."). A scope-less bug in a project with several links gets the hint "Pick a scope to
+f.createIssue`). **Bug repository on the site (before 2026-09-30):** a required
+Repository picker (`bugRepoChoices` in `repoLogic.ts`) and a refusal when there was
+nothing to pick. Since the 2026-09-30 change a bug never requires a repository (the site
+side is changed separately: the picker is optional over the project's own repositories).
+A scope-less bug in a project with several links gets the hint "Pick a scope to
 choose the repository automatically, or pick one below." The site still sends
 `repository_ids` **only in that bug fallback**; every other create lets the bot's
 internal route resolve the repository with the rule and pass `createIssue` through
@@ -200,7 +212,13 @@ line, not a crash).
 `handleCreateRequest`): `createIssue: b.createIssue !== false` — an old site sending no
 `create_issue` at all still gets an issue by default. For a bug it runs the rule itself
 before calling `createTask` and hands it the ruled repository, falling back to the site's
-`repositoryIds[0]` only when the rule finds none; 400 when both come up empty.
+`repositoryIds[0]` only when the rule finds none; when both come up empty the bug is
+created with no repository (no 400 since 2026-09-30). The `note` then ends with
+`Issue: not opened — the project has no repository for this scope` only for a caller that
+leaves `createIssue` on (the task import with "Open GitHub issues" ticked, or Discord).
+The real site sends `create_issue: false` whenever a bug has no repository
+(`taskFormLogic.ts` `createPayload`: `create_issue: !!(resolvedRepo ?? picked) &&
+f.createIssue`), so its toast shows `Issue: off`.
 **The issue outcome rides on the reply's `note`:** CSAAS forwards only `note` to the
 site, so the route sets `note` to the placement note and `issueReplyLine(made.issue)`
 joined by a newline — `Issue: <url>` / `Issue: not opened — <reason>` / `Issue: off`.

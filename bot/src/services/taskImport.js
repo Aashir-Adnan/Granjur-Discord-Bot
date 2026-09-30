@@ -84,7 +84,6 @@ function checkTask(entry, ctx) {
   const [, status] = statusOf(entry.status)
 
   const repoFor = () => resolveTaskRepo({ projectId: project.id, scope: v.fields.scope }, { links, repos }).repository
-  if (v.fields?.type === 'bug' && !repoFor()) errors.push('This project has no repository for this scope.')
 
   let subtasks = []
   if (entry.subtasks !== undefined && entry.subtasks !== null) {
@@ -108,7 +107,8 @@ function checkTask(entry, ctx) {
     if (seenTitles.has(titleKey)) warnings.push('This title appears more than once in the file.')
     seenTitles.add(titleKey)
   }
-  if (v.fields?.type === 'feature' && createIssues && status !== 'done' && !repoFor()) warnings.push(NO_ISSUE_WARNING)
+  // A feature or a bug (neither needs a repository): with issues on and no repository, say no issue is opened.
+  if (v.fields && createIssues && status !== 'done' && !repoFor()) warnings.push(NO_ISSUE_WARNING)
 
   if (errors.length) return { ok: false, errors, warnings, fields: null }
   return { ok: true, errors: [], warnings, fields: { ...v.fields, status, repositoryIds: [], subtasks } }

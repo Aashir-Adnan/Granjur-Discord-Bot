@@ -185,14 +185,12 @@ export async function handleCreateRequest({ headers = {}, body = {}, db: dbArg =
     if (v.error) return bad(v.error)
 
     // A bug's repository: the rule (project + scope) first; the site's pick
-    // (`repositoryIds[0]`) only when the rule finds none.
+    // (`repositoryIds[0]`) only when the rule finds none; else none. A bug never
+    // needs a repository: with none it gets no GitHub issue, and the note says so.
     let repo = null
     if (v.fields.type === 'bug') {
       const links = await loadProjectLinks(dbArg, project.id)
       const { repository: ruled } = resolveTaskRepo({ projectId: project.id, scope: v.fields.scope }, { links, repos })
-      if (!ruled && !v.fields.repositoryIds[0]) {
-        return bad('This project has no repository for this scope — pick a repository for the bug.')
-      }
       repo = ruled ?? reposById.get(v.fields.repositoryIds[0]) ?? null
     }
 

@@ -535,9 +535,12 @@ from the old status-only wording).
   (same day):** CSAAS forwards only `note` to the site, so `note` now carries the issue
   outcome on its own line after the placement note — `Issue: <url>` / `Issue: not opened
   — <reason>` / `Issue: off` (`issueReplyLine`, the `/create-task` reply's words); a
-  failed issue is also posted in the task's channel. The site's create page shows a
+  failed issue is also posted in the task's channel. The site's create page showed a
   required Repository picker for a BUG the rule gives no repository (the project's linked
-  repositories, else all; it refuses only when there are none), sends `repository_ids:
+  repositories, else all; it refused only when there were none) — **the behaviour before
+  2026-09-30; now the picker is optional over the project's own linked repositories, there
+  is none when the project has no links, and a bug is never refused (see
+  [[repositories-and-issues]])** — sends `repository_ids:
   [picked]` only then, and shows the note on separate lines in the toast
   (`whitespace-pre-line`). See [[repositories-and-issues]] for the rule, the opt-out and
   the site's mirrored `issueTargetText`/project-card repository list.
