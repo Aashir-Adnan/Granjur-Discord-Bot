@@ -53,6 +53,43 @@ test('a mover that throws does not turn a successful resolve into an error', asy
   assert.equal(h.interaction.replies.length, 1)
 })
 
+test('the issue seam is called with status: resolved, and a returned line is sent to the channel', async () => {
+  const h = harness()
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ text: async () => '# fix' })
+  const syncCalls = []
+  const syncIssue = async (a) => { syncCalls.push(a); h.log.push(['sync']); return { line: 'GitHub issue not closed — No GitHub access to o/r' } }
+  try {
+    await execute(h.interaction, { db: h.db, move: h.move, syncIssue })
+  } finally { globalThis.fetch = realFetch }
+  assert.equal(syncCalls.length, 1)
+  assert.deepEqual(syncCalls[0].updates, { status: 'resolved' })
+  assert.equal(syncCalls[0].task.id, 'T1')
+  // M4: the issue is synced before `move` locks the channel, and its line is
+  // in the reply as well as the channel.
+  assert.deepEqual(h.log, [
+    ['update', 'resolved'],
+    ['sync'],
+    ['send', 'This bug ticket has been resolved. This channel is now read-only and will be removed in 14 days.'],
+    ['send', 'GitHub issue not closed — No GitHub access to o/r'],
+    ['move', 'T1', 'pending', 'resolved', true, 'G1'],
+  ])
+  assert.equal(h.interaction.replies[0].content, 'GitHub issue not closed — No GitHub access to o/r')
+  assert.ok(h.interaction.replies[0].embeds[0], 'the embed is still in the reply')
+})
+
+test('no line from the issue seam: nothing extra is sent', async () => {
+  const h = harness()
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ text: async () => '# fix' })
+  const syncIssue = async () => ({ line: null })
+  try {
+    await execute(h.interaction, { db: h.db, move: h.move, syncIssue })
+  } finally { globalThis.fetch = realFetch }
+  assert.equal(h.log.filter((l) => l[0] === 'send').length, 1)
+  assert.equal(h.interaction.replies[0].content, undefined, 'no line, no content in the reply')
+})
+
 test('outside a bug channel, or when already resolved, nothing is written or moved', async () => {
   const h = harness({ ticket: null })
   await execute(h.interaction, { db: h.db, move: h.move })

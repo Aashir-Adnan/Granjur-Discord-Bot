@@ -102,7 +102,7 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
    - The usman@granjur.com permission fix (CSAAS `20856ae`, site `a594551`) is pushed, so
      it deployed with those pushes. (The org-level `Admin` role question carried from
      sub-project 1 is resolved — see item 1 above.)
-3. **Global channel layout and feedback — BUILT, NOT DEPLOYED.** Trims `/init`'s global
+3. **Global channel layout and feedback — DEPLOYED 2026-09-29.** Trims `/init`'s global
    layout to Onboarding/Announcements/Casual/Documentation/Feedback/Meetings (Rules,
    Archive, Frontend/Backend/Database and Command channels dropped — nothing reads them);
    adds a global `#feedback` channel (Verified only, never clients) and `/feedback`.
@@ -111,18 +111,19 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
    `44d80a4`, commits `65e09db..997dc26`; spec `65e09db`, plan `819d334`, code
    `913b8e3..997dc26`), bot repo only, migration 029 (`guildconfig.feedbackChannelId`).
    Suite 1375 tests (final-review fix wave 2026-09-29 added 3 to `cleanup.test.js`), `fail 0`.
-   - **Rollout, in order, each step needing the owner's go-ahead:**
-     1. Push the bot's `main` — the deploy runs migration 029, and the restarted bot
-        registers `/feedback`.
-     2. Run `/setup` on the live server — `#feedback` appears (the reply's "Feedback"
-        line says "created now").
-     3. Run `/cleanup` and **read the list before confirming**: expect Rules, Archive,
+   Merged, pushed and deployed; the owner ran `/setup` then `/cleanup` on the live server
+   on 2026-09-29, confirming the preview list before deleting.
+   - **Rollout that was followed, each step taken with the owner's go-ahead:**
+     1. Pushed the bot's `main` — the deploy ran migration 029, and the restarted bot
+        registered `/feedback`.
+     2. Ran `/setup` on the live server — `#feedback` appeared (the reply's "Feedback"
+        line said "created now").
+     3. Ran `/cleanup` and **read the list before confirming**: Rules, Archive,
         the Frontend/Backend/Database channels, the `cmd-*` channels, their now-emptied
         categories, plus any genuinely stray channel. `/cleanup`'s pre-existing `meet-*`
         rule also lists leftover meeting rooms even when they sit inside the (protected)
-        📋 Meetings category — check those by name before confirming, they are not new
-        to this branch. Confirm only once the list matches expectations.
-        **Final-review fix wave (2026-09-29):** the preview now shows every channel,
+        📋 Meetings category — those were checked by name before confirming.
+        **Final-review fix wave (2026-09-29):** the preview shows every channel,
         grouped by category (or, past Discord's embed size limit, as per-category counts
         plus an attached `cleanup-preview.txt` with the full list) — the old preview cut
         off at 25 channels with "…and N more" while the confirm button still deleted all
@@ -138,8 +139,101 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
        `pendingCleanups` only after the embed is built (today a stale earlier preview's
        button could act on the newer list after such an error).
      - The attachment path (`cleanup-preview.txt`) has no test.
-4. **Repositories per project with a scope** — `project_repos` gains a scope; a task's scope
-   picks the repo and opens the GitHub issue (today only bugs open one, `taskCreate.js`).
+4. **Repositories per project with a scope, and a GitHub issue for every task — BUILT, NOT
+   DEPLOYED.** `project_repos` gains a scope (migration 030); one rule
+   (`resolveTaskRepo`/`taskRepo.js`) picks a task's repository by project + scope in
+   `/create-task`, the site's create route and the meeting pipeline; issues now open for
+   bugs and features alike, with a per-task opt-out, a token per repo owner
+   (`GITHUB_TOKENS`), and failures always reported rather than swallowed; a task's issue
+   now closes/reopens with its status (`syncIssueState`); `/repos add` and `/projects` →
+   Link repo check GitHub access; a new Mobile scope; meeting-task issues now open from
+   the bot itself (`issue_syncing`), not CSAAS's `issueSync`. Spec
+   `docs/superpowers/specs/2026-09-30-repositories-per-scope-design.md`, knowledge
+   `.claude/knowledge/repositories-and-issues.md`. Branch `feat/repo-scopes` in all three
+   repos, not merged.
+   - **Bot** (base `main` `744ea34`; `git log --oneline 744ea34..HEAD`): spec/plan docs;
+     `8e4cae9` Mobile scope; `0a41a57` migration 030; `9ef6e8f` `taskRepo.js`'s one rule;
+     `05c208e` `github.js` — a token per owner, `createIssue`'s reported errors,
+     `checkRepoAccess`; `bb94d62` issues for bugs and features, site route passes the
+     opt-out; `547f622`/`7513665` `/create-task` — bugs pick a project, the scope picks
+     the repository, an Issue on/off toggle (plus the fix-wave rulings below);
+     `a2b851b` `/projects` link-with-scope/unlink, `/repos add` scope, the access check;
+     `53f0d73` `syncIssueState` closes/reopens the issue with the task's status;
+     `f22177a` meeting repository by project and scope, GitHub on by default, the bot
+     opens meeting issues via `issue_syncing`. Final fix pass: `576ea57` the issue
+     outcome reaches the site's `note` and a failed issue is said in the channel;
+     `094db6b` status sync finds the issue from its URL and says when its repository is
+     unknown, `/close-feature`/`/resolve-bug` sync before archiving; `7fe062d` the meeting
+     done summary counts opened issues and names skipped/failed apart; `2c36da1` no stray
+     link on a scope race, clearer link texts, stricter access check; then the done
+     summary is clamped to Discord's limit. Suite 1492 tests, `fail 0`.
+   - **CSAAS** (worktree `D:\Work\Granjur Technologies\CSAAS_Backend`, branch
+     `feat/repo-scopes` from `main` `09b2f61`): `aab5f8e` — Mobile scope in
+     `normalizeMeetingTaskScope`/the task-generation prompt, `create_issue` forwarded on
+     the create pass-through, `projectRepos` in the tasks payload. Jest file
+     `meeting-test/meetingTaskScope.test.js` 8/8 pass; all 18 `discord-tasks-test/*.test.js`
+     assert-scripts pass when run with `node` (they are not real jest tests — see the
+     backlog's "assert-based scripts" item below).
+   - **Site** (worktree `D:\Work\Granjur Technologies\UBS-Doc-repo-scopes`, branch
+     `feat/repo-scopes` from `main` `4f6dc09`; `git log --oneline 42069c0..7505783`):
+     `42069c0` Mobile scope, "Issue goes to …" line (`repoLogic.ts`), repositories shown
+     read-only on project cards; `544176a` fix — the line's `(<Scope>)` shows only when
+     the scope rule actually chose the repository; `b2b36d6` a bug the rule gives no
+     repository picks one (required picker: the project's linked repositories, else all;
+     refused only when there are none), the toast shows the bot's `note`; `7505783` the
+     toast keeps a multi-line message on separate lines.
+   - **Behaviour that changed during review, documented as built** (full detail in
+     `.claude/knowledge/repositories-and-issues.md`): a bug in a guild with no
+     repositories is refused at the very start ("No repositories. Add with **/repos**
+     first."); bugs pick a project first (or "No project"); when the scope rule finds
+     nothing, a bug picks from the project's linked repositories, else every server
+     repository; the confirm step's "Repository" shows "(<Scope>)" only when the scope
+     rule itself chose it (never for the only-untagged-repo fallback or a human's own
+     pick); a feature or bug with no rule match but an explicitly picked repository
+     still uses that repository and gets an issue (a controller ruling, not the rule's
+     own output); `issue_syncing` (meetings) saves each opened issue to the job
+     immediately so a retry can never reopen one; the site's create line adds
+     "(<Scope>)" under the identical condition.
+   - **Behaviour changed in the final fix pass (2026-09-30):** a site-created task's
+     `note` carries the issue outcome (`Issue: <url>` / `Issue: not opened — <reason>` /
+     `Issue: off`) and an issue failure is also posted in the task's channel; status sync
+     finds the issue from `externalIssueUrl` (owner/repo/number), falling back to
+     `repositoryId` + `externalIssueNumber`, and says "the issue's repository is unknown"
+     when neither resolves; meeting issue sync writes `repositoryId` with the issue; the
+     meeting done summary counts issues actually opened, names each task, lists
+     "skipped — no repository" apart from failures and is clamped to Discord's limit;
+     the site's create page has a required repository picker for a bug the rule gives no
+     repository; `/close-feature` and `/resolve-bug` run the issue sync before archiving
+     and show a failure in the reply; `/repos add` says when a scope was ignored; the
+     access check reports disabled issues and read-only tokens; a refused link never
+     leaves a stray untagged link.
+   - **Rollout, in order (bot → CSAAS → tag links in Discord → site), each step needing
+     the owner's go-ahead:**
+     1. Push the bot's `main` — the deploy runs migration 030;
+        `GITHUB_TOKENS=ubs-dev-org:<PAT>` is **already set** on the VM's bot `.env` (and
+        locally) by the owner, so no env step is needed at this push.
+     2. Push CSAAS `main` — a push auto-deploys; CSAAS runs its own migrations at
+        startup, and this sub-project adds none, so nothing else to do here.
+     3. Owner, in Discord, once the bot is live: `/projects` → Link repo to tag each
+        existing link with its scope; `/repos add` the ubs-dev-org Badar HMS repositories
+        with their scopes; `/projects` → Unlink repo the old `granjurtech/Badar_HMS_Node`.
+     4. Push the site (Vercel builds on push) — last, so its repository picker already
+        sees the tagged links.
+   - **Deferred (not required for rollout):**
+     - A possible false "No GitHub access" warning from the access check for a read-only
+       token that can still open issues.
+     - No "GitHub: all off" button in the meeting review — the first meetings may open
+       many issues (the per-task switch starts on).
+     - Duplicate-issue edge cases on overlapping `issue_syncing` retries.
+     - `create_task_edit` is deferred by `index.js` but opens a modal (pre-existing).
+     - The `/create-task` and `/projects` handlers are untested.
+   - **A pre-existing, unrelated note surfaced while reading CSAAS's test layout:** the
+     `discord-tasks-test/*.test.js` files use plain `assert`, not jest's `describe`/`test`
+     — jest's `testMatch` still picks them up and counts each as one failing "suite" with
+     zero tests, so `npm test`/`npx jest` alone does not show them green. They must be
+     run individually with `node <file>.test.js` (as `completed.md` has done for every
+     prior CSAAS build in this series). Not new to this build — see the pre-existing
+     backlog item under "Time reporting follow-ups" ("The 7 assert-based scripts …").
 5. **Clock in / out on the site** — needs sub-project 1 to know whose clock.
 6. **JSON task import** on the site with a documented format — only into the user's projects.
 7. **Meeting docs/JSON → Claude → tasks** without a meeting, plus a document field when a

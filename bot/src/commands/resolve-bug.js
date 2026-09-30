@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js'
 import db from '../db/index.js'
 import { placeTicketForStatus } from '../services/ticketArchive.js'
+import { syncIssueState } from '../services/taskIssueState.js'
 
 export const data = new SlashCommandBuilder()
   .setName('resolve-bug')
@@ -11,9 +12,9 @@ export const data = new SlashCommandBuilder()
 
 /**
  * @param {import('discord.js').ChatInputCommandInteraction} interaction already deferred
- * @param {{db?: object, move?: typeof placeTicketForStatus}} [deps]
+ * @param {{db?: object, move?: typeof placeTicketForStatus, syncIssue?: typeof syncIssueState}} [deps]
  */
-export async function execute(interaction, { db: dbArg = db, move = placeTicketForStatus } = {}) {
+export async function execute(interaction, { db: dbArg = db, move = placeTicketForStatus, syncIssue = syncIssueState } = {}) {
   const channel = interaction.channel
   const guild = interaction.guild
   if (!guild || !channel) return interaction.editReply({ content: 'Use this in a server channel.' })
@@ -58,8 +59,18 @@ export async function execute(interaction, { db: dbArg = db, move = placeTicketF
     .setDescription(`**${(ticket.title || 'Bug').slice(0, 200)}** has been resolved. Solution documentation has been saved.`)
     .setColor(0x57f287)
 
-  await interaction.editReply({ embeds: [embed] }).catch(() => {})
+  // The GitHub issue first: `move` below locks the channel, so a failure line
+  // posted after it could be missed. The line also goes in the reply.
+  let issueLine = null
+  try {
+    ;({ line: issueLine } = await syncIssue({ db: dbArg, task: ticket, updates: { status: 'resolved' } }))
+  } catch (e) {
+    console.warn('[resolve-bug] issue sync:', e?.message || e)
+  }
+
+  await interaction.editReply({ embeds: [embed], ...(issueLine ? { content: issueLine } : {}) }).catch(() => {})
   await channel.send({ content: 'This bug ticket has been resolved. This channel is now read-only and will be removed in 14 days.', embeds: [embed] }).catch(() => {})
+  if (issueLine) await channel.send({ content: issueLine }).catch(() => {})
   // Below the project's archive divider, locked, stamped for deletion in 14
   // days. The same placement every other status writer uses.
   try {

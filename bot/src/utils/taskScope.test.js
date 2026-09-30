@@ -2,13 +2,14 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { SCOPE_CHOICES, SCOPE_VALUES, isValidScope, scopeLabel } from './taskScope.js'
 
-test('there are exactly four choices, matching the four values', () => {
-  assert.equal(SCOPE_CHOICES.length, 4)
-  assert.deepEqual(SCOPE_VALUES, ['backend', 'frontend', 'qa', 'design'])
+test('there are exactly five choices, matching the five values', () => {
+  assert.equal(SCOPE_CHOICES.length, 5)
+  assert.deepEqual(SCOPE_VALUES, ['backend', 'frontend', 'mobile', 'qa', 'design'])
 })
 
-test('isValidScope accepts only the four fixed values', () => {
+test('isValidScope accepts only the five fixed values', () => {
   assert.equal(isValidScope('backend'), true)
+  assert.equal(isValidScope('mobile'), true)
   assert.equal(isValidScope('design'), true)
   assert.equal(isValidScope('Backend'), false) // case-sensitive: values, not labels
   assert.equal(isValidScope('GitSync'), false) // an old free-text value
@@ -19,6 +20,7 @@ test('isValidScope accepts only the four fixed values', () => {
 
 test('scopeLabel maps a stored value to its display name', () => {
   assert.equal(scopeLabel('backend'), 'Backend')
+  assert.equal(scopeLabel('mobile'), 'Mobile')
   assert.equal(scopeLabel('qa'), 'QA')
 })
 

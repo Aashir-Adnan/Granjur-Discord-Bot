@@ -14,6 +14,8 @@ import { mapMeetingTaskToRow } from './meetingTaskMap.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
 import { loadProjectContext, settledProject, resolveMeetingTaskProject, reviewProjectOptions } from './meetingTaskProject.js'
 import { buildAnalyzeLivePayload } from './liveTranscriptPayload.js'
+import { createIssue } from './github.js'
+import { repoReasonText } from './taskRepo.js'
 
 // overrides is a test-only seam, never meant to carry real data: the `db`
 // facade passed at runtime (bot/src/db/index.js default export) is a plain
@@ -411,6 +413,10 @@ async function mirroredStage({ job, db, client, csaasClient }) {
       github: !!reviewTask.github,
       title: row.title,
       taskChannelId,
+      // issue_syncing opens the issue here — the repository the rule gave the row.
+      repositoryId: row.repositoryId ?? null,
+      // …and, when there is none, says why (repoReasonText).
+      repoReason: project.repoReason ?? null,
     })
 
     // Persist progress after each task so a retry resumes where it stopped.
@@ -474,83 +480,133 @@ export function resolveRepoSlug(repositoryRow) {
   return { owner: m[1], repo: m[2] }
 }
 
-// issue_syncing: for mirrored tasks flagged github, group by the CSAAS task's
-// project -> resolved owner/repo, call csaasClient.issueSync per repo, and write
-// the returned issue url/number back onto the bot task rows. Best-effort:
-// failures land in dataJson.issueSyncErrors. Always advances to `done`.
-async function issueSyncingStage({ job, db, csaasClient }) {
-  const gh = (job.dataJson?.mirrored || []).filter((m) => m.github)
-  if (gh.length === 0) return { patch: {} }
+// The body of a meeting task's GitHub issue: what to do, where the code lives,
+// and which meeting it came from.
+function meetingIssueBody(csaasTask, job) {
+  const actions = Array.isArray(csaasTask?.intended_actions) ? csaasTask.intended_actions.join('\n') : ''
+  const residence = csaasTask?.code_residence ? `\n\nCode: ${csaasTask.code_residence}` : ''
+  return `${actions}${residence}\n\n---\nFrom meeting: ${job.dataJson?.title || job.meetingId}`
+}
 
-  const dataJson = { ...(job.dataJson || {}) }
+// issue_syncing (roadmap sub-project 4, 2026-09-30): the bot opens each
+// GitHub-flagged task's issue itself, in the repository `mirrored` recorded for
+// it (the project + scope rule), and writes the url/number onto the task row.
+// CSAAS's issueSync is no longer used. Idempotent: an entry already holding its
+// issue is skipped, and each opened issue is persisted at once, so a retry never
+// opens a second one. Best-effort: every failure lands in
+// dataJson.issueSyncErrors (the `done` summary lists them). Always advances.
+// `openIssue` is a test seam; production passes nothing and gets createIssue.
+async function issueSyncingStage({ job, db, openIssue = createIssue }) {
+  const mirrored = (job.dataJson?.mirrored || []).map((m) => ({ ...m }))
+  const flagged = mirrored.filter((m) => m.github && m.dbTaskId)
+  if (flagged.length === 0) return { patch: {} }
+
+  const dataJson = { ...(job.dataJson || {}), mirrored }
   const csaasTasks = Array.isArray(dataJson.tasks) ? dataJson.tasks : []
   const errors = []
 
-  let repos = []
-  try {
-    repos = await db.repository.findMany({ where: { guildConfigId: job.guildConfigId } })
-  } catch (e) {
-    console.warn('[meetingPipeline] repository.findMany failed:', e?.message || e)
-    repos = []
-  }
-  const slugByName = new Map()
-  for (const r of repos || []) {
-    const slug = resolveRepoSlug(r)
-    if (r?.name && slug) slugByName.set(r.name, slug)
-  }
+  const todo = flagged.filter((m) => !m.externalIssueUrl)
 
-  // group gh entries by `owner/repo`
-  const groups = new Map() // key -> { owner, repo, entries: [] }
-  for (const entry of gh) {
-    const csaasTask = csaasTasks.find((t) => taskKey(t.task_id) === taskKey(entry.csaasTaskId))
-    const project = csaasTask?.project
-    const slug = project ? slugByName.get(project) : null
-    if (!slug) {
-      errors.push({ csaasTaskId: entry.csaasTaskId, reason: `no repo for project ${project ?? '(none)'}` })
-      continue
-    }
-    const key = `${slug.owner}/${slug.repo}`
-    if (!groups.has(key)) groups.set(key, { owner: slug.owner, repo: slug.repo, entries: [] })
-    groups.get(key).entries.push(entry)
-  }
-
-  for (const { owner, repo, entries } of groups.values()) {
-    let issues = []
-    try {
-      const res = await csaasClient.issueSync(job.csaasMeetingId, {
-        owner,
-        repo,
-        taskIds: entries.map((g) => g.csaasTaskId),
-      })
-      issues = Array.isArray(res?.issues) ? res.issues : []
-    } catch (e) {
-      errors.push({ owner, repo, error: e?.message || String(e) })
-      continue
-    }
-
-    for (const issue of issues) {
-      const csaasTaskId = issue.task_id ?? issue.taskId
-      const match = entries.find((g) => g.csaasTaskId === csaasTaskId)
-      if (!match) continue
-      const url = issue.url ?? issue.github_issue_url ?? null
-      const number = issue.number ?? issue.github_issue_number ?? null
-      // mutate the mirrored entry in place so `done` can render issue links
-      // (entries hold the same object refs as dataJson.mirrored)
-      match.externalIssueUrl = url
-      match.externalIssueNumber = number
+  // An entry mirrored before repositories were recorded on it (pre-deploy)
+  // has none: the task row's own repositoryId is the next best source.
+  if (typeof db.task?.findFirst === 'function') {
+    for (const entry of todo) {
+      if (entry.repositoryId) continue
       try {
-        await db.task.update({
-          where: { externalId: 'csaas:' + csaasTaskId },
-          data: { externalIssueUrl: url, externalIssueNumber: number },
-        })
+        const row = await db.task.findFirst({ where: { id: entry.dbTaskId } })
+        if (row?.repositoryId) entry.repositoryId = row.repositoryId
       } catch (e) {
-        console.warn('[meetingPipeline] task.update (issue sync) failed:', e?.message || e)
+        console.warn('[meetingPipeline] task.findFirst (issue repo) failed:', e?.message || e)
+      }
+    }
+  }
+
+  let repoById = new Map()
+  let repoReadError = null
+  if (todo.some((m) => m.repositoryId)) {
+    try {
+      const repos = await db.repository.findMany({ where: { guildConfigId: job.guildConfigId } })
+      repoById = new Map((repos || []).map((r) => [String(r.id), r]))
+    } catch (e) {
+      repoReadError = e?.message || String(e)
+      console.warn('[meetingPipeline] repository.findMany failed:', repoReadError)
+    }
+  }
+
+  for (const entry of todo) {
+    const { csaasTaskId } = entry
+    const csaasTask = csaasTasks.find((t) => taskKey(t.task_id) === taskKey(csaasTaskId))
+    const title = entry.title || csaasTask?.goal_of_task || `Task ${csaasTaskId}`
+    // `skipped`: the rule gave the task no repository — nothing went wrong.
+    // `failed`: there was a repository and the issue still did not open.
+    const skip = (reason) => errors.push({ csaasTaskId, title, kind: 'skipped', reason })
+    const fail = (reason) => errors.push({ csaasTaskId, title, kind: 'failed', reason })
+    if (!entry.repositoryId) {
+      skip(entry.repoReason ? repoReasonText(entry.repoReason) : 'no repository for this project and scope')
+      continue
+    }
+    if (repoReadError) {
+      fail(`repositories could not be read: ${repoReadError}`)
+      continue
+    }
+    const repo = repoById.get(String(entry.repositoryId))
+    if (!repo?.url) {
+      fail(repo ? `${repo.name || 'the repository'} has no URL` : 'the repository is no longer linked')
+      continue
+    }
+    let res
+    try {
+      res = await openIssue(repo.url, title, meetingIssueBody(csaasTask, job))
+    } catch (e) {
+      fail(e?.message || String(e))
+      continue
+    }
+    // The issue exists now: record it on the entry (and the saved job) first,
+    // so even a failed row update below cannot make a retry open a second one.
+    entry.externalIssueUrl = res?.url ?? null
+    entry.externalIssueNumber = res?.number ?? null
+    try {
+      // repositoryId too, so the row agrees with where its issue lives.
+      await db.task.update({
+        where: { id: entry.dbTaskId },
+        data: { repositoryId: repo.id, externalIssueUrl: entry.externalIssueUrl, externalIssueNumber: entry.externalIssueNumber },
+      })
+    } catch (e) {
+      console.warn('[meetingPipeline] task.update (issue) failed:', e?.message || e)
+    }
+    if (db.meetingPipelineJob?.update) {
+      try {
+        // A snapshot: later entries are still being filled in.
+        await db.meetingPipelineJob.update(job.id, { dataJson: { ...dataJson, mirrored: mirrored.map((m) => ({ ...m })) } })
+      } catch (e) {
+        console.warn('[meetingPipeline] issue progress persist failed:', e?.message || e)
       }
     }
   }
 
   dataJson.issueSyncErrors = errors
   return { patch: { dataJson } }
+}
+
+const SUMMARY_NOTE = '… (summary shortened)'
+
+// Discord rejects an embed description over 4096 characters. Keep the text under
+// `max`, cutting at a line boundary (the leading count lines survive) and ending
+// with a note; a single line longer than the room is cut mid-line.
+export function clampSummary(lines, max = 4000) {
+  const text = lines.join('\n')
+  if (text.length <= max) return text
+  const room = max - SUMMARY_NOTE.length - 1
+  const kept = []
+  let used = 0
+  for (const line of lines) {
+    const add = line.length + (kept.length ? 1 : 0)
+    if (used + add > room) break
+    kept.push(line)
+    used += add
+  }
+  if (!kept.length) return `${text.slice(0, room)}\n${SUMMARY_NOTE}`
+  return `${kept.join('\n')}\n${SUMMARY_NOTE}`
 }
 
 // done: rewrite the review message into a final summary embed, then terminate.
@@ -561,26 +617,35 @@ async function doneStage({ job, db, client }) {
   const mirrored = Array.isArray(dataJson.mirrored) ? dataJson.mirrored : []
   const issueSyncErrors = Array.isArray(dataJson.issueSyncErrors) ? dataJson.issueSyncErrors : []
 
-  const lines = [
-    `✅ ${summary.approved.length} task(s) created`,
-    `${summary.rejectedCount} rejected`,
-    `${summary.githubCount} pushed to GitHub`,
-  ]
   const issueLinks = []
   for (const m of mirrored) {
     if (m.externalIssueUrl) issueLinks.push(`• [${m.title || m.csaasTaskId}](${m.externalIssueUrl})`)
   }
+  const lines = [
+    `✅ ${summary.approved.length} task(s) created`,
+    `${summary.rejectedCount} rejected`,
+    // Issues that actually opened — not the tasks that were flagged for one.
+    `${issueLinks.length} pushed to GitHub`,
+  ]
   if (issueLinks.length) lines.push('', '**GitHub issues:**', ...issueLinks)
   if (issueSyncErrors.length) {
     lines.push('', `⚠️ ${issueSyncErrors.length} issue-sync problem(s):`)
-    for (const err of issueSyncErrors) {
-      lines.push(`• ${err.reason || err.error || 'unknown error'}`)
+    const reasonOf = (err) => err.reason || err.error || 'unknown error'
+    const titleOf = (err) => err.title || err.csaasTaskId || 'a task'
+    // Entries saved before `kind` existed read as failures.
+    const skipped = issueSyncErrors.filter((err) => err.kind === 'skipped')
+    const failed = issueSyncErrors.filter((err) => err.kind !== 'skipped')
+    if (skipped.length) {
+      lines.push(`• skipped — no repository: ${skipped.map((err) => `${titleOf(err)} (${reasonOf(err)})`).join(', ')}`)
+    }
+    for (const err of failed) {
+      lines.push(`• failed: ${titleOf(err)} — ${reasonOf(err)}`)
     }
   }
 
   const summaryEmbed = new EmbedBuilder()
     .setTitle(`Meeting review complete — ${dataJson.title || 'Meeting'}`)
-    .setDescription(lines.join('\n'))
+    .setDescription(clampSummary(lines))
 
   try {
     // Prefer the channel the review was actually posted to; fall back to the

@@ -52,6 +52,13 @@
   nothing depends on it, `/cleanup`'s by-id protections and empty-category rule, and the
   new #feedback channel (`feedbackChannelId`, Verified-only, `/feedback`, `/setup`
   creating it idempotently). The live server is never reordered.
+- [repositories-and-issues.md](repositories-and-issues.md) — repositories per scope
+  (`project_repos.scope`, migration 030) and a GitHub issue for every task: the one
+  `resolveTaskRepo` rule shared by `/create-task`, the site's create route and the
+  meeting pipeline; `GITHUB_TOKENS` (per owner) vs `GITHUB_TOKEN` (fallback); issue
+  creation, the opt-out and reported failures; `syncIssueState` closing/reopening an
+  issue on a task's status change; `checkRepoAccess`; the Mobile scope; the bot (not
+  CSAAS) opening meeting-task issues idempotently in `issue_syncing`.
 - [client-role.md](client-role.md) — the `Client` role and `guildmember.kind`:
   why a client never gets `Verified`, the two `/verify` acceptance paths, the
   shared `approveMember`, `/set-roles`' refusal, the deny-by-default command

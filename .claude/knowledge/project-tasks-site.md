@@ -526,6 +526,21 @@ from the old status-only wording).
   fellBack, note }`; 400; 500 when the guild is not in the bot's cache (the project
   names a `guildConfigId` whose `guildId` the running bot doesn't have in
   `client.guilds.cache` — a config/deploy problem, not a bad request).
+  **Updated by roadmap sub-project 4 (2026-09-30):** the body also carries `create_issue`
+  (→ `createIssue: b.createIssue !== false`, default on); the route resolves the task's
+  repository itself with the same by-scope rule `/create-task` uses
+  (`resolveTaskRepo`/`taskRepo.js`) rather than the site always naming one —
+  `repositoryIds` is now sent only as a bug's fallback pick when the rule finds nothing;
+  the 200 body gains `issue: { url } | { error } | { skipped } | null`. **Final fix pass
+  (same day):** CSAAS forwards only `note` to the site, so `note` now carries the issue
+  outcome on its own line after the placement note — `Issue: <url>` / `Issue: not opened
+  — <reason>` / `Issue: off` (`issueReplyLine`, the `/create-task` reply's words); a
+  failed issue is also posted in the task's channel. The site's create page shows a
+  required Repository picker for a BUG the rule gives no repository (the project's linked
+  repositories, else all; it refuses only when there are none), sends `repository_ids:
+  [picked]` only then, and shows the note on separate lines in the toast
+  (`whitespace-pre-line`). See [[repositories-and-issues]] for the rule, the opt-out and
+  the site's mirrored `issueTargetText`/project-card repository list.
 - **`POST /internal/tasks/subtask`** — `{ parentId, title, holderIds, actor }` → 200
   `{ ok: true, task: { id, status, parentId } }`; 400; 404; 409 (a `TaskRuleError` —
   parent is itself a subtask, or already has 25 — surfaces as 409, not 500).

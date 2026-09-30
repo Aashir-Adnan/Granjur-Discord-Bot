@@ -44,6 +44,35 @@ test('a mover that throws does not turn a successful close into an error', async
   assert.equal(h.interaction.replies.length, 1)
 })
 
+test('the issue seam is called with status: closed, and a returned line is sent to the channel', async () => {
+  const h = harness()
+  const syncCalls = []
+  const syncIssue = async (a) => { syncCalls.push(a); h.log.push(['sync']); return { line: 'GitHub issue not closed — No GitHub access to o/r' } }
+  await execute(h.interaction, { db: h.db, move: h.move, syncIssue })
+  assert.equal(syncCalls.length, 1)
+  assert.deepEqual(syncCalls[0].updates, { status: 'closed' })
+  assert.equal(syncCalls[0].task.id, 'T1')
+  // M4: the issue is synced before `move` locks the channel, and its line is
+  // in the reply as well as the channel.
+  assert.deepEqual(h.log, [
+    ['update', 'closed'],
+    ['sync'],
+    ['send', 'This feature ticket has been closed. This channel is now read-only and will be removed in 14 days.'],
+    ['send', 'GitHub issue not closed — No GitHub access to o/r'],
+    ['move', 'T1', 'open', 'closed', true, 'G1'],
+  ])
+  assert.equal(h.interaction.replies[0].content, 'GitHub issue not closed — No GitHub access to o/r')
+  assert.ok(h.interaction.replies[0].embeds[0], 'the embed is still in the reply')
+})
+
+test('no line from the issue seam: nothing extra is sent', async () => {
+  const h = harness()
+  const syncIssue = async () => ({ line: null })
+  await execute(h.interaction, { db: h.db, move: h.move, syncIssue })
+  assert.equal(h.log.filter((l) => l[0] === 'send').length, 1)
+  assert.equal(h.interaction.replies[0].content, undefined, 'no line, no content in the reply')
+})
+
 test('outside a feature channel, or when already closed, nothing is written or moved', async () => {
   const h = harness({ feature: null })
   await execute(h.interaction, { db: h.db, move: h.move })

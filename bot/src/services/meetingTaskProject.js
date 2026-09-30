@@ -5,8 +5,12 @@
 //   3. the reviewer's pick in the review message, for a task neither settles.
 // Otherwise the task has no project — and no project name either: the name
 // Claude heard is not kept, so it cannot show up as a stray project group.
+// The repository then follows from the project and the task's scope, by the
+// same rule /create-task uses (sub-project 4, 2026-09-30; taskRepo.js).
 
 import { matchProject } from '../utils/projectMatch.js'
+import { resolveTaskRepo } from './taskRepo.js'
+import { meetingTaskScope } from './meetingTaskMap.js'
 
 // Discord caps a select at 25 options; one of them is "No project".
 export const REVIEW_PROJECT_LIMIT = 24
@@ -46,17 +50,22 @@ export function settledProject(csaasTask, ctx) {
   return null
 }
 
-// All three rules, plus the repository: the matched repository only when the
-// match's project is the task's project (sub-project 4 will pick repositories
-// by scope; until then a repository from another project would be wrong).
+// All three rules, plus the repository by the one repository rule (roadmap
+// sub-project 4, 2026-09-30; see taskRepo.js): the project's link carrying the
+// task's scope, else its only untagged link, else none. A task with no project
+// has no repository, whatever name Claude gave it.
 export function resolveMeetingTaskProject(csaasTask, reviewTask, ctx) {
-  const match = matchProject(csaasTask?.project, ctx)
   const settled = settledProject(csaasTask, ctx)
   const picked = settled ? null : projectById(ctx, reviewTask?.projectId)
   const projectId = settled?.projectId ?? picked?.id ?? null
   const projectName = settled?.projectName ?? picked?.name ?? null
-  const repositoryId = match && (match.projectId ?? null) === projectId ? match.repositoryId ?? null : null
-  return { projectId, projectName, repositoryId }
+  const { repository, reason } = resolveTaskRepo(
+    { projectId, scope: meetingTaskScope(csaasTask) },
+    { links: ctx.links, repos: ctx.repos },
+  )
+  // repoReason: the rule's verdict ('scope', 'only-repo', or why there is
+  // none), so a skipped GitHub issue can say precisely why.
+  return { projectId, projectName, repositoryId: repository?.id ?? null, repoReason: reason }
 }
 
 // The choices the review's "Which project?" select offers, stored on the job so

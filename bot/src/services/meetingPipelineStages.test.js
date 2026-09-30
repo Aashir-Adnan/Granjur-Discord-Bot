@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ChannelType } from 'discord.js'
-import { stageRunners, resolveRepoSlug } from './meetingPipelineStages.js'
+import { stageRunners, resolveRepoSlug, clampSummary } from './meetingPipelineStages.js'
 
 test('resolveRepoSlug parses ssh + https', () => {
   assert.deepEqual(resolveRepoSlug({ url: 'git@github.com:granjur/bot.git' }), { owner: 'granjur', repo: 'bot' })
@@ -14,65 +14,365 @@ test('resolveRepoSlug parses ssh + https', () => {
   assert.equal(resolveRepoSlug({ url: 'https://gitlab.com/a/b' }), null)
 })
 
+// issue_syncing (roadmap sub-project 4, 2026-09-30): the bot opens the issues
+// itself in each task's repository. CSAAS's issueSync is never called — every
+// test passes a csaasClient whose issueSync throws, and a fake openIssue.
+const noCsaasSync = { issueSync: async () => { throw new Error('csaasClient.issueSync must not be called') } }
+const SYNC_REPOS = [
+  { id: 'r-be', name: 'granjur-bot', url: 'https://github.com/granjur/bot' },
+  { id: 'r-fe', name: 'granjur-site', url: 'https://github.com/granjur/site' },
+]
+function syncDb({ repos = SYNC_REPOS, failUpdate = false } = {}) {
+  const updates = []
+  const persisted = []
+  const reads = []
+  const db = {
+    repository: { findMany: async (q) => { reads.push(q); return repos } },
+    task: { update: async (opts) => { if (failUpdate) throw new Error('db down'); updates.push(opts); return {} } },
+    meetingPipelineJob: { update: async (id, patch) => { persisted.push([id, patch]); return {} } },
+  }
+  return { db, updates, persisted, reads }
+}
+function fakeOpenIssue({ fail = {} } = {}) {
+  const calls = []
+  let n = 40
+  const openIssue = async (url, title, body) => {
+    calls.push({ url, title, body })
+    if (fail[title]) throw new Error(fail[title])
+    n += 1
+    return { url: `${url}/issues/${n}`, number: n }
+  }
+  return { openIssue, calls }
+}
+const syncJob = (mirrored, extra = {}) => ({
+  id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+  dataJson: {
+    title: 'Sprint sync',
+    tasks: [
+      { task_id: 'a', goal_of_task: 'Do A', intended_actions: ['Add the endpoint', 'Write the test'], code_residence: 'bot/src/api.js' },
+      { task_id: 'b', goal_of_task: 'Do B', intended_actions: ['Build the page'] },
+      { task_id: 'c', goal_of_task: 'Do C', intended_actions: ['Something'] },
+    ],
+    mirrored,
+    ...extra,
+  },
+})
+
 test('issue_syncing advances with no github-flagged mirrored tasks', async () => {
-  let called = false
-  const csaasClient = { issueSync: async () => { called = true; return { issues: [] } } }
-  const db = { repository: { findMany: async () => [] } }
-  const job = { id: 'j', csaasMeetingId: 'm', guildConfigId: 'g', dataJson: { mirrored: [{ csaasTaskId: 'a', github: false }], tasks: [] } }
-  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient })
-  assert.equal(called, false)
+  const { db } = syncDb()
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([{ csaasTaskId: 'a', dbTaskId: 'db1', github: false, repositoryId: 'r-be', title: 'Do A' }])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.equal(calls.length, 0)
   assert.notEqual(out.advance, false)
   assert.deepEqual(out.patch, {})
 })
 
-test('issue_syncing happy path syncs issues and updates tasks by externalId', async () => {
-  const updates = []
-  const syncArgs = []
-  const csaasClient = {
-    issueSync: async (mid, opts) => {
-      syncArgs.push([mid, opts])
-      return { issues: [{ task_id: 'a', url: 'https://github.com/granjur/bot/issues/7', number: 7 }] }
-    },
-  }
-  const db = {
-    repository: { findMany: async () => [{ name: 'granjur', url: 'https://github.com/granjur/bot' }] },
-    task: { update: async (opts) => { updates.push(opts); return {} } },
-  }
-  const job = {
-    id: 'j', csaasMeetingId: 'm', guildConfigId: 'g',
-    dataJson: {
-      tasks: [{ task_id: 'a', project: 'granjur' }],
-      mirrored: [{ csaasTaskId: 'a', dbTaskId: 'db1', github: true }],
-    },
-  }
-  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient })
-  assert.equal(syncArgs[0][0], 'm')
-  assert.deepEqual(syncArgs[0][1], { owner: 'granjur', repo: 'bot', taskIds: ['a'] })
-  assert.equal(updates[0].where.externalId, 'csaas:a')
-  assert.equal(updates[0].data.externalIssueUrl, 'https://github.com/granjur/bot/issues/7')
-  assert.equal(updates[0].data.externalIssueNumber, 7)
+test('issue_syncing opens one issue per flagged task in its repository and writes url/number by id', async () => {
+  const { db, updates, reads } = syncDb()
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([
+    { csaasTaskId: 'a', dbTaskId: 'db1', github: true, repositoryId: 'r-be', title: 'Do A' },
+    { csaasTaskId: 'b', dbTaskId: 'db2', github: true, repositoryId: 'r-fe', title: 'Do B' },
+    { csaasTaskId: 'c', dbTaskId: 'db3', github: false, repositoryId: 'r-be', title: 'Do C' },
+  ])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.deepEqual(reads, [{ where: { guildConfigId: 'g' } }])
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls[0], {
+    url: 'https://github.com/granjur/bot',
+    title: 'Do A',
+    body: 'Add the endpoint\nWrite the test\n\nCode: bot/src/api.js\n\n---\nFrom meeting: Sprint sync',
+  })
+  assert.deepEqual(calls[1], {
+    url: 'https://github.com/granjur/site',
+    title: 'Do B',
+    body: 'Build the page\n\n---\nFrom meeting: Sprint sync',
+  })
+  // F2: the row's repositoryId is written with the issue, so it agrees with where the issue lives.
+  assert.deepEqual(updates, [
+    { where: { id: 'db1' }, data: { repositoryId: 'r-be', externalIssueUrl: 'https://github.com/granjur/bot/issues/41', externalIssueNumber: 41 } },
+    { where: { id: 'db2' }, data: { repositoryId: 'r-fe', externalIssueUrl: 'https://github.com/granjur/site/issues/42', externalIssueNumber: 42 } },
+  ])
   assert.notEqual(out.advance, false)
+  const m = out.patch.dataJson.mirrored
+  assert.deepEqual([m[0].externalIssueUrl, m[0].externalIssueNumber], ['https://github.com/granjur/bot/issues/41', 41])
+  assert.deepEqual([m[1].externalIssueUrl, m[1].externalIssueNumber], ['https://github.com/granjur/site/issues/42', 42])
+  assert.equal(m[2].externalIssueUrl, undefined)
   assert.deepEqual(out.patch.dataJson.issueSyncErrors, [])
-  assert.equal(out.patch.dataJson.mirrored[0].externalIssueUrl, 'https://github.com/granjur/bot/issues/7')
-  assert.equal(out.patch.dataJson.mirrored[0].externalIssueNumber, 7)
+  // The job passed in is not mutated.
+  assert.equal(job.dataJson.mirrored[0].externalIssueUrl, undefined)
 })
 
-test('issue_syncing records an error for a project with no resolvable repo', async () => {
-  let called = false
-  const csaasClient = { issueSync: async () => { called = true; return { issues: [] } } }
-  const db = { repository: { findMany: async () => [] }, task: { update: async () => ({}) } }
+test('issue_syncing falls back to the meeting id when the meeting has no title', async () => {
+  const { db } = syncDb()
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([{ csaasTaskId: 'b', dbTaskId: 'db2', github: true, repositoryId: 'r-fe', title: 'Do B' }], { title: undefined })
+  await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.equal(calls[0].body, 'Build the page\n\n---\nFrom meeting: M')
+})
+
+test('issue_syncing skips a task that already has its issue (a retry opens no second one)', async () => {
+  const { db, updates } = syncDb()
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([
+    { csaasTaskId: 'a', dbTaskId: 'db1', github: true, repositoryId: 'r-be', title: 'Do A', externalIssueUrl: 'https://github.com/granjur/bot/issues/7', externalIssueNumber: 7 },
+    { csaasTaskId: 'b', dbTaskId: 'db2', github: true, repositoryId: 'r-fe', title: 'Do B' },
+  ])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.deepEqual(calls.map((c) => c.title), ['Do B'])
+  assert.deepEqual(updates.map((u) => u.where.id), ['db2'])
+  assert.equal(out.patch.dataJson.mirrored[0].externalIssueUrl, 'https://github.com/granjur/bot/issues/7')
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [])
+})
+
+test('issue_syncing persists each opened issue so a retry after a crash resumes, not repeats', async () => {
+  const { db, persisted } = syncDb()
+  const { openIssue } = fakeOpenIssue()
+  const first = syncJob([
+    { csaasTaskId: 'a', dbTaskId: 'db1', github: true, repositoryId: 'r-be', title: 'Do A' },
+    { csaasTaskId: 'b', dbTaskId: 'db2', github: true, repositoryId: 'r-fe', title: 'Do B' },
+  ])
+  await stageRunners.issue_syncing({ job: first, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.equal(persisted.length, 2)
+  assert.equal(persisted[0][0], 'j')
+  assert.equal(persisted[0][1].dataJson.mirrored[0].externalIssueUrl, 'https://github.com/granjur/bot/issues/41')
+  assert.equal(persisted[0][1].dataJson.mirrored[1].externalIssueUrl, undefined)
+  // A retry from the state saved after the first issue opens only the second.
+  const retry = fakeOpenIssue()
+  const resumed = { ...first, dataJson: persisted[0][1].dataJson }
+  const out = await stageRunners.issue_syncing({ job: resumed, db, client: {}, csaasClient: noCsaasSync, openIssue: retry.openIssue })
+  assert.deepEqual(retry.calls.map((c) => c.title), ['Do B'])
+  assert.equal(out.patch.dataJson.mirrored[0].externalIssueUrl, 'https://github.com/granjur/bot/issues/41')
+})
+
+test('issue_syncing records a task with no repository and opens nothing for it', async () => {
+  const { db, updates } = syncDb()
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([{ csaasTaskId: 'a', dbTaskId: 'db1', github: true, repositoryId: null, title: 'Do A' }])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.equal(calls.length, 0)
+  assert.equal(updates.length, 0)
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [{ csaasTaskId: 'a', title: 'Do A', kind: 'skipped', reason: 'no repository for this project and scope' }])
+  assert.notEqual(out.advance, false)
+})
+
+// F4 (final review, 2026-09-30): a precise, named reason, and skips kept apart from failures.
+test("issue_syncing records the rule's own reason for a task with no repository", async () => {
+  const { db } = syncDb()
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([
+    { csaasTaskId: 'a', dbTaskId: 'db1', github: true, repositoryId: null, repoReason: 'no-scope', title: 'Do A' },
+    { csaasTaskId: 'b', dbTaskId: 'db2', github: true, repositoryId: null, repoReason: 'no-repo-for-scope', title: 'Do B' },
+  ])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.equal(calls.length, 0)
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [
+    { csaasTaskId: 'a', title: 'Do A', kind: 'skipped', reason: 'the task has no scope' },
+    { csaasTaskId: 'b', title: 'Do B', kind: 'skipped', reason: 'the project has no repository for this scope' },
+  ])
+})
+
+test("issue_syncing: a pre-deploy entry with no repositoryId falls back to the task row's repositoryId", async () => {
+  const { db, updates } = syncDb()
+  const reads = []
+  db.task.findFirst = async (q) => { reads.push(q); return { id: 'db1', repositoryId: 'r-fe' } }
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([{ csaasTaskId: 'a', dbTaskId: 'db1', github: true, title: 'Do A' }]) // no repositoryId key at all
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.deepEqual(reads, [{ where: { id: 'db1' } }])
+  assert.deepEqual(calls.map((c) => c.url), ['https://github.com/granjur/site'])
+  assert.equal(updates[0].data.repositoryId, 'r-fe')
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [])
+})
+
+test('issue_syncing: a pre-deploy entry whose task row has no repository either is a named skip', async () => {
+  const { db } = syncDb()
+  db.task.findFirst = async () => ({ id: 'db1', repositoryId: null })
+  const { openIssue } = fakeOpenIssue()
+  const job = syncJob([{ csaasTaskId: 'a', dbTaskId: 'db1', github: true, title: 'Do A' }])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [{ csaasTaskId: 'a', title: 'Do A', kind: 'skipped', reason: 'no repository for this project and scope' }])
+})
+
+test('issue_syncing records a repository that is no longer there', async () => {
+  const { db } = syncDb({ repos: [] })
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([{ csaasTaskId: 'a', dbTaskId: 'db1', github: true, repositoryId: 'r-gone', title: 'Do A' }])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.equal(calls.length, 0)
+  assert.equal(out.patch.dataJson.issueSyncErrors.length, 1)
+  assert.equal(out.patch.dataJson.issueSyncErrors[0].csaasTaskId, 'a')
+  assert.equal(out.patch.dataJson.issueSyncErrors[0].kind, 'failed')
+  assert.equal(out.patch.dataJson.issueSyncErrors[0].title, 'Do A')
+  assert.notEqual(out.advance, false)
+})
+
+test('a failing openIssue is recorded with its message; the other tasks still get theirs and the stage advances', async () => {
+  const { db, updates } = syncDb()
+  const { openIssue, calls } = fakeOpenIssue({ fail: { 'Do A': 'No GitHub access to granjur/bot' } })
+  const job = syncJob([
+    { csaasTaskId: 'a', dbTaskId: 'db1', github: true, repositoryId: 'r-be', title: 'Do A' },
+    { csaasTaskId: 'b', dbTaskId: 'db2', github: true, repositoryId: 'r-fe', title: 'Do B' },
+  ])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.equal(calls.length, 2)
+  assert.deepEqual(updates.map((u) => u.where.id), ['db2'])
+  assert.deepEqual(out.patch.dataJson.issueSyncErrors, [{ csaasTaskId: 'a', title: 'Do A', kind: 'failed', reason: 'No GitHub access to granjur/bot' }])
+  assert.equal(out.patch.dataJson.mirrored[0].externalIssueUrl, undefined)
+  assert.notEqual(out.advance, false)
+})
+
+test('an opened issue stays on the entry even if the task row update fails, so a retry does not reopen it', async () => {
+  const { db } = syncDb({ failUpdate: true })
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([{ csaasTaskId: 'a', dbTaskId: 'db1', github: true, repositoryId: 'r-be', title: 'Do A' }])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.equal(calls.length, 1)
+  assert.equal(out.patch.dataJson.mirrored[0].externalIssueUrl, 'https://github.com/granjur/bot/issues/41')
+  assert.notEqual(out.advance, false)
+})
+
+test('issue_syncing with a failed repository read records every flagged task and still advances', async () => {
+  const db = { repository: { findMany: async () => { throw new Error('db down') } }, task: { update: async () => ({}) } }
+  const { openIssue, calls } = fakeOpenIssue()
+  const job = syncJob([{ csaasTaskId: 'a', dbTaskId: 'db1', github: true, repositoryId: 'r-be', title: 'Do A' }])
+  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient: noCsaasSync, openIssue })
+  assert.equal(calls.length, 0)
+  assert.equal(out.patch.dataJson.issueSyncErrors.length, 1)
+  assert.notEqual(out.advance, false)
+})
+
+test('done renders the issue links and the issue problems from the entries', async () => {
+  let edited = null
+  const msg = { edit: async (p) => { edited = p } }
+  const channel = { id: 'tc1', send: async () => ({}), messages: { fetch: async () => msg } }
+  const client = { channels: { fetch: async () => channel }, user: { id: 'bot' } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+  }
   const job = {
-    id: 'j', csaasMeetingId: 'm', guildConfigId: 'g',
+    id: 'j', meetingId: 'M', guildConfigId: 'g', reviewMessageId: 'rm1',
     dataJson: {
-      tasks: [{ task_id: 'a', project: 'ghost' }],
-      mirrored: [{ csaasTaskId: 'a', github: true }],
+      title: 'Sprint sync', reviewChannelId: 'tc1',
+      tasks: [{ task_id: 'a' }, { task_id: 'b' }],
+      review: { tasks: [{ taskId: 'a', github: true }, { taskId: 'b', github: true }] },
+      mirrored: [
+        { csaasTaskId: 'a', title: 'Do A', github: true, externalIssueUrl: 'https://github.com/granjur/bot/issues/41' },
+        { csaasTaskId: 'b', title: 'Do B', github: true },
+      ],
+      issueSyncErrors: [{ csaasTaskId: 'b', reason: 'no repository for this project and scope' }],
     },
   }
-  const out = await stageRunners.issue_syncing({ job, db, client: {}, csaasClient })
-  assert.equal(called, false)
-  assert.equal(out.patch.dataJson.issueSyncErrors.length, 1)
-  assert.match(out.patch.dataJson.issueSyncErrors[0].reason, /no repo for project ghost/)
-  assert.notEqual(out.advance, false)
+  await stageRunners.done({ job, db, client, csaasClient: {} })
+  const desc = edited.embeds[0].data.description
+  assert.match(desc, /\[Do A\]\(https:\/\/github\.com\/granjur\/bot\/issues\/41\)/)
+  assert.match(desc, /no repository for this project and scope/)
+})
+
+// F3 + F4 (final review, 2026-09-30).
+function doneHarness(dataJson) {
+  let edited = null
+  const msg = { edit: async (p) => { edited = p } }
+  const channel = { id: 'tc1', send: async () => ({}), messages: { fetch: async () => msg } }
+  const client = { channels: { fetch: async () => channel }, user: { id: 'bot' } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+  }
+  const job = { id: 'j', meetingId: 'M', guildConfigId: 'g', reviewMessageId: 'rm1', dataJson: { title: 'Sprint sync', reviewChannelId: 'tc1', ...dataJson } }
+  return { job, db, client, description: () => edited.embeds[0].data.description }
+}
+
+test('done counts only the tasks whose issue actually opened as pushed to GitHub', async () => {
+  const h = doneHarness({
+    tasks: [{ task_id: 'a' }, { task_id: 'b' }, { task_id: 'c' }],
+    review: { tasks: [{ taskId: 'a', github: true }, { taskId: 'b', github: true }, { taskId: 'c', github: true }] },
+    mirrored: [
+      { csaasTaskId: 'a', title: 'Do A', github: true, externalIssueUrl: 'https://github.com/granjur/bot/issues/41' },
+      { csaasTaskId: 'b', title: 'Do B', github: true },
+      { csaasTaskId: 'c', title: 'Do C', github: true },
+    ],
+    issueSyncErrors: [
+      { csaasTaskId: 'b', title: 'Do B', kind: 'skipped', reason: 'the task has no scope' },
+      { csaasTaskId: 'c', title: 'Do C', kind: 'failed', reason: 'No GitHub access to granjur/bot' },
+    ],
+  })
+  await stageRunners.done({ job: h.job, db: h.db, client: h.client, csaasClient: {} })
+  const desc = h.description()
+  assert.match(desc, /^1 pushed to GitHub$/m)
+  assert.doesNotMatch(desc, /3 pushed to GitHub/)
+})
+
+test('done lists skipped tasks apart from failed ones, each by title', async () => {
+  const h = doneHarness({
+    tasks: [{ task_id: 'a' }, { task_id: 'b' }, { task_id: 'c' }],
+    review: { tasks: [{ taskId: 'a', github: true }, { taskId: 'b', github: true }, { taskId: 'c', github: true }] },
+    mirrored: [
+      { csaasTaskId: 'a', title: 'Do A', github: true },
+      { csaasTaskId: 'b', title: 'Do B', github: true },
+      { csaasTaskId: 'c', title: 'Do C', github: true },
+    ],
+    issueSyncErrors: [
+      { csaasTaskId: 'a', title: 'Do A', kind: 'skipped', reason: 'the task has no scope' },
+      { csaasTaskId: 'b', title: 'Do B', kind: 'skipped', reason: 'the project has no repository for this scope' },
+      { csaasTaskId: 'c', title: 'Do C', kind: 'failed', reason: 'No GitHub access to granjur/bot' },
+    ],
+  })
+  await stageRunners.done({ job: h.job, db: h.db, client: h.client, csaasClient: {} })
+  const lines = h.description().split('\n')
+  assert.ok(lines.includes('• skipped — no repository: Do A (the task has no scope), Do B (the project has no repository for this scope)'), lines.join('\n'))
+  assert.ok(lines.includes('• failed: Do C — No GitHub access to granjur/bot'), lines.join('\n'))
+})
+
+test('done still renders an issue problem saved before kind/title existed, as a failure', async () => {
+  const h = doneHarness({
+    tasks: [{ task_id: 'b' }],
+    review: { tasks: [{ taskId: 'b', github: true }] },
+    mirrored: [{ csaasTaskId: 'b', github: true }],
+    issueSyncErrors: [{ csaasTaskId: 'b', reason: 'boom' }],
+  })
+  await stageRunners.done({ job: h.job, db: h.db, client: h.client, csaasClient: {} })
+  assert.ok(h.description().split('\n').includes('• failed: b — boom'))
+})
+
+test('clampSummary leaves a short summary unchanged', () => {
+  const lines = ['a', 'b', '', 'c']
+  assert.equal(clampSummary(lines), lines.join('\n'))
+})
+
+test('clampSummary shortens a long summary at a line boundary and keeps the counts', () => {
+  const lines = ['✅ 3 task(s) created', '0 rejected', '0 pushed to GitHub']
+  for (let i = 0; i < 100; i++) lines.push(`• failed: ${'t'.repeat(200)} — boom ${i}`)
+  const out = clampSummary(lines)
+  assert.ok(out.length <= 4000, String(out.length))
+  const outLines = out.split('\n')
+  assert.deepEqual(outLines.slice(0, 3), lines.slice(0, 3))
+  assert.equal(outLines[outLines.length - 1], '… (summary shortened)')
+  assert.equal(outLines[3], lines[3])
+})
+
+test('clampSummary cuts a single oversized line rather than exceeding the limit', () => {
+  const out = clampSummary(['x'.repeat(9000)])
+  assert.ok(out.length <= 4000)
+  assert.ok(out.endsWith('… (summary shortened)'))
+})
+
+test('done with 40 failing issue syncs does not throw and stays within the embed limit', async () => {
+  const errors = []
+  for (let i = 0; i < 40; i++) errors.push({ csaasTaskId: `t${i}`, title: 'T'.repeat(200), kind: 'failed', reason: 'No GitHub access to granjur/bot' })
+  const h = doneHarness({
+    tasks: [{ task_id: 'a' }],
+    review: { tasks: [{ taskId: 'a', github: true }] },
+    mirrored: [{ csaasTaskId: 'a', title: 'Do A', github: true }],
+    issueSyncErrors: errors,
+  })
+  await stageRunners.done({ job: h.job, db: h.db, client: h.client, csaasClient: {} })
+  const desc = h.description()
+  assert.ok(desc.length <= 4096, String(desc.length))
+  assert.ok(desc.startsWith('✅ 0 task(s) created') || desc.startsWith('✅'))
+  assert.ok(desc.endsWith('… (summary shortened)'))
 })
 
 test('done edits the review message and terminates', async () => {
@@ -349,9 +649,14 @@ test('mirrored creates a task per non-rejected review task and pings assignees',
   const db = {
     meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
     meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
-    repository: { findMany: async () => [{ id: 'r1', name: 'granjur' }] },
-    project: { findMany: async () => [] },
-    projectRepos: { findMany: async () => [] },
+    repository: { findMany: async () => [{ id: 'r1', name: 'granjur' }, { id: 'r2', name: 'granjur-web' }] },
+    project: { findMany: async () => [{ id: 'p1', name: 'granjur' }] },
+    projectRepos: {
+      findMany: async () => [
+        { project_id: 'p1', repository_id: 'r1', scope: 'backend' },
+        { project_id: 'p1', repository_id: 'r2', scope: 'frontend' },
+      ],
+    },
     task: { findFirst: async () => null, create: async ({ data }) => { created.push(data); return { id: `db${created.length}` } } },
     meetingPipelineJob: { update: async () => ({}) },
   }
@@ -359,7 +664,7 @@ test('mirrored creates a task per non-rejected review task and pings assignees',
     id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
     dataJson: {
       tasks: [
-        { task_id: 'a', goal_of_task: 'Do A', project: 'granjur' },
+        { task_id: 'a', goal_of_task: 'Do A', project: 'granjur', platform: 'node' },
         { task_id: 'b', goal_of_task: 'Do B' },
       ],
       review: {
@@ -373,10 +678,13 @@ test('mirrored creates a task per non-rejected review task and pings assignees',
   const out = await stageRunners.mirrored({ job, db, client, csaasClient: {} })
   assert.equal(created.length, 1)
   assert.equal(created[0].externalId, 'csaas:a')
+  // The project's backend link: node -> backend (the repository rule).
   assert.equal(created[0].repositoryId, 'r1')
   assert.equal(created[0].discordChannelId, 'tc1')
   assert.equal(out.patch.dataJson.mirrored.length, 1)
   assert.equal(out.patch.dataJson.mirrored[0].dbTaskId, 'db1')
+  assert.equal(out.patch.dataJson.mirrored[0].repositoryId, 'r1')
+  assert.equal(out.patch.dataJson.mirrored[0].github, true)
   assert.equal(out.patch.dataJson.mirrored[0].title, 'Do A')
   assert.equal(sent.length, 1)
   assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\*/)
@@ -1058,4 +1366,18 @@ test('mirrored: an unclear task left on "No project" (or a legacy review) has no
     assert.equal(row.projectId, null)
     assert.equal(row.projectName, null)
   }
+})
+
+test('mirrored entries carry the repositoryId the row was created with (null when none)', async () => {
+  const { db, created } = mirrorDb()
+  db.repository = { findMany: async () => [{ id: 'r-fw', name: 'framework', url: 'https://github.com/granjur/framework' }] }
+  db.projectRepos = { findMany: async () => [{ project_id: 'p1', repository_id: 'r-fw', scope: null }] }
+  const out = await stageRunners.mirrored({
+    job: mirrorJob([{ taskId: 'a', github: true }, { taskId: 'b', needsProject: true, projectId: null, github: true }]),
+    db, client: mirrorClient(), csaasClient: {},
+  })
+  assert.deepEqual(created.map((r) => r.repositoryId), ['r-fw', null])
+  assert.deepEqual(out.patch.dataJson.mirrored.map((m) => m.repositoryId), ['r-fw', null])
+  // F4: the rule's reason rides along, so issue_syncing can say why there is no repository.
+  assert.deepEqual(out.patch.dataJson.mirrored.map((m) => m.repoReason), ['only-repo', 'no-project'])
 })

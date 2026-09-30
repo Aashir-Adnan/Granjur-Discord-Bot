@@ -12,6 +12,9 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { EPHEMERAL } from '../constants.js'
 import { reattributeGuildDocs } from '../services/docsSync.js'
+import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
+import { linkRepo, linkRefusalText, accessLine, SCOPE_IGNORED_TEXT } from '../services/projectRepoLinks.js'
+import { checkRepoAccess } from '../services/github.js'
 
 export const data = new SlashCommandBuilder()
   .setName('repos')
@@ -24,6 +27,9 @@ export const data = new SlashCommandBuilder()
       .addStringOption((o) => o.setName('name').setDescription('Display name').setRequired(false).setMaxLength(100))
       .addStringOption((o) => o.setName('url').setDescription('Repository URL').setRequired(false))
       .addStringOption((o) => o.setName('project').setDescription('Project name (optional)').setRequired(false))
+      .addStringOption((o) =>
+        o.setName('scope').setDescription('Scope to link under (optional, needs project)').setRequired(false).addChoices(...SCOPE_CHOICES)
+      )
   )
 
 export async function execute(interaction) {
@@ -45,12 +51,15 @@ export async function execute(interaction) {
     const nameOpt = interaction.options.getString('name')
     const urlOpt = interaction.options.getString('url')
     const projectOpt = (interaction.options.getString('project') || '').trim() || null
+    const scopeOpt = interaction.options.getString('scope') || null
     if (nameOpt && urlOpt) {
       const url = urlOpt.replace(/\/$/, '')
-      flowStore.set(interaction.user.id, guild.id, 'repos_add', { name: nameOpt, url, project: projectOpt })
+      flowStore.set(interaction.user.id, guild.id, 'repos_add', { name: nameOpt, url, project: projectOpt, scope: scopeOpt })
       const embed = new EmbedBuilder()
         .setTitle('Confirm add repository')
-        .setDescription(`**${nameOpt}**\n${url}${projectOpt ? `\nProject: ${projectOpt}` : ''}`)
+        .setDescription(
+          `**${nameOpt}**\n${url}${projectOpt ? `\nProject: ${projectOpt}` : ''}${scopeOpt ? `\nScope: ${scopeLabel(scopeOpt)}` : ''}${scopeOpt && !projectOpt ? `\n${SCOPE_IGNORED_TEXT}` : ''}`
+        )
         .setColor(0x5865f2)
         .setFooter({ text: 'Step 2 of 2' })
       const row = new ActionRowBuilder().addComponents(
@@ -192,16 +201,25 @@ export async function handleConfirmAdd(interaction) {
         await reattributeGuildDocs(cfg.id).catch(() => {})
       }
       if (project?.id && repo?.id) {
-        await db.projectRepos.add({ data: { project_id: project.id, repository_id: repo.id } })
+        const result = await linkRepo({ db, projectId: project.id, repositoryId: repo.id, scope: state.scope || null })
+        if (!result.ok) {
+          const holder = await db.repository.findFirst({ where: { id: result.holderRepositoryId, guildConfigId: cfg.id } })
+          throw new Error(linkRefusalText(project.name, holder?.name ?? 'another repository', state.scope))
+        }
       }
     } catch (e) {
       linkNote = `\n\nLinking to project **${state.project}** did not complete (${e?.message ?? String(e)}). Finish it with **/projects** → **Link repo**.`
     }
   }
 
+  // A scope only means something on a project link.
+  const scopeNote = state.scope && !state.project ? `\n\n${SCOPE_IGNORED_TEXT}` : ''
+  const access = await checkRepoAccess(state.url)
   const embed = new EmbedBuilder()
     .setTitle('Repository added')
-    .setDescription(`**${state.name}**: ${state.url}${state.project ? ` (${state.project})` : ''}${linkNote}`)
+    .setDescription(
+      `**${state.name}**: ${state.url}${state.project ? ` (${state.project})` : ''}${linkNote}${scopeNote}\n\n${accessLine({ ...access, url: state.url })}`
+    )
     .setColor(0x57f287)
 
   await interaction.editReply({ embeds: [embed], components: [] }).catch(() => {})

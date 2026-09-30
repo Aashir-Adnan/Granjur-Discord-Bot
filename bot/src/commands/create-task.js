@@ -14,7 +14,8 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 import * as flowStore from '../flows/store.js'
 import { createTaskTicketChannel } from '../services/taskTicketChannel.js'
 import { createIssue } from '../services/github.js'
-import { createTask } from '../services/taskCreate.js'
+import { createTask, issueReplyLine } from '../services/taskCreate.js'
+import { resolveTaskRepo, loadProjectLinks } from '../services/taskRepo.js'
 import { CATEGORY_SOFT_CAP } from '../constants.js'
 import { EPHEMERAL } from '../constants.js'
 import { SCOPE_CHOICES, scopeLabel, isValidScope } from '../utils/taskScope.js'
@@ -22,6 +23,17 @@ import { SCOPE_CHOICES, scopeLabel, isValidScope } from '../utils/taskScope.js'
 const FLOW_KEY = 'create_task'
 
 const SESSION_EXPIRED_MSG = 'Session expired or invalid step. Run **/create-task** again.'
+
+export const NO_REPOSITORIES_MSG = 'No repositories. Add with **/repos** first.'
+
+/**
+ * A bug still needs a repository (the rule's, or one picked from the server's),
+ * so a guild with none refuses a bug before its first step — as it always did.
+ * Returns the reply payload, or null when the bug can start. Pure; exported for its test.
+ */
+export function bugStartRefusal(repos) {
+  return repos?.length ? null : { content: NO_REPOSITORIES_MSG, components: [] }
+}
 
 /** After deferUpdate() we must use editReply(); after deferReply() use editReply(); only use update() when not yet acknowledged. */
 async function respond(interaction, payload) {
@@ -39,6 +51,7 @@ async function respond(interaction, payload) {
   return interaction.reply({ ...p, flags: EPHEMERAL }).catch((err) => console.error('[create-task] respond reply:', err?.message ?? err))
 }
 const STEP_TYPE = 'type'
+const STEP_BUG_PROJECT = 'bug_project'
 const STEP_REPO = 'repo'
 const STEP_MODAL = 'modal'
 const STEP_SCOPE = 'scope'
@@ -97,12 +110,19 @@ export async function execute(interaction) {
   const typeOpt = interaction.options.getString('type')
   const titleOpt = interaction.options.getString('title')
   const descriptionOpt = (interaction.options.getString('description') || '').trim() || null
-  const scopeOpt = interaction.options.getString('scope') // constrained to the four choices, or null
+  const scopeOpt = interaction.options.getString('scope') // constrained to the five choices, or null
   const modulesOpt = (interaction.options.getString('modules') || '').trim()
   const assigneesOpt = interaction.options.getString('assignees')
   const taggedOpt = interaction.options.getString('tagged')
 
   flowStore.clear(interaction.user.id, guild.id, FLOW_KEY)
+
+  // A bug with no repository in the guild is refused before any step (the fast
+  // path and the type-only path alike).
+  if (typeOpt === 'bug') {
+    const refusal = bugStartRefusal(repos)
+    if (refusal) return interaction.editReply(refusal)
+  }
 
   // If type + title provided in command, skip type step and modal; go to repos/project or repo step
   if (typeOpt && titleOpt) {
@@ -115,7 +135,7 @@ export async function execute(interaction) {
       modules.push(name)
     }
     const state = {
-      step: taskType === 'feature' ? STEP_REPOS_PROJECTS : STEP_REPO,
+      step: taskType === 'feature' ? STEP_REPOS_PROJECTS : STEP_BUG_PROJECT,
       taskType,
       title: titleOpt.trim(),
       description: descriptionOpt,
@@ -130,23 +150,19 @@ export async function execute(interaction) {
       // asks for it first only when it is not.
       await proceedAfterScope(interaction, state, guild)
     } else {
-      if (!repos.length) return interaction.editReply({ content: 'No repositories. Add with **/repos** first.', components: [] })
-      const embed = new EmbedBuilder()
-        .setTitle('Create bug task')
-        .setDescription('Select the **repository** for this bug.')
-        .setColor(0xed4245)
-        .setFooter({ text: 'Step — Repository' })
-      const options = repos.slice(0, 25).map((r) => ({ label: r.name, value: r.id, description: (r.url || '').slice(0, 100) }))
-      const select = new StringSelectMenuBuilder().setCustomId('create_task_repo').setPlaceholder('Select repository').addOptions(options)
-      await interaction.editReply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(select)] })
+      // A bug's first step is its project; the repository follows from the
+      // project and the scope (proceedAfterScope), asked for only when the
+      // rule finds none.
+      await showBugProjectStep(interaction, state, projects)
     }
     return
   }
 
-  // Otherwise: if only type provided, go to modal (feature) or repo (bug)
+  // Otherwise: if only type provided, go to modal (feature) or project (bug)
   if (typeOpt) {
     const isFeature = typeOpt === 'feature'
-    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, { step: isFeature ? STEP_MODAL : STEP_REPO, taskType: typeOpt })
+    const typeState = { step: isFeature ? STEP_MODAL : STEP_BUG_PROJECT, taskType: typeOpt }
+    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, typeState)
     if (isFeature) {
       const embed = new EmbedBuilder()
         .setTitle('Create feature task')
@@ -158,15 +174,7 @@ export async function execute(interaction) {
       )
       await interaction.editReply({ embeds: [embed], components: [row] })
     } else {
-      if (!repos.length) return interaction.editReply({ content: 'No repositories. Add with **/repos** first.', components: [] })
-      const embed = new EmbedBuilder()
-        .setTitle('Create bug task')
-        .setDescription('**Step 1:** Choose the repository for this bug.')
-        .setColor(0xed4245)
-        .setFooter({ text: 'Step 2 — Repository' })
-      const options = repos.slice(0, 25).map((r) => ({ label: r.name, value: r.id, description: (r.url || '').slice(0, 100) }))
-      const select = new StringSelectMenuBuilder().setCustomId('create_task_repo').setPlaceholder('Select repository').addOptions(options)
-      await interaction.editReply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(select)] })
+      await showBugProjectStep(interaction, typeState, projects)
     }
     return
   }
@@ -195,7 +203,13 @@ export async function handleTypeButton(interaction) {
     const taskType = isFeature ? 'feature' : 'bug'
     const cfg = await getOrCreateGuildConfig(guild.id)
 
-    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, { step: isFeature ? STEP_MODAL : STEP_REPO, taskType })
+    if (!isFeature) {
+      const refusal = bugStartRefusal(await db.repository.findMany({ where: { guildConfigId: cfg.id } }))
+      if (refusal) return interaction.update(refusal).catch(() => {})
+    }
+
+    const typeState = { step: isFeature ? STEP_MODAL : STEP_BUG_PROJECT, taskType }
+    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, typeState)
 
     if (isFeature) {
     const embed = new EmbedBuilder()
@@ -208,19 +222,8 @@ export async function handleTypeButton(interaction) {
     )
     await interaction.update({ embeds: [embed], components: [row] }).catch(() => interaction.editReply({ embeds: [embed], components: [row] }))
   } else {
-    const repos = await db.repository.findMany({ where: { guildConfigId: cfg.id } })
-    if (!repos.length) return interaction.update({ content: 'No repositories. Add with **/repos** first.', components: [] }).catch(() => {})
-    const embed = new EmbedBuilder()
-      .setTitle('Create bug task')
-      .setDescription('**Step 1:** Choose the repository for this bug.')
-      .setColor(0xed4245)
-      .setFooter({ text: 'Step 2 — Repository' })
-    const options = repos.slice(0, 25).map((r) => ({ label: r.name, value: r.id, description: (r.url || '').slice(0, 100) }))
-    const select = new StringSelectMenuBuilder().setCustomId('create_task_repo').setPlaceholder('Select repository').addOptions(options)
-    await interaction.update({ embeds: [embed], components: [new ActionRowBuilder().addComponents(select)] }).catch((e) => {
-      console.error('[create-task] handleTypeButton bug update:', e?.message ?? e)
-      interaction.editReply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(select)] }).catch(() => {})
-    })
+    const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
+    await showBugProjectStep(interaction, typeState, projects)
   }
   } catch (e) {
     console.error('[create-task] handleTypeButton error:', e)
@@ -260,6 +263,156 @@ export function scopeRow() {
     .setPlaceholder('Select scope')
     .addOptions(SCOPE_CHOICES.map((c) => ({ label: c.name, value: c.value })))
   return new ActionRowBuilder().addComponents(menu)
+}
+
+/**
+ * A bug's first step: its project. The guild's projects by name (at most 24,
+ * so the list plus "No project" stays within Discord's 25), "No project" last.
+ * Exported for its test.
+ */
+export function bugProjectRow(projects, selectedId = null) {
+  const sorted = [...(projects || [])]
+    .sort((a, b) => String(a?.name ?? '').localeCompare(String(b?.name ?? ''), undefined, { sensitivity: 'base' }))
+    .slice(0, 24)
+  const options = sorted.map((p) => ({
+    label: String(p.name || 'Project').slice(0, 100),
+    value: String(p.id),
+    default: selectedId != null && String(p.id) === String(selectedId),
+  }))
+  options.push({ label: 'No project', value: 'none', default: selectedId === 'none' })
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('create_task_bug_project')
+    .setPlaceholder('Select project')
+    .addOptions(options)
+  return new ActionRowBuilder().addComponents(menu)
+}
+
+/** The confirm step's Issue on/off toggle. Exported for its test. */
+export function issueToggleButton(on) {
+  return new ButtonBuilder()
+    .setCustomId('create_task_issue_toggle')
+    .setLabel(on ? 'Issue: on' : 'Issue: off')
+    .setStyle(on ? ButtonStyle.Primary : ButtonStyle.Secondary)
+}
+
+// The last line of the "task created" reply: what happened to the GitHub issue.
+// Lives in services/taskCreate.js so the site create route says it the same
+// way; re-exported here for this command's tests.
+export { issueReplyLine }
+
+/**
+ * The repository the confirm step shows — the same one createTask will use, so
+ * what the user sees is what happens — and how it was chosen: `'scope'` or
+ * `'only-repo'` (the rule), `'picked'` (the user's pick), or null (none).
+ * A feature: the rule on its first project and its scope, else its first picked
+ * repository. A bug: `state.repo`, already settled by the rule or the repository
+ * step in proceedAfterScope (createTask re-applies the same rule and falls back
+ * to that same repo). `db` is a seam; exported for its test.
+ *
+ * @returns {Promise<{repository: object|null, reason: 'scope'|'only-repo'|'picked'|null}>}
+ */
+export async function confirmRepository(state, { db: dbArg = db, cfg } = {}) {
+  if (state.taskType !== 'feature') {
+    return state.repo ? { repository: state.repo, reason: state.repoReason ?? 'picked' } : { repository: null, reason: null }
+  }
+  let repos = []
+  try {
+    repos = (await dbArg.repository.findMany({ where: { guildConfigId: cfg.id } })) ?? []
+  } catch (e) {
+    console.warn('[create-task] confirmRepository repository read failed:', e?.message ?? e)
+    repos = []
+  }
+  const projectId = state.projectIds?.[0] ?? null
+  const links = await loadProjectLinks(dbArg, projectId)
+  const { repository, reason } = resolveTaskRepo({ projectId, scope: state.scope }, { links, repos })
+  if (repository) return { repository, reason }
+  const first = state.repositoryIds?.[0]
+  const picked = first ? (repos.find((r) => String(r.id) === String(first)) ?? null) : null
+  return picked ? { repository: picked, reason: 'picked' } : { repository: null, reason: null }
+}
+
+/**
+ * The confirm step's "Repository" value: the name, with `(<Scope>)` only when
+ * the scope rule chose it; `None — no issue` when there is none. Pure; exported for its test.
+ */
+export function repositoryFieldText(repository, reason, scope) {
+  if (!repository) return 'None — no issue'
+  const name = String(repository.name || 'Repository').slice(0, 100)
+  const label = reason === 'scope' ? scopeLabel(scope) : null
+  return label ? `${name} (${label})` : name
+}
+
+async function showBugProjectStep(interaction, state, projects) {
+  try {
+    const embed = new EmbedBuilder()
+      .setTitle('Create bug task')
+      .setDescription('Pick the **project** this bug belongs to, or **No project**. Its repository then follows from the project and the scope.')
+      .setColor(0xed4245)
+      .setFooter({ text: 'Step — Project' })
+    if (state.title) embed.addFields({ name: 'Title', value: state.title.slice(0, 100), inline: true })
+    await respond(interaction, { embeds: [embed], components: [bugProjectRow(projects, state.projectId)] })
+  } catch (e) {
+    console.error('[create-task] showBugProjectStep error:', e)
+    await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
+  }
+}
+
+export async function handleBugProjectSelect(interaction) {
+  try {
+    const guild = interaction.guild
+    if (!guild) {
+      console.error('[create-task] handleBugProjectSelect: no guild')
+      return
+    }
+    const state = flowStore.get(interaction.user.id, guild.id, FLOW_KEY)
+    // STEP_MODAL too: a dismissed details modal leaves the project select on
+    // screen, and picking again from it must still work.
+    const onProjectStep = state?.step === STEP_BUG_PROJECT || (state?.step === STEP_MODAL && !state?.title)
+    if (!state || state.taskType !== 'bug' || !onProjectStep) {
+      console.error('[create-task] handleBugProjectSelect: wrong step or no state', state?.step, state?.taskType)
+      await respond(interaction, { content: SESSION_EXPIRED_MSG, components: [] }).catch(() => {})
+      return
+    }
+    const value = interaction.values?.[0]
+    if (!value) {
+      await respond(interaction, { content: 'No project selected.', components: [] }).catch(() => {})
+      return
+    }
+    const nextState = { ...state, projectId: value === 'none' ? null : value }
+    if (state.title) {
+      // Not deferred by index.js (the other branch opens a modal); this one
+      // reads the database before answering, so acknowledge it first.
+      if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate().catch(() => {})
+      await proceedAfterScope(interaction, nextState, guild)
+    } else {
+      nextState.step = STEP_MODAL
+      flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
+      await interaction.showModal(buildTaskModal(false))
+    }
+  } catch (e) {
+    console.error('[create-task] handleBugProjectSelect error:', e)
+    await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
+  }
+}
+
+/** A bug whose project and scope give no repository: pick one (the project's linked ones, else every guild repository). */
+async function showRepoStep(interaction, state, repos, fromProject) {
+  try {
+    const embed = new EmbedBuilder()
+      .setTitle('Create bug task')
+      .setDescription(fromProject
+        ? `This project has no repository for the **${scopeLabel(state.scope) || 'chosen'}** scope. Select the **repository** for this bug from the project's repositories.`
+        : 'Select the **repository** for this bug.')
+      .addFields({ name: 'Title', value: state.title?.slice(0, 100) || '—', inline: true })
+      .setColor(0xed4245)
+      .setFooter({ text: 'Step — Repository' })
+    const options = repos.slice(0, 25).map((r) => ({ label: String(r.name || 'Repository').slice(0, 100), value: String(r.id), description: (r.url || '').slice(0, 100) || undefined }))
+    const select = new StringSelectMenuBuilder().setCustomId('create_task_repo').setPlaceholder('Select repository').addOptions(options)
+    await respond(interaction, { embeds: [embed], components: [new ActionRowBuilder().addComponents(select)] })
+  } catch (e) {
+    console.error('[create-task] showRepoStep error:', e)
+    await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
+  }
 }
 
 async function showScopeStep(interaction, state, guild) {
@@ -322,6 +475,27 @@ async function proceedAfterScope(interaction, state, guild) {
     const next = { ...state, step: STEP_REPOS_PROJECTS }
     flowStore.set(interaction.user.id, guild.id, FLOW_KEY, next)
     return showReposProjectsStep(interaction, next, guild)
+  }
+  // A bug: once its scope is known, the rule (project + scope) picks its
+  // repository; only when it finds none is the repository asked for.
+  if (!state.repositoryId && !state.repoResolved) {
+    const cfg = await getOrCreateGuildConfig(guild.id)
+    const repos = (await db.repository.findMany({ where: { guildConfigId: cfg.id } })) ?? []
+    const links = await loadProjectLinks(db, state.projectId)
+    const { repository, reason } = resolveTaskRepo({ projectId: state.projectId, scope: state.scope }, { links, repos })
+    if (repository) {
+      state = { ...state, repo: repository, repositoryId: repository.id, repoResolved: true, repoReason: reason }
+    } else {
+      // The project's linked repositories, else every server repository. A bug
+      // always has at least one to pick from: bug start refuses a guild with none.
+      const linkedIds = new Set(links.map((l) => String(l.repository_id)))
+      const linked = repos.filter((r) => linkedIds.has(String(r.id)))
+      const choices = linked.length ? linked : repos
+      if (!choices.length) return respond(interaction, bugStartRefusal(choices)) // all removed mid-flow
+      const next = { ...state, step: STEP_REPO }
+      flowStore.set(interaction.user.id, guild.id, FLOW_KEY, next)
+      return showRepoStep(interaction, next, choices, linked.length > 0)
+    }
   }
   if (state.taggedMemberIds?.length !== undefined) {
     const next = { ...state, step: STEP_CONFIRM }
@@ -415,6 +589,9 @@ export async function handleRepoSelect(interaction) {
       console.error('[create-task] handleRepoSelect: no guild')
       return
     }
+    // Never opens a modal (the repository step comes after scope, so the title is
+    // known); it reads the database and may fetch members before answering.
+    if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate().catch(() => {})
     const repoId = interaction.values?.[0]
     if (!repoId) {
       await respond(interaction, { content: 'No repository selected.', components: [] }).catch(() => {})
@@ -428,22 +605,15 @@ export async function handleRepoSelect(interaction) {
     }
 
     const state = flowStore.get(interaction.user.id, guild.id, FLOW_KEY)
-    if (!state || state.taskType !== 'bug') {
-      console.error('[create-task] handleRepoSelect: missing state or not bug', state?.step, state?.taskType)
+    if (!state || state.taskType !== 'bug' || !state.title) {
+      console.error('[create-task] handleRepoSelect: missing state, not bug, or no title', state?.step, state?.taskType)
       await respond(interaction, { content: SESSION_EXPIRED_MSG, components: [] }).catch(() => {})
       return
     }
 
-    const nextState = { ...state, repositoryId: repoId, repo }
-    // If title was already set (e.g. from command), skip the modal — proceedAfterScope
-    // asks for scope first if it is not already known, then decides tagged/members/confirm.
-    if (state.title) {
-      await proceedAfterScope(interaction, nextState, guild)
-    } else {
-      nextState.step = STEP_MODAL
-      flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
-      await interaction.showModal(buildTaskModal(false))
-    }
+    const nextState = { ...state, repositoryId: repoId, repo, repoResolved: true, repoReason: 'picked' }
+    // proceedAfterScope decides tagged/members/confirm (repository set: no rule).
+    await proceedAfterScope(interaction, nextState, guild)
   } catch (e) {
     console.error('[create-task] handleRepoSelect error:', e)
     await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
@@ -660,9 +830,13 @@ async function showConfirmStep(interaction, state, guild) {
     embed.addFields({ name: 'Tagged', value: tagged.length ? tagged.map((id) => `<@${id}>`).join(' ') : 'None', inline: true })
   }
 
+  const { repository: repo, reason: repoReason } = await confirmRepository(state, { cfg })
+  embed.addFields({ name: 'Repository', value: repositoryFieldText(repo, repoReason, state.scope), inline: false })
+
   const rowButtons = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('create_task_create').setLabel('Create task').setStyle(ButtonStyle.Success),
     ...(isFeature ? [new ButtonBuilder().setCustomId('create_task_edit').setLabel('Edit details').setStyle(ButtonStyle.Secondary)] : []),
+    ...(repo ? [issueToggleButton(state.createIssue !== false)] : []),
     new ButtonBuilder().setCustomId('create_task_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
   )
   const components = isFeature ? [assigneeRow(state), rowButtons] : [rowButtons]
@@ -696,6 +870,29 @@ async function handleMetricSelect(interaction, key) {
   }
 }
 
+/** The confirm step's Issue on/off toggle: flips `state.createIssue` and re-renders. */
+export async function handleIssueToggle(interaction) {
+  try {
+    const guild = interaction.guild
+    if (!guild) {
+      console.error('[create-task] handleIssueToggle: no guild')
+      return
+    }
+    const state = flowStore.get(interaction.user.id, guild.id, FLOW_KEY)
+    if (!state || state.step !== STEP_CONFIRM) {
+      console.error('[create-task] handleIssueToggle: wrong step or no state', state?.step)
+      await respond(interaction, { content: SESSION_EXPIRED_MSG, components: [] }).catch(() => {})
+      return
+    }
+    const nextState = { ...state, createIssue: state.createIssue === false }
+    flowStore.set(interaction.user.id, guild.id, FLOW_KEY, nextState)
+    await showConfirmStep(interaction, nextState, guild)
+  } catch (e) {
+    console.error('[create-task] handleIssueToggle error:', e)
+    await respond(interaction, { content: `Error: ${e?.message ?? String(e)}`, components: [], embeds: [] }).catch(() => {})
+  }
+}
+
 export async function handleMetricApi(interaction) { return handleMetricSelect(interaction, 'hasApiTest') }
 export async function handleMetricQa(interaction) { return handleMetricSelect(interaction, 'hasQaTest') }
 export async function handleMetricAc(interaction) { return handleMetricSelect(interaction, 'hasAc') }
@@ -707,6 +904,8 @@ export async function handleAssigneesSelect(interaction) {
       console.error('[create-task] handleAssigneesSelect: no guild')
       return
     }
+    // A user select is not deferred by index.js; the confirm re-render reads the database.
+    if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate().catch(() => {})
     const state = flowStore.get(interaction.user.id, guild.id, FLOW_KEY)
     if (!state || state.step !== STEP_CONFIRM) {
       console.error('[create-task] handleAssigneesSelect: wrong step or no state', state?.step)
@@ -787,8 +986,10 @@ export async function handleCreate(
   try {
     // Tasks belong to the real `project` table (Framework, Badar HMS, CSAAS),
     // not `projectschema`, which is a dump-versioning table with no rows.
-    const firstProject = isFeature && state.projectIds?.[0]
-      ? await dbArg.project.findFirst({ where: { id: state.projectIds[0] } })
+    // A feature's first picked project; a bug's one project (its first step).
+    const projectId = isFeature ? (state.projectIds?.[0] ?? null) : (state.projectId ?? null)
+    const firstProject = projectId
+      ? await dbArg.project.findFirst({ where: { id: projectId } })
       : null
     const fields = {
       type: isFeature ? 'feature' : 'bug',
@@ -800,25 +1001,28 @@ export async function handleCreate(
       repositoryIds: isFeature ? (state.repositoryIds || []) : [],
       tracks: { apiTests: state.hasApiTest === true, qaTests: state.hasQaTest === true, acceptanceCriteria: state.hasAc === true },
     }
-    const { channel, fellBack, issueUrl } = await createTask({
+    const { channel, fellBack, issue } = await createTask({
       db: dbArg, guild, cfg, fields,
       project: firstProject,
-      // Carries state.repositoryId even without state.repo, as the old code wrote it.
+      // A bug's state.repo (settled by the rule or the repository step);
+      // carries state.repositoryId even without state.repo, as the old code wrote it.
       repo: isFeature || (!state.repositoryId && !state.repo)
         ? null
         : { ...(state.repo || {}), id: state.repositoryId ?? state.repo?.id ?? null },
       actor: { discordId: interaction.user.id },
       createChannel, openIssue,
+      createIssue: state.createIssue !== false,
     })
     flowStore.clear(interaction.user.id, guild.id, FLOW_KEY)
+    const issueLine = issueReplyLine(issue)
     if (isFeature) {
       await respond(interaction, {
-        embeds: [new EmbedBuilder().setTitle('Feature task created').setDescription(channelPlacementNote(`<#${channel.id}>`, firstProject, fellBack)).setColor(0x57f287)],
+        embeds: [new EmbedBuilder().setTitle('Feature task created').setDescription(`${channelPlacementNote(`<#${channel.id}>`, firstProject, fellBack)}\n${issueLine}`).setColor(0x57f287)],
         components: [],
       })
     } else {
       await respond(interaction, {
-        embeds: [new EmbedBuilder().setTitle('Bug task created').setDescription(`Channel: ${channel}${issueUrl ? `\nIssue: ${issueUrl}` : ''}`).setColor(0x57f287)],
+        embeds: [new EmbedBuilder().setTitle('Bug task created').setDescription(`Channel: <#${channel.id}>\n${issueLine}`).setColor(0x57f287)],
         components: [],
       })
     }

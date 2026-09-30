@@ -1,6 +1,7 @@
 // Creating a Feature or a Bug task: the row, its repositories, its ticket doc,
-// the bug's GitHub issue, and its channel. Shared by /create-task and the site's
-// create route, so a task looks the same in Discord whichever made it.
+// its channel, and — after the channel exists — its GitHub issue. Shared by
+// /create-task and the site's create route, so a task looks the same in
+// Discord whichever made it.
 //
 // Never replies to anyone — the caller does that with what comes back.
 
@@ -8,6 +9,7 @@ import { ChannelType, EmbedBuilder, OverwriteType, PermissionFlagsBits } from 'd
 import db from '../db/index.js'
 import { createTaskTicketChannel } from './taskTicketChannel.js'
 import { createIssue } from './github.js'
+import { resolveTaskRepo, loadProjectLinks, repoReasonText } from './taskRepo.js'
 import { getOrCreateCategory } from '../utils/categories.js'
 import { CATEGORY_BOLD_NAMES } from '../constants.js'
 import { TEXT_ALLOW } from '../utils/textAllow.js'
@@ -24,16 +26,97 @@ function createdByField(actor) {
 }
 
 /**
+ * The project's repository links and the guild's repositories, read through
+ * the `db` seam, plus the rule's verdict for this task. `repository.findMany`
+ * is read defensively (older callers' fakes don't stub it) — a missing model
+ * or a failing read just means the rule finds nothing, same as no links.
+ */
+async function resolveRepoForTask(dbArg, cfg, projectId, scope) {
+  let repos = []
+  try {
+    repos = (await dbArg.repository?.findMany?.({ where: { guildConfigId: cfg.id } })) ?? []
+  } catch (e) {
+    console.warn('[taskCreate] repository read failed:', e?.message ?? e)
+    repos = []
+  }
+  const links = await loadProjectLinks(dbArg, projectId)
+  const { repository: ruled, reason } = resolveTaskRepo({ projectId, scope }, { links, repos })
+  const byId = new Map(repos.map((r) => [String(r.id), r]))
+  return { ruled, reason, byId }
+}
+
+/** The body every task's GitHub issue opens with. */
+function issueBody(fields, project, guild, channel, task) {
+  return [
+    fields.description || '',
+    '',
+    '---',
+    `Scope: ${scopeLabel(fields.scope) || '—'} · Project: ${project?.name || '—'}`,
+    `Discord: https://discord.com/channels/${guild.id}/${channel.id}`,
+    `Task ID: ${task.id}`,
+  ].join('\n')
+}
+
+/**
+ * The line that says what happened to a new task's GitHub issue. A failure or
+ * a skip is always said, never silent. Shared by /create-task's reply and the
+ * site create route's `note` (CSAAS forwards only `note` to the site), so both
+ * say it in the same words. Pure.
+ *
+ * @param {{url:string}|{error:string}|{skipped:string}|null} issue  createTask's `issue`
+ */
+export function issueReplyLine(issue) {
+  if (issue && issue.url) return `Issue: ${issue.url}`
+  if (issue && 'error' in issue) return `Issue: not opened — ${issue.error}`
+  if (issue && 'skipped' in issue) return `Issue: not opened — ${issue.skipped}`
+  return 'Issue: off'
+}
+
+/**
+ * Open (or skip, or report the failure of) a task's GitHub issue, once its
+ * channel exists. Never throws — a GitHub failure is always reported back,
+ * never silent, and never undoes the task or its channel. A failure is also
+ * said in the task's channel (best-effort); a skip or an opt-out is not.
+ */
+async function openTaskIssue({ dbArg, model, wantIssue, usedRepo, reasonText, fields, project, guild, channel, task, openIssue }) {
+  if (!wantIssue) return { issue: null, issueUrl: '' }
+  if (!usedRepo?.url) return { issue: { skipped: reasonText }, issueUrl: '' }
+  let res
+  try {
+    const body = issueBody(fields, project, guild, channel, task)
+    res = await openIssue(usedRepo.url, fields.title, body)
+  } catch (e) {
+    const reason = e?.message ?? String(e)
+    try {
+      await channel.send({ content: `GitHub issue not opened — ${reason}` })
+    } catch (_) { /* best-effort: the reply still reports it */ }
+    return { issue: { error: reason }, issueUrl: '' }
+  }
+  // The issue exists from here on: a failed row write must not hide it.
+  try {
+    await dbArg[model].update({ where: { id: task.id }, data: { externalIssueUrl: res.url, externalIssueNumber: res.number } })
+  } catch (e) {
+    console.warn('[taskCreate] issue url write failed:', e?.message ?? e)
+  }
+  try {
+    await channel.send({ content: `GitHub issue: ${res.url}` })
+  } catch (_) { /* best-effort: the issue is open either way */ }
+  return { issue: { url: res.url }, issueUrl: res.url }
+}
+
+/**
  * @param {object} opts
  * @param {{type:'feature'|'bug', title:string, description:string|null, scope:string|null, modules:string[], holderIds:string[], repositoryIds:string[], tracks:{apiTests:boolean,qaTests:boolean,acceptanceCriteria:boolean}}} opts.fields
  * @param {object|null} [opts.project]  the project row (required from the site; optional from Discord)
- * @param {object|null} [opts.repo]     a bug's repository row ({ id, name, url })
+ * @param {object|null} [opts.repo]     a bug's caller-picked repository row ({ id, name, url }); overridden by the rule
  * @param {{discordId?:string|null, label?:string|null, viaSite?:boolean}} [opts.actor]
- * @returns {Promise<{task: object, channel: object, fellBack: 'cap'|'missing'|null, issueUrl: string}>}
+ * @param {boolean} [opts.createIssue]  per-task opt-out; on by default
+ * @returns {Promise<{task: object, channel: object, fellBack: 'cap'|'missing'|null, issueUrl: string, issue: {url:string}|{error:string}|{skipped:string}|null}>}
  */
 export async function createTask({
   db: dbArg = db, guild, cfg, fields, project = null, repo = null, actor = {},
   createChannel = createTaskTicketChannel, openIssue = createIssue, getCategory = getOrCreateCategory,
+  createIssue: wantIssue = true,
 }) {
   const creator = actor.discordId ?? null
   const holders = unique(fields.holderIds || [])
@@ -50,10 +133,14 @@ export async function createTask({
   const createdBy = createdByField(actor)
 
   if (fields.type === 'feature') {
+    const { ruled, reason, byId } = await resolveRepoForTask(dbArg, cfg, project?.id, fields.scope)
+    const pickedRepo = fields.repositoryIds?.[0] ? byId.get(String(fields.repositoryIds[0])) : null
+    const usedRepo = ruled ?? pickedRepo ?? null
+
     const task = await dbArg.feature.create({
       data: {
         guildConfigId: cfg.id,
-        repositoryId: fields.repositoryIds?.[0] ?? null,
+        repositoryId: ruled?.id ?? fields.repositoryIds?.[0] ?? null,
         projectId: project?.id ?? null,
         projectName: project?.name ?? null,
         title: fields.title,
@@ -90,15 +177,21 @@ export async function createTask({
       // that throws must not leave a channel with no row pointing at it.
       onCreated: (made) => dbArg.feature.update({ where: { id: task.id }, data: { discordChannelId: made.id } }),
     })
-    return { task, channel, fellBack, issueUrl: '' }
+    const { issue, issueUrl } = await openTaskIssue({
+      dbArg, model: 'feature', wantIssue, usedRepo, reasonText: repoReasonText(reason),
+      fields, project, guild, channel, task, openIssue,
+    })
+    return { task, channel, fellBack, issueUrl, issue }
   }
 
   // Bug.
+  const { ruled, reason } = await resolveRepoForTask(dbArg, cfg, project?.id, fields.scope)
+  const usedRepo = ruled ?? repo ?? null
   const taggedMentions = holders.map((id) => `<@${id}>`).join(' ')
   const task = await dbArg.bugTicket.create({
     data: {
       guildConfigId: cfg.id,
-      repositoryId: repo?.id ?? null,
+      repositoryId: ruled?.id ?? repo?.id ?? null,
       // Only when there is one: /create-task's project-less bug row stays
       // exactly as it was, without two extra null columns.
       ...(project ? { projectId: project.id, projectName: project.name } : {}),
@@ -112,26 +205,13 @@ export async function createTask({
     },
   })
 
-  let issueUrl = ''
-  if (repo?.url) {
-    try {
-      const body = [fields.description || '', `\n---\n**Tagged:** ${taggedMentions || 'none'}`, `**Ticket ID:** ${task.id}`].join('\n')
-      const res = await openIssue(repo.url, fields.title, body)
-      if (res?.url) {
-        issueUrl = res.url
-        await dbArg.bugTicket.update({ where: { id: task.id }, data: { externalIssueUrl: res.url, externalIssueNumber: res.number } })
-      }
-    } catch (_) {}
-  }
-
   await dbArg.ticketDoc.create({ data: { guildConfigId: cfg.id, ticketType: 'bug', taskId: task.id, title: (fields.title || 'Bug').slice(0, 512), content: null } })
 
   const bugFields = [
     { name: 'Status', value: 'pending', inline: true },
     { name: 'Scope', value: scopeLabel(fields.scope) || '—', inline: true },
     { name: 'Tagged', value: taggedMentions || 'None', inline: true },
-    { name: 'Repository', value: repo?.url || '—', inline: false },
-    ...(issueUrl ? [{ name: 'Issue', value: issueUrl, inline: false }] : []),
+    { name: 'Repository', value: usedRepo?.url || '—', inline: false },
     ...(createdBy ? [createdBy] : []),
   ]
 
@@ -150,7 +230,11 @@ export async function createTask({
       closeHint: 'Use **/resolve-bug** in this channel when fixed.',
       onCreated: (made) => dbArg.bugTicket.update({ where: { id: task.id }, data: { discordChannelId: made.id } }),
     })
-    return { task, channel, fellBack, issueUrl }
+    const { issue, issueUrl } = await openTaskIssue({
+      dbArg, model: 'bugTicket', wantIssue, usedRepo, reasonText: repoReasonText(reason),
+      fields, project, guild, channel, task, openIssue,
+    })
+    return { task, channel, fellBack, issueUrl, issue }
   }
 
   // No project (only /create-task makes these): the global Bugs category,
@@ -164,7 +248,7 @@ export async function createTask({
     name: `bug-${task.id.slice(-6)}`,
     type: ChannelType.GuildText,
     parent: category.id,
-    topic: `Bug: ${fields.title} | Repo: ${repo?.name || '—'}`,
+    topic: `Bug: ${fields.title} | Repo: ${usedRepo?.name || '—'}`,
     permissionOverwrites: overwrites,
   })
   await dbArg.bugTicket.update({ where: { id: task.id }, data: { discordChannelId: channel.id } })
@@ -177,12 +261,15 @@ export async function createTask({
       { name: 'Status', value: 'pending', inline: true },
       { name: 'Scope', value: scopeLabel(fields.scope) || '—', inline: true },
       { name: 'Tagged', value: taggedMentions || 'None', inline: true },
-      { name: 'Repository', value: repo?.url || '—', inline: false },
+      { name: 'Repository', value: usedRepo?.url || '—', inline: false },
       { name: 'Resolve', value: 'Use **/resolve-bug** in this channel when fixed.', inline: false },
-      ...(issueUrl ? [{ name: 'Issue', value: issueUrl, inline: false }] : [])
     )
     .setFooter({ text: `Ticket ID: ${task.id}` })
     .setColor(0xed4245)
   await channel.send({ content: allMentions || null, embeds: [embed] })
-  return { task, channel, fellBack: null, issueUrl }
+  const { issue, issueUrl } = await openTaskIssue({
+    dbArg, model: 'bugTicket', wantIssue, usedRepo, reasonText: repoReasonText(reason),
+    fields, project, guild, channel, task, openIssue,
+  })
+  return { task, channel, fellBack: null, issueUrl, issue }
 }

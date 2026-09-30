@@ -11,6 +11,7 @@ import { activityChanges, recordTaskActivity } from './taskActivity.js'
 import { assertCanFinish, syncParent } from './taskHierarchy.js'
 import { placeTicketForStatus } from './ticketArchive.js'
 import { isFinished } from '../utils/ticketArchive.js'
+import { syncIssueState } from './taskIssueState.js'
 
 /** What /close-feature and /resolve-bug already say in the channel they close. */
 export const READ_ONLY_LINE = 'This channel is now read-only and will be removed in 14 days.'
@@ -30,7 +31,7 @@ export const WARNING_MAX = 1500
  *
  * @returns {Promise<{ warning: string, notified: { channelId: string|null, created: boolean, dmed: string[] }, placement: { moved: boolean, archived: boolean|null, reason: string|null } }>}
  */
-export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, actor = {}, notify = notifyTaskUpdate, guild = null, record = recordTaskActivity, move = placeTicketForStatus, redact = new Set() }) {
+export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, actor = {}, notify = notifyTaskUpdate, guild = null, record = recordTaskActivity, move = placeTicketForStatus, redact = new Set(), syncIssue = syncIssueState }) {
   // `redact`: ids of related tasks the site caller cannot see (CSAAS sends them).
   // They are named generically in what this returns and in the refusal; the
   // Discord channel post keeps the real titles. Discord callers pass nothing.
@@ -104,6 +105,18 @@ export async function applyTaskUpdate({ db: dbArg = db, client, task, updates, a
     const wasFinished = isFinished(task.status)
     if (finished && !wasFinished) extraLines = [READ_ONLY_LINE]
     else if (!finished && wasFinished) extraLines = [WRITABLE_LINE]
+  }
+
+  // The GitHub issue follows the status the same way the channel does: closed
+  // (with a reason) when the task finishes, reopened when it comes back.
+  // Never blocks or undoes the status change already written above.
+  if (updates.status !== undefined) {
+    try {
+      const { line } = await syncIssue({ db: dbArg, task, updates })
+      if (line) extraLines = [...extraLines, line]
+    } catch (e) {
+      console.error('[taskStatusChange] issue sync:', e?.message ?? e)
+    }
   }
 
   let notified = { channelId: task.discordChannelId || null, created: false, dmed: [] }

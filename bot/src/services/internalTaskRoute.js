@@ -8,7 +8,8 @@ import { TASK_STATUSES } from '../utils/taskDeps.js'
 import { TaskRuleError } from '../utils/taskHierarchy.js'
 import { validateCreate, validateEdit } from '../utils/taskEditRules.js'
 import { applyEdit, projectMoveNote } from './taskEdit.js'
-import { createTask } from './taskCreate.js'
+import { createTask, issueReplyLine } from './taskCreate.js'
+import { resolveTaskRepo, loadProjectLinks } from './taskRepo.js'
 import { createSubtask } from './taskHierarchy.js'
 import { notifyTaskUpdate } from './taskUpdateNotify.js'
 
@@ -182,9 +183,24 @@ export async function handleCreateRequest({ headers = {}, body = {}, db: dbArg =
     const v = validateCreate(b, { project, memberIds, reposById })
     if (v.error) return bad(v.error)
 
+    // A bug's repository: the rule (project + scope) first; the site's pick
+    // (`repositoryIds[0]`) only when the rule finds none.
+    let repo = null
+    if (v.fields.type === 'bug') {
+      const links = await loadProjectLinks(dbArg, project.id)
+      const { repository: ruled } = resolveTaskRepo({ projectId: project.id, scope: v.fields.scope }, { links, repos })
+      if (!ruled && !v.fields.repositoryIds[0]) {
+        return bad('This project has no repository for this scope — pick a repository for the bug.')
+      }
+      repo = ruled ?? reposById.get(v.fields.repositoryIds[0]) ?? null
+    }
+
     const { label, activityId } = await siteActor(dbArg, cfg.id, b.actor)
-    const repo = v.fields.type === 'bug' && v.fields.repositoryIds[0] ? reposById.get(v.fields.repositoryIds[0]) : null
-    const made = await create({ db: dbArg, guild, cfg, fields: v.fields, project, repo, actor: { discordId: activityId, label, viaSite: true } })
+    const made = await create({
+      db: dbArg, guild, cfg, fields: v.fields, project, repo,
+      actor: { discordId: activityId, label, viaSite: true },
+      createIssue: b.createIssue !== false,
+    })
     return {
       status: 200,
       body: {
@@ -192,7 +208,10 @@ export async function handleCreateRequest({ headers = {}, body = {}, db: dbArg =
         task: { id: made.task.id, type: made.task.type ?? v.fields.type, status: made.task.status, projectId: project.id },
         channelId: made.channel?.id ?? null,
         fellBack: made.fellBack ?? null,
-        note: placementNote(project, v.fields.type, made.fellBack ?? null),
+        // CSAAS forwards only `note` to the site, so the issue outcome rides
+        // on it, in the words the Discord reply uses.
+        note: [placementNote(project, v.fields.type, made.fellBack ?? null), issueReplyLine(made.issue ?? null)].filter(Boolean).join('\n'),
+        issue: made.issue ?? null,
       },
     }
   })

@@ -1171,6 +1171,18 @@ async function projectReposAdd({ data }) {
     [data.project_id, data.repository_id],
   );
 }
+async function projectReposSetScope({ project_id, repository_id, scope }) {
+  await query(
+    "UPDATE `project_repos` SET scope = ? WHERE project_id = ? AND repository_id = ?",
+    [scope ?? null, project_id, repository_id],
+  );
+}
+async function projectReposRemove({ project_id, repository_id }) {
+  await query(
+    "DELETE FROM `project_repos` WHERE project_id = ? AND repository_id = ?",
+    [project_id, repository_id],
+  );
+}
 
 // ---------- taskdependency ("taskId is blocked by blockedByTaskId") ----------
 export function taskDependencyInsertSql(data) {
@@ -2441,6 +2453,8 @@ const db = {
   projectRepos: {
     findMany: projectReposFindMany,
     add: projectReposAdd,
+    setScope: projectReposSetScope,
+    remove: projectReposRemove,
   },
   taskActivity: {
     add: taskActivityAdd,

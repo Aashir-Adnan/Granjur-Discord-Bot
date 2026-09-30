@@ -56,32 +56,81 @@ test('unclear: no meeting project and no match settles nothing', () => {
 
 test("rule 3: the reviewer's pick applies only to an unclear task", () => {
   const picked = resolveMeetingTaskProject({}, { projectId: 'p2' }, ctxOf())
-  assert.deepEqual(picked, { projectId: 'p2', projectName: 'Badar HMS', repositoryId: null })
+  assert.deepEqual(picked, { projectId: 'p2', projectName: 'Badar HMS', repositoryId: null, repoReason: 'no-scope' })
   const ignored = resolveMeetingTaskProject({}, { projectId: 'p2' }, ctxOf({ meetingProjectId: 'p1' }))
   assert.equal(ignored.projectId, 'p1')
 })
 
 test('a picked project that no longer exists, "none", or a legacy state gives no project and no name', () => {
-  const none = { projectId: null, projectName: null, repositoryId: null }
+  const none = { projectId: null, projectName: null, repositoryId: null, repoReason: 'no-project' }
   assert.deepEqual(resolveMeetingTaskProject({ project: 'Ghost' }, { projectId: 'deleted' }, ctxOf()), none)
   assert.deepEqual(resolveMeetingTaskProject({ project: 'Ghost' }, { projectId: null }, ctxOf()), none)
   assert.deepEqual(resolveMeetingTaskProject({ project: 'Ghost' }, { taskId: 'a' }, ctxOf()), none)
 })
 
-test("the matched repository is kept only when the match's project is the task's project", () => {
+// Repository by the rule (roadmap sub-project 4, 2026-09-30): the project's
+// link with the task's scope, else its only untagged link, else none.
+const REPOS = [
+  { id: 'r-node', name: 'Badar_HMS_Node' },
+  { id: 'r-web', name: 'Badar_HMS_Web' },
+  { id: 'r-fw-be', name: 'framework-backend' },
+  { id: 'r-fw-mob', name: 'framework-app' },
+]
+
+test('the repository is the project link carrying the task scope', () => {
   const ctx = ctxOf({
-    repos: [{ id: 'r2', name: 'Badar_HMS_Node' }],
-    links: [{ project_id: 'p2', repository_id: 'r2' }],
+    repos: REPOS,
+    links: [
+      { project_id: 'p2', repository_id: 'r-node', scope: 'backend' },
+      { project_id: 'p2', repository_id: 'r-web', scope: 'frontend' },
+    ],
   })
-  // Rule 2 settled on the match: its repository comes along.
-  assert.equal(resolveMeetingTaskProject({ project: 'Badar HMS' }, {}, ctx).repositoryId, 'r2')
-  // Rule 1 overrode the match: the match's repository belongs to another project.
-  assert.equal(resolveMeetingTaskProject({ project: 'Badar HMS' }, {}, { ...ctx, meetingProjectId: 'p1' }).repositoryId, null)
+  assert.equal(resolveMeetingTaskProject({ project: 'Badar HMS', platform: 'node' }, {}, ctx).repositoryId, 'r-node')
+  assert.equal(resolveMeetingTaskProject({ project: 'Badar HMS', platform: 'react' }, {}, ctx).repositoryId, 'r-web')
+  // No link for this scope, and more than one link: none, never "the first".
+  assert.equal(resolveMeetingTaskProject({ project: 'Badar HMS', platform: 'react-native' }, {}, ctx).repositoryId, null)
 })
 
-test('a repository-only match (no project) keeps its repository when the task also has no project', () => {
+test("a project's single untagged link is used whatever the scope", () => {
+  const ctx = ctxOf({ repos: REPOS, links: [{ project_id: 'p2', repository_id: 'r-node', scope: null }] })
+  assert.equal(resolveMeetingTaskProject({ project: 'Badar HMS', platform: 'react' }, {}, ctx).repositoryId, 'r-node')
+  assert.equal(resolveMeetingTaskProject({ project: 'Badar HMS' }, {}, ctx).repositoryId, 'r-node')
+})
+
+test('two untagged links give no repository', () => {
+  const ctx = ctxOf({
+    repos: REPOS,
+    links: [
+      { project_id: 'p2', repository_id: 'r-node', scope: null },
+      { project_id: 'p2', repository_id: 'r-web', scope: null },
+    ],
+  })
+  assert.equal(resolveMeetingTaskProject({ project: 'Badar HMS', platform: 'node' }, {}, ctx).repositoryId, null)
+})
+
+test("the meeting project's override picks the meeting project's scope link, not the named project's", () => {
+  const ctx = ctxOf({
+    meetingProjectId: 'p1',
+    repos: REPOS,
+    links: [
+      { project_id: 'p2', repository_id: 'r-node', scope: 'backend' },
+      { project_id: 'p1', repository_id: 'r-fw-be', scope: 'backend' },
+      { project_id: 'p1', repository_id: 'r-fw-mob', scope: 'mobile' },
+    ],
+  })
+  const out = resolveMeetingTaskProject({ project: 'Badar HMS', platform: 'node' }, {}, ctx)
+  assert.deepEqual(out, { projectId: 'p1', projectName: 'Framework', repositoryId: 'r-fw-be', repoReason: 'scope' })
+  assert.equal(resolveMeetingTaskProject({ project: 'Badar HMS', platform: 'react-native' }, {}, ctx).repositoryId, 'r-fw-mob')
+})
+
+test("the reviewer's pick gets that project's repository by the rule", () => {
+  const ctx = ctxOf({ repos: REPOS, links: [{ project_id: 'p2', repository_id: 'r-web', scope: 'frontend' }] })
+  assert.equal(resolveMeetingTaskProject({ platform: 'react' }, { projectId: 'p2' }, ctx).repositoryId, 'r-web')
+})
+
+test('a task with no project has no repository, even when its name matches a repository', () => {
   const ctx = ctxOf({ projects: [], repos: [{ id: 'r1', name: 'granjur' }] })
-  assert.deepEqual(resolveMeetingTaskProject({ project: 'granjur' }, {}, ctx), { projectId: null, projectName: null, repositoryId: 'r1' })
+  assert.deepEqual(resolveMeetingTaskProject({ project: 'granjur' }, {}, ctx), { projectId: null, projectName: null, repositoryId: null, repoReason: 'no-project' })
 })
 
 test('reviewProjectOptions sorts by name, drops unnamed rows, and caps at 24', () => {

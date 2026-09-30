@@ -1,4 +1,4 @@
-// A task's discipline, fixed to four values. Replaces the old free-text
+// A task's discipline, fixed to five values. Replaces the old free-text
 // `scope` column (which held things like "GitSync" or "Task Hierarchy" —
 // a short label, not a classification) with a closed set that both
 // /create-task and /update-task offer as a picker, never typed text.
@@ -6,6 +6,7 @@
 export const SCOPE_CHOICES = [
   { name: 'Backend', value: 'backend' },
   { name: 'Frontend', value: 'frontend' },
+  { name: 'Mobile', value: 'mobile' },
   { name: 'QA', value: 'qa' },
   { name: 'Design', value: 'design' },
 ]

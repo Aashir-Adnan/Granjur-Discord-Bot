@@ -105,7 +105,14 @@ CSAAS: `meetings.meeting_id`, `status` enum (`pending`→`transcribed`→`analyz
 - On approval: `/approve {skip_github:true}` → create real rows in the bot `task`
   table (`assigneeIds=[discordId]`, `externalId=csaas:<meeting_task_id>`,
   `projectName`, `status='open'`) → ping assignees → `/issuesync` for GitHub-flagged
-  tasks (with `[Agent Call]` marker).
+  tasks (with `[Agent Call]` marker). **Superseded by sub-project 4 (2026-09-30):** the
+  `issue_syncing` pipeline stage now opens each GitHub-flagged task's issue itself, via
+  the bot's own `createIssue` and the repository the scope rule gave the task —
+  `csaasClient.issueSync`/CSAAS's `/issuesync` is no longer called from this path. The
+  issue row update writes `repositoryId` with the issue; the `done` summary counts issues
+  actually opened, names each task, lists "skipped — no repository" apart from failures,
+  and is clamped to Discord's embed limit (`clampSummary`). See
+  [[repositories-and-issues]].
 
 ## ubs_doc — superseded
 
@@ -199,9 +206,11 @@ usual 2-per-page), instead of asking via a select whose only option would be "No
 pipeline stage (best-effort: a failed read leaves that part empty, so the rules fall
 through as if it were unset). `settledProject(csaasTask, ctx)` runs rules 1–2 and returns
 `null` when the task is unclear. `resolveMeetingTaskProject(csaasTask, reviewTask, ctx)`
-adds rule 3 and the repository — the matched repository is kept only when the match's
-project is the chosen project (sub-project 4 will pick repositories by scope instead). **A
-task with no project ends up with `projectName: null` too** — the CSAAS-spoken name is
+adds rule 3 and the repository — **updated by sub-project 4 (2026-09-30):** the
+repository now comes from `resolveTaskRepo({ projectId, scope: meetingTaskScope(csaasTask)
+}, { links, repos })` (`taskRepo.js`), the same by-scope rule `/create-task` and the site
+use, in place of the original "match's project equals the chosen project" match. See
+[[repositories-and-issues]]. **A task with no project ends up with `projectName: null` too** — the CSAAS-spoken name is
 never kept once no project settles, so it can never show up on the site as a stray
 project group of one.
 
