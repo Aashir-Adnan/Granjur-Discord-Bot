@@ -1,9 +1,10 @@
 import { SlashCommandBuilder } from 'discord.js'
 import db, { getOrCreateGuildConfig } from '../db/index.js'
 import { isLeadershipFor, memberProjectIdsOf } from '../utils/timeAccess.js'
+import { ClockError, clockIn, closeEntry } from '../services/clock.js'
 import { clockableTasks } from '../utils/timeTaskPicker.js'
 import { taskChoiceLabel, holdersOf } from '../utils/taskLabel.js'
-import { entryMinutes, formatDuration } from '../utils/timeTracking.js'
+import { formatDuration } from '../utils/timeTracking.js'
 
 /** The "no task" sentinel: time logged against general work. */
 export const GENERAL = '-'
@@ -14,24 +15,11 @@ export const data = new SlashCommandBuilder()
   .addStringOption((o) =>
     o.setName('task').setDescription('The task you are working on').setRequired(true).setAutocomplete(true))
 
-/** Close an open entry, writing its duration. Shared with /clock-out. */
-export async function closeEntry(dbArg, entry, { at = new Date(), note = null, source } = {}) {
-  const minutes = entryMinutes(entry.clockInAt, at)
-  const data = { clockOutAt: at, minutes }
-  if (note) data.note = note
-  if (source) data.source = source
-  await dbArg.clockEntry.update(entry.id, data)
-  return minutes
-}
+// The clock rules live in services/clock.js; this command only words the reply.
+// Re-exported so /clock-out, clockWatch and the reminder buttons keep importing it from here.
+export { closeEntry }
 
 const NOT_AVAILABLE = 'That task is not available to you.'
-
-/** A task's title for a reply, or a plain fallback when it cannot be found. */
-async function titleOf(dbArg, cfg, taskId) {
-  if (!taskId) return 'general work'
-  const task = await dbArg.task.findFirst({ where: { id: taskId, guildConfigId: cfg.id } }).catch(() => null)
-  return task?.title ?? 'a task'
-}
 
 export async function execute(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
   const guild = interaction.guild
@@ -41,59 +29,29 @@ export async function execute(interaction, { db: dbArg = db, getConfig = getOrCr
   if (!cfg) return interaction.editReply({ content: 'Server not initialized. Run **/init** first.' })
 
   const picked = String(interaction.options.getString('task') ?? GENERAL).trim() || GENERAL
-  const userId = interaction.user.id
 
-  // Resolve the chosen task, and refuse one the caller may not clock into. A
-  // task that does not exist and one the caller cannot use get the same
-  // message, so this cannot be used to probe for tasks.
-  let task = null
-  if (picked !== GENERAL) {
-    task = await dbArg.task.findFirst({ where: { id: picked, guildConfigId: cfg.id } })
-    const allowed = task
-      ? clockableTasks([task], {
-          memberProjectIds: await memberProjectIdsOf(dbArg, cfg, userId),
-          isLeadership: isLeadershipFor(interaction.guild, interaction.member, cfg),
-          callerId: userId,
-        }).length > 0
-      : false
-    if (!allowed) return interaction.editReply({ content: NOT_AVAILABLE })
-  }
-  const taskId = task ? task.id : null
-
-  const active = await dbArg.clockEntry.findActive(guild.id, userId)
-  const now = new Date()
-
-  if (active && (active.taskId ?? null) === taskId) {
-    const running = formatDuration(entryMinutes(active.clockInAt, now))
-    const label = task ? `**${task.title}**` : 'general work'
-    return interaction.editReply({ content: `You are already clocked in on ${label} (running for **${running}**). Nothing changed.` })
+  let result
+  try {
+    result = await clockIn({
+      db: dbArg,
+      cfg,
+      guild,
+      discordId: interaction.user.id,
+      taskId: picked === GENERAL ? null : picked,
+      member: interaction.member,
+    })
+  } catch (e) {
+    if (e instanceof ClockError) return interaction.editReply({ content: NOT_AVAILABLE })
+    throw e
   }
 
-  let stopped = null
-  if (active) {
-    const minutes = await closeEntry(dbArg, active, { at: now })
-    stopped = `**${await titleOf(dbArg, cfg, active.taskId ?? null)}** (${formatDuration(minutes)})`
+  const target = result.task ? `**${result.task.title}**` : 'general work'
+  if (result.outcome === 'unchanged') {
+    const running = formatDuration(result.runningMinutes)
+    return interaction.editReply({ content: `You are already clocked in on ${target} (running for **${running}**). Nothing changed.` })
   }
-
-  await dbArg.clockEntry.create({
-    data: {
-      guildConfigId: cfg.id,
-      discordId: userId,
-      clockInAt: now,
-      taskId,
-      source: 'timer',
-    },
-  })
-
-  // Switching tasks keeps the person clocked in, so the role is left alone.
-  if (!active && cfg.clockedInRoleId) {
-    const member = interaction.member ?? await guild.members.fetch(userId).catch(() => null)
-    if (member) await member.roles.add(cfg.clockedInRoleId).catch(() => {})
-  }
-
-  const target = task ? `**${task.title}**` : 'general work'
-  const content = stopped
-    ? `Stopped ${stopped} · started ${target}. Use **/clock-out** when you finish.`
+  const content = result.stopped
+    ? `Stopped **${result.stopped.title}** (${formatDuration(result.stopped.minutes)}) · started ${target}. Use **/clock-out** when you finish.`
     : `**Clocked in** on ${target}. Use **/clock-out** when you finish.`
   await interaction.editReply({ content })
 }
