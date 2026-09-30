@@ -234,3 +234,104 @@ test('a failing row update after the issue opened still returns { url } and post
   assert.equal(r.issueUrl, 'https://github.com/g/bot/issues/5')
   assert.deepEqual(sent, [{ content: 'GitHub issue: https://github.com/g/bot/issues/5' }])
 })
+
+// ------------------------------------------------ creating with a status ----
+
+const repoSetup = () => ({
+  repos: [{ id: 'R1', name: 'bot', url: 'https://github.com/g/bot' }],
+  links: [{ project_id: 'P1', repository_id: 'R1', scope: 'backend' }],
+})
+const neverCalled = (name) => async () => { throw new Error(`${name} must not be called`) }
+
+test('a done feature: row done, doc and repos still written, no channel, no issue', async () => {
+  const db = fakeDb(repoSetup())
+  const r = await createTask({
+    db, guild: { id: 'G' }, cfg, fields: { ...baseFields, status: 'done' }, project, actor: { discordId: 'u-me' },
+    createChannel: neverCalled('createChannel'), openIssue: neverCalled('openIssue'), createIssue: true,
+    setStatus: neverCalled('setStatus'),
+  })
+  const [, data] = db.log.find((l) => l[0] === 'feature.create')
+  assert.equal(data.status, 'done')
+  assert.ok(db.log.some((l) => l[0] === 'doc.create' && l[1] === 'feature'))
+  assert.ok(db.log.some((l) => l[0] === 'repos.add'))
+  assert.equal(db.log.some((l) => l[0] === 'feature.update'), false)
+  assert.equal(r.task.status, 'done')
+  assert.deepEqual({ ...r, task: null }, { task: null, channel: null, fellBack: null, issueUrl: null, issue: null })
+})
+
+test('a done bug: row done, repository id kept, doc written, no channel, no issue', async () => {
+  const db = fakeDb(repoSetup())
+  const r = await createTask({
+    db, guild: { id: 'G' }, cfg, project, repo: null,
+    fields: { ...baseFields, type: 'bug', modules: [], repositoryIds: [], status: 'done' },
+    actor: { discordId: null, label: 'Me (via the site)', viaSite: true },
+    createChannel: neverCalled('createChannel'), openIssue: neverCalled('openIssue'), createIssue: true,
+  })
+  const [, data] = db.log.find((l) => l[0] === 'bug.create')
+  assert.equal(data.status, 'done')
+  assert.equal(data.repositoryId, 'R1')
+  assert.ok(db.log.some((l) => l[0] === 'doc.create' && l[1] === 'bug'))
+  assert.equal(db.log.some((l) => l[0] === 'bug.update'), false)
+  assert.equal(r.channel, null); assert.equal(r.issue, null); assert.equal(r.issueUrl, null)
+})
+
+test('status open is today exactly: a bug stays pending, a feature open, no status change', async () => {
+  const f = fakeDb(); const b = fakeDb()
+  const setStatus = neverCalled('setStatus')
+  await createTask({ db: f, guild: { id: 'G' }, cfg, fields: { ...baseFields, status: 'open' }, project, createChannel: fakeChannelMaker().maker, setStatus })
+  await createTask({ db: b, guild: { id: 'G' }, cfg, fields: { ...baseFields, type: 'bug', modules: [], status: 'open' }, project, createChannel: fakeChannelMaker().maker, setStatus })
+  assert.equal(f.log.find((l) => l[0] === 'feature.create')[1].status, 'open')
+  assert.equal(b.log.find((l) => l[0] === 'bug.create')[1].status, 'pending')
+})
+
+test('an in-progress task: channel and issue as today, then one status change, and the result carries it', async () => {
+  const db = fakeDb(repoSetup())
+  const { calls, maker } = fakeChannelMaker()
+  const moves = []
+  const guild = { id: 'G' }
+  const r = await createTask({
+    db, guild, cfg, fields: { ...baseFields, repositoryIds: [], status: 'in_progress' }, project, actor: { discordId: 'u-me' },
+    createChannel: maker, openIssue: async (url) => ({ url: `${url}/issues/3`, number: 3 }),
+    setStatus: async (a) => { moves.push(a) },
+  })
+  assert.equal(calls.length, 1)
+  assert.equal(db.log.find((l) => l[0] === 'feature.create')[1].status, 'open')
+  assert.equal(r.issue.url, 'https://github.com/g/bot/issues/3')
+  assert.equal(moves.length, 1)
+  assert.equal(moves[0].task.id, 'task1')
+  assert.equal(moves[0].guild, guild)
+  assert.equal(r.task.status, 'in_progress')
+  assert.equal(r.channel.id, 'ch1')
+})
+
+test('an in-progress bug is moved from pending; a failing status change is logged and the task is still returned', async () => {
+  const db = fakeDb()
+  const errors = []; const orig = console.error; console.error = (...a) => errors.push(a)
+  try {
+    const r = await createTask({
+      db, guild: { id: 'G' }, cfg, project,
+      fields: { ...baseFields, type: 'bug', modules: [], status: 'in_progress' },
+      createChannel: fakeChannelMaker().maker,
+      setStatus: async () => { throw new Error('boom') },
+    })
+    assert.equal(r.task.id, 'task1')
+    assert.equal(r.task.status, 'pending', 'the task stays as created')
+    assert.equal(errors.length, 1)
+  } finally { console.error = orig }
+})
+
+test('the default in-progress move goes through applyTaskUpdate without telling anyone', async () => {
+  const writes = []
+  const db = {
+    ...fakeDb(),
+    task: { update: async ({ where, data }) => { writes.push([where.id, data]) }, findChildren: async () => [] },
+    taskDependency: { findByTask: async () => [] },
+    taskActivity: { add: async () => {} },
+  }
+  const r = await createTask({
+    db, guild: { id: 'G' }, cfg, fields: { ...baseFields, status: 'in_progress' }, project, actor: { discordId: 'u-me' },
+    createChannel: fakeChannelMaker().maker,
+  })
+  assert.deepEqual(writes, [['task1', { status: 'in_progress' }]])
+  assert.equal(r.task.status, 'in_progress')
+})

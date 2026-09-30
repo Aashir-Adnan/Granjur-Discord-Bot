@@ -6,7 +6,7 @@ import db from '../db/index.js'
 import { applyTaskUpdate } from './taskStatusChange.js'
 import { TASK_STATUSES } from '../utils/taskDeps.js'
 import { TaskRuleError } from '../utils/taskHierarchy.js'
-import { validateCreate, validateEdit } from '../utils/taskEditRules.js'
+import { validateCreate, validateEdit, statusOf, descriptionOf, scopeOf } from '../utils/taskEditRules.js'
 import { applyEdit, projectMoveNote } from './taskEdit.js'
 import { createTask, issueReplyLine } from './taskCreate.js'
 import { resolveTaskRepo, loadProjectLinks } from './taskRepo.js'
@@ -210,7 +210,7 @@ export async function handleCreateRequest({ headers = {}, body = {}, db: dbArg =
         fellBack: made.fellBack ?? null,
         // CSAAS forwards only `note` to the site, so the issue outcome rides
         // on it, in the words the Discord reply uses.
-        note: [placementNote(project, v.fields.type, made.fellBack ?? null), issueReplyLine(made.issue ?? null)].filter(Boolean).join('\n'),
+        note: v.fields.status === 'done' ? '' : [placementNote(project, v.fields.type, made.fellBack ?? null), issueReplyLine(made.issue ?? null)].filter(Boolean).join('\n'),
         issue: made.issue ?? null,
       },
     }
@@ -229,6 +229,12 @@ export async function handleSubtaskRequest({ headers = {}, body = {}, db: dbArg 
     const title = typeof b.title === 'string' ? b.title.trim() : ''
     if (!title) return bad('A subtask needs a title.')
     if (title.length > 200) return bad('The title can be at most 200 characters.')
+    const [dErr, description] = descriptionOf(b.description)
+    if (dErr) return bad(dErr)
+    const [scErr, scope] = scopeOf(b.scope)
+    if (scErr) return bad(scErr)
+    const [stErr, status] = statusOf(b.status)
+    if (stErr) return bad(stErr)
     const parent = await dbArg.task.findFirst({ where: { id: parentId } })
     if (!parent) return { status: 404, body: { ok: false, message: 'Task not found' } }
     let assigneeIds = []
@@ -240,7 +246,7 @@ export async function handleSubtaskRequest({ headers = {}, body = {}, db: dbArg 
     const actor = await siteActor(dbArg, parent.guildConfigId, b.actor)
     const { guild } = await guildOf(dbArg, client, parent.guildConfigId)
     const child = await addSubtask({
-      db: dbArg, client, guild, parent, fields: { title, assigneeIds }, actor,
+      db: dbArg, client, guild, parent, fields: { title, assigneeIds, ...(b.description !== undefined && { description }), ...(b.scope !== undefined && { scope }), ...(b.status !== undefined && { status }) }, actor,
       notify: notifyTaskUpdate, apply: applyTaskUpdate, redact: redactSetFrom(b.hiddenTaskIds),
     })
     return { status: 200, body: { ok: true, task: { id: child.id, status: child.status, parentId: child.parentTaskId ?? parent.id } } }

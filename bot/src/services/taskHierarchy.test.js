@@ -263,3 +263,37 @@ test('task insert: a bug defaults to pending and a feature to open, json columns
   assert.equal(col(feature, 'type'), 'feature')
   assert.equal(col(feature, 'assigneeIds'), '[]')
 })
+
+// ------------------------------------ creating subtasks with a status ----
+
+test('a done subtask: row done, description and scope stored, nobody notified, parent activity recorded', async () => {
+  const db = fakeDb(seed())
+  notifications.length = 0
+  const child = await createSubtask({
+    db, client, parent: setTask(db, 'P'), fields: { ...fields, status: 'done' }, actor: { discordId: 'u1' }, notify, apply,
+  })
+  const row = db.tasks.find((t) => t.id === child.id)
+  assert.equal(row.status, 'done')
+  assert.equal(row.description, 'Cover the rules')
+  assert.equal(row.scope, 'qa')
+  assert.equal(notifications.length, 0)
+  assert.deepEqual(db.activity.find((a) => a.taskId === 'P').changes, [{ field: 'subtask', action: 'added', title: 'Write tests' }])
+})
+
+test('an in-progress subtask is written in progress and announced as today', async () => {
+  const db = fakeDb(seed())
+  notifications.length = 0
+  const child = await createSubtask({
+    db, client, parent: setTask(db, 'P'), fields: { ...fields, status: 'in_progress' }, actor: { discordId: 'u1' }, notify, apply,
+  })
+  assert.equal(db.tasks.find((t) => t.id === child.id).status, 'in_progress')
+  assert.deepEqual(notifications.find((n) => n.task.id === child.id).extraLines, ['**subtask added**'])
+})
+
+test('a subtask with no status or an open one is written open', async () => {
+  const db = fakeDb(seed())
+  const a = await createSubtask({ db, client, parent: setTask(db, 'P'), fields, actor: { discordId: 'u1' }, notify, apply })
+  const b = await createSubtask({ db, client, parent: setTask(db, 'P'), fields: { ...fields, status: 'open' }, actor: { discordId: 'u1' }, notify, apply })
+  assert.equal(db.tasks.find((t) => t.id === a.id).status, 'open')
+  assert.equal(db.tasks.find((t) => t.id === b.id).status, 'open')
+})

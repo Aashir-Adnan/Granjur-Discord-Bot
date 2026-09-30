@@ -75,7 +75,7 @@ export async function createSubtask({
       is_feature: 1,
       title: title.slice(0, 200),
       description: fields?.description ? String(fields.description).slice(0, 2000) : null,
-      status: 'open',
+      status: fields?.status === 'done' || fields?.status === 'in_progress' ? fields.status : 'open',
       createdBy: actor.discordId ?? actor.activityId ?? null,
       assigneeIds,
       scope: fields?.scope || null,
@@ -91,21 +91,24 @@ export async function createSubtask({
     actor: { discordId: actor.discordId ?? actor.activityId ?? null, label: actor.label ?? null },
   })
 
-  // Tell the parent's channel, and DM whoever was assigned. Best-effort.
-  try {
-    await notify({
-      client,
-      guild,
-      task: child,
-      before: { ...child, assigneeIds: [] },
-      updates: { assigneeIds },
-      actorId: actor.discordId ?? null,
-      actorLabel: actor.label ?? null,
-      extraLines: ['**subtask added**'],
-      db: dbArg,
-    })
-  } catch (e) {
-    console.error('[taskHierarchy] subtask notify:', e?.message ?? e)
+  // Tell the parent's channel, and DM whoever was assigned. Best-effort. A
+  // subtask recorded as already done tells nobody.
+  if (child.status !== 'done') {
+    try {
+      await notify({
+        client,
+        guild,
+        task: child,
+        before: { ...child, assigneeIds: [] },
+        updates: { assigneeIds },
+        actorId: actor.discordId ?? null,
+        actorLabel: actor.label ?? null,
+        extraLines: ['**subtask added**'],
+        db: dbArg,
+      })
+    } catch (e) {
+      console.error('[taskHierarchy] subtask notify:', e?.message ?? e)
+    }
   }
 
   // A new open subtask under a finished parent reopens it.

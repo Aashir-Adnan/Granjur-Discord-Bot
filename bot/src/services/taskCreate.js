@@ -14,6 +14,7 @@ import { getOrCreateCategory } from '../utils/categories.js'
 import { CATEGORY_BOLD_NAMES } from '../constants.js'
 import { TEXT_ALLOW } from '../utils/textAllow.js'
 import { scopeLabel } from '../utils/taskScope.js'
+import { applyTaskUpdate } from './taskStatusChange.js'
 
 const unique = (ids) => [...new Set(ids.filter(Boolean).map(String))]
 const metric = (tracked) => (tracked === true ? 0 : null)
@@ -105,18 +106,27 @@ async function openTaskIssue({ dbArg, model, wantIssue, usedRepo, reasonText, fi
 }
 
 /**
+ * Move a just-created task to in progress, through the same write every status
+ * change uses, but telling nobody: the creation already said everything.
+ * `client` is null — the guild is passed, so nothing looks one up.
+ */
+const moveToInProgress = ({ db: dbArg, task, actor, guild }) =>
+  applyTaskUpdate({ db: dbArg, client: null, task, updates: { status: 'in_progress' }, actor, guild, notify: async () => {} })
+
+/**
  * @param {object} opts
  * @param {{type:'feature'|'bug', title:string, description:string|null, scope:string|null, modules:string[], holderIds:string[], repositoryIds:string[], tracks:{apiTests:boolean,qaTests:boolean,acceptanceCriteria:boolean}}} opts.fields
  * @param {object|null} [opts.project]  the project row (required from the site; optional from Discord)
  * @param {object|null} [opts.repo]     a bug's caller-picked repository row ({ id, name, url }); overridden by the rule
  * @param {{discordId?:string|null, label?:string|null, viaSite?:boolean}} [opts.actor]
  * @param {boolean} [opts.createIssue]  per-task opt-out; on by default
- * @returns {Promise<{task: object, channel: object, fellBack: 'cap'|'missing'|null, issueUrl: string, issue: {url:string}|{error:string}|{skipped:string}|null}>}
+ * @param {Function} [opts.setStatus]   moves a new `in_progress` task; a failure is logged, the task stays as created
+ * @returns {Promise<{task: object, channel: object|null, fellBack: 'cap'|'missing'|null, issueUrl: string|null, issue: {url:string}|{error:string}|{skipped:string}|null}>}
  */
 export async function createTask({
   db: dbArg = db, guild, cfg, fields, project = null, repo = null, actor = {},
   createChannel = createTaskTicketChannel, openIssue = createIssue, getCategory = getOrCreateCategory,
-  createIssue: wantIssue = true,
+  createIssue: wantIssue = true, setStatus = moveToInProgress,
 }) {
   const creator = actor.discordId ?? null
   const holders = unique(fields.holderIds || [])
@@ -131,6 +141,21 @@ export async function createTask({
     passedAcceptanceCriteria: metric(fields.tracks?.acceptanceCriteria),
   }
   const createdBy = createdByField(actor)
+  // `fields.status`: absent or 'open' is today's path. 'done' records finished
+  // work — the row and its ticket doc, but no channel and no issue. 'in_progress'
+  // is today's path and then a status change.
+  const done = fields.status === 'done'
+  const finish = async (made) => {
+    if (fields.status !== 'in_progress') return made
+    try {
+      await setStatus({ db: dbArg, task: made.task, actor, guild })
+      return { ...made, task: { ...made.task, status: 'in_progress' } }
+    } catch (e) {
+      console.error('[taskCreate] in-progress move failed:', e?.message ?? e)
+      return made
+    }
+  }
+  const doneResult = (task) => ({ task, channel: null, fellBack: null, issueUrl: null, issue: null })
 
   if (fields.type === 'feature') {
     const { ruled, reason, byId } = await resolveRepoForTask(dbArg, cfg, project?.id, fields.scope)
@@ -147,7 +172,7 @@ export async function createTask({
         description: fields.description ?? null,
         createdBy: creator,
         assigneeIds: holders,
-        status: 'open',
+        status: done ? 'done' : 'open',
         modules: fields.modules || [],
         scope: fields.scope ?? null,
         implementationStatus: 'not_started',
@@ -156,6 +181,7 @@ export async function createTask({
     })
     if (fields.repositoryIds?.length) await dbArg.featureRepositories.add(task.id, fields.repositoryIds)
     await dbArg.ticketDoc.create({ data: { guildConfigId: cfg.id, ticketType: 'feature', taskId: task.id, title: fields.title?.slice(0, 512) || 'Feature', content: null } })
+    if (done) return doneResult(task)
 
     const scopeMod = [scopeLabel(fields.scope), (fields.modules?.length ? fields.modules.join(', ') : null)].filter(Boolean).join(' · ')
     const { channel, fellBack } = await createChannel(guild, {
@@ -181,7 +207,7 @@ export async function createTask({
       dbArg, model: 'feature', wantIssue, usedRepo, reasonText: repoReasonText(reason),
       fields, project, guild, channel, task, openIssue,
     })
-    return { task, channel, fellBack, issueUrl, issue }
+    return finish({ task, channel, fellBack, issueUrl, issue })
   }
 
   // Bug.
@@ -197,7 +223,7 @@ export async function createTask({
       ...(project ? { projectId: project.id, projectName: project.name } : {}),
       title: fields.title,
       description: fields.description || null,
-      status: 'pending',
+      status: done ? 'done' : 'pending',
       taggedMemberIds: holders,
       createdBy: creator,
       scope: fields.scope ?? null,
@@ -206,6 +232,7 @@ export async function createTask({
   })
 
   await dbArg.ticketDoc.create({ data: { guildConfigId: cfg.id, ticketType: 'bug', taskId: task.id, title: (fields.title || 'Bug').slice(0, 512), content: null } })
+  if (done) return doneResult(task)
 
   const bugFields = [
     { name: 'Status', value: 'pending', inline: true },
@@ -234,7 +261,7 @@ export async function createTask({
       dbArg, model: 'bugTicket', wantIssue, usedRepo, reasonText: repoReasonText(reason),
       fields, project, guild, channel, task, openIssue,
     })
-    return { task, channel, fellBack, issueUrl, issue }
+    return finish({ task, channel, fellBack, issueUrl, issue })
   }
 
   // No project (only /create-task makes these): the global Bugs category,
@@ -271,5 +298,5 @@ export async function createTask({
     dbArg, model: 'bugTicket', wantIssue, usedRepo, reasonText: repoReasonText(reason),
     fields, project, guild, channel, task, openIssue,
   })
-  return { task, channel, fellBack: null, issueUrl, issue }
+  return finish({ task, channel, fellBack: null, issueUrl, issue })
 }
