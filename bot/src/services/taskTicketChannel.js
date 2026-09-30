@@ -122,6 +122,49 @@ async function placeAboveDivider(guild, project, category, channel, status) {
 }
 
 /**
+ * A task channel's overwrites: `@everyone` denied view, the project role
+ * allowed when the channel sits inside the project's section, and one allow per
+ * member. `/create-task` builds a new channel with these, and reactivating a
+ * project rebuilds an archived one with them (`services/projectLifecycle.js`).
+ *
+ * @param {import('discord.js').Guild} guild
+ * @param {{project?: {discordRoleId?: string|null}|null, memberIds?: string[], inSection?: boolean}} opts
+ *   `inSection` — the channel is (or is going) inside the project's own category.
+ */
+export function taskChannelOverwrites(guild, { project = null, memberIds = [], inSection = false } = {}) {
+  const members = [...new Set((memberIds || []).filter(Boolean))]
+  // The guild id is a ROLE (@everyone); a member id is a USER. Passing type 0
+  // for a user makes Discord discard the overwrite without an error, and the
+  // ticket channel ends up visible to nobody — which is what happened to
+  // feature-f56be0 on 2026-09-04.
+  const permissionOverwrites = [
+    { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+  ]
+  // An explicit overwrite array is stored EXACTLY as passed: Discord copies
+  // nothing from the parent and resolution does not walk up to the category, so
+  // a channel inside a project's section has to carry the project role's allow
+  // itself or the project members it belongs to cannot see their own task.
+  // Only when it really is inside that section — in the global Features/Bugs
+  // category the audience is the assignees, exactly as before, and adding the
+  // role there would be a grant nobody asked for.
+  // And only when that role still exists: an overwrite naming an unknown role
+  // can make Discord reject the whole create — after the task row is written.
+  if (inSection && project?.discordRoleId && guild.roles?.cache?.has?.(project.discordRoleId)) {
+    permissionOverwrites.push({
+      id: project.discordRoleId,
+      type: OverwriteType.Role,
+      allow: PROJECT_ROLE_PERMS,
+    })
+  }
+  // The per-member entries are in ADDITION to that (spec §5), so an assignee
+  // who is not on the project still sees their task.
+  permissionOverwrites.push(
+    ...members.map((id) => ({ id, type: OverwriteType.Member, allow: MEMBER_PERMS }))
+  )
+  return permissionOverwrites
+}
+
+/**
  * Create the private channel for one task and post its opening embed.
  *
  * @param {import('discord.js').Guild} guild
@@ -186,34 +229,7 @@ export async function createTaskTicketChannel(guild, opts) {
       })
     : `${namePrefix}-${String(taskId).slice(-6)}`
 
-  // The guild id is a ROLE (@everyone); a member id is a USER. Passing type 0
-  // for a user makes Discord discard the overwrite without an error, and the
-  // ticket channel ends up visible to nobody — which is what happened to
-  // feature-f56be0 on 2026-09-04.
-  const permissionOverwrites = [
-    { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
-  ]
-  // An explicit overwrite array is stored EXACTLY as passed: Discord copies
-  // nothing from the parent and resolution does not walk up to the category, so
-  // a channel inside a project's section has to carry the project role's allow
-  // itself or the project members it belongs to cannot see their own task.
-  // Only when it really is inside that section — in the global Features/Bugs
-  // category the audience is the assignees, exactly as before, and adding the
-  // role there would be a grant nobody asked for.
-  // And only when that role still exists: an overwrite naming an unknown role
-  // can make Discord reject the whole create — after the task row is written.
-  if (!fellBack && project?.discordRoleId && guild.roles?.cache?.has?.(project.discordRoleId)) {
-    permissionOverwrites.push({
-      id: project.discordRoleId,
-      type: OverwriteType.Role,
-      allow: PROJECT_ROLE_PERMS,
-    })
-  }
-  // The per-member entries are in ADDITION to that (spec §5), so an assignee
-  // who is not on the project still sees their task.
-  permissionOverwrites.push(
-    ...members.map((id) => ({ id, type: OverwriteType.Member, allow: MEMBER_PERMS }))
-  )
+  const permissionOverwrites = taskChannelOverwrites(guild, { project, memberIds: members, inSection: !fellBack })
 
   const channel = await guild.channels.create({
     name,

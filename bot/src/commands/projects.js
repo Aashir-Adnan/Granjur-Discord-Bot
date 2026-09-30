@@ -20,11 +20,18 @@ import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
 import { linkRepo, unlinkRepo, linkRefusalText, accessLine, linkUpdatedText } from '../services/projectRepoLinks.js'
 import { checkRepoAccess } from '../services/github.js'
 import { DELETED_NAME_HELD, DELETED_SLUG_HELD, PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
+import { deleteProject, reactivateProject, deleteReply, reactivateReply } from '../services/projectLifecycle.js'
 
 const NO_SCOPE_VALUE = 'none'
 
 /** Discord's hard limit on a message. */
 const REPLY_LIMIT = 2000
+
+/** Discord's hard limit on an embed field's value. */
+const FIELD_LIMIT = 1024
+
+/** `/projects` → Delete: the confirm name was not the project's. */
+export const NAME_MISMATCH = 'The name does not match — nothing was deleted.'
 
 export const data = new SlashCommandBuilder()
   .setName('projects')
@@ -37,6 +44,8 @@ export async function listPayload(cfg, { db: dbArg = db } = {}) {
   const counts = await dbArg.docPage.countsByProject({ guildConfigId: cfg.id })
   const byId = new Map(counts.map((c) => [c.projectId, Number(c.n)]))
 
+  const deleted = all.filter((p) => isDeletedProject(p))
+
   const embed = new EmbedBuilder()
     .setTitle('Projects')
     .setColor(0x5865f2)
@@ -47,14 +56,32 @@ export async function listPayload(cfg, { db: dbArg = db } = {}) {
             .join('\n')
         : '_No projects yet._'
     )
+  if (deleted.length) {
+    embed.addFields({
+      name: 'Deleted',
+      value: cut(deleted.map((p) => `**${p.name}**${deletedOn(p)}`).join('\n'), FIELD_LIMIT),
+    })
+  }
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('projects_add').setLabel('Add project').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('projects_link_repo').setLabel('Link repo').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('projects_unlink_repo').setLabel('Unlink repo').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId('projects_unlink_repo').setLabel('Unlink repo').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('projects_delete').setLabel('Delete project').setStyle(ButtonStyle.Danger)
   )
+  if (deleted.length) {
+    row.addComponents(
+      new ButtonBuilder().setCustomId('projects_reactivate').setLabel('Reactivate project').setStyle(ButtonStyle.Success)
+    )
+  }
 
   return { embeds: [embed], components: [row], content: null }
+}
+
+/** ` — deleted <date>` for the Deleted section, or nothing when the date cannot be read. */
+function deletedOn(project) {
+  const t = new Date(project?.deletedAt).getTime()
+  return Number.isFinite(t) ? ` — deleted <t:${Math.floor(t / 1000)}:d>` : ''
 }
 
 export async function execute(interaction) {
@@ -378,4 +405,179 @@ export async function handleUnlinkRepoSelect(interaction) {
   return interaction
     .editReply({ content: `Unlinked **${repo?.name ?? 'the repository'}** from **${state.projectName}**.`, components: [] })
     .catch(() => {})
+}
+
+// ---------------------------------------------------------------------------
+// Delete project / Reactivate project (services/projectLifecycle.js does the work)
+// ---------------------------------------------------------------------------
+
+/**
+ * The router defers these (`deferUpdate` for a button or select, `deferReply`
+ * for a modal); make sure of it here too, because what follows can be dozens
+ * of Discord calls and the token only outlives them once acknowledged.
+ */
+async function acknowledge(interaction, how) {
+  if (interaction.deferred || interaction.replied) return true
+  try {
+    if (how === 'update') await interaction.deferUpdate()
+    else await interaction.deferReply({ flags: EPHEMERAL })
+    return true
+  } catch (e) {
+    console.error('[projects] defer:', e?.message ?? e)
+    return false
+  }
+}
+
+const fold = (s) => String(s ?? '').trim().toLowerCase()
+
+/** The project id a `<prefix>:<id>` custom id carries. */
+const idFrom = (customId) => String(customId || '').split(':')[1] || ''
+
+/** The guild's project with this id, deleted or not; null when it is not this guild's. */
+async function projectOf(dbArg, cfg, projectId) {
+  if (!projectId) return null
+  const project = await dbArg.project.findFirst({ where: { id: projectId } })
+  return project && String(project.guildConfigId) === String(cfg.id) ? project : null
+}
+
+const projectOptions = (projects) => projects.slice(0, 25).map((p) => ({ label: p.name.slice(0, 100), value: p.id }))
+
+/** `/projects` → Delete project: a select of the live projects. */
+export async function handleDeleteButton(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
+  if (!interaction.guild || !(await acknowledge(interaction, 'update'))) return
+  const cfg = await getConfig(interaction.guild.id)
+  // The default read hides deleted projects.
+  const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })
+  if (!projects.length) {
+    return interaction.editReply({ content: 'No projects to delete.', embeds: [], components: [] }).catch(() => {})
+  }
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('projects_delete_select')
+    .setPlaceholder('Choose a project to delete…')
+    .addOptions(projectOptions(projects))
+  return interaction
+    .editReply({
+      content: 'Delete which project? Its channels, category and role are removed and its task channels archived; every row is kept, and **Reactivate project** brings it back.',
+      embeds: [],
+      components: [new ActionRowBuilder().addComponents(select)],
+    })
+    .catch(() => {})
+}
+
+/**
+ * The project picked: a modal asking for its name. The modal IS the answer to
+ * this select, so the router must not defer it (`projects_delete_select` is in
+ * `noDeferComponentIds`), and nothing is read first.
+ */
+export async function handleDeleteSelect(interaction) {
+  const projectId = interaction.values?.[0]
+  if (!projectId) return
+  const modal = new ModalBuilder().setCustomId(`projects_delete_modal:${projectId}`).setTitle('Delete project')
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('name')
+        .setLabel('Type the project name to confirm')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+    )
+  )
+  return interaction.showModal(modal).catch((e) => console.error('[projects] delete modal:', e?.message ?? e))
+}
+
+/**
+ * The confirm-name modal. A name that is not the project's (case and outer
+ * spaces aside) deletes nothing.
+ *
+ * @param {import('discord.js').ModalSubmitInteraction} interaction
+ * @param {{db?: object, getConfig?: Function, remove?: typeof deleteProject}} [deps]
+ */
+export async function handleDeleteModal(
+  interaction,
+  { db: dbArg = db, getConfig = getOrCreateGuildConfig, remove = deleteProject } = {}
+) {
+  const guild = interaction.guild
+  if (!guild || !(await acknowledge(interaction, 'reply'))) return
+  const say = (content) => interaction.editReply({ content: cut(content, REPLY_LIMIT) }).catch(() => {})
+  const cfg = await getConfig(guild.id)
+  const project = await projectOf(dbArg, cfg, idFrom(interaction.customId))
+  if (!project) return say('That project no longer exists.')
+  // Picked before somebody else deleted it: the select hid it, the id did not.
+  if (isDeletedProject(project)) return say(PROJECT_DELETED)
+  if (fold(interaction.fields.getTextInputValue('name')) !== fold(project.name)) return say(NAME_MISMATCH)
+
+  try {
+    const result = await remove({ db: dbArg, guild, cfg, project, actorId: interaction.user?.id ?? null, now: new Date() })
+    return say(deleteReply(project.name, result))
+  } catch (e) {
+    console.error(`[projects] delete ${project.name}:`, e)
+    return say(`Could not delete **${project.name}**: ${e?.message ?? String(e)}`)
+  }
+}
+
+/** `/projects` → Reactivate project: a select of the deleted projects. */
+export async function handleReactivateButton(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
+  if (!interaction.guild || !(await acknowledge(interaction, 'update'))) return
+  const cfg = await getConfig(interaction.guild.id)
+  const all = await dbArg.project.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true } })
+  const deleted = all.filter((p) => isDeletedProject(p))
+  if (!deleted.length) {
+    return interaction.editReply({ content: 'No deleted projects.', embeds: [], components: [] }).catch(() => {})
+  }
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('projects_reactivate_select')
+    .setPlaceholder('Choose a project to reactivate…')
+    .addOptions(projectOptions(deleted))
+  return interaction
+    .editReply({ content: 'Reactivate which project?', embeds: [], components: [new ActionRowBuilder().addComponents(select)] })
+    .catch(() => {})
+}
+
+/** The project picked: one confirm button carrying its id. */
+export async function handleReactivateSelect(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
+  if (!interaction.guild || !(await acknowledge(interaction, 'update'))) return
+  const cfg = await getConfig(interaction.guild.id)
+  const project = await projectOf(dbArg, cfg, interaction.values?.[0])
+  if (!project) {
+    return interaction.editReply({ content: 'That project no longer exists.', components: [] }).catch(() => {})
+  }
+  const confirm = new ButtonBuilder()
+    .setCustomId(`projects_reactivate_confirm:${project.id}`)
+    .setLabel('Reactivate')
+    .setStyle(ButtonStyle.Success)
+  return interaction
+    .editReply({
+      content: `Reactivate **${project.name}**? Its section and role are rebuilt and its task channels come back.`,
+      components: [new ActionRowBuilder().addComponents(confirm)],
+    })
+    .catch(() => {})
+}
+
+/**
+ * The confirm button.
+ *
+ * @param {import('discord.js').ButtonInteraction} interaction
+ * @param {{db?: object, getConfig?: Function, reactivate?: typeof reactivateProject}} [deps]
+ */
+export async function handleReactivateConfirm(
+  interaction,
+  { db: dbArg = db, getConfig = getOrCreateGuildConfig, reactivate = reactivateProject } = {}
+) {
+  const guild = interaction.guild
+  if (!guild || !(await acknowledge(interaction, 'update'))) return
+  const say = (content) =>
+    interaction.editReply({ content: cut(content, REPLY_LIMIT), components: [], embeds: [] }).catch(() => {})
+  const cfg = await getConfig(guild.id)
+  const project = await projectOf(dbArg, cfg, idFrom(interaction.customId))
+  if (!project) return say('That project no longer exists.')
+  // Pressed twice, or reactivated by somebody else since the select.
+  if (!isDeletedProject(project)) return say(`**${project.name}** is not deleted.`)
+
+  try {
+    const result = await reactivate({ db: dbArg, guild, cfg, project, botUserId: interaction.client?.user?.id ?? null })
+    return say(reactivateReply(project.name, result))
+  } catch (e) {
+    console.error(`[projects] reactivate ${project.name}:`, e)
+    return say(`Could not reactivate **${project.name}**: ${e?.message ?? String(e)}`)
+  }
 }

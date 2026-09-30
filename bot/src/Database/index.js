@@ -1131,7 +1131,8 @@ const PROJECT_UPDATABLE = [
   ["docsPaths", (v) => toJson(v)],
   ["discordCategoryId", (v) => v],
   ["discordRoleId", (v) => v],
-  ["discordChannels", (v) => JSON.stringify(v)],
+  // null is SQL NULL (a deleted project's cleared map), not the JSON text 'null'.
+  ["discordChannels", (v) => (v === null ? null : JSON.stringify(v))],
   ["deletedAt", (v) => v],
   ["deletedBy", (v) => v],
 ];

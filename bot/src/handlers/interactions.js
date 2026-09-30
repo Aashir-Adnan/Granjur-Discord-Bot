@@ -117,6 +117,8 @@ export default async function handleInteractions(interaction) {
       );
     if (customId === "projects_add_modal")
       return (await import("../commands/projects.js")).handleAddModal(interaction);
+    if (customId.startsWith("projects_delete_modal:"))
+      return (await import("../commands/projects.js")).handleDeleteModal(interaction);
     return;
   }
 
@@ -276,6 +278,12 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/projects.js")).handleLinkRepo(interaction);
     if (customId === "projects_unlink_repo")
       return (await import("../commands/projects.js")).handleUnlinkRepo(interaction);
+    if (customId === "projects_delete")
+      return (await import("../commands/projects.js")).handleDeleteButton(interaction);
+    if (customId === "projects_reactivate")
+      return (await import("../commands/projects.js")).handleReactivateButton(interaction);
+    if (customId.startsWith("projects_reactivate_confirm:"))
+      return (await import("../commands/projects.js")).handleReactivateConfirm(interaction);
     await interaction
       .editReply({
         content: `Unknown button. Received customId: "${customId}"`,
@@ -436,6 +444,10 @@ export default async function handleInteractions(interaction) {
       return (await import("../commands/projects.js")).handleUnlinkProjectSelect(interaction);
     if (customId === "projects_unlink_repo_select")
       return (await import("../commands/projects.js")).handleUnlinkRepoSelect(interaction);
+    if (customId === "projects_delete_select")
+      return (await import("../commands/projects.js")).handleDeleteSelect(interaction);
+    if (customId === "projects_reactivate_select")
+      return (await import("../commands/projects.js")).handleReactivateSelect(interaction);
     // No handler matched — we already deferred, so we must editReply or Discord shows "interaction failed"
     await interaction
       .editReply({ content: "Unknown action.", components: [] })

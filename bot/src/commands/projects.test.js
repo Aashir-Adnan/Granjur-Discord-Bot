@@ -4,7 +4,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
-import { handleAddModal, listPayload } from './projects.js'
+import {
+  handleAddModal,
+  listPayload,
+  handleDeleteButton,
+  handleDeleteSelect,
+  handleDeleteModal,
+  handleReactivateButton,
+  handleReactivateSelect,
+  handleReactivateConfirm,
+} from './projects.js'
 
 // --- fakes ------------------------------------------------------------------
 
@@ -403,4 +412,208 @@ test('the /projects list reads deleted projects too, and lists the live ones', a
   const payload = await listPayload(CFG, { db })
   assert.deepEqual(db.reads, [{ guildConfigId: 'g1', includeDeleted: true }])
   assert.match(payload.embeds[0].data.description, /\*\*Framework\*\* — `framework` — 3 doc page\(s\)/)
+})
+
+// ---------------------------------------------------------------------------
+// Delete and Reactivate
+// ---------------------------------------------------------------------------
+
+function lifecycleDb() {
+  const db = hidingDb([
+    { id: 'p1', name: 'Framework', docsSlug: 'framework', guildConfigId: 'g1', deletedAt: null },
+    { id: 'p2', name: 'Apollo', docsSlug: 'apollo', guildConfigId: 'g1', deletedAt: DELETED_AT },
+  ])
+  db.project.findFirst = async ({ where }) => db.rows.find((p) => p.id === where.id) ?? null
+  db.docPage = { countsByProject: async () => [] }
+  return db
+}
+
+function componentInteraction({ guild = fakeGuild(), values = [], customId = '', typed = '', deferred = true } = {}) {
+  const log = []
+  return {
+    log,
+    guild,
+    customId,
+    values,
+    deferred,
+    replied: false,
+    user: { id: 'u-ceo' },
+    client: { user: { id: 'bot1' } },
+    fields: { getTextInputValue: (id) => (id === 'name' ? typed : '') },
+    replies: [],
+    modals: [],
+    async deferUpdate() {
+      log.push('deferUpdate')
+      this.deferred = true
+    },
+    async deferReply() {
+      log.push('deferReply')
+      this.deferred = true
+    },
+    async editReply(payload) {
+      log.push('editReply')
+      this.replies.push(payload)
+      return payload
+    },
+    async showModal(modal) {
+      log.push('showModal')
+      this.modals.push(modal)
+    },
+  }
+}
+
+const buttonIds = (payload) => payload.components.flatMap((row) => row.components.map((c) => c.data.custom_id))
+
+test('the /projects list shows deleted projects in their own section, and Reactivate only when there are any', async () => {
+  const db = lifecycleDb()
+  const payload = await listPayload(CFG, { db })
+  const embed = payload.embeds[0].data
+  assert.match(embed.description, /\*\*Framework\*\*/)
+  assert.doesNotMatch(embed.description, /Apollo/, 'a deleted project is not among the live ones')
+  const deleted = embed.fields.find((f) => f.name === 'Deleted')
+  assert.ok(deleted, 'a Deleted section')
+  assert.match(deleted.value, /\*\*Apollo\*\*/)
+  assert.doesNotMatch(deleted.value, /Framework/)
+  assert.deepEqual(buttonIds(payload), [
+    'projects_add',
+    'projects_link_repo',
+    'projects_unlink_repo',
+    'projects_delete',
+    'projects_reactivate',
+  ])
+
+  db.rows.splice(1, 1)
+  const none = await listPayload(CFG, { db })
+  assert.equal((none.embeds[0].data.fields ?? []).length, 0, 'no Deleted section with nothing deleted')
+  assert.ok(!buttonIds(none).includes('projects_reactivate'))
+  assert.ok(buttonIds(none).includes('projects_delete'))
+})
+
+test('Delete project offers the live projects only', async () => {
+  const db = lifecycleDb()
+  const it = componentInteraction({ customId: 'projects_delete' })
+  await handleDeleteButton(it, { db, getConfig })
+  const select = it.replies.at(-1).components[0].components[0].toJSON()
+  assert.equal(select.custom_id, 'projects_delete_select')
+  assert.deepEqual(select.options.map((o) => o.value), ['p1'])
+})
+
+test('picking a project to delete opens the confirm-name modal carrying its id', async () => {
+  const db = lifecycleDb()
+  const it = componentInteraction({ customId: 'projects_delete_select', values: ['p1'], deferred: false })
+  await handleDeleteSelect(it, { db, getConfig })
+  assert.deepEqual(it.log, ['showModal'], 'the modal is the reply; nothing deferred first')
+  const modal = it.modals[0].toJSON()
+  assert.equal(modal.custom_id, 'projects_delete_modal:p1')
+  const input = modal.components[0].components[0]
+  assert.equal(input.label, 'Type the project name to confirm')
+  assert.equal(input.custom_id, 'name')
+})
+
+test('a confirm name that does not match refuses with the sentence and deletes nothing', async () => {
+  const db = lifecycleDb()
+  let ran = 0
+  const it = componentInteraction({ customId: 'projects_delete_modal:p1', typed: 'Framewrk' })
+  await handleDeleteModal(it, { db, getConfig, remove: async () => ran++ })
+  assert.equal(ran, 0)
+  assert.deepEqual(db.calls.filter((c) => c[0] === 'project.update'), [])
+  assert.equal(it.replies.at(-1).content, 'The name does not match — nothing was deleted.')
+})
+
+test('a matching name (any case, spaces trimmed) deletes and replies with the result', async () => {
+  const db = lifecycleDb()
+  const guild = fakeGuild()
+  const seen = []
+  const remove = async (args) => {
+    seen.push(args)
+    return { archived: 2, removed: 5, stoppedClocks: 1, failures: ['Could not delete #framework-general: Missing Permissions'] }
+  }
+  const it = componentInteraction({ guild, customId: 'projects_delete_modal:p1', typed: '  framework ', deferred: false })
+  await handleDeleteModal(it, { db, getConfig, remove })
+  assert.equal(it.log[0], 'deferReply', 'deferred before the slow part')
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].db, db)
+  assert.equal(seen[0].guild, guild)
+  assert.equal(seen[0].cfg, CFG)
+  assert.equal(seen[0].project.id, 'p1')
+  assert.equal(seen[0].actorId, 'u-ceo')
+  assert.ok(seen[0].now instanceof Date)
+  assert.deepEqual(it.log.filter((l) => l === 'editReply'), ['editReply'], 'the reply is edited once, at the end')
+  assert.equal(
+    it.replies.at(-1).content,
+    'Deleted **Framework**. Archived 2 task channels; removed its section and role. Stopped 1 running clocks.\nCould not delete #framework-general: Missing Permissions'
+  )
+})
+
+test('deleting a project that is already deleted is refused', async () => {
+  const db = lifecycleDb()
+  let ran = 0
+  const it = componentInteraction({ customId: 'projects_delete_modal:p2', typed: 'Apollo' })
+  await handleDeleteModal(it, { db, getConfig, remove: async () => ran++ })
+  assert.equal(ran, 0)
+  assert.equal(it.replies.at(-1).content, 'This project is deleted.')
+})
+
+test('Reactivate project offers the deleted projects only, then a confirm button', async () => {
+  const db = lifecycleDb()
+  const it = componentInteraction({ customId: 'projects_reactivate' })
+  await handleReactivateButton(it, { db, getConfig })
+  const select = it.replies.at(-1).components[0].components[0].toJSON()
+  assert.equal(select.custom_id, 'projects_reactivate_select')
+  assert.deepEqual(select.options.map((o) => o.value), ['p2'])
+
+  const picked = componentInteraction({ customId: 'projects_reactivate_select', values: ['p2'] })
+  await handleReactivateSelect(picked, { db, getConfig })
+  const reply = picked.replies.at(-1)
+  assert.match(reply.content, /\*\*Apollo\*\*/)
+  assert.deepEqual(buttonIds(reply), ['projects_reactivate_confirm:p2'])
+})
+
+test('confirming a reactivation runs it and replies with the result', async () => {
+  const db = lifecycleDb()
+  const guild = fakeGuild()
+  const seen = []
+  const reactivate = async (args) => {
+    seen.push(args)
+    return { restored: 3, failures: ['Section rebuild failed — run /project-setup for it.'] }
+  }
+  const it = componentInteraction({ guild, customId: 'projects_reactivate_confirm:p2', deferred: false })
+  await handleReactivateConfirm(it, { db, getConfig, reactivate })
+  assert.equal(it.log[0], 'deferUpdate')
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].db, db)
+  assert.equal(seen[0].guild, guild)
+  assert.equal(seen[0].cfg, CFG)
+  assert.equal(seen[0].project.id, 'p2')
+  assert.equal(seen[0].botUserId, 'bot1')
+  assert.deepEqual(it.log.filter((l) => l === 'editReply'), ['editReply'])
+  assert.deepEqual(it.replies.at(-1), {
+    content: 'Reactivated **Apollo**. Rebuilt its section; restored 3 task channels.\nSection rebuild failed — run /project-setup for it.',
+    components: [],
+    embeds: [],
+  })
+})
+
+test('confirming a reactivation of a live project changes nothing', async () => {
+  const db = lifecycleDb()
+  let ran = 0
+  const it = componentInteraction({ customId: 'projects_reactivate_confirm:p1' })
+  await handleReactivateConfirm(it, { db, getConfig, reactivate: async () => ran++ })
+  assert.equal(ran, 0)
+  assert.equal(it.replies.at(-1).content, '**Framework** is not deleted.')
+})
+
+test('a delete or reactivate that throws still answers the operator', async () => {
+  const db = lifecycleDb()
+  const it = componentInteraction({ customId: 'projects_delete_modal:p1', typed: 'Framework' })
+  await quiet(() =>
+    handleDeleteModal(it, { db, getConfig, remove: async () => { throw new Error('db down') } })
+  )
+  assert.match(it.replies.at(-1).content, /Could not delete \*\*Framework\*\*: db down/)
+
+  const again = componentInteraction({ customId: 'projects_reactivate_confirm:p2' })
+  await quiet(() =>
+    handleReactivateConfirm(again, { db, getConfig, reactivate: async () => { throw new Error('db down') } })
+  )
+  assert.match(again.replies.at(-1).content, /Could not reactivate \*\*Apollo\*\*: db down/)
 })
