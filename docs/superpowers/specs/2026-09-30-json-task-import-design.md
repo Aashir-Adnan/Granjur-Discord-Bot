@@ -84,7 +84,8 @@ Answers given while designing:
   accepted.
 - Unknown fields are ignored. A `project`, `id` or `subtasks` inside a subtask is ignored,
   not an error.
-- The file may be at most 1 MB.
+- The file may be at most 256 KB. (The bot's internal routes cap a request at 64 KB
+  today; the import-check route alone takes up to 512 KB.)
 
 ### 2. Rules a task must pass (the preview's verdicts)
 
@@ -123,16 +124,14 @@ task invalid: a task is never imported without part of what the file says it has
 - **`POST /internal/tasks/import-check`** `{ projectId, tasks, createIssues }` →
   `{ ok, tasks }`. 400 for a missing project, a non-array, more than 50 tasks. Uses
   `guarded` and `guildOf`.
-- **`POST /internal/tasks/create`** gains two optional fields:
+- **`POST /internal/tasks/create`** gains one optional field:
   - `status` — `open` (today's behaviour, and the default), `in_progress`, or `done`.
     - `in_progress`: the task is created as today (channel, issue), then its status is
       set through the existing status-change path so the channel's card and the activity
       log agree with the row. No notification DM is sent for that first change.
     - `done`: the row is written with status `done` for both types (the status the
       board's Done column writes), **no channel is created and no issue is opened**;
-      `discordChannelId` stays null. The task's activity log records the create.
-  - `imported: true` — marks the activity entry as made by an import. It changes no
-    behaviour other than the wording.
+      `discordChannelId` stays null. `createdBy` is recorded as for any site create.
 - **`POST /internal/tasks/subtask`** gains optional `description`, `scope` and `status`
   (`open` | `in_progress` | `done`). A `done` subtask is written finished; nobody is
   notified of it.
@@ -144,10 +143,10 @@ task invalid: a task is never imported without part of what the file says it has
 - **`POST /api/discord/tasks/import-check`** `{ project_id, tasks, create_issues? }`
   (in `discordTasksWrite.js`, the write-object pattern): the same permission, identity,
   `assertCanWrite` and `assertCanUseProject` checks as `createTask`, in the same order;
-  shape checks (an array of 1–50 objects, the request at most 1 MB); then
+  shape checks (an array of 1–50 objects, the request at most 256 KB); then
   `callBot('/internal/tasks/import-check')`. It returns the bot's verdicts with `fields`
   so the site can send each valid task to create unchanged.
-- **`createTask`** forwards optional `status` and `imported`.
+- **`createTask`** forwards optional `status`.
 - **`addSubtask`** forwards optional `description`, `scope` and `status`.
 - Nothing new is trusted from the site: a task sent to create after a preview goes
   through every create check again.
@@ -158,7 +157,7 @@ task invalid: a task is never imported without part of what the file says it has
   tab's create button, shown under the same condition as that button.
 - **`importLogic.ts`** (pure, tested):
   - `parseImportFile(text)` → `{ tasks }` or `{ error }` (not JSON, no `tasks` array,
-    empty, more than 50, over 1 MB), with messages a non-developer can act on;
+    empty, more than 50, over 256 KB), with messages a non-developer can act on;
   - the import queue: given the verdicts, the ordered steps (a task, then each of its
     subtasks), and the reducer that records each step as created / failed / skipped;
   - the summary line (`Imported 12 of 15 tasks. 2 were invalid and 1 failed.`).
@@ -192,13 +191,13 @@ task invalid: a task is never imported without part of what the file says it has
     name and username, none, several, duplicates; the 50 and 25 caps; a done task with an
     open subtask; nothing is written.
   - `createTask` with `status: 'done'`: no channel call, no issue call, the finished
-    status per type, the activity entry; with `in_progress`: channel and issue as today,
+    status, `createdBy`; with `in_progress`: channel and issue as today,
     then the status change; with no `status`: byte-for-byte today's behaviour (existing
     tests unchanged).
   - `createSubtask` with `description`, `scope`, `status`.
   - The routes: auth, validation, pass-through.
 - **CSAAS:** import-check's permission, link and project refusals; shape limits; `status`
-  and `imported` forwarded by create; subtask fields forwarded; a test that runs the real
+  forwarded by create; subtask fields forwarded; a test that runs the real
   `resolveIdentity`.
 - **Site (vitest):** `importLogic` — parsing and its error messages, the queue order, the
   reducer (created, failed, skipped-after-parent-failure), the summary, the download of
