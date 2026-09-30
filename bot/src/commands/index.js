@@ -58,6 +58,7 @@ import * as recordCmd from './record.js'
 import * as explainCmd from './explain.js'
 import * as clientRequestCmd from './client-request.js'
 import * as clientTrackingCmd from './client-tracking.js'
+import * as tasksFromDocCmd from './tasks-from-doc.js'
 
 const commandModules = [
   initCmd,
@@ -110,6 +111,7 @@ const commandModules = [
   recordCmd,
   clientRequestCmd,
   clientTrackingCmd,
+  tasksFromDocCmd,
 ]
 
 // A module's `data` may be a single SlashCommandBuilder or an array of them
@@ -190,7 +192,9 @@ export function isModalFirstCommand(name) {
 
 // Commands whose reply should be visible to the channel, not only to the
 // invoker. Every other slash command is deferred ephemerally in index.js.
-const PUBLIC_REPLY_COMMANDS = new Set(['explain'])
+// /tasks-from-doc is public for its accepted reply; its refusals are sent as
+// ephemeral follow-ups by the command itself.
+const PUBLIC_REPLY_COMMANDS = new Set(['explain', 'tasks-from-doc'])
 
 export function isPublicReplyCommand(name) {
   return PUBLIC_REPLY_COMMANDS.has(name)

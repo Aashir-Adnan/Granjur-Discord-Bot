@@ -77,7 +77,7 @@ test('buildReviewMessage: 3 tasks -> 2 pages, <=5 rows, customIds carry jobId', 
 
   for (const page of [0, 1]) {
     const s = applyReviewAction(state, { type: 'page', page })
-    const msg = buildReviewMessage({ job, notes: 'notes here', reportPath: '/vm/report.md', state: s, roster })
+    const msg = buildReviewMessage({ job, notes: 'notes here', state: s, roster })
     assert.ok(Array.isArray(msg.embeds))
     assert.ok(Array.isArray(msg.components))
     assert.ok(msg.components.length <= 5, `page ${page} rows ${msg.components.length}`)
@@ -183,15 +183,15 @@ test('an unclear task gets the project select; every page stays within 5 rows', 
   const job = { id: 'JOB7', dataJson: { title: 'Sync', tasks: three, assignments: [], reviewProjects: PROJECTS } }
   const state = initReviewState(three, [], settleFirstOnly)
   // b and c are unclear, so one task per page: three pages.
-  const first = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] })
+  const first = buildReviewMessage({ job, notes: '', state, roster: [] })
   assert.match(first.embeds[0].data.description, /Page 1\/3/)
   for (const page of [0, 1, 2]) {
-    const msg = buildReviewMessage({ job, notes: '', reportPath: null, state: applyReviewAction(state, { type: 'page', page }), roster: [] })
+    const msg = buildReviewMessage({ job, notes: '', state: applyReviewAction(state, { type: 'page', page }), roster: [] })
     assert.ok(msg.components.length <= 5, `page ${page} rows ${msg.components.length}`)
   }
-  const pageA = rowsJson(buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] }))
+  const pageA = rowsJson(buildReviewMessage({ job, notes: '', state, roster: [] }))
   assert.ok(!pageA.includes('mtg_project:'), 'a settled task has no project select')
-  const pageB = buildReviewMessage({ job, notes: '', reportPath: null, state: applyReviewAction(state, { type: 'page', page: 1 }), roster: [] })
+  const pageB = buildReviewMessage({ job, notes: '', state: applyReviewAction(state, { type: 'page', page: 1 }), roster: [] })
   const selectRow = pageB.components.map((c) => c.toJSON()).find((r) => r.components[0].custom_id === 'mtg_project:JOB7:b')
   assert.ok(selectRow, 'the project select for b')
   const select = selectRow.components[0]
@@ -206,7 +206,7 @@ test('the project select marks the current pick and never offers more than 25 op
   const job = { id: 'J', dataJson: { tasks: one, assignments: [], reviewProjects: many } }
   let state = initReviewState(one, [], () => null)
   state = applyReviewAction(state, { type: 'project', taskId: 'b', projectId: 'id3' })
-  const select = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] })
+  const select = buildReviewMessage({ job, notes: '', state, roster: [] })
     .components.map((c) => c.toJSON()).find((r) => r.components[0].custom_id === 'mtg_project:J:b').components[0]
   assert.equal(select.options.length, 25)
   assert.equal(select.options.find((o) => o.value === 'id3').default, true)
@@ -219,24 +219,24 @@ test('the task embed shows Scope, Modules and Project', () => {
   ]
   const job = { id: 'J', dataJson: { tasks: two, assignments: [], reviewProjects: PROJECTS } }
   let state = initReviewState(two, [], settleFirstOnly)
-  const pageA = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] }).embeds[1].data.description
+  const pageA = buildReviewMessage({ job, notes: '', state, roster: [] }).embeds[1].data.description
   assert.match(pageA, /\*\*Scope:\*\* Backend/)
   assert.match(pageA, /\*\*Modules:\*\* GitSync, Webhooks/)
   assert.match(pageA, /\*\*Project:\*\* Framework/)
   state = applyReviewAction(state, { type: 'page', page: 1 })
-  let pageB = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] }).embeds[1].data.description
+  let pageB = buildReviewMessage({ job, notes: '', state, roster: [] }).embeds[1].data.description
   assert.match(pageB, /\*\*Scope:\*\* Design/)
   assert.ok(!/Modules:/.test(pageB))
   assert.match(pageB, /\*\*Project:\*\* not set, pick one below/)
   state = applyReviewAction(state, { type: 'project', taskId: 'b', projectId: 'p2' })
-  pageB = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] }).embeds[1].data.description
+  pageB = buildReviewMessage({ job, notes: '', state, roster: [] }).embeds[1].data.description
   assert.match(pageB, /\*\*Project:\*\* Badar HMS/)
 })
 
 test('a task with no usable scope says so; a legacy state shows no project line', () => {
   const one = [{ task_id: 'x', goal_of_task: 'X', feature: 'Free text' }]
   const job = { id: 'J', dataJson: { tasks: one, assignments: [] } }
-  const desc = buildReviewMessage({ job, notes: '', reportPath: null, state: initReviewState(one, []), roster: [] }).embeds[1].data.description
+  const desc = buildReviewMessage({ job, notes: '', state: initReviewState(one, []), roster: [] }).embeds[1].data.description
   assert.match(desc, /\*\*Scope:\*\* none/)
   assert.ok(!/Project:/.test(desc))
 })
@@ -254,11 +254,23 @@ test('initReviewState starts every task with GitHub on', () => {
 test('the review message shows GitHub on, including for a task missing from the state', () => {
   const job = { id: 'J', dataJson: { tasks, assignments } }
   for (const state of [initReviewState(tasks, assignments), { tasks: [], page: 0 }]) {
-    const msg = buildReviewMessage({ job, notes: '', reportPath: null, state, roster: [] })
+    const msg = buildReviewMessage({ job, notes: '', state, roster: [] })
     const buttons = msg.components.map((c) => c.toJSON()).flatMap((r) => r.components)
     const gh = buttons.filter((b) => String(b.custom_id).startsWith('mtg_gh:'))
     assert.equal(gh.length, 2)
     assert.ok(gh.every((b) => b.label === 'GitHub: on'))
     assert.match(msg.embeds[1].data.description, /\*\*GitHub issue:\*\* yes/)
   }
+})
+
+test('buildReviewMessage points at the attached notes when notesAttached, with no report-path line', () => {
+  const job = { id: 'J', dataJson: { title: 'Sync', tasks, assignments } }
+  const state = initReviewState(tasks, assignments)
+  const on = buildReviewMessage({ job, notes: 'the notes', notesAttached: true, state, roster: [] })
+  const off = buildReviewMessage({ job, notes: 'the notes', notesAttached: false, state, roster: [] })
+  const desc = (m) => m.embeds[0].data.description
+  assert.match(desc(on), /the notes\n+Full notes are attached above\./)
+  assert.doesNotMatch(desc(off), /attached above/)
+  assert.doesNotMatch(desc(on), /Full report|on the VM/)
+  assert.doesNotMatch(desc(off), /Full report|on the VM/)
 })

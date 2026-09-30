@@ -299,7 +299,7 @@ export async function clearStaleLiveSession(database, meetingId) {
  * Ends recording when all human members leave the channel.
  */
 export async function startMeetingRecording(voiceChannel, guild, meetingId, voiceChannelId, options = {}) {
-  const { deleteOnEnd = false, textChannelId = null, meetingTopic = null } = options;
+  const { deleteOnEnd = false, textChannelId = null, meetingTopic = null, preMeetingNotes = null } = options;
 
   if (!voiceChannel || !guild || !meetingId) {
     console.error(`[voiceCapture] Invalid parameters for startMeetingRecording`);
@@ -953,7 +953,7 @@ export async function startMeetingRecording(voiceChannel, guild, meetingId, voic
       // gets a path inside recordingsDir rather than recordingsDir itself.
       const name = deriveMeetingName(path.join(recordingsDir, "meeting.ogg"), meetingId);
       const title = `${name} — ${formatMeetingDate(new Date())}`;
-      const { meeting_id } = await csaasClient.createMeeting({ title, participants: humans });
+      const { meeting_id } = await csaasClient.createMeeting({ title, participants: humans, preMeetingNotes });
       if (meeting_id) {
         // Worth recording even if the meeting ended meanwhile: the pipeline reuses it.
         await db.meeting.update({ where: { id: meetingId }, data: { csaasMeetingId: meeting_id } });

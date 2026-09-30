@@ -77,3 +77,9 @@
   verdict shape, `status` on create/subtask (done = no channel, no issue, no notify), the
   per-route body cap, CSAAS's `import-check` endpoint, the site's sequential queue,
   unconfirmed steps and leftover file, and the rollout order (bot first).
+- [doc-tasks.md](doc-tasks.md) — tasks from a document (roadmap sub-project 7, built, not
+  deployed): `docText.js` (types, 10 MB / 60,000 chars / 65,535 bytes, lazy `unpdf`/`mammoth`),
+  `/tasks-from-doc` and its document job (`dataJson.source`, `reviewChannelId`, the
+  `/analyze-live` text path), a document at `/record start` sent to CSAAS as
+  `pre_meeting_notes` (not stored), the `reporting` stage and the notes/report files, and
+  the rollout (CSAAS first).

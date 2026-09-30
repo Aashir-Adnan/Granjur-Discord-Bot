@@ -198,3 +198,61 @@ test('analyzeLive sends the snake_case body analyze-live expects', async () => {
     globalThis.fetch = realFetch
   }
 })
+
+test('generateReport posts meeting_id to /report with a 300 s timeout', async () => {
+  assert.equal((await import('./csaasClient.js')).REPORT_TIMEOUT_MS, 300_000)
+  const realFetch = globalThis.fetch
+  const realTimeout = AbortSignal.timeout
+  const timeouts = []
+  AbortSignal.timeout = (ms) => { timeouts.push(ms); return realTimeout.call(AbortSignal, ms) }
+  let seen = null
+  globalThis.fetch = async (url, init) => {
+    seen = { url, body: JSON.parse(init.body) }
+    return new Response(JSON.stringify({ status: 200, payload: { return: { ok: true } } }), { status: 200 })
+  }
+  try {
+    process.env.CSAAS_API_URL = 'http://csaas.test/api'
+    process.env.CSAAS_ACTOR_URDD = '999'
+    const { generateReport } = await import('./csaasClient.js')
+    const out = await generateReport('m1')
+    assert.equal(out.ok, true)
+    assert.equal(seen.url, 'http://csaas.test/api/meeting/workflow/report')
+    assert.equal(seen.body.meeting_id, 'm1')
+    assert.equal(seen.body.actionPerformerURDD, '999')
+    assert.deepEqual(timeouts, [300_000])
+  } finally {
+    globalThis.fetch = realFetch
+    AbortSignal.timeout = realTimeout
+  }
+})
+
+test('generateReport takes a shorter timeout when the caller passes one', async () => {
+  const realFetch = globalThis.fetch
+  const realTimeout = AbortSignal.timeout
+  const timeouts = []
+  AbortSignal.timeout = (ms) => { timeouts.push(ms); return realTimeout.call(AbortSignal, ms) }
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: 200, payload: { return: { ok: true } } }), { status: 200 })
+  try {
+    const { generateReport } = await import('./csaasClient.js')
+    await generateReport('m1', { timeoutMs: 170_000 })
+    assert.deepEqual(timeouts, [170_000])
+  } finally {
+    globalThis.fetch = realFetch
+    AbortSignal.timeout = realTimeout
+  }
+})
+
+test('createMeeting sends pre_meeting_notes when given a non-empty brief', async () => {
+  await createMeeting({ title: 'T', participants: ['Ali'], preMeetingNotes: 'Background text' })
+  const body = JSON.parse(calls[0].opts.body)
+  assert.equal(body.pre_meeting_notes, 'Background text')
+})
+
+test('createMeeting without a brief sends exactly the old body', async () => {
+  await createMeeting({ title: 'T', participants: ['Ali'] })
+  await createMeeting({ title: 'T', participants: ['Ali'], preMeetingNotes: '' })
+  await createMeeting({ title: 'T', participants: ['Ali'], preMeetingNotes: null })
+  for (const c of calls) {
+    assert.deepEqual(JSON.parse(c.opts.body), { title: 'T', participants: ['Ali'], actionPerformerURDD: '999' })
+  }
+})

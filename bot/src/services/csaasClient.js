@@ -89,8 +89,11 @@ export const CREATE_MEETING_TIMEOUT_MS = 20_000
 
 // CSAAS create returns { meeting: <meetings row>, scope_repo_ids }. The id lives
 // at meeting.meeting_id (verified in meetingWorkflow.js createMeeting -> getMeeting).
-export const createMeeting = async ({ title, participants }) => {
-  const out = await postJson('/meeting/workflow/create', { title, participants }, { timeoutMs: CREATE_MEETING_TIMEOUT_MS })
+// preMeetingNotes is the optional pre-meeting brief; the key is left out when empty.
+export const createMeeting = async ({ title, participants, preMeetingNotes }) => {
+  const body = { title, participants }
+  if (typeof preMeetingNotes === 'string' && preMeetingNotes) body.pre_meeting_notes = preMeetingNotes
+  const out = await postJson('/meeting/workflow/create', body, { timeoutMs: CREATE_MEETING_TIMEOUT_MS })
   return { meeting_id: out?.meeting?.meeting_id ?? out?.meeting_id }
 }
 
@@ -115,6 +118,15 @@ export const fetchNotes = async (meetingId) => {
   const html = out?.latestHtml ?? out?.html ?? null
   return { notes, html }
 }
+
+// /report re-runs the transcript analysis (the work /analyze-live gets 180 s
+// for), then a codebase search and the notes and HTML generation. 300 s, still
+// under the worker default 360 s stage cap.
+export const REPORT_TIMEOUT_MS = 300_000
+
+// `timeoutMs` lets the reporting stage keep the call inside the worker's stage cap.
+export const generateReport = (meetingId, { timeoutMs = REPORT_TIMEOUT_MS } = {}) =>
+  postJson('/meeting/workflow/report', { meeting_id: meetingId }, { timeoutMs })
 
 export const fetchMeeting = (meetingId) =>
   getJson('/meeting/workflow/meeting', { meeting_id: meetingId })

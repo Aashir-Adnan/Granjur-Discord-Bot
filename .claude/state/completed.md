@@ -2,6 +2,34 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-10-01 — Tasks from a document, a meeting-start document, meeting notes as files (BUILT, NOT DEPLOYED)
+
+Owner roadmap sub-project 7 of 7, built 2026-09-30 to 2026-10-01 subagent-driven. Branch
+`feat/doc-tasks` in the bot and CSAAS; nothing merged, pushed or deployed. No migration.
+Rollout when approved: CSAAS, then the bot (`npm install --production` installs `unpdf` and
+`mammoth`). Knowledge `.claude/knowledge/doc-tasks.md` (new); spec
+`docs/superpowers/specs/2026-09-30-doc-tasks-and-meeting-notes-design.md`.
+
+- **Bot:** `48f1f06` spec, `5597828` plan; `4d6782a` read text out of documents
+  (`services/docText.js`); `16334b3` + `b08b81e` meeting notes as files (the `reporting`
+  stage, notes message, `notesAttachedIn`); `24ad422` + `6e9d492` + `5ff14ec`
+  `/tasks-from-doc` (defer first, ephemeral refusals, byte cap, one-insert job, cleanup on
+  failure); `826a127` + `be182b4` a document at `/record start` (an unreadable or stalled
+  document never holds back the recording); plus `docs: tasks from documents and meeting
+  notes — knowledge and state`; then the final-review fix wave `fix(meetings): no mentions
+  from user text, fresh job rows per tick, report once, size and channel checks` (notes
+  message, accepted reply and assignee pings no longer ping from user/Claude text; the worker
+  re-reads each claimed job and runs one tick at a time; `reported` saved before `/report`,
+  whose timeout sits 30 s inside the stage cap; CSAAS size limits, a 3-document queue cap and
+  a channel permission check on `/tasks-from-doc`; the failure notice no longer shows the
+  raw error).
+- **CSAAS:** `6a159cf` `/create` accepts the pre-meeting brief (`pre_meeting_notes`, at most
+  20,000 characters, else 400).
+- Suites: bot `npm test` 1696 tests, 1696 pass, `ℹ fail 0` (1677 before the fix wave); CSAAS `create.test.js OK` and
+  `utterance.test.js OK` (run with `OPENAI_API_KEY=dummy`).
+- Not exercised live (no deploy). Deferred items and the VM Node >= 22 check for PDFs are
+  under roadmap item 7 in `backlog.md`.
+
 ## 2026-09-30 — A bug no longer needs a repository
 
 Owner-approved: the bot never refuses a bug for lack of a repository (optional picker with "No repository", skipped when nothing to offer; the site route and the JSON import accept it; no GitHub issue then). Commit `fix(bugs): a bug no longer needs a repository`; knowledge `repositories-and-issues.md`, `task-import.md`. Site side changed separately; not exercised live on Discord.

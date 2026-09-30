@@ -4,8 +4,7 @@
 // - advance: when false, the job stays on the same stage (e.g. polling)
 // - block:   when true, status becomes 'blocked' instead of 'pending'/'done'
 import fs from 'node:fs/promises'
-import path from 'node:path'
-import { EmbedBuilder } from 'discord.js'
+import { AttachmentBuilder, EmbedBuilder } from 'discord.js'
 import { getGuildConfigById } from '../Database/index.js'
 import { buildRoster } from './meetingRoster.js'
 import { deriveMeetingName, formatMeetingDate } from '../commands/playback.js'
@@ -16,6 +15,8 @@ import { loadProjectContext, settledProject, resolveMeetingTaskProject, reviewPr
 import { buildAnalyzeLivePayload } from './liveTranscriptPayload.js'
 import { createIssue } from './github.js'
 import { repoReasonText } from './taskRepo.js'
+import { REPORT_TIMEOUT_MS } from './csaasClient.js'
+import { stageTimeoutMs } from '../Database/meetingPipelineJob.helpers.js'
 
 // overrides is a test-only seam, never meant to carry real data: the `db`
 // facade passed at runtime (bot/src/db/index.js default export) is a plain
@@ -35,23 +36,28 @@ async function guildIdFor(guildConfigId, overrides) {
 }
 
 // created: create the CSaaS meeting, snapshot the roster and title onto the job.
+// A document job (/tasks-from-doc) has no recordings: its title is the one the
+// command stored, dated with the job's creation time, and everyone verified is
+// on the roster (buildRoster falls back to that when no recording matches).
 async function createdStage({ job, db, csaasClient, client }) {
   const meeting = await db.meeting.findUnique({ where: { id: job.meetingId } })
-  const recs = await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } })
+  const isDocument = job.dataJson?.source === 'document'
+  const recs = isDocument ? [] : await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } })
 
   const guildId = await guildIdFor(job.guildConfigId, db)
   const guild = await client.guilds.fetch(guildId)
   const roster = await buildRoster({
     guild,
     guildConfigId: job.guildConfigId,
-    meetingId: job.meetingId,
+    meetingId: isDocument ? null : job.meetingId,
     db,
   })
 
-  const title =
-    deriveMeetingName(recs[0]?.filePath, job.meetingId) +
-    ' — ' +
-    formatMeetingDate(recs[0]?.startedAt || meeting?.createdAt)
+  const title = isDocument
+    ? `${job.dataJson.title || job.dataJson.documentName || 'Document'} — ${formatMeetingDate(job.createdAt || meeting?.createdAt)}`
+    : deriveMeetingName(recs[0]?.filePath, job.meetingId) +
+      ' — ' +
+      formatMeetingDate(recs[0]?.startedAt || meeting?.createdAt)
 
   // startMeetingRecording creates the CSAAS meeting so the live transcript has
   // somewhere to post. Only create one here when that did not happen.
@@ -75,6 +81,20 @@ async function createdStage({ job, db, csaasClient, client }) {
 // One successful upload per tick (advance:false) so each upload is short and
 // independently retryable; advances only once every rec is uploaded-or-missing.
 async function transcribingStage({ job, db, csaasClient }) {
+  // A document job has its text already: hand it to analyze-live as one segment.
+  // Never the /transcribe path and never the liveTranscriptFailed fallback — any
+  // error is rethrown so the worker retries the stage.
+  if (job.dataJson?.source === 'document') {
+    const meeting = await db.meeting.findUnique({ where: { id: job.meetingId } })
+    const text = String(meeting?.transcript || '').trim()
+    if (!text) throw new Error('document job has no text')
+    const analysis = await csaasClient.analyzeLive(job.csaasMeetingId, {
+      meetingNotes: { segment_0: { time_range: '', transcription: text } },
+      totalDurationSec: 0,
+    })
+    return { patch: { dataJson: { ...job.dataJson, liveTranscript: true, analysis } } }
+  }
+
   // Live path: the bot transcribed each turn as it was spoken, so CSAAS gets a
   // real conversation instead of one whole file per speaker. analyze-live both
   // stores the transcript and runs the analysis, so `analyzing` then no-ops.
@@ -179,10 +199,18 @@ export async function resolveMeetingChannel(client, db, job) {
   const meeting = await db.meeting.findUnique({ where: { id: job.meetingId } })
   const candidates = []
 
+  // A document job lives in the channel /tasks-from-doc was run in (a text
+  // channel, so there is no meetingchannel row to look up). Recorded meetings
+  // keep the lookup below.
+  const isDocument = job.dataJson?.source === 'document'
+  if (isDocument && job.dataJson.reviewChannelId) candidates.push(job.dataJson.reviewChannelId)
+
   try {
-    const mc = await db.meetingChannel.findFirst({
-      where: { guildConfigId: job.guildConfigId, voiceChannelId: meeting?.channelId },
-    })
+    const mc = isDocument
+      ? null
+      : await db.meetingChannel.findFirst({
+        where: { guildConfigId: job.guildConfigId, voiceChannelId: meeting?.channelId },
+      })
     if (mc?.textChannelId) candidates.push(mc.textChannelId)
   } catch (e) {
     console.warn('[meetingPipeline] meetingChannel lookup failed:', e?.message || e)
@@ -200,8 +228,53 @@ export async function resolveMeetingChannel(client, db, job) {
   return null
 }
 
-// awaiting_review: fetch notes, write the HTML report to disk (best-effort),
-// post the Discord review UI, and block the job for human review.
+// The /report call's timeout: its own 300 s, but always 30 s inside the
+// worker's stage cap, so the call gives up before the worker does.
+export function reportTimeoutMs() {
+  return Math.max(1, Math.min(REPORT_TIMEOUT_MS, stageTimeoutMs() - 30_000))
+}
+
+// reporting: ask CSAAS to write the meeting notes and the HTML report (its
+// /report step; /notes is empty until this has run). Best-effort and never
+// throws: a failed report must not stop the tasks reaching review. Asked once:
+// `reported` is saved BEFORE the call, because the worker saves nothing from a
+// stage its timeout abandons — the retry then moves on instead of asking again.
+async function reportingStage({ job, db, csaasClient }) {
+  const data = { ...(job.dataJson || {}) }
+  if (data.reported) return { patch: { dataJson: data } }
+  data.reported = true
+  if (db?.meetingPipelineJob?.update) {
+    try {
+      await db.meetingPipelineJob.update(job.id, { dataJson: { ...data } })
+    } catch (e) {
+      console.warn('[meetingPipeline] report marker persist failed:', e?.message || e)
+    }
+  }
+  try {
+    await csaasClient.generateReport(job.csaasMeetingId, { timeoutMs: reportTimeoutMs() })
+  } catch (e) {
+    const message = e?.message || String(e)
+    console.warn('[meetingPipeline] report failed:', message)
+    data.reportError = message
+  }
+  return { patch: { dataJson: data } }
+}
+
+// YYYY-MM-DD in UTC, or today's date when the value is missing or unparseable.
+function utcDateStamp(value) {
+  const d = value ? new Date(value) : new Date()
+  return (Number.isNaN(d.getTime()) ? new Date() : d).toISOString().slice(0, 10)
+}
+
+// The two attachment names for a meeting held on `date` (the date the job's
+// title uses).
+export function meetingNotesFileNames(date) {
+  const stamp = utcDateStamp(date)
+  return { notes: `meeting-notes-${stamp}.md`, report: `meeting-report-${stamp}.html` }
+}
+
+// awaiting_review: fetch notes, post them (and the HTML report) as files, post
+// the Discord review UI, and block the job for human review.
 async function awaitingReviewStage({ job, db, client, csaasClient }) {
   const data = { ...(job.dataJson || {}) }
   const tasks = data.tasks || []
@@ -209,20 +282,6 @@ async function awaitingReviewStage({ job, db, client, csaasClient }) {
   const roster = data.roster || []
 
   const { notes, html } = await csaasClient.fetchNotes(job.csaasMeetingId)
-
-  let reportPath = null
-  if (html) {
-    try {
-      const dir = process.env.MEETING_REPORTS_DIR || 'bot/meeting-reports'
-      await fs.mkdir(dir, { recursive: true })
-      const file = path.resolve(dir, `${job.meetingId}.html`)
-      await fs.writeFile(file, html)
-      reportPath = file
-    } catch (e) {
-      console.warn('[meetingPipeline] failed to write meeting report:', e?.message || e)
-      reportPath = null
-    }
-  }
 
   // Settle each task's project now (meeting project, else the project Claude
   // named) so the review can ask only about the unclear ones. The choices are
@@ -243,8 +302,47 @@ async function awaitingReviewStage({ job, db, client, csaasClient }) {
 
   const channel = await resolveMeetingChannel(client, db, job)
   if (channel) {
+    if (!data.notesMessageId && (notes || html)) {
+      try {
+        // The date the title uses: the first recording's start, else the meeting's.
+        let when = null
+        try {
+          const meeting = await db.meeting.findUnique({ where: { id: job.meetingId } })
+          const recs = await db.meetingRecording.findMany({ where: { meetingId: job.meetingId } })
+          when = recs[0]?.startedAt || meeting?.createdAt || null
+        } catch (e) {
+          console.warn('[meetingPipeline] meeting date lookup failed:', e?.message || e)
+        }
+        const names = meetingNotesFileNames(when)
+        const files = []
+        if (notes) files.push(new AttachmentBuilder(Buffer.from(notes, 'utf8'), { name: names.notes }))
+        if (html) files.push(new AttachmentBuilder(Buffer.from(html, 'utf8'), { name: names.report }))
+        // The title is user text (a document job's `title` option): it must not ping.
+        const sentNotes = await channel.send({
+          content: `**Meeting notes — ${data.title || 'Meeting'}**`,
+          files,
+          allowedMentions: { parse: [] },
+        })
+        data.notesMessageId = sentNotes.id
+        data.notesChannelId = channel.id
+        // Saved BEFORE the review goes out: a crash between the two sends then
+        // retries without posting the notes a second time. (The worker only
+        // saves the patch once this whole stage returns.)
+        if (db.meetingPipelineJob?.update) {
+          try {
+            await db.meetingPipelineJob.update(job.id, { dataJson: { ...data } })
+          } catch (e) {
+            console.warn('[meetingPipeline] notes message persist failed:', e?.message || e)
+          }
+        }
+      } catch (e) {
+        console.warn('[meetingPipeline] failed to post meeting notes:', e?.message || e)
+      }
+    }
     try {
-      const payload = buildReviewMessage({ job: { ...job, dataJson: data }, notes, reportPath, state, roster })
+      const payload = buildReviewMessage({
+        job: { ...job, dataJson: data }, notes, notesAttached: !!data.notesMessageId, state, roster,
+      })
       const msg = await channel.send(payload)
       patch.reviewMessageId = msg.id
       // Remember WHERE it went. doneStage edits this message into the final
@@ -445,11 +543,14 @@ async function mirroredStage({ job, db, client, csaasClient }) {
     }
     for (const [ref, items] of byRef) {
       try {
-        await channel.send(
-          `<@${ref}> you've been assigned: ${items
+        // Task titles are Claude's words, steerable by a document's text: only
+        // the assignee this line is for may be pinged.
+        await channel.send({
+          content: `<@${ref}> you've been assigned: ${items
             .map((m) => (m.taskChannelId ? `**${m.title}** (<#${m.taskChannelId}>)` : `**${m.title}**`))
             .join(', ')} — /update-task for details`,
-        )
+          allowedMentions: { users: [ref] },
+        })
       } catch (e) {
         console.warn('[meetingPipeline] assignee ping failed:', e?.message || e)
       }
@@ -673,6 +774,7 @@ export const stageRunners = {
   analyzing: analyzingStage,
   generating_tasks: generatingTasksStage,
   assigning: assigningStage,
+  reporting: reportingStage,
   awaiting_review: awaitingReviewStage,
   approved: approvedStage,
   mirrored: mirroredStage,

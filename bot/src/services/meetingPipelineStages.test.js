@@ -4,7 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ChannelType } from 'discord.js'
-import { stageRunners, resolveRepoSlug, clampSummary } from './meetingPipelineStages.js'
+import { stageRunners, resolveRepoSlug, clampSummary, meetingNotesFileNames, resolveMeetingChannel } from './meetingPipelineStages.js'
+import { formatMeetingDate } from '../commands/playback.js'
 
 test('resolveRepoSlug parses ssh + https', () => {
   assert.deepEqual(resolveRepoSlug({ url: 'git@github.com:granjur/bot.git' }), { owner: 'granjur', repo: 'bot' })
@@ -557,7 +558,6 @@ function reviewJob() {
 }
 
 test('awaiting_review posts a message and blocks', async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const sent = []
   const channel = { send: async (payload) => { sent.push(payload); return { id: 'msg1' } } }
   const fetched = []
@@ -571,7 +571,7 @@ test('awaiting_review posts a message and blocks', async () => {
   const out = await stageRunners.awaiting_review({ job: reviewJob(), db, csaasClient, client })
   assert.equal(out.block, true)
   assert.equal(out.patch.reviewMessageId, 'msg1')
-  assert.equal(sent.length, 1)
+  assert.equal(sent.length, 2)
   assert.equal(fetched[0], 'tc1')
   assert.equal(typeof out.patch.dataJson.review, 'object')
   assert.ok(Array.isArray(out.patch.dataJson.review.tasks))
@@ -579,7 +579,6 @@ test('awaiting_review posts a message and blocks', async () => {
 })
 
 test('awaiting_review posts even without html report', async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const sent = []
   const channel = { send: async (payload) => { sent.push(payload); return { id: 'msg2' } } }
   const client = { channels: { fetch: async () => channel } }
@@ -592,13 +591,12 @@ test('awaiting_review posts even without html report', async () => {
   const out = await stageRunners.awaiting_review({ job: reviewJob(), db, csaasClient, client })
   assert.equal(out.block, true)
   assert.equal(out.patch.reviewMessageId, 'msg2')
-  assert.equal(sent.length, 1)
-  const desc = sent[0].embeds[0].data.description
+  assert.equal(sent.length, 2)
+  const desc = sent[1].embeds[0].data.description
   assert.ok(!/Full report:/.test(desc))
 })
 
 test('awaiting_review still blocks when channel resolution fails', async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const client = { channels: { fetch: async () => { throw new Error('no channel') } } }
   const csaasClient = { fetchNotes: async () => ({ notes: 'N', html: '<html></html>' }) }
   const db = {
@@ -687,7 +685,33 @@ test('mirrored creates a task per non-rejected review task and pings assignees',
   assert.equal(out.patch.dataJson.mirrored[0].github, true)
   assert.equal(out.patch.dataJson.mirrored[0].title, 'Do A')
   assert.equal(sent.length, 1)
-  assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\*/)
+  assert.match(sent[0].content, /<@11> you've been assigned: \*\*Do A\*\*/)
+})
+
+test('the assignee ping mentions only the assignee, even when a task title holds a mention', async () => {
+  const sent = []
+  const channel = { id: 'tc1', send: async (m) => { sent.push(m); return { id: 'x' } } }
+  const client = { user: { id: 'bot' }, channels: { fetch: async () => channel } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    repository: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+    projectRepos: { findMany: async () => [] },
+    task: { findFirst: async () => null, create: async () => ({ id: 'db1' }) },
+    meetingPipelineJob: { update: async () => ({}) },
+  }
+  const job = {
+    id: 'j', meetingId: 'M', csaasMeetingId: 'm', guildConfigId: 'g',
+    dataJson: {
+      tasks: [{ task_id: 'a', goal_of_task: 'Tell @everyone and <@&42> and <@77>' }],
+      review: { tasks: [{ taskId: 'a', assigneeRef: '11', rejected: false }] },
+    },
+  }
+  await stageRunners.mirrored({ job, db, client, csaasClient: {} })
+  assert.equal(sent.length, 1)
+  assert.match(sent[0].content, /^<@11> you've been assigned: \*\*Tell @everyone/)
+  assert.deepEqual(sent[0].allowedMentions, { users: ['11'] })
 })
 
 test('mirrored is idempotent on re-run: reuses existing task, no re-ping when pinged', async () => {
@@ -814,7 +838,7 @@ test('mirrored gives each assigned task its own channel, DMs the assignee, and r
   assert.match(dms[0][1], /<#task-2>/)
 
   // The review-channel summary links the new channel.
-  assert.match(sent[0], /<@11> you've been assigned: \*\*Do A\*\* \(<#task-2>\)/)
+  assert.match(sent[0].content, /<@11> you've been assigned: \*\*Do A\*\* \(<#task-2>\)/)
 })
 
 test('mirrored gives a matched task its channel inside the project, named after its title', async () => {
@@ -1293,7 +1317,6 @@ const twoTaskJob = () => ({
 })
 
 test('awaiting_review asks for a project only where the rules settle none, and stores the choices', async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const sent = []
   const channel = { id: 'tc1', send: async (p) => { sent.push(p); return { id: 'msg1' } } }
   const client = { channels: { fetch: async () => channel } }
@@ -1304,11 +1327,10 @@ test('awaiting_review asks for a project only where the rules settle none, and s
   assert.deepEqual([b.needsProject, b.projectId], [true, null])
   assert.deepEqual(out.patch.dataJson.reviewProjects, [{ id: 'p2', name: 'Badar HMS' }, { id: 'p1', name: 'Framework' }])
   // One task per page while b needs a project: page 1 is a, with no select.
-  assert.match(sent[0].embeds[0].data.description, /Page 1\/2/)
+  assert.match(sent[1].embeds[0].data.description, /Page 1\/2/)
 })
 
 test('awaiting_review asks nothing when the guild has no projects to offer', async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const sent = []
   const channel = { id: 'tc1', send: async (p) => { sent.push(p); return { id: 'msg1' } } }
   const client = { channels: { fetch: async () => channel } }
@@ -1317,11 +1339,10 @@ test('awaiting_review asks nothing when the guild has no projects to offer', asy
   assert.ok(out.patch.dataJson.review.tasks.every((t) => t.needsProject === false))
   assert.deepEqual(out.patch.dataJson.reviewProjects, [])
   // No task needs a project, so the legacy page size (2) applies to both tasks: one page.
-  assert.match(sent[0].embeds[0].data.description, /Page 1\/1/)
+  assert.match(sent[1].embeds[0].data.description, /Page 1\/1/)
 })
 
 test("awaiting_review asks nothing when the meeting has a project", async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const channel = { id: 'tc1', send: async () => ({ id: 'msg1' }) }
   const out = await stageRunners.awaiting_review({
     job: twoTaskJob(), db: reviewDb({ meetingProjectId: 'p1' }),
@@ -1380,4 +1401,354 @@ test('mirrored entries carry the repositoryId the row was created with (null whe
   assert.deepEqual(out.patch.dataJson.mirrored.map((m) => m.repositoryId), ['r-fw', null])
   // F4: the rule's reason rides along, so issue_syncing can say why there is no repository.
   assert.deepEqual(out.patch.dataJson.mirrored.map((m) => m.repoReason), ['only-repo', 'no-project'])
+})
+
+// ---------------------------------------------------------------------------
+// Meeting notes as files (2026-09-30): reporting stage + notes message
+// ---------------------------------------------------------------------------
+
+test('reporting asks CSAAS for the report once and records it', async () => {
+  const calls = []
+  const csaasClient = { generateReport: async (id) => { calls.push(id); return {} } }
+  const job = { id: 'j', csaasMeetingId: 'm7', dataJson: { title: 'T' } }
+  const out = await stageRunners.reporting({ job, csaasClient })
+  assert.deepEqual(calls, ['m7'])
+  assert.equal(out.patch.dataJson.reported, true)
+  assert.equal(out.patch.dataJson.reportError, undefined)
+  assert.equal(out.patch.dataJson.title, 'T')
+  assert.notEqual(out.advance, false)
+  assert.notEqual(out.block, true)
+})
+
+test('reporting advances when the report fails, recording the error and logging once', async () => {
+  const warns = []
+  const realWarn = console.warn
+  console.warn = (...a) => warns.push(a)
+  try {
+    const csaasClient = { generateReport: async () => { throw new Error('claude down') } }
+    const out = await stageRunners.reporting({ job: { id: 'j', csaasMeetingId: 'm7', dataJson: {} }, csaasClient })
+    assert.equal(out.patch.dataJson.reported, true)
+    assert.equal(out.patch.dataJson.reportError, 'claude down')
+    assert.notEqual(out.advance, false)
+    assert.equal(warns.length, 1)
+    assert.equal(warns[0][0], '[meetingPipeline] report failed:')
+  } finally {
+    console.warn = realWarn
+  }
+})
+
+test('reporting does not call CSAAS again when already reported', async () => {
+  let called = false
+  const csaasClient = { generateReport: async () => { called = true } }
+  const out = await stageRunners.reporting({
+    job: { id: 'j', csaasMeetingId: 'm7', dataJson: { reported: true } }, csaasClient,
+  })
+  assert.equal(called, false)
+  assert.equal(out.patch.dataJson.reported, true)
+})
+
+// ---- final fix wave (2026-10-01): /report is marked BEFORE it is called ----
+
+function reportingDb() {
+  const writes = []
+  return { writes, db: { meetingPipelineJob: { update: async (id, patch) => { writes.push([id, structuredClone(patch)]); return {} } } } }
+}
+
+test('reporting saves reported:true on the job before it calls /report', async () => {
+  const { db, writes } = reportingDb()
+  let writesAtCall = null
+  const csaasClient = { generateReport: async () => { writesAtCall = writes.length; return {} } }
+  const job = { id: 'j', csaasMeetingId: 'm7', dataJson: { title: 'T' } }
+  await stageRunners.reporting({ job, db, csaasClient })
+  assert.equal(writesAtCall, 1, 'the write happened before the call')
+  assert.deepEqual(writes[0], ['j', { dataJson: { title: 'T', reported: true } }])
+})
+
+test('a retry after an aborted /report (stage timeout) advances without calling it again', async () => {
+  const { db, writes } = reportingDb()
+  let calls = 0
+  // First run: the call never returns (the worker's stage timeout abandons it).
+  const hung = { generateReport: () => { calls += 1; return new Promise(() => {}) } }
+  const job = { id: 'j', csaasMeetingId: 'm7', dataJson: { title: 'T' } }
+  void stageRunners.reporting({ job, db, csaasClient: hung })
+  await new Promise((r) => setImmediate(r))
+  assert.equal(calls, 1)
+  // The worker's error path keeps the saved dataJson; the retry reads it.
+  const saved = writes.at(-1)[1].dataJson
+  const retry = { generateReport: async () => { calls += 1; return {} } }
+  const out = await stageRunners.reporting({ job: { ...job, dataJson: saved }, db, csaasClient: retry })
+  assert.equal(calls, 1, '/report was not called a second time')
+  assert.notEqual(out.advance, false)
+  assert.equal(out.patch.dataJson.reported, true)
+})
+
+test('a retry after a thrown /report advances without calling it again', async () => {
+  const { db, writes } = reportingDb()
+  let calls = 0
+  const realWarn = console.warn
+  console.warn = () => {}
+  try {
+    const job = { id: 'j', csaasMeetingId: 'm7', dataJson: {} }
+    const aborting = { generateReport: async () => { calls += 1; throw new Error('This operation was aborted') } }
+    await stageRunners.reporting({ job, db, csaasClient: aborting })
+    const out = await stageRunners.reporting({ job: { ...job, dataJson: writes.at(-1)[1].dataJson }, db, csaasClient: aborting })
+    assert.equal(calls, 1)
+    assert.notEqual(out.advance, false)
+  } finally {
+    console.warn = realWarn
+  }
+})
+
+test('the /report timeout is clamped to 30 s under the worker stage timeout', async () => {
+  const prev = process.env.MEETING_STAGE_TIMEOUT_MS
+  const seen = []
+  const csaasClient = { generateReport: async (id, opts) => { seen.push(opts?.timeoutMs); return {} } }
+  const run = () => stageRunners.reporting({ job: { id: 'j', csaasMeetingId: 'm7', dataJson: {} }, db: reportingDb().db, csaasClient })
+  try {
+    delete process.env.MEETING_STAGE_TIMEOUT_MS
+    await run() // default stage timeout 360 s -> min(300 s, 330 s)
+    process.env.MEETING_STAGE_TIMEOUT_MS = '200000'
+    await run() // min(300 s, 170 s)
+    process.env.MEETING_STAGE_TIMEOUT_MS = '900000'
+    await run() // min(300 s, 870 s)
+  } finally {
+    if (prev === undefined) delete process.env.MEETING_STAGE_TIMEOUT_MS
+    else process.env.MEETING_STAGE_TIMEOUT_MS = prev
+  }
+  assert.deepEqual(seen, [300_000, 170_000, 300_000])
+})
+
+test('meetingNotesFileNames uses the UTC date, and today when the date is unusable', () => {
+  assert.deepEqual(meetingNotesFileNames('2026-09-30T23:30:00Z'), {
+    notes: 'meeting-notes-2026-09-30.md', report: 'meeting-report-2026-09-30.html',
+  })
+  assert.equal(meetingNotesFileNames(new Date('2026-01-05T00:00:00Z')).notes, 'meeting-notes-2026-01-05.md')
+  const today = new Date().toISOString().slice(0, 10)
+  assert.equal(meetingNotesFileNames(null).notes, `meeting-notes-${today}.md`)
+  assert.equal(meetingNotesFileNames('nonsense').report, `meeting-report-${today}.html`)
+})
+
+// One channel + db fake that logs the order of sends and job writes.
+function notesHarness({ notes, html, dataJson = {}, failNotes = false, startedAt = '2026-03-02T10:00:00Z' } = {}) {
+  const events = []
+  const sent = []
+  const channel = {
+    id: 'tc1',
+    send: async (payload) => {
+      if (payload.files && failNotes) throw new Error('upload refused')
+      const id = payload.files ? 'notes-msg' : 'review-msg'
+      sent.push(payload)
+      events.push(`send:${id}`)
+      return { id }
+    },
+  }
+  const client = { channels: { fetch: async () => channel } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'M', channelId: 'vc1', createdAt: '2020-01-01T00:00:00Z' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'tc1' }) },
+    meetingRecording: { findMany: async () => [{ startedAt }] },
+    meetingPipelineJob: {
+      update: async (id, patch) => { events.push(`update:${patch.dataJson.notesMessageId ?? 'none'}`); return {} },
+    },
+  }
+  const csaasClient = { fetchNotes: async () => ({ notes, html }) }
+  const job = reviewJob()
+  job.dataJson = { ...job.dataJson, ...dataJson }
+  return { events, sent, client, db, csaasClient, job }
+}
+
+const notesMessages = (h) => h.sent.filter((p) => p.files)
+const fileNames = (p) => p.files.map((f) => f.name)
+
+test('awaiting_review posts the notes message with both files before the review', async () => {
+  const h = notesHarness({ notes: '# Notes', html: '<html>r</html>' })
+  const out = await stageRunners.awaiting_review(h)
+  const [m] = notesMessages(h)
+  assert.equal(notesMessages(h).length, 1)
+  assert.equal(m.content, '**Meeting notes — T**')
+  assert.deepEqual(fileNames(m), ['meeting-notes-2026-03-02.md', 'meeting-report-2026-03-02.html'])
+  assert.equal(m.files[0].attachment.toString('utf8'), '# Notes')
+  assert.equal(m.files[1].attachment.toString('utf8'), '<html>r</html>')
+  assert.equal(out.patch.dataJson.notesMessageId, 'notes-msg')
+  assert.equal(out.patch.dataJson.notesChannelId, 'tc1')
+  assert.equal(out.patch.reviewMessageId, 'review-msg')
+  assert.match(h.sent.at(-1).embeds[0].data.description, /Full notes are attached above\./)
+  assert.equal(out.block, true)
+})
+
+test('the notes message pings nobody, whatever the title says', async () => {
+  const h = notesHarness({ notes: '# Notes', html: null, dataJson: { title: '@everyone <@&123>' } })
+  await stageRunners.awaiting_review(h)
+  const [m] = notesMessages(h)
+  assert.equal(m.content, '**Meeting notes — @everyone <@&123>**')
+  assert.deepEqual(m.allowedMentions, { parse: [] })
+  // The review message carries no content at all (embeds only), so nothing in it pings.
+  assert.equal(h.sent.at(-1).content, undefined)
+})
+
+test('awaiting_review attaches only the notes when there is no html', async () => {
+  const h = notesHarness({ notes: 'just notes', html: null })
+  await stageRunners.awaiting_review(h)
+  assert.deepEqual(fileNames(notesMessages(h)[0]), ['meeting-notes-2026-03-02.md'])
+})
+
+test('awaiting_review attaches only the report when there are no notes', async () => {
+  const h = notesHarness({ notes: '', html: '<html></html>' })
+  const out = await stageRunners.awaiting_review(h)
+  assert.deepEqual(fileNames(notesMessages(h)[0]), ['meeting-report-2026-03-02.html'])
+  assert.equal(out.patch.dataJson.notesMessageId, 'notes-msg')
+})
+
+test('awaiting_review posts no notes message when notes and html are both empty', async () => {
+  const h = notesHarness({ notes: '', html: null })
+  const out = await stageRunners.awaiting_review(h)
+  assert.equal(notesMessages(h).length, 0)
+  assert.equal(out.patch.dataJson.notesMessageId, undefined)
+  assert.doesNotMatch(h.sent[0].embeds[0].data.description, /attached above/)
+  assert.equal(out.patch.reviewMessageId, 'review-msg')
+})
+
+test('awaiting_review uses the meeting creation date when there is no recording', async () => {
+  const h = notesHarness({ notes: 'n', html: null })
+  h.db.meetingRecording.findMany = async () => []
+  await stageRunners.awaiting_review(h)
+  assert.deepEqual(fileNames(notesMessages(h)[0]), ['meeting-notes-2020-01-01.md'])
+})
+
+test('awaiting_review saves notesMessageId before it sends the review', async () => {
+  const h = notesHarness({ notes: 'n', html: '<p/>' })
+  await stageRunners.awaiting_review(h)
+  assert.deepEqual(h.events, ['send:notes-msg', 'update:notes-msg', 'send:review-msg'])
+})
+
+test('awaiting_review does not post the notes again when notesMessageId is already set (a retry)', async () => {
+  const h = notesHarness({ notes: 'n', html: '<p/>', dataJson: { notesMessageId: 'earlier' } })
+  const out = await stageRunners.awaiting_review(h)
+  assert.equal(notesMessages(h).length, 0)
+  assert.equal(h.sent.length, 1)
+  assert.equal(out.patch.dataJson.notesMessageId, 'earlier')
+  assert.match(h.sent[0].embeds[0].data.description, /Full notes are attached above\./)
+})
+
+test('awaiting_review still posts the review when the notes send throws', async () => {
+  const warns = []
+  const realWarn = console.warn
+  console.warn = (...a) => warns.push(a)
+  try {
+    const h = notesHarness({ notes: 'n', html: '<p/>', failNotes: true })
+    const out = await stageRunners.awaiting_review(h)
+    assert.equal(out.patch.reviewMessageId, 'review-msg')
+    assert.equal(out.patch.dataJson.notesMessageId, undefined)
+    assert.equal(out.block, true)
+    assert.doesNotMatch(h.sent[0].embeds[0].data.description, /attached above/)
+    assert.ok(warns.some((w) => /failed to post meeting notes/.test(w[0])))
+  } finally {
+    console.warn = realWarn
+  }
+})
+
+// ---- document jobs (/tasks-from-doc) ----
+
+const docJob = (extra = {}, dataExtra = {}) => ({
+  id: 'j', meetingId: 'm', guildConfigId: 'g', csaasMeetingId: 'csaas-1',
+  createdAt: new Date('2026-09-07T10:00:00Z'),
+  dataJson: { source: 'document', reviewChannelId: 'tc1', documentName: 'spec.pdf', title: 'spec', ...dataExtra },
+  ...extra,
+})
+
+test('created for a document job: titled from dataJson.title and the job date, roster is all verified members, dataJson kept', async () => {
+  let createArgs = null
+  let rosterQuery = null
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', csaasMeetingId: null, transcript: 'text' }) },
+    // A document job has no recordings; reading them would be a bug.
+    meetingRecording: { findMany: async () => { throw new Error('no recordings for a document job') } },
+    guildMember: { findMany: async (q) => { rosterQuery = q; return [{ discordId: 'u1', email: 'ali@x.io' }, { discordId: 'u2', email: 'sara@x.io' }] } },
+    getGuildConfigById: async () => ({ guildId: 'g' }),
+  }
+  const csaasClient = { createMeeting: async (a) => { createArgs = a; return { meeting_id: 'csaas-new' } } }
+  const client = { guilds: { fetch: async () => ({ id: 'g', members: { fetch: async (id) => ({ displayName: id === 'u1' ? 'Ali' : 'Sara' }) } }) } }
+  const out = await stageRunners.created({ job: docJob({ csaasMeetingId: null }), db, client, csaasClient })
+  const when = formatMeetingDate(new Date('2026-09-07T10:00:00Z'))
+  assert.equal(out.patch.dataJson.title, `spec — ${when}`)
+  assert.equal(createArgs.title, `spec — ${when}`)
+  assert.deepEqual(createArgs.participants, ['Ali', 'Sara'])
+  assert.deepEqual(out.patch.dataJson.roster.map((r) => r.ref), ['u1', 'u2'])
+  assert.equal(rosterQuery.where.verifiedAt.not, null)
+  assert.equal(out.patch.csaasMeetingId, 'csaas-new')
+  assert.equal(out.patch.dataJson.source, 'document')
+  assert.equal(out.patch.dataJson.reviewChannelId, 'tc1')
+  assert.equal(out.patch.dataJson.documentName, 'spec.pdf')
+})
+
+test('transcribing for a document job sends the transcript to analyze-live as one segment and never touches /transcribe', async () => {
+  let args = null
+  const db = { meeting: { findUnique: async () => ({ id: 'm', transcript: 'Ali: ship it by Friday.' }) } }
+  const csaasClient = {
+    analyzeLive: async (id, payload) => { args = [id, payload]; return { summary: 'ok' } },
+    transcribeSegment: async () => { throw new Error('transcribeSegment must not be called') },
+  }
+  const out = await stageRunners.transcribing({ job: docJob(), db, csaasClient, client: {} })
+  assert.deepEqual(args, ['csaas-1', {
+    meetingNotes: { segment_0: { time_range: '', transcription: 'Ali: ship it by Friday.' } },
+    totalDurationSec: 0,
+  }])
+  assert.equal(out.patch.dataJson.liveTranscript, true)
+  assert.deepEqual(out.patch.dataJson.analysis, { summary: 'ok' })
+  assert.equal(out.patch.dataJson.source, 'document')
+  assert.notEqual(out.advance, false)
+})
+
+test('transcribing for a document job rethrows an analyze-live failure, never falls back or flags liveTranscriptFailed', async () => {
+  const db = { meeting: { findUnique: async () => ({ id: 'm', transcript: 'some text' }) } }
+  const csaasClient = {
+    analyzeLive: async () => { throw new Error('csaas 502') },
+    transcribeSegment: async () => { throw new Error('transcribeSegment must not be called') },
+  }
+  await assert.rejects(() => stageRunners.transcribing({ job: docJob(), db, csaasClient, client: {} }), /csaas 502/)
+})
+
+test('transcribing for a document job with an empty transcript throws', async () => {
+  const db = { meeting: { findUnique: async () => ({ id: 'm', transcript: '  ' }) } }
+  const csaasClient = { analyzeLive: async () => { throw new Error('must not be called') } }
+  await assert.rejects(() => stageRunners.transcribing({ job: docJob(), db, csaasClient, client: {} }), /document job has no text/)
+})
+
+test('resolveMeetingChannel: a document job uses dataJson.reviewChannelId even with no meetingchannel row', async () => {
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', channelId: 'tc1' }) },
+    meetingChannel: { findFirst: async () => { throw new Error('no lookup for a document job') } },
+  }
+  const sent = { id: 'tc1', send: async () => {} }
+  const client = { channels: { fetch: async (id) => (id === 'tc1' ? sent : null) } }
+  assert.equal(await resolveMeetingChannel(client, db, docJob()), sent)
+})
+
+test('resolveMeetingChannel: a recorded meeting keeps the meetingchannel lookup, ignoring reviewChannelId', async () => {
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', channelId: 'vc1' }) },
+    meetingChannel: { findFirst: async () => ({ textChannelId: 'text-mc' }) },
+  }
+  const fetched = []
+  const client = { channels: { fetch: async (id) => { fetched.push(id); return { id, send: async () => {} } } } }
+  const ch = await resolveMeetingChannel(client, db, { meetingId: 'm', guildConfigId: 'g', dataJson: { reviewChannelId: 'elsewhere' } })
+  assert.equal(ch.id, 'text-mc')
+  assert.deepEqual(fetched, ['text-mc'])
+})
+
+test('awaiting_review for a document job posts into dataJson.reviewChannelId with no meetingchannel row', async () => {
+  const sends = []
+  const channel = { id: 'tc1', send: async (p) => { sends.push(p); return { id: `msg${sends.length}` } } }
+  const db = {
+    meeting: { findUnique: async () => ({ id: 'm', channelId: 'tc1' }) },
+    meetingChannel: { findFirst: async () => { throw new Error('no lookup for a document job') } },
+    meetingRecording: { findMany: async () => [] },
+    project: { findMany: async () => [] },
+  }
+  const csaasClient = { fetchNotes: async () => ({ notes: null, html: null }) }
+  const client = { channels: { fetch: async () => channel } }
+  const job = docJob({}, { tasks: [{ task_id: 1, goal_of_task: 'Do it' }], assignments: [], roster: [] })
+  const out = await stageRunners.awaiting_review({ job, db, client, csaasClient })
+  assert.equal(out.patch.reviewMessageId, 'msg1')
+  assert.equal(out.patch.dataJson.reviewChannelId, 'tc1')
 })

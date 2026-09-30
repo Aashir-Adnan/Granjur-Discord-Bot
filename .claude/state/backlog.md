@@ -300,8 +300,43 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      - A file with many long descriptions must be split to fit 90 KB (CSAAS's body parser
        limit, deliberately left alone).
 7. **Meeting docs/JSON → Claude → tasks** without a meeting, plus a document field when a
-   meeting starts (today only a voice recording enqueues the pipeline; channel attachments
-   land in `meeting.notes` and are never read).
+   meeting starts, plus meeting notes as files — **BUILT, NOT DEPLOYED (not merged either),
+   2026-10-01.** Branch `feat/doc-tasks` in the bot and CSAAS. Spec
+   `docs/superpowers/specs/2026-09-30-doc-tasks-and-meeting-notes-design.md`, plan
+   `docs/superpowers/plans/2026-09-30-doc-tasks-and-meeting-notes.md`, knowledge
+   `.claude/knowledge/doc-tasks.md`. No migration. `/tasks-from-doc` (Verified), a document
+   at `/record start` (sent to CSAAS as `pre_meeting_notes`), and the `reporting` stage that
+   finally makes the meeting notes and HTML report exist (posted as files).
+   - **Rollout, in order (CSAAS → bot), each step needing the owner's go-ahead:**
+     1. Merge, then push CSAAS `main` (auto-deploys; harmless alone, `/create` just accepts
+        `pre_meeting_notes`).
+     2. Merge, then push the bot's `main`: the deploy runs `npm install --production`
+        (installs `unpdf` and `mammoth`), `npm run db:migrate` (nothing new) and restarts
+        pm2; `loadCommands` re-registers the slash commands at startup when the list changed.
+     3. Owner check: `node --version` on the VM must be >= 22 for PDFs (`unpdf`).
+   - **Not yet done:** a live pass: `/tasks-from-doc` with a small .md and a PDF, a
+     `/record start` with a document, and a finished meeting showing the notes and report files.
+   - **Deferred:**
+     - The VM's Node version must be >= 22 for PDF reading (`unpdf` declares it; on Node
+       below 22 PDF reading may fail; the failure is contained to that file). Unknown today.
+     - Extraction runs in-process: a crafted .docx could exhaust the bot's memory. A
+       `worker_thread` with resource limits would contain it.
+     - `/report` adds ~3 Claude calls and minutes per meeting, and truncates long
+       transcripts in the HTML report.
+     - Participant names show blank in the HTML report: the bot sends names as strings;
+       CSAAS's report expects objects.
+     - Anyone who can see a review can approve it (pre-existing).
+     - The worker's claim does not check `nextAttemptAt`: across two processes a job that
+       failed on the same stage between the batch read and the claim runs before its
+       backoff (in one process the in-flight guard rules this out).
+     - `/record start` waits for the document read, up to 20 s, before recording starts.
+     - `Using <file> as background` is shown even when the brief is later lost (the brief
+       is not stored, so a CSAAS that cannot create the meeting at the start drops it).
+     - A failed file read after the public defer is ephemeral now, but a role denial for
+       `/tasks-from-doc` is public (as for `/explain`).
+     - After `/meeting-review` re-posts a review, a document job's later notices follow the
+       new channel.
+     - Files posted in the meeting channel during a meeting are still not read.
 
 ## Site create/edit — rollout (branch `feat/site-task-edit` in all three repos, 2026-09-28)
 

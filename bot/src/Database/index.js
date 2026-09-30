@@ -1928,14 +1928,27 @@ function _mpjRow(row) {
   return { ...row, dataJson };
 }
 
+/** The INSERT for a job; `dataJson` (optional) is written in the same statement. */
+export function meetingPipelineJobInsertSql(pk, data = {}) {
+  if (data.dataJson === undefined || data.dataJson === null) {
+    return {
+      sql: "INSERT INTO `meeting_pipeline_job` (id, guildConfigId, meetingId) VALUES (?, ?, ?)",
+      params: [pk, data.guildConfigId, data.meetingId],
+    };
+  }
+  return {
+    sql: "INSERT INTO `meeting_pipeline_job` (id, guildConfigId, meetingId, dataJson) VALUES (?, ?, ?, ?)",
+    // Serialised only when it is an object, as meetingPipelineJobUpdate does.
+    params: [pk, data.guildConfigId, data.meetingId, typeof data.dataJson === "object" ? JSON.stringify(data.dataJson) : data.dataJson],
+  };
+}
+
 async function meetingPipelineJobCreate({ data }) {
   const existing = await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE meetingId = ?", [data.meetingId]);
   if (existing) return _mpjRow(existing);
   const pk = id();
-  await query(
-    "INSERT INTO `meeting_pipeline_job` (id, guildConfigId, meetingId) VALUES (?, ?, ?)",
-    [pk, data.guildConfigId, data.meetingId],
-  );
+  const { sql, params } = meetingPipelineJobInsertSql(pk, data);
+  await query(sql, params);
   return _mpjRow(await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE id = ?", [pk]));
 }
 
@@ -1945,6 +1958,19 @@ async function meetingPipelineJobFindByMeeting(meetingId) {
 
 async function meetingPipelineJobFindById(jobId) {
   return _mpjRow(await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE id = ?", [jobId]));
+}
+
+/** A guild's jobs that are still in the pipeline: every status but 'done' and 'failed'. */
+export function meetingPipelineJobUnfinishedByGuildSql(guildConfigId) {
+  return {
+    sql: "SELECT * FROM `meeting_pipeline_job` WHERE guildConfigId = ? AND status NOT IN ('done', 'failed')",
+    params: [guildConfigId],
+  };
+}
+
+async function meetingPipelineJobFindUnfinishedByGuild(guildConfigId) {
+  const { sql, params } = meetingPipelineJobUnfinishedByGuildSql(guildConfigId);
+  return (await query(sql, params)).map(_mpjRow);
 }
 
 function _mpjStaleSeconds() {
@@ -2535,6 +2561,7 @@ const db = {
     create: meetingPipelineJobCreate,
     findByMeeting: meetingPipelineJobFindByMeeting,
     findById: meetingPipelineJobFindById,
+    findUnfinishedByGuild: meetingPipelineJobFindUnfinishedByGuild,
     claimBatch: meetingPipelineJobClaimBatch,
     claim: meetingPipelineJobClaim,
     update: meetingPipelineJobUpdate,

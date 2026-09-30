@@ -1,11 +1,11 @@
 import db from '../db/index.js'
 import * as csaasClient from './csaasClient.js'
-import { backoffMs, MAX_ATTEMPTS, meetingPipelineEnabled } from '../Database/meetingPipelineJob.helpers.js'
+import { backoffMs, MAX_ATTEMPTS, meetingPipelineEnabled, stageTimeoutMs } from '../Database/meetingPipelineJob.helpers.js'
 import { stageRunners as defaultRunners, resolveMeetingChannel } from './meetingPipelineStages.js'
 
 export const STAGE_ORDER = [
   'created', 'transcribing', 'analyzing', 'generating_tasks', 'assigning',
-  'awaiting_review', 'approved', 'mirrored', 'issue_syncing', 'done',
+  'reporting', 'awaiting_review', 'approved', 'mirrored', 'issue_syncing', 'done',
 ]
 
 export function nextStage(stage) {
@@ -13,8 +13,6 @@ export function nextStage(stage) {
   if (i < 0 || i >= STAGE_ORDER.length - 1) return 'done'
   return STAGE_ORDER[i + 1]
 }
-
-const DEFAULT_STAGE_TIMEOUT_MS = 360_000
 
 function withTimeout(promise, ms, label) {
   let timer
@@ -32,17 +30,44 @@ function withTimeout(promise, ms, label) {
   return Promise.race([guarded, timeout]).finally(() => clearTimeout(timer))
 }
 
-export async function runTick({ db, stageRunners, client, now = () => new Date(), notify = notifyFailure }) {
-  const jobs = await db.meetingPipelineJob.claimBatch(3)
-  for (const job of jobs) {
+// A stage can hold a tick for minutes (/report), and the interval does not wait,
+// so a tick that finds the previous one still running does nothing.
+let tickInFlight = false
+
+export async function runTick(deps) {
+  if (tickInFlight) return
+  tickInFlight = true
+  try {
+    await runBatch(deps)
+  } finally {
+    tickInFlight = false
+  }
+}
+
+async function runBatch({ db, stageRunners, client, now = () => new Date(), notify = notifyFailure }) {
+  const batch = await db.meetingPipelineJob.claimBatch(3)
+  for (const snapshot of batch) {
     // Claim the job (pending -> working) before running its stage. If another
     // worker already took it, skip. 'working' is transient: the stage's own
     // update(...) sets the next real status; a crash leaves it stale for the
     // claimBatch reaper to re-pick.
     const claimed = db.meetingPipelineJob.claim
-      ? await db.meetingPipelineJob.claim(job.id)
+      ? await db.meetingPipelineJob.claim(snapshot.id)
       : true
     if (!claimed) continue
+
+    // The batch was read before the jobs ahead of this one ran, and the claim
+    // checks only the status: run from the row as it is now. If another worker
+    // moved it on meanwhile, hand it back (pending, as the claim found it) and
+    // leave it for a later tick.
+    const job = db.meetingPipelineJob.findById
+      ? await db.meetingPipelineJob.findById(snapshot.id)
+      : snapshot
+    if (!job) continue
+    if (job.stage !== snapshot.stage) {
+      await db.meetingPipelineJob.update(job.id, { status: 'pending' })
+      continue
+    }
 
     const runner = stageRunners[job.stage]
     if (!runner) {
@@ -52,7 +77,7 @@ export async function runTick({ db, stageRunners, client, now = () => new Date()
       continue
     }
     try {
-      const timeoutMs = Number(process.env.MEETING_STAGE_TIMEOUT_MS) || DEFAULT_STAGE_TIMEOUT_MS
+      const timeoutMs = stageTimeoutMs()
       const out = (await withTimeout(
         Promise.resolve().then(() => runner({ job, db, client, csaasClient })),
         timeoutMs,
@@ -77,15 +102,16 @@ export async function runTick({ db, stageRunners, client, now = () => new Date()
   }
 }
 
-// Best-effort channel alert when a job exhausts its retries. Never throws.
+// Best-effort channel alert when a job exhausts its retries. Never throws. The
+// error itself stays in the job's lastError: it can hold internal URLs, so the
+// channel only learns the stage.
 export async function notifyFailure(client, job, err, resolve = resolveMeetingChannel) {
   try {
     const channel = await resolve(client, db, job)
     if (!channel || typeof channel.send !== 'function') return
-    const reason = String(err?.message || err).slice(0, 300)
     await channel.send(
-      '⚠️ Meeting pipeline failed at **' + job.stage + '** — `' + reason +
-      '`. Retry with `/meeting-retry ' + job.meetingId + '`.',
+      'The meeting pipeline stopped at **' + job.stage + '** after several attempts. ' +
+      'An admin can retry it with `/meeting-retry ' + job.meetingId + '`.',
     )
   } catch (e) {
     console.warn('[meetingPipeline] notifyFailure failed:', e?.message || e)
