@@ -84,7 +84,7 @@ Answers given while designing:
   accepted.
 - Unknown fields are ignored. A `project`, `id` or `subtasks` inside a subtask is ignored,
   not an error.
-- The file may be at most 256 KB. (The bot's internal routes cap a request at 64 KB
+- The file may be at most 90 KB. CSAAS's body parser (`express.json()` default, 100 KB) refuses a larger body before any handler runs, and that shared limit was left alone. (The bot's internal routes cap a request at 64 KB
   today; the import-check route alone takes up to 512 KB.)
 
 ### 2. Rules a task must pass (the preview's verdicts)
@@ -143,7 +143,7 @@ task invalid: a task is never imported without part of what the file says it has
 - **`POST /api/discord/tasks/import-check`** `{ project_id, tasks, create_issues? }`
   (in `discordTasksWrite.js`, the write-object pattern): the same permission, identity,
   `assertCanWrite` and `assertCanUseProject` checks as `createTask`, in the same order;
-  shape checks (an array of 1–50 objects, the request at most 256 KB); then
+  shape checks (an array of 1–50 objects, the request at most 90 KB); then
   `callBot('/internal/tasks/import-check')`. It returns the bot's verdicts with `fields`
   so the site can send each valid task to create unchanged.
 - **`createTask`** forwards optional `status`.
@@ -157,7 +157,7 @@ task invalid: a task is never imported without part of what the file says it has
   tab's create button, shown under the same condition as that button.
 - **`importLogic.ts`** (pure, tested):
   - `parseImportFile(text)` → `{ tasks }` or `{ error }` (not JSON, no `tasks` array,
-    empty, more than 50, over 256 KB), with messages a non-developer can act on;
+    empty, more than 50, over 90 KB), with messages a non-developer can act on;
   - the import queue: given the verdicts, the ordered steps (a task, then each of its
     subtasks), and the reducer that records each step as created / failed / skipped;
   - the summary line (`Imported 12 of 15 tasks. 2 were invalid and 1 failed.`).
