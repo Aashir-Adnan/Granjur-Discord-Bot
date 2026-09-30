@@ -49,7 +49,7 @@ function checkSubtask(sub, n, members) {
   if (!isObject(sub)) return { errors: [`${prefix}Each subtask must be an object.`], fields: null }
   const errors = []
   const [tErr, title] = titleOf(sub.title)
-  if (tErr) errors.push(tErr)
+  if (tErr) errors.push(typeof sub.title === 'string' && sub.title.trim() ? tErr : 'A subtask needs a title.')
   const [dErr, description] = descriptionOf(sub.description)
   if (dErr) errors.push(dErr)
   const [scErr, scope] = scopeOf(sub.scope)
@@ -70,9 +70,16 @@ function checkTask(entry, ctx) {
 
   const who = resolveAssignees(entry.assignees ?? [], members)
   errors.push(...who.errors)
-  // The file's assignees replace holderIds, and a file names no repositories:
-  // the repository rule below is the one that decides a bug's.
-  const v = validateCreate({ ...entry, holderIds: who.ids, repositoryIds: [] }, { project, memberIds, reposById })
+  // Only the fields a file may set are passed on (never `tracks`, never its own
+  // holderIds or repositoryIds): the file's assignees replace holderIds, and the
+  // repository rule below is the one that decides a bug's repository.
+  const v = validateCreate(
+    {
+      type: entry.type, title: entry.title, description: entry.description, scope: entry.scope, status: entry.status, modules: entry.modules,
+      holderIds: who.ids, repositoryIds: [],
+    },
+    { project, memberIds, reposById },
+  )
   if (v.error) errors.push(v.error)
   const [, status] = statusOf(entry.status)
 
@@ -87,14 +94,18 @@ function checkTask(entry, ctx) {
       const checked = entry.subtasks.map((s, i) => checkSubtask(s, i + 1, members))
       for (const c of checked) errors.push(...c.errors)
       subtasks = checked.map((c) => c.fields)
-      const unfinished = entry.subtasks.some((s) => isObject(s) && statusOf(s.status)[1] !== 'done')
+      const unfinished = entry.subtasks.some((s) => {
+        const [err, st] = isObject(s) ? statusOf(s.status) : ['not an object']
+        return !err && st !== 'done'
+      })
       if (status === 'done' && unfinished) errors.push('A done task cannot have unfinished subtasks.')
     }
   }
 
   const titleKey = typeof entry.title === 'string' ? norm(entry.title) : ''
   if (titleKey) {
-    if (existingTitles.has(titleKey) || seenTitles.has(titleKey)) warnings.push('A task with this title already exists in this project.')
+    if (existingTitles.has(titleKey)) warnings.push('A task with this title already exists in this project.')
+    if (seenTitles.has(titleKey)) warnings.push('This title appears more than once in the file.')
     seenTitles.add(titleKey)
   }
   if (v.fields?.type === 'feature' && createIssues && status !== 'done' && !repoFor()) warnings.push(NO_ISSUE_WARNING)
@@ -114,7 +125,8 @@ export async function checkImport({ db, cfg, project, tasks, createIssues = true
     loadProjectLinks(db, project.id),
     db.task.findMany({ where: { guildConfigId: cfg.id, projectId: project.id }, take: EXISTING_TASKS_CAP }),
   ])
-  const members = memberRows || []
+  // Filtered here as well, so another guild's member can never be matched whatever the query returns.
+  const members = (memberRows || []).filter((m) => m.guildConfigId === cfg.id)
   const ctx = {
     members,
     memberIds: new Set(members.map((m) => String(m.discordId))),

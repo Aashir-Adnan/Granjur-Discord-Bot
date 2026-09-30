@@ -145,7 +145,7 @@ test('a bad subtask makes the parent not ok and names the subtask', async () => 
   assert.equal(r.ok, false)
   assert.equal(r.fields, null)
   assert.deepEqual(r.errors, [
-    'Subtask 2: A task needs a title.',
+    'Subtask 2: A subtask needs a title.',
     `Subtask 2: scope must be one of ${SCOPE_VALUES.join(', ')}, or empty`,
     'Subtask 3: Each subtask must be an object.',
     'Subtask 4: No member matches "nobody".',
@@ -186,7 +186,12 @@ test('warning: a title the project already has (case-insensitive, subtasks ignor
 
 test('warning: a title repeated in the file lands on the later task only', async () => {
   const { tasks } = await check([{ type: 'feature', title: 'Same' }, { type: 'feature', title: ' same ' }, { type: 'feature', title: 'SAME' }], fakeDb(), { createIssues: false })
-  assert.deepEqual(tasks.map((t) => t.warnings.length), [0, 1, 1])
+  const again = 'This title appears more than once in the file.'
+  assert.deepEqual(tasks.map((t) => t.warnings), [[], [again], [again]])
+  const db = fakeDb({ tasks: [{ id: 't1', guildConfigId: 'g1', projectId: 'P1', title: 'Same' }] })
+  const both = (await check([{ type: 'feature', title: 'Same' }, { type: 'feature', title: 'same' }], db, { createIssues: false })).tasks
+  assert.deepEqual(both[0].warnings, ['A task with this title already exists in this project.'])
+  assert.deepEqual(both[1].warnings, ['A task with this title already exists in this project.', again])
 })
 
 test('warning: an open or in-progress feature with issues on and no repository', async () => {
@@ -273,4 +278,25 @@ test('body cap: 512 KB for the import check, 64 KB for every other route', () =>
     assert.equal(maxBodyFor(url), INTERNAL_MAX_BODY)
   }
   assert.equal(INTERNAL_MAX_BODY, 64 * 1024)
+})
+
+test('the file cannot set tracks or repositories; only the check decides them', async () => {
+  const r = await one({ type: 'feature', title: 'x', tracks: { apiTests: true, qaTests: true, acceptanceCriteria: true }, repositoryIds: ['R1'], holderIds: ['u-else'] }, withRepo())
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.fields.tracks, { apiTests: false, qaTests: false, acceptanceCriteria: false })
+  assert.deepEqual(r.fields.repositoryIds, [])
+  assert.deepEqual(r.fields.holderIds, [])
+})
+
+test('a done parent with a subtask of an invalid status gets only the status error', async () => {
+  const r = await one({ type: 'feature', title: 'x', status: 'done', subtasks: [{ title: 'a', status: 'nope' }] })
+  assert.deepEqual(r.errors, ['Subtask 1: status must be open, in_progress or done.'])
+})
+
+test('a member row from another guild is never matched, even if the query returns it', async () => {
+  const db = fakeDb()
+  db.guildMember.findMany = async () => [ali, elsewhere]
+  const r = await one({ type: 'feature', title: 'x', assignees: ['else@example.com'] }, db)
+  assert.deepEqual(r.errors, ['No member matches "else@example.com".'])
+  assert.deepEqual((await one({ type: 'feature', title: 'x', assignees: ['ali@example.com'] }, db)).fields.holderIds, ['u-ali'])
 })
