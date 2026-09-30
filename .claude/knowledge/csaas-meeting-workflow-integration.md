@@ -46,8 +46,9 @@ and an `/issuesync` `task_ids` filter. Bot side: `bot/src/services/csaasClient.j
 (`bot/src/Database/meetingPipelineJob*.js`, migration 013),
 `bot/src/services/meetingPipelineWorker.js` (`runTick` 60s loop, backoff,
 `MAX_ATTEMPTS`, stage timeout, `notifyFailure`),
-`bot/src/services/meetingPipelineStages.js` (10 stage runners +
-`resolveMeetingChannel`), review UI (`bot/src/services/meetingReviewUI.js` +
+`bot/src/services/meetingPipelineStages.js` (11 stage runners — `created, transcribing,
+analyzing, generating_tasks, assigning, reporting, awaiting_review, approved, mirrored,
+issue_syncing, done`; `reporting` added 2026-10-01 — + `resolveMeetingChannel`), review UI (`bot/src/services/meetingReviewUI.js` +
 `bot/src/commands/meetingReview.js`, `/meeting-review` `/meeting-retry`), `task`
 mirroring with `externalId`/`meetingId` (migration 014). Manual E2E runbook:
 `docs/meeting-pipeline-e2e-checklist.md`. Remaining follow-ups are in
@@ -100,7 +101,11 @@ CSAAS: `meetings.meeting_id`, `status` enum (`pending`→`transcribed`→`analyz
   [meeting-audio-recording.md](meeting-audio-recording.md)) → enqueue → create CSAAS
   meeting → upload each `MeetingRecording` `.ogg` as a `/transcribe` segment
   (speaker-labelled) → `/analyze` → `/tasks` → `/assign`.
-- Review UI in the meeting text channel: notes + local HTML-report link + per-task
+- Review UI in the meeting text channel: notes + HTML report (attached as files in a
+  `**Meeting notes — <title>**` message before the review; **history:** until 2026-10-01 the
+  notes were always empty because the bot never called CSAAS `/report`, and the report was a
+  local-disk link via `MEETING_REPORTS_DIR`, now removed — the `reporting` stage calls
+  `/report` once, best-effort; see [[doc-tasks]]) + per-task
   row (assignee user-select, "Push to GitHub" toggle, Approve/Reject) + "Approve all".
 - On approval: `/approve {skip_github:true}` → create real rows in the bot `task`
   table (`assigneeIds=[discordId]`, `externalId=csaas:<meeting_task_id>`,
@@ -242,3 +247,14 @@ task_scope_fixed_values.sql`. CSAAS: `Src/Apis/ProjectSpecificApis/MeetingWorkfl
 meetingTaskScope.js` (new), `meetingWorkflow.js`, `meetingAgents.js` (prompt schema),
 migration `20260929_2_meeting_tasks_scope.sql`. Rollout order and the preview query are in
 `.claude/state/backlog.md`.
+
+## Document jobs, the pre-meeting brief and the `reporting` stage (2026-10-01, roadmap sub-project 7)
+
+Built on `feat/doc-tasks` in both repos, not deployed. A pipeline job with
+`dataJson.source === 'document'` (`/tasks-from-doc`) has no recordings: `created` builds the
+roster from all verified members and titles the CSAAS meeting `<title> — <date>`;
+`transcribing` sends `meeting.transcript` through `/analyze-live` as one segment; the review
+goes to `dataJson.reviewChannelId`. `/record action:start document:<file>` sends the text
+(at most 20,000 characters) as `pre_meeting_notes` on `/create`, which now accepts it (string,
+at most 20,000, else 400) and is not stored on the bot. The `reporting` stage (between
+`assigning` and `awaiting_review`) calls `/report` once. Full detail in [[doc-tasks]].
