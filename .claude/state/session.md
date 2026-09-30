@@ -24,8 +24,13 @@ branch `feat/repo-scopes` in each. Nothing in this sub-project is merged or depl
 - `.claude/state/backlog.md`: roadmap item 3 marked DEPLOYED 2026-09-29 (the owner ran
   `/setup` then `/cleanup` on the live server); roadmap item 4 marked BUILT, NOT DEPLOYED
   with commits per repo, the reviewed-in behaviour, and the rollout order.
-- `.claude/state/completed.md`: two 2026-09-30 entries at the top — the sub-project 4
-  build (commits per repo) and the sub-project 3 deployment note.
+- `.claude/state/completed.md`: one 2026-09-30 entry at the top — the sub-project 4
+  build (commits per repo). The sub-project 3 deployment is its own 2026-09-29 entry
+  ("Global channel layout and feedback: deployed"), not a second 2026-09-30 one.
+- Final fix pass, after the suites above: bot `576ea57`, `094db6b`, `7fe062d`,
+  `2c36da1` and the done-summary clamp (`clampSummary`), site `b2b36d6`, `7505783`;
+  the three knowledge files and these state files now describe head. Bot `npm test` →
+  1492 tests, `fail 0`.
 
 ## Open items
 None carried forward from this session's own scope. Rollout (bot → CSAAS → site, each

@@ -32,7 +32,17 @@ branch `feat/repo-scopes`; **not merged, not deployed.**
   `f22177a` meeting pipeline — `mirroredStage` picks a repository by project + scope,
   the review's GitHub switch now starts on, `issue_syncing` opens issues from the bot
   itself (idempotent, each issue persisted immediately), CSAAS's `issueSync` no longer
-  called. `npm test 2>&1 | tail -20` → 1459 tests, `fail 0`.
+  called. Final fix pass: `576ea57` the issue outcome rides on the site route's `note`
+  (`Issue: <url>` / `not opened — <reason>` / `off`, via the shared `issueReplyLine`) and
+  a failed issue is posted in the task's channel; `094db6b` `syncIssueState` finds the
+  issue from `externalIssueUrl` (fallback `repositoryId` + `externalIssueNumber`), says
+  "the issue's repository is unknown" otherwise, and `/close-feature`/`/resolve-bug` sync
+  before archiving; `7fe062d` meeting issue sync writes `repositoryId`, and the done
+  summary counts issues actually opened and lists skipped-no-repository apart from
+  failures, each by task title; `2c36da1` no stray link on a scope race, `/repos add`
+  says when a scope was ignored, the access check reports disabled issues and read-only
+  tokens; and the done summary is clamped to Discord's embed limit (`clampSummary`).
+  `npm test` → 1492 tests, `fail 0`.
 - **CSAAS** (worktree `D:\Work\Granjur Technologies\CSAAS_Backend`, branch
   `feat/repo-scopes` from `main` `09b2f61`): `aab5f8e` — Mobile scope in
   `meetingTaskScope.js`/the task-generation prompt, `create_issue` forwarded on the
@@ -47,8 +57,11 @@ branch `feat/repo-scopes`; **not merged, not deployed.**
   `resolveTaskRepo`/`issueTargetText` mirroring the bot's rule and confirm-step text,
   repositories shown read-only on project cards (`projectRepoList`); `544176a` — fix so
   the "Issue goes to … (`<Scope>`)" line's parenthetical shows only when the scope rule
-  itself chose the repository, matching the bot's confirm step. `npx vitest run` → 34
-  files, 367 tests pass.
+  itself chose the repository, matching the bot's confirm step; `b2b36d6` a bug the rule
+  gives no repository gets a required repository picker (the project's linked
+  repositories, else all; refused only when there are none) and the toast shows the
+  bot's `note`; `7505783` the toast keeps a multi-line message on separate lines.
+  Range `42069c0..7505783`.
 
 Behaviour that changed vs. the written spec, recorded in the knowledge file: a feature or
 bug with no rule match but an explicitly picked repository still gets that repository and

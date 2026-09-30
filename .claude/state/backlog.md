@@ -160,7 +160,13 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      `a2b851b` `/projects` link-with-scope/unlink, `/repos add` scope, the access check;
      `53f0d73` `syncIssueState` closes/reopens the issue with the task's status;
      `f22177a` meeting repository by project and scope, GitHub on by default, the bot
-     opens meeting issues via `issue_syncing`. Suite 1459 tests, `fail 0`.
+     opens meeting issues via `issue_syncing`. Final fix pass: `576ea57` the issue
+     outcome reaches the site's `note` and a failed issue is said in the channel;
+     `094db6b` status sync finds the issue from its URL and says when its repository is
+     unknown, `/close-feature`/`/resolve-bug` sync before archiving; `7fe062d` the meeting
+     done summary counts opened issues and names skipped/failed apart; `2c36da1` no stray
+     link on a scope race, clearer link texts, stricter access check; then the done
+     summary is clamped to Discord's limit. Suite 1492 tests, `fail 0`.
    - **CSAAS** (worktree `D:\Work\Granjur Technologies\CSAAS_Backend`, branch
      `feat/repo-scopes` from `main` `09b2f61`): `aab5f8e` — Mobile scope in
      `normalizeMeetingTaskScope`/the task-generation prompt, `create_issue` forwarded on
@@ -169,10 +175,13 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      assert-scripts pass when run with `node` (they are not real jest tests — see the
      backlog's "assert-based scripts" item below).
    - **Site** (worktree `D:\Work\Granjur Technologies\UBS-Doc-repo-scopes`, branch
-     `feat/repo-scopes` from `main` `4f6dc09`): `42069c0` Mobile scope, "Issue goes to
-     …" line (`repoLogic.ts`), repositories shown read-only on project cards; `544176a`
-     fix — the line's `(<Scope>)` shows only when the scope rule actually chose the
-     repository. `npx vitest run`: 34 files, 367 tests pass.
+     `feat/repo-scopes` from `main` `4f6dc09`; `git log --oneline 42069c0..7505783`):
+     `42069c0` Mobile scope, "Issue goes to …" line (`repoLogic.ts`), repositories shown
+     read-only on project cards; `544176a` fix — the line's `(<Scope>)` shows only when
+     the scope rule actually chose the repository; `b2b36d6` a bug the rule gives no
+     repository picks one (required picker: the project's linked repositories, else all;
+     refused only when there are none), the toast shows the bot's `note`; `7505783` the
+     toast keeps a multi-line message on separate lines.
    - **Behaviour that changed during review, documented as built** (full detail in
      `.claude/knowledge/repositories-and-issues.md`): a bug in a guild with no
      repositories is refused at the very start ("No repositories. Add with **/repos**
@@ -185,16 +194,39 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      own output); `issue_syncing` (meetings) saves each opened issue to the job
      immediately so a retry can never reopen one; the site's create line adds
      "(<Scope>)" under the identical condition.
-   - **Rollout, in order, each step needing the owner's go-ahead:**
+   - **Behaviour changed in the final fix pass (2026-09-30):** a site-created task's
+     `note` carries the issue outcome (`Issue: <url>` / `Issue: not opened — <reason>` /
+     `Issue: off`) and an issue failure is also posted in the task's channel; status sync
+     finds the issue from `externalIssueUrl` (owner/repo/number), falling back to
+     `repositoryId` + `externalIssueNumber`, and says "the issue's repository is unknown"
+     when neither resolves; meeting issue sync writes `repositoryId` with the issue; the
+     meeting done summary counts issues actually opened, names each task, lists
+     "skipped — no repository" apart from failures and is clamped to Discord's limit;
+     the site's create page has a required repository picker for a bug the rule gives no
+     repository; `/close-feature` and `/resolve-bug` run the issue sync before archiving
+     and show a failure in the reply; `/repos add` says when a scope was ignored; the
+     access check reports disabled issues and read-only tokens; a refused link never
+     leaves a stray untagged link.
+   - **Rollout, in order (bot → CSAAS → tag links in Discord → site), each step needing
+     the owner's go-ahead:**
      1. Push the bot's `main` — the deploy runs migration 030;
         `GITHUB_TOKENS=ubs-dev-org:<PAT>` is **already set** on the VM's bot `.env` (and
         locally) by the owner, so no env step is needed at this push.
      2. Push CSAAS `main` — a push auto-deploys; CSAAS runs its own migrations at
         startup, and this sub-project adds none, so nothing else to do here.
-     3. Push the site (Vercel builds on push).
-     4. Owner: `/projects` → Link repo to tag each existing link with its scope;
-        `/repos add` the ubs-dev-org Badar HMS repositories with their scopes; `/projects`
-        → Unlink repo the old `granjurtech/Badar_HMS_Node`.
+     3. Owner, in Discord, once the bot is live: `/projects` → Link repo to tag each
+        existing link with its scope; `/repos add` the ubs-dev-org Badar HMS repositories
+        with their scopes; `/projects` → Unlink repo the old `granjurtech/Badar_HMS_Node`.
+     4. Push the site (Vercel builds on push) — last, so its repository picker already
+        sees the tagged links.
+   - **Deferred (not required for rollout):**
+     - A possible false "No GitHub access" warning from the access check for a read-only
+       token that can still open issues.
+     - No "GitHub: all off" button in the meeting review — the first meetings may open
+       many issues (the per-task switch starts on).
+     - Duplicate-issue edge cases on overlapping `issue_syncing` retries.
+     - `create_task_edit` is deferred by `index.js` but opens a modal (pre-existing).
+     - The `/create-task` and `/projects` handlers are untested.
    - **A pre-existing, unrelated note surfaced while reading CSAAS's test layout:** the
      `discord-tasks-test/*.test.js` files use plain `assert`, not jest's `describe`/`test`
      — jest's `testMatch` still picks them up and counts each as one failing "suite" with

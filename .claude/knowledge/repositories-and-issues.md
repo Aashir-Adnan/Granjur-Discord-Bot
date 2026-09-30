@@ -25,7 +25,12 @@ returning `{ repository_id, scope, ... }` rows.
   repository in the project already holds that scope, returning
   `{ ok: false, holderRepositoryId }`; a race that slips past the pre-check surfaces as
   a MySQL duplicate-key error (`errno 1062` / `ER_DUP_ENTRY`) from `setScope`, caught and
-  turned into the same refusal shape after a re-read.
+  turned into the same refusal shape after a re-read. **A refusal never leaves a stray
+  link:** if this call had just inserted the (untagged) row before `setScope` hit the
+  race, it removes that row again (best-effort, a failed cleanup only warns).
+- `linkUpdatedText(repoName, projectName, scope)` — the `/projects` relink headline,
+  `Updated <Repo> in <Project> to <Scope|no scope>.`; `SCOPE_IGNORED_TEXT` — `Scope
+  ignored — give a project to link with a scope.`
 - `unlinkRepo({ db, projectId, repositoryId })` removes one pair; tasks keep their
   already-set `repositoryId`.
 - `linkRefusalText(projectName, repoName, scope)` → `"<Project> already has <Repo> as
@@ -117,7 +122,11 @@ from every repository in the server, and failures were swallowed silently. Now:
 - else `createIssue()` is called; success → `{ issue: { url }, issueUrl }`, stores
   `externalIssueUrl`/`externalIssueNumber` on the task row, and best-effort posts
   `GitHub issue: <url>` into the new channel; **failure never fails the create** —
-  `issue: { error: e.message }` comes back instead, the task and its channel stand.
+  `issue: { error: reason }` comes back instead, the task and its channel stand, and the
+  failure is also **said in the task's channel** (`GitHub issue not opened — <reason>`,
+  best-effort; a skip or an opt-out is not posted). A failed row write after a
+  successful issue no longer hides it (its own best-effort try: the issue link is still
+  returned and posted).
 - The body is the description, then `Scope: <Scope> · Project: <Project>`, the Discord
   channel link, and `Task ID: <id>`.
 
@@ -150,9 +159,11 @@ open an issue against, even when the scope rule itself came up empty.
 - **An Issue on/off toggle** on the confirm step, on by default:
   `issueToggleButton(on)` (custom id `create_task_issue_toggle`, label "Issue: on"/"Issue:
   off", Primary/Secondary style), flips `state.createIssue` and re-renders.
-- **The reply's last line**, always present, never silent: `issueReplyLine(issue)` →
-  `Issue: <url>` on success, `Issue: not opened — <error>` on failure, `Issue: not
-  opened — <skipped reason>` when no repository, or `Issue: off` when the toggle was off.
+- **The reply's last line**, always present, never silent: `issueReplyLine(issue)`
+  (`services/taskCreate.js`, re-exported by `/create-task`) → `Issue: <url>` on success,
+  `Issue: not opened — <error>` on failure, `Issue: not opened — <skipped reason>` when
+  no repository, or `Issue: off` when the toggle was off. **The same function writes the
+  site route's `note`** (below).
 
 ### The site's create page
 
@@ -162,11 +173,16 @@ open an issue against, even when the scope rule itself came up empty.
 about the task's own scope). `No repository for this project and scope — no issue` when
 none. An **Open a GitHub issue** checkbox, on by default, disabled when there's no
 repository, sends `create_issue` (`taskFormLogic.ts`: `create_issue: !!resolvedRepo &&
-f.createIssue`). A bug with no resolvable repository is still refused client-side
-("Pick a project for the task." / needs a repository) because a bug must have one — the
-site still sends `repository_ids` **only in that bug fallback**; every other create lets
-the bot's internal route resolve the repository with the rule and pass `createIssue`
-through untouched.
+f.createIssue`). **A bug the rule gives no repository now shows a required Repository
+picker** (`bugRepoChoices` in `repoLogic.ts`: the project's linked repositories, else
+every repository) and sends `repository_ids: [picked]`; the form refuses only when there
+is nothing to pick ("This project has no repository — add one in Discord with /repos
+add."). A scope-less bug in a project with several links gets the hint "Pick a scope to
+choose the repository automatically, or pick one below." The site still sends
+`repository_ids` **only in that bug fallback**; every other create lets the bot's
+internal route resolve the repository with the rule and pass `createIssue` through
+untouched. The success toast reads `Task created.` plus the bot's `note` (shown on
+separate lines — `Toast.tsx` uses `whitespace-pre-line`).
 
 **CSAAS** (`discordTasksWrite.js`): `create_issue` (boolean, optional) on the create
 pass-through → `body.createIssue`; 400 if present and not a boolean. The tasks payload
@@ -180,8 +196,11 @@ line, not a crash).
 **Bot's internal create route** (`bot/src/services/internalTaskRoute.js`
 `handleCreateRequest`): `createIssue: b.createIssue !== false` — an old site sending no
 `create_issue` at all still gets an issue by default. For a bug it runs the rule itself
-before calling `createTask`, refusing with 400 when the rule and the site's own
-`repositoryIds[0]` both come up empty.
+before calling `createTask` and hands it the ruled repository, falling back to the site's
+`repositoryIds[0]` only when the rule finds none; 400 when both come up empty.
+**The issue outcome rides on the reply's `note`:** CSAAS forwards only `note` to the
+site, so the route sets `note` to the placement note and `issueReplyLine(made.issue)`
+joined by a newline — `Issue: <url>` / `Issue: not opened — <reason>` / `Issue: off`.
 
 ## The issue follows the task's status (owner request, 2026-09-30)
 
@@ -201,10 +220,15 @@ back from finished to live → `{ state: 'open' }`.
 
 `syncIssueState` itself: does nothing (`{ line: null }`) unless `updates.status` is
 present and different from `task.status`, the transition calls for a change, the task
-has an issue number (`externalIssueNumber`, else parsed out of
-`` /issues\/(\d+)/ `` in `externalIssueUrl`), and its repository still resolves
-(`dbArg.repository.findFirst({ where: { id: task.repositoryId, guildConfigId } })`).
-**Never throws** — a repository-lookup error or `setIssueState` failure both come back as
+has an issue. **The issue is found from `externalIssueUrl` first** (owner, repo and
+number all parsed from the URL, so it closes in the repository it was opened in
+whatever `repositoryId` says now); only without a parsable URL does it fall back to
+`repositoryId` + `externalIssueNumber` (repository read with
+`dbArg.repository.findFirst({ where: { id: task.repositoryId, guildConfigId } })`; a
+falsy `repositoryId` is never looked up). When neither resolves it says so instead of
+doing nothing: `GitHub issue not closed — the issue's repository is unknown` (or `not
+reopened`). `/close-feature` and `/resolve-bug` run this sync **before** `move` archives
+and locks the channel, and put its line in the reply too. **Never throws** — a repository-lookup error or `setIssueState` failure both come back as
 `{ line: 'GitHub issue not closed — <reason>' }` / `'not reopened — <reason>'`, appended
 to the reply or channel post as one extra line; the status change itself always
 succeeds regardless. An issue already in the target state counts as success (GitHub's
@@ -219,7 +243,13 @@ after adding/linking (never blocking it — the repository is added or linked ei
 issues won't open until a token can reach it` (also shown for an unparsable URL, using
 the checked URL in place of `<owner>/<repo>` since `checkRepoAccess` never learned an
 owner/repo for a URL it couldn't parse), or, on a GitHub error/timeout, "GitHub access
-couldn't be checked right now." — never a blocker.
+couldn't be checked right now." — never a blocker. **The check asks whether an issue
+can actually open, not just whether the repository can be read:** issues switched off
+(`has_issues === false`) → `⚠️ Issues are disabled on <owner>/<repo> — issues won't open
+until they are turned on in the repository's settings` (`issuesDisabled`); a token that
+reads but has neither `push` nor `triage` permission → the same no-access warning.
+(Known limit, deferred: a read-only-looking token that can still open issues may get a
+false "No GitHub access" warning.)
 
 ## Managing links in Discord
 
@@ -231,7 +261,9 @@ couldn't be checked right now." — never a blocker.
   repositories (`repo · scope` label), removes the link. Tasks keep their
   `repositoryId`.
 - **`/repos add`** gained an optional `scope` choice alongside its optional `project`,
-  same one-per-scope refusal, same access-check line on the reply.
+  same one-per-scope refusal, same access-check line on the reply. A `scope` with no
+  `project` is ignored and the reply says so (`Scope ignored — give a project to link
+  with a scope.`).
 - Who can manage links is unchanged (same roles as `/projects`/`/repos` today).
 
 ## Meeting issues, opened by the bot (not CSAAS)
@@ -258,12 +290,26 @@ more than one linked repository). Now:
     `db.task.update` and the saved job's `dataJson` **before moving to the next entry**,
     specifically so a crash or retry mid-loop can never reopen an issue whose row-write
     merely failed;
-  - failures (no repository, a repository read error, a repository with no `url`, or
-    `createIssue` throwing) are collected into `dataJson.issueSyncErrors` per
-    `csaasTaskId` with a plain-English `reason`, never thrown — the stage always
-    advances (`patch: {}` when nothing is flagged, `patch: { dataJson }` otherwise);
-  - `doneStage`'s final summary embed lists both the opened issue links and every
-    `issueSyncErrors` entry.
+  - **the row update writes `repositoryId` together with the issue url/number** (a
+    pre-deploy entry with no `repositoryId` falls back to the task row's), so the
+    status sync can always find the repository later;
+  - failures are collected into `dataJson.issueSyncErrors` as `{ csaasTaskId, title,
+    kind, reason }`, never thrown — the stage always advances (`patch: {}` when nothing
+    is flagged, `patch: { dataJson }` otherwise). `kind` is `'skipped'` (no repository
+    for the project and scope; `reason` is the rule's own sentence via `repoReasonText`,
+    carried on the mirrored entry as `repoReason`) or `'failed'` (a repository read
+    error, a repository with no `url`, or `createIssue` throwing); an entry saved before
+    `kind` existed reads as a failure;
+  - `doneStage`'s final summary embed: `N pushed to GitHub` counts **issues actually
+    opened** (mirrored entries with an `externalIssueUrl`), not flagged tasks; each
+    issue is a link named by its task title; problems are listed as one `• skipped — no
+    repository: <title> (<reason>), …` line apart from one `• failed: <title> —
+    <reason>` line per failure. **The text is clamped to Discord's limit**
+    (`clampSummary(lines, max = 4000)`, exported from `meetingPipelineStages.js`): cut at
+    a line boundary, the count lines always kept, ending with `… (summary shortened)`.
+    Without it a meeting with ~16+ issue problems made `EmbedBuilder.setDescription`
+    throw (over 4096 characters) on every retry and the review message was never
+    rewritten.
   - **CSAAS's `issueSync` is no longer called by the bot.** The CSAAS endpoint itself
     stays in place for any other caller — nothing there was removed.
 

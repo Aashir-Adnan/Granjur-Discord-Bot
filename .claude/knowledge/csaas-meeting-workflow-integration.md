@@ -108,7 +108,10 @@ CSAAS: `meetings.meeting_id`, `status` enum (`pending`→`transcribed`→`analyz
   tasks (with `[Agent Call]` marker). **Superseded by sub-project 4 (2026-09-30):** the
   `issue_syncing` pipeline stage now opens each GitHub-flagged task's issue itself, via
   the bot's own `createIssue` and the repository the scope rule gave the task —
-  `csaasClient.issueSync`/CSAAS's `/issuesync` is no longer called from this path. See
+  `csaasClient.issueSync`/CSAAS's `/issuesync` is no longer called from this path. The
+  issue row update writes `repositoryId` with the issue; the `done` summary counts issues
+  actually opened, names each task, lists "skipped — no repository" apart from failures,
+  and is clamped to Discord's embed limit (`clampSummary`). See
   [[repositories-and-issues]].
 
 ## ubs_doc — superseded
