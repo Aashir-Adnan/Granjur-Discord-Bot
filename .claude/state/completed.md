@@ -2,7 +2,11 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
-## 2026-09-30 — JSON task import on the site (BUILT, NOT DEPLOYED, NOT MERGED)
+## 2026-09-30 — JSON task import on the site (MERGED AND PUSHED 2026-09-30)
+
+Merged and pushed 2026-09-30, bot first: bot `db92164` (Deploy to VM run succeeded), CSAAS
+`35fdc47` (auto-deploys; deploy not observed), site `3bed224` (Vercel success). Not yet
+exercised live in a browser. The text below was written before the merge.
 
 Owner roadmap sub-project 6 of 7: import a JSON file of tasks and subtasks into a project
 from the site, with a check step first and each task created through the ordinary routes.

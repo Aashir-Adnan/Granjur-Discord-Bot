@@ -1,8 +1,8 @@
 # JSON task import on the site
 
 Roadmap sub-project 6 of 7 (owner roadmap, `.claude/state/backlog.md`). Built across the
-bot, CSAAS and the site on branch `feat/task-import`; BUILT, NOT DEPLOYED and not merged
-(as of 2026-09-30). No migration anywhere. Spec:
+bot, CSAAS and the site; merged and pushed 2026-09-30 (bot `db92164`, CSAAS `35fdc47`,
+site `3bed224`). No migration anywhere. Spec:
 `docs/superpowers/specs/2026-09-30-json-task-import-design.md`. Same trust shape as the
 site's other task-write routes (see [[project-tasks-site]]): the bot owns every rule about
 the values, CSAAS checks permission and the shape of the request and asks the bot over

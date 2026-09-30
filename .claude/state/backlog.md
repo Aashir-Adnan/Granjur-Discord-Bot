@@ -274,13 +274,16 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
        `/clock-in` lets any non-client through. A pending member sees the bot's sentence
        in the header pill instead of a clock.
 6. **JSON task import** on the site with a documented format — only into the user's
-   projects. **BUILT, NOT DEPLOYED (not merged either), 2026-09-30.** Branch
-   `feat/task-import` in all three repos (the site in worktree `UBS-Doc-task-import`).
+   projects. **MERGED AND PUSHED 2026-09-30** — bot `db92164`, CSAAS `35fdc47`, site
+   `3bed224`, in that order (the bot first: a CSAAS that forwards `status` to an older bot
+   would create a done task as an open one with a channel).
    Spec `docs/superpowers/specs/2026-09-30-json-task-import-design.md`, knowledge
    `.claude/knowledge/task-import.md`. No migration.
-   - **Rollout order: bot, then CSAAS, then site.** The bot MUST be live before CSAAS: a
-     CSAAS that forwards `status` to an older bot would create a done task as an open one
-     with a channel. Each push needs the owner's go-ahead.
+   - **Deploy evidence:** bot "Deploy to VM" run succeeded; site Vercel status success.
+     CSAAS was pushed (it auto-deploys) but its deploy was NOT observed; the import screen
+     answering `Import is not available yet.` would mean CSAAS or the bot is still old.
+   - **Not yet done:** a live pass in a browser. Start with a small file: one open feature,
+     one done bug, one task with mixed subtasks.
    - **Deferred:**
      - A done feature is stored with `implementationStatus: 'not_started'`.
      - An edit of a task that was already finished no longer creates a channel for it
