@@ -2,9 +2,11 @@
 // 2026-09-30). One rule for /create-task, the site's create route and the
 // meeting pipeline:
 //   1. the project's link carrying the task's scope;
-//   2. else the project's ONLY link, when that link has no scope yet (a
-//      single-repository project keeps working until it is tagged);
-//   3. else none — never "the first of several".
+//   2. else the project's ONE untagged link — it takes every scope no tagged
+//      link claims (a single-repository project keeps working until it is
+//      tagged; a repository holding backend AND frontend stays untagged beside
+//      a tagged mobile one, since a link carries one scope);
+//   3. else none — never "the first of several" untagged links.
 
 const REASONS = {
   'no-project': 'the task has no project',
@@ -24,7 +26,8 @@ export function resolveTaskRepo({ projectId, scope }, { links = [], repos = [] }
     const hit = mine.find((l) => l.scope === scope)
     if (hit) return { repository: byId.get(String(hit.repository_id)), reason: 'scope' }
   }
-  if (mine.length === 1 && !mine[0].scope) return { repository: byId.get(String(mine[0].repository_id)), reason: 'only-repo' }
+  const untagged = mine.filter((l) => !l.scope)
+  if (untagged.length === 1) return { repository: byId.get(String(untagged[0].repository_id)), reason: 'only-repo' }
   return { repository: null, reason: scope ? 'no-repo-for-scope' : 'no-scope' }
 }
 

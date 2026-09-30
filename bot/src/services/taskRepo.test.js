@@ -25,9 +25,26 @@ test('two links, neither with the scope: none (never "the first")', () => {
   assert.deepEqual(resolveTaskRepo({ projectId: 'p1', scope: 'design' }, { links: [link('r1'), link('r2')], repos }), { repository: null, reason: 'no-repo-for-scope' })
 })
 
-test('no project, or no scope with several links', () => {
+test('no project, or no scope with only tagged links', () => {
   assert.deepEqual(resolveTaskRepo({ projectId: null, scope: 'backend' }, { links: [], repos }), { repository: null, reason: 'no-project' })
-  assert.deepEqual(resolveTaskRepo({ projectId: 'p1', scope: null }, { links: [link('r1', 'backend'), link('r2')], repos }), { repository: null, reason: 'no-scope' })
+  assert.deepEqual(resolveTaskRepo({ projectId: 'p1', scope: null }, { links: [link('r1', 'backend'), link('r2', 'frontend')], repos }), { repository: null, reason: 'no-scope' })
+})
+
+// Badar HMS, 2026-09-30: one repository holds backend AND frontend, a second
+// holds the mobile app. A link carries one scope, so the shared repository is
+// left untagged and takes every scope no tagged repository claims.
+test('rule 2: the one untagged link takes every scope no tagged link claims', () => {
+  const links = [link('r1'), link('r2', 'mobile')]
+  assert.deepEqual(resolveTaskRepo({ projectId: 'p1', scope: 'mobile' }, { links, repos }), { repository: R2, reason: 'scope' })
+  for (const scope of ['backend', 'frontend', 'qa', 'design', null]) {
+    assert.deepEqual(resolveTaskRepo({ projectId: 'p1', scope }, { links, repos }), { repository: R1, reason: 'only-repo' }, String(scope))
+  }
+})
+
+test('two untagged links beside a tagged one: still none', () => {
+  const R3 = { id: 'r3', name: 'Third', url: 'https://github.com/o/third' }
+  const out = resolveTaskRepo({ projectId: 'p1', scope: 'backend' }, { links: [link('r1'), link('r3'), link('r2', 'mobile')], repos: [...repos, R3] })
+  assert.deepEqual(out, { repository: null, reason: 'no-repo-for-scope' })
 })
 
 test("links of other projects and links to deleted repositories are ignored", () => {
