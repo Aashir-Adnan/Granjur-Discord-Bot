@@ -139,8 +139,14 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
        `pendingCleanups` only after the embed is built (today a stale earlier preview's
        button could act on the newer list after such an error).
      - The attachment path (`cleanup-preview.txt`) has no test.
-4. **Repositories per project with a scope, and a GitHub issue for every task — BUILT, NOT
-   DEPLOYED.** `project_repos` gains a scope (migration 030); one rule
+4. **Repositories per project with a scope, and a GitHub issue for every task — DEPLOYED
+   2026-09-30** (bot `f2be0ab` then `89d53bf`, CSAAS `c2c0829`, site `befffcf`; migration
+   030 applied). Rule 2 was widened the same day for Badar HMS: the project's one
+   untagged link takes every scope no tagged link claims (bot `8c59916`, site `a6ed57c`).
+   **Left for the owner:** tag Edarete's 2 and Framework's 3 links with scopes (several
+   untagged links give no automatic issue); `/repos add` the Badar HMS mobile repository
+   with scope Mobile. CSAAS's deploy was not verified live (no migration to look for).
+   `project_repos` gains a scope (migration 030); one rule
    (`resolveTaskRepo`/`taskRepo.js`) picks a task's repository by project + scope in
    `/create-task`, the site's create route and the meeting pipeline; issues now open for
    bugs and features alike, with a per-task opt-out, a token per repo owner
