@@ -109,6 +109,16 @@ function parseUserIds(str) {
   return [...ids]
 }
 
+/**
+ * A server with no repositories and no projects has nothing for a FEATURE to
+ * attach to, so a feature is refused; a bug never is (it can go with no project
+ * and no repository). Returns the reply payload, or null. Pure; exported for its test.
+ */
+export function emptyServerRefusal(taskType, repos, projects) {
+  if (taskType === 'bug' || repos?.length || projects?.length) return null
+  return { content: 'No repositories or projects. Add repos with **/repos** or a project with **/projects**.', components: [] }
+}
+
 export async function execute(interaction) {
   const guild = interaction.guild
   if (!guild) return interaction.editReply({ content: 'Use this in a server.' })
@@ -116,13 +126,12 @@ export async function execute(interaction) {
   const cfg = await getOrCreateGuildConfig(guild.id)
   const repos = await db.repository.findMany({ where: { guildConfigId: cfg.id } })
   const projects = await db.project.findMany({ where: { guildConfigId: cfg.id } })
-  if (!repos.length && !projects.length) {
-    return interaction.editReply({
-      content: 'No repositories or projects. Add repos with **/repos** or a project with **/projects**.',
-    })
-  }
-
   const typeOpt = interaction.options.getString('type')
+  // Only features are refused in an empty server; with no type given yet, the
+  // feature button refuses after the type is chosen (handleTypeButton).
+  const refusal = typeOpt ? emptyServerRefusal(typeOpt, repos, projects) : null
+  if (refusal) return interaction.editReply(refusal)
+
   const titleOpt = interaction.options.getString('title')
   const descriptionOpt = (interaction.options.getString('description') || '').trim() || null
   const scopeOpt = interaction.options.getString('scope') // constrained to the five choices, or null
@@ -210,6 +219,11 @@ export async function handleTypeButton(interaction) {
     const isFeature = interaction.customId === 'create_task_type_feature'
     const taskType = isFeature ? 'feature' : 'bug'
     const cfg = await getOrCreateGuildConfig(guild.id)
+
+    if (isFeature) {
+      const refusal = emptyServerRefusal(taskType, await db.repository.findMany({ where: { guildConfigId: cfg.id } }), await db.project.findMany({ where: { guildConfigId: cfg.id } }))
+      if (refusal) return interaction.update(refusal).catch(() => {})
+    }
 
     const typeState = { step: isFeature ? STEP_MODAL : STEP_BUG_PROJECT, taskType }
     flowStore.set(interaction.user.id, guild.id, FLOW_KEY, typeState)

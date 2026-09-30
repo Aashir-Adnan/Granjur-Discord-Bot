@@ -207,8 +207,8 @@ test('a bug with no project and no repository: global Bugs channel, topic shows 
   })
   assert.equal(db.log.find((l) => l[0] === 'bug.create')[1].repositoryId, null)
   assert.match(created[0].topic, /\| Repo: —$/)
-  assert.deepEqual(r.issue, { skipped: 'the task has no project' })
-  assert.equal(issueReplyLine(r.issue), 'Issue: not opened — the task has no project')
+  assert.deepEqual(r.issue, { skipped: 'no repository was picked' })
+  assert.equal(issueReplyLine(r.issue), 'Issue: not opened — no repository was picked')
 })
 
 // F1 (final review, 2026-09-30): a failed issue is said in the task's channel too.

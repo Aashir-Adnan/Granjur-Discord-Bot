@@ -5,7 +5,7 @@ import * as flowStore from '../flows/store.js'
 import {
   assigneeRow, scopeRow, handleCreate, channelPlacementNote,
   bugProjectRow, issueToggleButton, issueReplyLine, confirmRepository,
-  repositoryFieldText, resolveBugRepo, pickBugRepo, bugRepoStep, NO_REPO_VALUE,
+  repositoryFieldText, resolveBugRepo, pickBugRepo, bugRepoStep, NO_REPO_VALUE, emptyServerRefusal,
 } from './create-task.js'
 import { createTaskTicketChannel } from '../services/taskTicketChannel.js'
 import { GitHubError } from '../services/github.js'
@@ -485,6 +485,15 @@ test('bugRepoStep: at most 24 repositories plus No repository (Discord allows 25
   assert.equal(opts.at(-1).value, '__none__')
 })
 
+test('emptyServerRefusal: a server with no repositories and no projects refuses a feature, never a bug', () => {
+  const msg = { content: 'No repositories or projects. Add repos with **/repos** or a project with **/projects**.', components: [] }
+  assert.deepEqual(emptyServerRefusal('feature', [], []), msg)
+  assert.deepEqual(emptyServerRefusal('feature', undefined, undefined), msg)
+  assert.equal(emptyServerRefusal('bug', [], []), null)
+  assert.equal(emptyServerRefusal('feature', [API_REPO], []), null)
+  assert.equal(emptyServerRefusal('feature', [], [PROJECT]), null)
+})
+
 test('confirmRepository: a bug settled with no repository shows none', async () => {
   const db = fakeDb([], PROJECT, { repos: [API_REPO], links: LINKS })
   assert.deepEqual(await confirmRepository({ taskType: 'bug', scope: 'qa', repoResolved: true, repo: null, repositoryId: null }, { db, cfg: { id: 'cfg1' } }), { repository: null, reason: null })
@@ -573,7 +582,7 @@ test('handleCreate files a project-less bug with no repository: global Bugs chan
   assert.equal(log.find((e) => e[0] === 'bugTicket.create')[1].repositoryId, null)
   assert.equal(guild.created.at(-1).topic, 'Bug: Login 500s | Repo: —')
   assert.deepEqual(guild.sends[0].embeds[0].toJSON().fields.find((f) => f.name === 'Repository'), { name: 'Repository', value: '—', inline: false })
-  assert.equal(it.replies.at(-1).embeds[0].toJSON().description, 'Channel: <#chanBug>\nIssue: not opened — the task has no project')
+  assert.equal(it.replies.at(-1).embeds[0].toJSON().description, 'Channel: <#chanBug>\nIssue: not opened — no repository was picked')
 })
 
 test('handleCreate with the Issue toggle off opens no issue and says Issue: off', async () => {

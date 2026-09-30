@@ -294,8 +294,9 @@ export async function createTask({
     .setFooter({ text: `Ticket ID: ${task.id}` })
     .setColor(0xed4245)
   await channel.send({ content: allMentions || null, embeds: [embed] })
+  // A project-less bug: the rule has nothing to say, so the only reason is that none was picked.
   const { issue, issueUrl } = await openTaskIssue({
-    dbArg, model: 'bugTicket', wantIssue, usedRepo, reasonText: repoReasonText(reason),
+    dbArg, model: 'bugTicket', wantIssue, usedRepo, reasonText: 'no repository was picked',
     fields, project, guild, channel, task, openIssue,
   })
   return finish({ task, channel, fellBack: null, issueUrl, issue })

@@ -160,9 +160,12 @@ open an issue against, even when the scope rule itself came up empty.
   settles the state for a pick or "No repository". A **feature** with no repository just
   has no repository and no issue — it is never asked. Without a repository the reply's
   issue line is whatever `openTaskIssue` reports: `Issue: not opened — the project has no
-  repository for this scope` (a bug in a project), or `… — the task has no project` (a
-  project-less bug with no pick) — the existing `repoReasonText` wording, deliberately not
-  a second sentence.
+  repository for this scope` (a bug in a project), or `Issue: not opened — no repository was
+  picked` (a project-less bug with no pick; the project-less branch of `createTask` passes
+  that reason itself). The in-project wording is the existing `repoReasonText` one.
+  `/create-task` refuses a server with no repositories and no projects only for a
+  FEATURE (`emptyServerRefusal`); a bug proceeds ("No project" only, repository step
+  skipped, global Bugs category).
 - **The confirm step's "Repository" field** (`repositoryFieldText(repository, reason,
   scope)`) shows the name plus `(<Scope>)` **only when `reason === 'scope'`** — i.e.
   only when the scope rule itself chose it, never for `'only-repo'` (which says nothing
@@ -210,8 +213,12 @@ line, not a crash).
 `create_issue` at all still gets an issue by default. For a bug it runs the rule itself
 before calling `createTask` and hands it the ruled repository, falling back to the site's
 `repositoryIds[0]` only when the rule finds none; when both come up empty the bug is
-created with no repository (no 400 since 2026-09-30) and the `note` ends with
-`Issue: not opened — the project has no repository for this scope`.
+created with no repository (no 400 since 2026-09-30). The `note` then ends with
+`Issue: not opened — the project has no repository for this scope` only for a caller that
+leaves `createIssue` on (the task import with "Open GitHub issues" ticked, or Discord).
+The real site sends `create_issue: false` whenever a bug has no repository
+(`taskFormLogic.ts` `createPayload`: `create_issue: !!(resolvedRepo ?? picked) &&
+f.createIssue`), so its toast shows `Issue: off`.
 **The issue outcome rides on the reply's `note`:** CSAAS forwards only `note` to the
 site, so the route sets `note` to the placement note and `issueReplyLine(made.issue)`
 joined by a newline — `Issue: <url>` / `Issue: not opened — <reason>` / `Issue: off`.
