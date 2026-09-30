@@ -149,6 +149,23 @@ fakes `resolveIdentity` cannot catch its absence, so the first real call would f
 - A picker or clock-out dialog left open while the clock changes underneath it is closed.
 - A task the viewer cannot see arrives as `a task` (never shown as General work).
 
+### Linking from the header, and the board's tag (2026-09-30, site `eaf5e12`, `d3a0491`)
+
+- **Linking from the header.** The Team section's own link card shows only when
+  `needsLink` is true (`!linked && !seesAll`), so an account that sees every project — a
+  platform admin — never met it and had no way to enter a `/link` code. The header's
+  "Link your Discord account to clock in" is therefore a button that opens `LinkCard` in a
+  dialog (`ClockControl.tsx`, `CLOCK_LINK_REASON` for the wording; `LinkCard` takes an
+  optional `reason`). `onLinked` refreshes the tasks payload and the clock. No backend
+  change: `POST /api/discord/identity/link` never depended on `seesAll`.
+- **Board tag.** `clockTagFor` / `clockTagText` / `clockTagTitle` in `clockLogic.ts`. A
+  card is tagged when someone is clocked in on its task or one of its subtasks (the board
+  draws only top-level tasks). The viewer's own clock comes from the shared `clock.status`;
+  other people's from `fetchClockedIn()`, which `Board.tsx` calls only for holders of
+  `view_discord_time`, refetching with the payload and when the viewer's own entry
+  changes. Without the permission a viewer sees only their own tag. A redacted entry has
+  no task id, so it can never be pinned to a card.
+
 ## Rollout
 
 Bot → CSAAS → site, each push needing the owner's go-ahead. No migration. CSAAS

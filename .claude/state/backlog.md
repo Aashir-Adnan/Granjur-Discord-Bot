@@ -250,6 +250,11 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      CSAAS was pushed (it auto-deploys) but its deploy was NOT observed — with no
      migration there is no ledger row to check; the site's header reading "Clock
      unavailable" for everyone would mean CSAAS is still on the old build.
+   - **Follow-ups shipped 2026-09-30 (site only, Vercel success):** `eaf5e12` — the
+     header's link text is a button opening the link card, so an unlinked admin can enter
+     a `/link` code; `d3a0491` — a clocked-in tag on board cards (own clock for everyone,
+     other people's for `view_discord_time` holders). Showing teammates' tags to everyone
+     would need a CSAAS change; not asked for.
    - **Not yet done:** a live pass in a browser (clock in on general work, switch to a
      task, clock out with a note, the Time tab card), and a Discord smoke test of
      `/clock-in`, a task switch and `/clock-out` on the new service.
