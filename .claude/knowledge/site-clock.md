@@ -130,12 +130,18 @@ fakes `resolveIdentity` cannot catch its absence, so the first real call would f
 - **Time tab** (`TimeTab.tsx`): a `Clocked in now` card, shown only when the report's
   scope is `all`, fetched alongside the report; its elapsed time ticks from the fetch
   too.
-- **Refresh:** the status is fetched on mount and every 60 s.
+- **Refresh:** the status is fetched on mount, every 60 s, on the header's Refresh
+  button, after each clock action (also a failed one, so a stale header corrects itself),
+  after the link card redeems a code, and when the tab becomes visible again. The 60 s poll
+  skips its tick while the tab is hidden, so a background tab neither costs calls nor keeps
+  the session alive.
 - **Elapsed ticks from the bot's `elapsedSeconds` plus the time since the status was
   received (`elapsedNow`), never from `clockInAt`.** The viewer's browser clock or
   timezone may disagree with the server's; only the server's own count is trusted.
 - **Failure handling:** `Clock unavailable` shows only while no status fetch has ever
-  succeeded (`linked` is still `null`). A failed refresh keeps the last good status, so a
+  succeeded (`linked` is still `null`); when the backend refused the call with a 4xx other
+  than 404 and a sentence (e.g. 400 `No staff member matches that Discord account.`), the
+  pill shows that sentence instead (`clockUnavailableText`), otherwise the bare text. A failed refresh keeps the last good status, so a
   running clock never loses its Clock out button, and it raises no toast (the 60 s
   refresh must not loop error messages). The clock-in and clock-out responses are applied
   directly (clock-in's `status`; clock-out sets inactive) and a follow-up refresh runs, so
