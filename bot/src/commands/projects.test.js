@@ -13,7 +13,9 @@ import {
   handleReactivateButton,
   handleReactivateSelect,
   handleReactivateConfirm,
+  data,
 } from './projects.js'
+import { getCommandDescription } from '../config/commands.js'
 
 // --- fakes ------------------------------------------------------------------
 
@@ -428,7 +430,18 @@ function lifecycleDb() {
   return db
 }
 
-function componentInteraction({ guild = fakeGuild(), values = [], customId = '', typed = '', deferred = true } = {}) {
+/** A member as `canUseCommand` reads one: roles by name, no Administrator, not the owner. */
+function fakeMember(roleNames = ['CEO'], id = 'u-ceo') {
+  const roles = roleNames.map((name, i) => ({ id: `r-${i}`, name }))
+  return {
+    id,
+    guild: { ownerId: 'owner' },
+    permissions: { has: () => false },
+    roles: { cache: { some: (fn) => roles.some(fn), has: (rid) => roles.some((r) => r.id === rid) } },
+  }
+}
+
+function componentInteraction({ guild = fakeGuild(), values = [], customId = '', typed = '', deferred = true, member = fakeMember() } = {}) {
   const log = []
   return {
     log,
@@ -437,6 +450,7 @@ function componentInteraction({ guild = fakeGuild(), values = [], customId = '',
     values,
     deferred,
     replied: false,
+    member,
     user: { id: 'u-ceo' },
     client: { user: { id: 'bot1' } },
     fields: { getTextInputValue: (id) => (id === 'name' ? typed : '') },
@@ -672,6 +686,65 @@ test('the delete and reactivate pickers list 25 by name and say how many are not
   const few = componentInteraction({ customId: 'projects_delete' })
   await handleDeleteButton(few, { db: lifecycleDb(), getConfig })
   assert.doesNotMatch(few.replies.at(-1).content, /Showing the first/)
+})
+
+// --- final fix wave ---------------------------------------------------------
+
+test('the delete prompt says the section channels and their messages are lost, and the modal label fits', async () => {
+  const it = componentInteraction({ customId: 'projects_delete' })
+  await handleDeleteButton(it, { db: lifecycleDb(), getConfig })
+  assert.equal(
+    it.replies.at(-1).content,
+    'Delete which project? Deleting hides the project and its tasks and archives task channels. Its section channels (members, docs, chat, voice…) are deleted with their messages — Reactivate rebuilds them empty.'
+  )
+  assert.doesNotMatch(it.replies.at(-1).content, /every row is kept/)
+
+  const picked = componentInteraction({ customId: 'projects_delete_select', values: ['p1'], deferred: false })
+  await handleDeleteSelect(picked)
+  const label = picked.modals[0].toJSON().components[0].components[0].label
+  assert.equal(label, 'Type the project name to confirm')
+  assert.ok(label.length <= 45, "within Discord's 45-character label limit")
+})
+
+test('the /projects description names Delete and Reactivate and fits Discord’s 100 characters', () => {
+  const description = data.toJSON().description
+  assert.match(description, /delete/i)
+  assert.match(description, /reactivate/i)
+  assert.ok(description.length <= 100, description)
+  const help = getCommandDescription('projects')
+  assert.match(help.summary, /delete or reactivate/)
+  assert.match(help.detail, /Delete project/)
+  assert.match(help.detail, /Reactivate project/)
+})
+
+const REFUSED = 'This command needs one of these roles: CEO, Server Manager.'
+
+test('the confirm-name modal refuses a member without a /projects role and deletes nothing', async () => {
+  const db = lifecycleDb()
+  let ran = 0
+  const it = componentInteraction({ customId: 'projects_delete_modal:p1', typed: 'Framework', member: fakeMember(['Developer'], 'u-dev') })
+  await handleDeleteModal(it, { db, getConfig, remove: async () => ran++ })
+  assert.equal(ran, 0)
+  assert.equal(it.replies.at(-1).content, REFUSED)
+
+  // No member to check is a refusal too, never a pass.
+  const none = componentInteraction({ customId: 'projects_delete_modal:p1', typed: 'Framework', member: null })
+  await handleDeleteModal(none, { db, getConfig, remove: async () => ran++ })
+  assert.equal(ran, 0)
+  assert.equal(none.replies.at(-1).content, REFUSED)
+
+  const manager = componentInteraction({ customId: 'projects_delete_modal:p1', typed: 'Framework', member: fakeMember(['Server Manager']) })
+  await handleDeleteModal(manager, { db, getConfig, remove: async () => (ran++, { archived: 0, removed: 0, stoppedClocks: 0, failures: [] }) })
+  assert.equal(ran, 1, 'a Server Manager may')
+})
+
+test('the reactivate confirm button refuses a member without a /projects role', async () => {
+  const db = lifecycleDb()
+  let ran = 0
+  const it = componentInteraction({ customId: 'projects_reactivate_confirm:p2', member: fakeMember(['Developer'], 'u-dev') })
+  await handleReactivateConfirm(it, { db, getConfig, reactivate: async () => ran++ })
+  assert.equal(ran, 0)
+  assert.deepEqual(it.replies.at(-1), { content: REFUSED, components: [], embeds: [] })
 })
 
 test('a delete or reactivate that throws still answers the operator', async () => {

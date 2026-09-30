@@ -16,8 +16,16 @@ export function cut(text, max) {
   return last >= 0xd800 && last <= 0xdbff ? sliced.slice(0, -1) : sliced
 }
 
-/** The project's stored channel-id map, whether MySQL handed back an object or a string. */
-export function storedChannels(project) {
+/**
+ * The key a deleted project's `discordChannels` JSON keeps the ids of the
+ * non-task channels its delete moved into the archive under (a meeting pair, a
+ * hand-made channel, an unstored legacy section channel). An array, not a
+ * channel id: `storedChannels` leaves it out, `archivedChannelIds` reads it.
+ */
+export const ARCHIVED_STORE_KEY = 'archived'
+
+/** The raw `discordChannels` map, whether MySQL handed back an object or a string. */
+function channelMap(project) {
   const raw = project?.discordChannels
   if (!raw) return {}
   if (typeof raw === 'object') return { ...raw }
@@ -27,4 +35,20 @@ export function storedChannels(project) {
   } catch {
     return {}
   }
+}
+
+/**
+ * The project's stored channel-id map, whether MySQL handed back an object or a
+ * string. Section channel ids only: the `archived` list is not one of them.
+ */
+export function storedChannels(project) {
+  const map = channelMap(project)
+  delete map[ARCHIVED_STORE_KEY]
+  return map
+}
+
+/** The ids a project delete archived beyond its task channels; empty when none. */
+export function archivedChannelIds(project) {
+  const list = channelMap(project)[ARCHIVED_STORE_KEY]
+  return Array.isArray(list) ? list.filter((id) => typeof id === 'string' && id) : []
 }

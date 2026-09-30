@@ -446,9 +446,9 @@
       "detail": "Shows your upcoming meetings. Select one to reschedule (new time) or cancel it. CEO/Server Manager can manage everyone's."
     },
     "projects": {
-      "summary": "List projects, add a project, link a repository",
+      "summary": "List projects, add, delete or reactivate a project, link a repository",
       "syntax": "/projects",
-      "detail": "CEO/Server Manager only. A project's docs folder determines which UBS-Doc pages are attributed to it."
+      "detail": "CEO/Server Manager only. A project's docs folder determines which UBS-Doc pages are attributed to it. Delete project hides the project and its tasks and archives its task channels; its section channels are deleted with their messages. Reactivate project rebuilds the section (empty) and brings the task channels back."
     },
     "project-members": {
       "summary": "Add, remove, or list who works on a project.",

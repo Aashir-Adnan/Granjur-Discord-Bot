@@ -583,7 +583,7 @@ test('reactivateProject clears the row before the rebuild and hands setup the fr
   assert.equal(calls[0].g, guild)
   assert.equal(calls[0].project.deletedAt, null, 'the fresh, un-marked row')
   assert.equal(calls[0].project.id, 'p1')
-  assert.deepEqual(calls[0].deps, { db, cfg: CFG, botUserId: 'bot1' })
+  assert.deepEqual(calls[0].deps, { db, cfg: CFG, botUserId: 'bot1', reactivating: true })
 })
 
 test('reactivateProject restores each task channel, relocks a finished one, and removes an empty archive category', async () => {
@@ -721,9 +721,173 @@ test('delete keeps the section category when a task channel could not be archive
 test('delete keeps the stored id of a channel or role it could not remove, and clears the rest', async () => {
   const { log, guild, db } = deleteFixture({ failures: { members: 'Missing Permissions', role: 'Missing Permissions' } })
   await quiet(() => deleteProject({ db, guild, cfg: CFG, project: db.row, actorId: 'u-ceo', now: NOW }))
-  assert.deepEqual(log.at(-1), ['project.update', { discordChannels: { members: 'sec-members' }, discordCategoryId: null }])
+  // The channel that refused deletion is still tracked by its key, and (final
+  // fix wave) moved into the archive rather than lifted out with the category.
+  assert.deepEqual(log.at(-1), ['project.update', { discordChannels: { members: 'sec-members', archived: ['sec-members'] }, discordCategoryId: null }])
   assert.equal(db.row.discordRoleId, 'role-p1', 'the role that could not be deleted is still tracked')
-  assert.deepEqual(db.row.discordChannels, { members: 'sec-members' })
+  assert.deepEqual(db.row.discordChannels, { members: 'sec-members', archived: ['sec-members'] })
+})
+
+// --- final fix wave: every section child, client managers ------------------
+
+const ARCHIVED_OVERWRITES = [{ id: 'G1', type: OverwriteType.Role, deny: [F.ViewChannel, F.SendMessages] }]
+
+/** The delete fixture plus a /meeting-channel pair (the text one a shared review channel) and a hand-made channel in the section. */
+function sectionChildrenFixture({ failHandMade = null } = {}) {
+  const { log, guild, db } = deleteFixture()
+  guild.makeChannel({ id: 'meet-text', name: 'standup-apollo-text', parentId: 'cat-p1', topic: 'Meeting review' })
+  guild.makeChannel({ id: 'meet-voice', name: 'standup-apollo-voice', type: ChannelType.GuildVoice, parentId: 'cat-p1' })
+  guild.makeChannel({ id: 'hand-made', name: 'apollo-scratch', parentId: 'cat-p1', failEdit: failHandMade })
+  return { log, guild, db }
+}
+
+function withSharedReview(db) {
+  const tasks = [
+    { id: 't4', projectId: 'p1', discordChannelId: 'meet-text', status: 'open' },
+    { id: 't5', projectId: 'p1', discordChannelId: 'meet-text', status: 'open' },
+  ]
+  const read = db.task.findMany
+  db.task.findMany = async (args) => [...(await read(args)), ...tasks]
+  return db
+}
+
+test('delete moves a meeting pair and an untracked channel left in the section into the archive and records them', async () => {
+  const { log, guild, db } = sectionChildrenFixture()
+  withSharedReview(db)
+  const result = await deleteProject({ db, guild, cfg: CFG, project: db.row, actorId: 'u-ceo', now: NOW })
+
+  const archive = [...guild.channels.cache.values()].find((c) => c.name === '🗄 ARCHIVED PROJECTS')
+  for (const id of ['meet-text', 'meet-voice', 'hand-made']) {
+    const c = guild.channels.cache.get(id)
+    assert.equal(c.parentId, archive.id, `${id} is in the archive, not lifted to the top level`)
+    assert.deepEqual(c.edits.at(-1).permissionOverwrites, ARCHIVED_OVERWRITES, `${id}: hidden and read-only`)
+  }
+  assert.ok(!guild.channels.cache.has('cat-p1'), 'nothing left in it, so the category goes')
+  const at = (entry) => log.findIndex((e) => e[0] === entry[0] && e[1] === entry[1])
+  assert.ok(at(['channel.edit', 'meet-voice']) < at(['channel.delete', 'cat-p1']), 'moved before the category goes')
+  assert.deepEqual([...db.row.discordChannels.archived].sort(), ['hand-made', 'meet-text', 'meet-voice'])
+  assert.equal(result.archived, 2, 'the count is still the task channels')
+  assert.deepEqual(result.failures, [])
+})
+
+test('delete keeps the category when a section child cannot be moved, and records only the ones that moved', async () => {
+  const { guild, db } = sectionChildrenFixture({ failHandMade: 'Missing Permissions' })
+  const result = await quiet(() => deleteProject({ db, guild, cfg: CFG, project: db.row, actorId: 'u-ceo', now: NOW }))
+  assert.ok(guild.channels.cache.has('cat-p1'), 'the category stays around the channel that could not move')
+  assert.equal(guild.channels.cache.get('hand-made').parentId, 'cat-p1')
+  assert.ok(result.failures.includes('Kept the section category because some task channels could not be archived.'))
+  assert.match(result.failures.join('\n'), /apollo-scratch.*Missing Permissions/)
+  assert.equal(db.row.discordCategoryId, 'cat-p1', 'its id is still stored')
+  assert.deepEqual([...db.row.discordChannels.archived].sort(), ['meet-text', 'meet-voice'])
+})
+
+/** A deleted project whose delete archived two non-task channels (and one since deleted by hand). */
+function archivedChildrenFixture({ failVoice = null } = {}) {
+  const archivedOw = { deny: [F.ViewChannel, F.SendMessages], id: 'G1', type: OverwriteType.Role }
+  const { log, guild, db } = reactivateFixture({
+    archiveExtra: [
+      { id: 'meet-text', name: 'standup-apollo-text', parentId: 'arch1', overwrites: [archivedOw] },
+      { id: 'meet-voice', name: 'standup-apollo-voice', type: ChannelType.GuildVoice, parentId: 'arch1', overwrites: [archivedOw], failEdit: failVoice },
+    ],
+  })
+  db.row.discordChannels = { archived: ['meet-text', 'meet-voice', 'gone-by-hand'] }
+  return { log, guild, db }
+}
+
+test('reactivate moves each recorded archived channel back into the category with its overwrites synced, then clears the list', async () => {
+  const { log, guild, db } = archivedChildrenFixture()
+  const calls = []
+  const result = await reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup: fakeSetup({ guild, db, log, calls }) })
+  for (const id of ['meet-text', 'meet-voice']) {
+    const c = guild.channels.cache.get(id)
+    assert.equal(c.parentId, 'cat-new', `${id} is back in the project's category`)
+    assert.deepEqual(c.edits.at(-1), { parent: 'cat-new', lockPermissions: true }, `${id}: synced to the category, so the role sees it`)
+  }
+  assert.ok(!('archived' in (db.row.discordChannels ?? {})), 'the list is cleared')
+  assert.ok(!guild.channels.cache.has('arch1'), 'the archive emptied, so it goes')
+  assert.deepEqual(result, { restored: 2, failures: [] }, 'a recorded channel deleted by hand is simply skipped')
+})
+
+test('reactivate sends a recorded archived channel to the global category when the project category is full', async () => {
+  const { guild, db } = archivedChildrenFixture()
+  // 46 section channels and the two task channels: room for exactly one more under the 49 cap.
+  const setup = partialSetup({ guild, db, moved: ['tc1', 'tc2'], fill: 46 })
+  const result = await quiet(() => reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup }))
+  const features = [...guild.channels.cache.values()].find((c) => c.name === 'Features' && c.type === ChannelType.GuildCategory)
+  assert.ok(features)
+  assert.equal(guild.channels.cache.get('meet-text').parentId, 'cat-new', 'the first one fits')
+  assert.equal(guild.channels.cache.get('meet-voice').parentId, features.id, 'the next goes to the global category')
+  assert.deepEqual(guild.channels.cache.get('meet-voice').edits.at(-1), { parent: features.id, lockPermissions: true })
+  assert.deepEqual(result.failures, [])
+})
+
+test('reactivate names a recorded archived channel it could not move back', async () => {
+  const { log, guild, db } = archivedChildrenFixture({ failVoice: 'Missing Access' })
+  const calls = []
+  const result = await quiet(() =>
+    reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup: fakeSetup({ guild, db, log, calls }) })
+  )
+  assert.deepEqual(result.failures, ['Could not restore #standup-apollo-voice: Missing Access'])
+  assert.equal(guild.channels.cache.get('meet-text').parentId, 'cat-new', 'the others still came back')
+  assert.ok(guild.channels.cache.has('arch1'), 'not empty, so kept')
+})
+
+test('restoreTaskChannel gives a client request channel back to the project’s client managers', async () => {
+  const guild = fakeGuild({ channels: [ticket('tc1', 'feature-report', { parentId: 'cat-p1' })], roles: [{ id: 'role-p1' }] })
+  const channel = guild.channels.cache.get('tc1')
+  const task = { id: 't1', createdBy: 'client1', requestedBy: 'client1', assigneeIds: ['u1'], status: 'open', discordChannelId: 'tc1' }
+  const project = liveProject()
+  await restoreTaskChannel(guild, channel, { task, project, managerIds: ['m1', 'm2'] })
+  assert.deepEqual(
+    channel.edits[0].permissionOverwrites,
+    taskChannelOverwrites(guild, { project, memberIds: ['client1', 'u1', 'm1', 'm2'], inSection: true })
+  )
+})
+
+test('restoreTaskChannel leaves a team task’s audience alone even when managers are passed', async () => {
+  const guild = fakeGuild({ channels: [ticket('tc1', 'feature-login', { parentId: 'cat-p1' })], roles: [{ id: 'role-p1' }] })
+  const channel = guild.channels.cache.get('tc1')
+  const task = { id: 't1', createdBy: 'u-lead', assigneeIds: ['u1'], status: 'open', discordChannelId: 'tc1' }
+  const project = liveProject()
+  await restoreTaskChannel(guild, channel, { task, project, managerIds: ['m1'] })
+  assert.deepEqual(
+    channel.edits[0].permissionOverwrites,
+    taskChannelOverwrites(guild, { project, memberIds: ['u-lead', 'u1'], inSection: true })
+  )
+})
+
+test('reactivate reads the roster once and restores the client managers on request channels only', async () => {
+  const { log, guild, db } = reactivateFixture()
+  db.task.findMany = async () => [
+    { id: 't1', projectId: 'p1', discordChannelId: 'tc1', status: 'open', createdBy: 'client1', requestedBy: 'client1', assigneeIds: [] },
+    { id: 't2', projectId: 'p1', discordChannelId: 'tc2', status: 'open', createdBy: 'u-lead', assigneeIds: ['u2'] },
+  ]
+  const rosterReads = []
+  db.projectMember = {
+    async findByProject({ where }) {
+      rosterReads.push(where)
+      return [
+        { discordId: 'm1', role: 'client_manager' },
+        { discordId: 'client1', role: 'client' },
+        { discordId: 'dev1', role: 'developer' },
+      ]
+    },
+  }
+  const calls = []
+  await reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup: fakeSetup({ guild, db, log, calls }) })
+  assert.deepEqual(rosterReads, [{ projectId: 'p1' }])
+  const ids = (id) => guild.channels.cache.get(id).edits.at(-1).permissionOverwrites.map((o) => o.id)
+  assert.ok(ids('tc1').includes('m1'), 'the manager sees the request again')
+  assert.ok(!ids('tc2').includes('m1'), 'but not a team task')
+})
+
+test('reactivate never reads the roster when no task is a client request', async () => {
+  const { log, guild, db } = reactivateFixture()
+  let reads = 0
+  db.projectMember = { findByProject: async () => (reads++, []) }
+  const calls = []
+  await reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup: fakeSetup({ guild, db, log, calls }) })
+  assert.equal(reads, 0)
 })
 
 // --- replies ----------------------------------------------------------------

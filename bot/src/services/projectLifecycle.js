@@ -6,15 +6,19 @@
 //   delete     — mark the row, stop running clocks on its tasks, move each
 //                task channel into a hidden, read-only archive category
 //                (`🗄 ARCHIVED PROJECTS`, then `… 2` once one holds 50), then
-//                remove the section's channels, its category (kept when a task
-//                channel could not be archived) and its role, and null the ids
-//                of what is gone (what could not be removed stays stored).
+//                remove the section's stored channels, archive every other
+//                channel still in its category (ids recorded under
+//                `discordChannels.archived`), remove the category (kept when
+//                any channel could not be archived) and its role, and null the
+//                ids of what is gone (what could not be removed stays stored).
 //   reactivate — un-mark the row, rebuild the section with `setupOneProject`
-//                (whose task pass moves the task channels back in), rebuild
-//                each task channel's overwrites the way a new one is built
-//                (moving one the rebuild left in the archive to where a new
-//                one would go), relock the finished ones, and drop any empty
-//                archive category.
+//                (whose task pass moves the task channels back in), move the
+//                recorded `archived` channels back with the category's
+//                overwrites and clear the list, rebuild each task channel's
+//                overwrites the way a new one is built (moving one the rebuild
+//                left in the archive to where a new one would go; a client
+//                request's also naming the project's client managers), relock
+//                the finished ones, and drop any empty archive category.
 //
 // Nothing in the database is deleted. Each Discord step is caught on its own
 // and reported in `failures`; the project stays deleted (or reactivated)
@@ -26,7 +30,8 @@ import { lockTicketChannel } from '../utils/channels.js'
 import { isFinished } from '../utils/ticketArchive.js'
 import { isTicketChannel } from '../utils/taskChannelName.js'
 import { holdersOf } from '../utils/taskLabel.js'
-import { storedChannels } from '../utils/projectStore.js'
+import { storedChannels, archivedChannelIds, ARCHIVED_STORE_KEY } from '../utils/projectStore.js'
+import { managerIdsOf } from '../utils/clientRoles.js'
 import { closeEntry } from './clock.js'
 import { setupOneProject } from '../commands/project-setup.js'
 
@@ -122,9 +127,14 @@ export async function archiveTaskChannel(guild, channel, archiveCategory) {
  * the project's category when it has room, else the global Features/Bugs one.
  * A live ticket must never sit, open to its members, under "archived".
  *
+ * `managerIds` are the project's client managers (`managerIdsOf` over its
+ * roster); they are added only when the task is a client request
+ * (`requestedBy` set). A meeting task's approver is not stored on its row, so a
+ * mirrored task's channel comes back without them.
+ *
  * @returns {Promise<{edited: number, failed: number}|null>} the relock's counts, null when not finished
  */
-export async function restoreTaskChannel(guild, channel, { task, project }) {
+export async function restoreTaskChannel(guild, channel, { task, project, managerIds = [] }) {
   const payload = {}
   let inSection = Boolean(project?.discordCategoryId) && channel.parentId === project.discordCategoryId
   if (inArchive(guild, channel)) {
@@ -134,7 +144,9 @@ export async function restoreTaskChannel(guild, channel, { task, project }) {
   }
   payload.permissionOverwrites = taskChannelOverwrites(guild, {
     project,
-    memberIds: [task?.createdBy, ...holdersOf(task)],
+    // A client request's channel is also its project's client managers' (the
+    // rule `clientRequest.js` creates it by and `/project-members` keeps).
+    memberIds: [task?.createdBy, ...holdersOf(task), ...(task?.requestedBy ? managerIds : [])],
     inSection,
   })
   const edited = (await channel.edit(payload)) ?? channel
@@ -236,6 +248,8 @@ export async function deleteProject({ db: dbArg, guild, cfg = null, project, act
 
   // 3. Each task channel into the archive, before its category goes.
   let archived = 0
+  // Tried here, moved or not: the sweep in 4b does not try (or report) it twice.
+  const attempted = new Set()
   for (const task of ownChannelTasks(tasks)) {
     const found = await lookup(guild.channels, task.discordChannelId, UNKNOWN_CHANNEL)
     if (found.gone) continue
@@ -246,6 +260,7 @@ export async function deleteProject({ db: dbArg, guild, cfg = null, project, act
     }
     const channel = found.item
     if (!isTicketChannel(channel)) continue
+    attempted.add(channel.id)
     try {
       await archiveTaskChannel(guild, channel, await ensureArchiveCategory(guild))
       archived += 1
@@ -281,6 +296,28 @@ export async function deleteProject({ db: dbArg, guild, cfg = null, project, act
     const gone = await remove(guild.channels, id, UNKNOWN_CHANNEL, (c) => (c ? `#${c.name}` : `channel ${id}`))
     if (!gone) keptChannels[key] = id
   }
+
+  // 4b. Whatever else is still in the category — a /meeting-channel pair, a
+  //     legacy section channel whose id was never stored, a hand-made channel,
+  //     one of the section's own that refused deletion — goes into the archive
+  //     too, the same way, and its id is recorded so a reactivation brings it
+  //     back. Deleting the category would otherwise lift it to the top level
+  //     with the role's overwrite gone. One that cannot be moved keeps the
+  //     category, exactly as a task channel does.
+  const archivedIds = []
+  const leftInSection = project.discordCategoryId
+    ? cachedChannels(guild).filter((c) => c?.parentId === project.discordCategoryId && !attempted.has(c.id))
+    : []
+  for (const channel of leftInSection) {
+    try {
+      await archiveTaskChannel(guild, channel, await ensureArchiveCategory(guild))
+      archivedIds.push(channel.id)
+    } catch (e) {
+      archiveIncomplete = true
+      fail(`archive #${channel.name}`, e)
+    }
+  }
+
   let categoryGone = false
   if (archiveIncomplete && project.discordCategoryId) {
     failures.push(CATEGORY_KEPT)
@@ -294,7 +331,8 @@ export async function deleteProject({ db: dbArg, guild, cfg = null, project, act
   // 5. The row forgets what is gone; a reactivation builds fresh ones. What
   //    could not be removed stays stored, so /project-setup and a reactivation
   //    still track it instead of building a duplicate beside it.
-  const data = { discordChannels: Object.keys(keptChannels).length ? keptChannels : null }
+  const channelsLeft = archivedIds.length ? { ...keptChannels, [ARCHIVED_STORE_KEY]: archivedIds } : keptChannels
+  const data = { discordChannels: Object.keys(channelsLeft).length ? channelsLeft : null }
   if (categoryGone) data.discordCategoryId = null
   if (roleGone) data.discordRoleId = null
   try {
@@ -328,10 +366,13 @@ export async function reactivateProject({ db: dbArg, guild, cfg, project, botUse
 
   // 2. The section, through the same routine /project-setup runs. Its task
   //    pass moves every task channel that still exists into the new category.
+  // Read before the rebuild, whose single write of the section ids drops the list.
+  const archivedIds = archivedChannelIds(fresh)
   let rebuilt = false
   let rebuildWarnings = []
   try {
-    const out = await setup(guild, fresh, { db: dbArg, cfg, botUserId })
+    // `reactivating`: the rebuild must not refuse a row it may still read as deleted.
+    const out = await setup(guild, fresh, { db: dbArg, cfg, botUserId, reactivating: true })
     rebuilt = Boolean(out?.result?.category)
     // What the rebuild itself could not do (a refused channel, a full category).
     rebuildWarnings = [...new Set([...(out?.plan?.warnings ?? []), ...(out?.result?.warnings ?? [])].map(String))]
@@ -341,17 +382,60 @@ export async function reactivateProject({ db: dbArg, guild, cfg, project, botUse
   if (!rebuilt) failures.push(SECTION_REBUILD_FAILED)
   failures.push(...rebuildWarnings.map((w) => `Rebuild: ${w}`))
 
-  // 3. Each task channel's overwrites, against the ids the rebuild just stored.
   const current = await reread(fresh)
+
+  // 3. The non-task channels the delete archived, back into the section with
+  //    the category's overwrites (so the new role sees them), or where a new
+  //    task channel would go when the category is full. Before the task pass,
+  //    which then gives any task channel among them its own overwrites.
+  for (const id of archivedIds) {
+    const found = await lookup(guild.channels, id, UNKNOWN_CHANNEL)
+    if (found.gone) continue
+    if (found.error) {
+      fail(`find archived channel ${id}`, found.error)
+      continue
+    }
+    const channel = found.item
+    try {
+      const { category } = await resolveParentCategory(guild, current, 'Features')
+      await channel.edit({ parent: category.id, lockPermissions: true })
+    } catch (e) {
+      fail(`restore #${channel.name}`, e)
+    }
+  }
+  if (archivedIds.length) {
+    // Cleared whatever happened: what could not be moved is named above.
+    const left = storedChannels(await reread(current))
+    try {
+      await dbArg.project.update({
+        where: { id: project.id },
+        data: { discordChannels: Object.keys(left).length ? left : null },
+      })
+    } catch (e) {
+      fail('clear its archived channel list', e)
+    }
+  }
+
+  // 4. Each task channel's overwrites, against the ids the rebuild just stored.
   let tasks = []
   try {
     tasks = (await readTasks(dbArg, cfg?.id ?? project.guildConfigId, project.id)) ?? []
   } catch (e) {
     fail('read its tasks, so no task channel was restored', e)
   }
+  const owned = ownChannelTasks(tasks)
+  // The client managers, for request channels only; read only when there is one.
+  let managerIds = []
+  if (owned.some((t) => t?.requestedBy)) {
+    try {
+      managerIds = managerIdsOf(await dbArg.projectMember.findByProject({ where: { projectId: project.id } }))
+    } catch (e) {
+      fail("read its client managers, so request channels came back without them", e)
+    }
+  }
   let restored = 0
   const seen = []
-  for (const task of ownChannelTasks(tasks)) {
+  for (const task of owned) {
     const found = await lookup(guild.channels, task.discordChannelId, UNKNOWN_CHANNEL)
     if (found.gone) continue
     if (found.error) {
@@ -362,7 +446,7 @@ export async function reactivateProject({ db: dbArg, guild, cfg, project, botUse
     if (!isTicketChannel(channel)) continue
     seen.push(channel)
     try {
-      const lock = await restoreTaskChannel(guild, channel, { task, project: current })
+      const lock = await restoreTaskChannel(guild, channel, { task, project: current, managerIds })
       restored += 1
       if (lock?.failed) failures.push(`Could not lock #${channel.name} again: ${lock.failed} overwrite(s) refused.`)
     } catch (e) {
@@ -376,7 +460,7 @@ export async function reactivateProject({ db: dbArg, guild, cfg, project, botUse
     failures.push(`#${channel.name} is still in ${where} — run /project-setup for it.`)
   }
 
-  // 4. An archive category nothing is left in.
+  // 5. An archive category nothing is left in.
   for (const category of cachedChannels(guild).filter(isArchiveCategory)) {
     if (childCount(guild, category.id) > 0) continue
     try {

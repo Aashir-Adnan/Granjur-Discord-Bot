@@ -2,6 +2,22 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-10-01 — Project soft delete: final fix wave (NOT MERGED, NOT DEPLOYED)
+
+After the final review, one bot commit on `feat/project-soft-delete`, `fix(projects): archive
+every section child, restore managers, honest delete prompt, role check`: delete sweeps every
+other channel left in the section category into the archive and records the ids
+(`discordChannels.archived`), reactivation moves them back with the category's overwrites and
+clears the list; a client request channel gets its project's client managers back on
+reactivation; the Delete picker says section channels are deleted with their messages;
+the confirm modal and Reactivate button re-run the `/projects` role gate; `/project-setup`
+refuses a project deleted mid-walk (only `reactivateProject` passes `reactivating: true`);
+the `/projects` description and help mention Delete and Reactivate. Files:
+`services/projectLifecycle.js`, `utils/projectStore.js`, `services/projectSection.js`,
+`commands/projects.js`, `commands/project-setup.js`, `commands/index.js`,
+`config/commands.js`, `config/command-config.json`, their tests, and the knowledge file.
+Suite: bot `npm test` 1832 tests, pass 1832, `ℹ fail 0`.
+
 ## 2026-10-01 — Project soft delete (BUILT, NOT MERGED, NOT DEPLOYED)
 
 Delete project and Reactivate project in `/projects`. A deleted project and its tasks are hidden

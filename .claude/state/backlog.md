@@ -6,8 +6,10 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ## Project soft delete — BUILT, NOT DEPLOYED (not merged), 2026-10-01
 Delete and Reactivate in `/projects`; a deleted project and its tasks are hidden, nothing is
-removed. Bot branch `feat/project-soft-delete` (`2c6e5e3` .. `f160bce`), CSAAS branch
-`feat/project-soft-delete` (`605a582`). Knowledge `.claude/knowledge/project-soft-delete.md`.
+removed. Bot branch `feat/project-soft-delete` (`2c6e5e3` .. `f160bce`, the docs commit, then
+the final fix wave `fix(projects): archive every section child, restore managers, honest
+delete prompt, role check`), CSAAS branch `feat/project-soft-delete` (`605a582`). Knowledge
+`.claude/knowledge/project-soft-delete.md`.
 - **Rollout, each push needing the owner's go-ahead:** (1) merge and push the bot's `main`; the
   deploy runs `npm run db:migrate` (031) before the restart. (2) merge and push CSAAS `main`
   (auto-deploys). The column check makes either order safe.
@@ -17,6 +19,15 @@ removed. Bot branch `feat/project-soft-delete` (`2c6e5e3` .. `f160bce`), CSAAS b
 - **Deferred (known limits):** the per-project lock is per process; a restored channel lands
   below the archive divider until the next `/project-setup`; tasks beyond the 2000-row read are
   not visited on delete or reactivation.
+  - Concurrent deletes of different projects share the archive categories without a lock
+    (failures are reported, and recoverable).
+  - A meeting's tasks from a project deleted mid-pipeline land in "No project" and are not
+    re-attached on reactivation.
+  - After the bot deploy CSAAS can take up to 5 minutes to notice the `deletedAt` column; its
+    one-time `Could not check granjur.project.deletedAt` warning must be checked in the CSAAS
+    log.
+  - A meeting-mirrored task's approver is not stored on the task row, so reactivation does
+    not give it back its access to that task's channel (the assignee and creator do get it).
 
 ## Owner roadmap, 2026-09-28 — seven sub-projects, in build order (each: spec → plan → build)
 1. **Identity link and access scoping — DEPLOYED (2026-09-29).** Spec

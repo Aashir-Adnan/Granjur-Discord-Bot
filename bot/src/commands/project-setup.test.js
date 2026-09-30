@@ -9,6 +9,9 @@ import {
   renderResult,
   staffOnly,
   clientIdsOf,
+  setupProjectSection,
+  setupOneProject,
+  prepareSectionRun,
 } from './project-setup.js'
 import { ARCHIVE_DIVIDER_NAME } from '../utils/ticketArchive.js'
 
@@ -1236,4 +1239,44 @@ test("a live project whose slug a deleted project still holds is refused, like a
   await quiet(() => execute(it, { db, getConfig }))
   assert.equal(guild.channels.calls.length, 0)
   assert.match(it.replies.at(-1).content, /refused: its channel slug `framework` is also used by \*\*Framework Old\*\*/)
+})
+
+test('a project deleted after the walk read it is refused when its turn comes, and nothing is built', async () => {
+  // The walk's list still has it live; the fresh read says deleted.
+  const db = hidingDb({ projects: [{ ...PROJECT, deletedAt: DELETED_AT }] })
+  const guild = fakeGuild()
+  const run = await prepareSectionRun(guild, { botUserId: 'bot1' })
+  const out = await quiet(() => setupProjectSection(guild, { ...PROJECT, deletedAt: null }, { db, cfg: CFG, run }))
+  assert.equal(out.refused, true)
+  assert.equal(out.plan, null)
+  assert.match(out.block, /\*\*Framework\*\* — This project is deleted\. Nothing was changed\./)
+  assert.equal(guild.channels.calls.length, 0)
+  assert.equal(guild.roles.calls.length, 0)
+  assert.ok(!db.calls.some((c) => c[0] === 'project.update'))
+})
+
+test('the all:true walk skips a project deleted mid-walk', async () => {
+  const projects = [{ ...PROJECT }]
+  const db = hidingDb({ projects })
+  // Deleted between the walk's list read and its own turn.
+  const list = db.project.findMany
+  db.project.findMany = async (args) => {
+    const rows = (await list(args)).map((p) => ({ ...p }))
+    if (args.where.includeDeleted !== true) projects[0].deletedAt = DELETED_AT
+    return rows
+  }
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { all: true } })
+  await quiet(() => execute(it, { db, getConfig }))
+  assert.match(it.replies.at(-1).content, /This project is deleted/)
+  assert.equal(guild.channels.calls.length, 0)
+})
+
+test('the reactivation path rebuilds a project the fresh read still shows deleted', async () => {
+  const db = hidingDb({ projects: [{ ...PROJECT, deletedAt: DELETED_AT }] })
+  const guild = fakeGuild()
+  const out = await quiet(() => setupOneProject(guild, { ...PROJECT }, { db, cfg: CFG, botUserId: 'bot1', reactivating: true }))
+  assert.ok(!out.refused)
+  assert.ok(out.result?.category, 'the section was built')
+  assert.ok(guild.channels.calls.length > 0)
 })

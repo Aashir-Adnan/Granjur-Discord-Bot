@@ -6,7 +6,7 @@ import {
 } from 'discord.js'
 import { config } from '../config.js'
 import { EPHEMERAL } from '../constants.js'
-import { autocompleteAllowed, canUseCommand, getCommandRoles } from '../config/commands.js'
+import { autocompleteAllowed, canUseCommand, commandRefusal } from '../config/commands.js'
 import { getGuildConfig } from '../db/index.js'
 import * as initCmd from './init.js'
 import * as createTaskCmd from './create-task.js'
@@ -241,10 +241,7 @@ export async function handleCommand(interaction, commands) {
   if (member && !canUseCommand(member, interaction.commandName, { clientRoleId: cfg?.clientRoleId ?? null })) {
     // The command channels this used to point at were removed by the
     // global-channel-layout trim — say the actual roles instead.
-    const roles = getCommandRoles(interaction.commandName)
-    const msg = roles.length
-      ? `This command needs one of these roles: ${roles.join(', ')}.`
-      : 'You don\'t have permission to use this command.'
+    const msg = commandRefusal(interaction.commandName)
     if (interaction.deferred) return interaction.editReply({ content: msg }).catch(() => {})
     return interaction.reply({ content: msg, flags: EPHEMERAL }).catch(() => {})
   }

@@ -29,6 +29,14 @@ export function getCommandRoles(commandName) {
   return Array.isArray(roles) ? roles : []
 }
 
+/** What the command gate answers a member who may not run the command. */
+export function commandRefusal(commandName) {
+  const roles = getCommandRoles(commandName)
+  return roles.length
+    ? `This command needs one of these roles: ${roles.join(', ')}.`
+    : 'You don\'t have permission to use this command.'
+}
+
 /** Whether this command gets a dedicated channel in the command-channels category. */
 export function hasDedicatedChannel(commandName) {
   const cfg = loadCommandConfig()

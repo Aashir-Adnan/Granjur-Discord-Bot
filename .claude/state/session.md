@@ -9,8 +9,10 @@ meeting notes as files) went live 2026-10-01.
 
 ## State
 - Project soft delete: BUILT, NOT MERGED, NOT DEPLOYED. Bot `feat/project-soft-delete`
-  (`2c6e5e3`, `1ea4336`, `725f77a`, `833a0cd`, `f160bce`, then the docs commit), CSAAS
-  `feat/project-soft-delete` (`605a582`). Suites green: bot 1815 tests, `ℹ fail 0`; CSAAS
+  (`2c6e5e3`, `1ea4336`, `725f77a`, `833a0cd`, `f160bce`, the docs commit `5dbd9e3`, then the
+  final fix wave `fix(projects): archive every section child, restore managers, honest delete
+  prompt, role check`), CSAAS `feat/project-soft-delete` (`605a582`). Suites green: bot 1832
+  tests, `ℹ fail 0` (after the final fix wave); CSAAS
   `soft-delete.test.js` OK, loop no `FAILED`, jest 5 passed. Rollout bot then CSAAS, each push
   needs the owner's go-ahead (`backlog.md`). Knowledge `project-soft-delete.md`.
 - Sub-project 7: CSAAS `1c9eb0c` (auto-deploys; not observed); bot `4cf460d`, whose deploy

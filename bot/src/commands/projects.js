@@ -21,6 +21,7 @@ import { linkRepo, unlinkRepo, linkRefusalText, accessLine, linkUpdatedText } fr
 import { checkRepoAccess } from '../services/github.js'
 import { DELETED_NAME_HELD, DELETED_SLUG_HELD, PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
 import { deleteProject, reactivateProject, deleteReply, reactivateReply } from '../services/projectLifecycle.js'
+import { canUseCommand, commandRefusal } from '../config/commands.js'
 
 const NO_SCOPE_VALUE = 'none'
 
@@ -35,7 +36,7 @@ export const NAME_MISMATCH = 'The name does not match — nothing was deleted.'
 
 export const data = new SlashCommandBuilder()
   .setName('projects')
-  .setDescription('(CEO/Server Manager) List projects, add a project, link a repo')
+  .setDescription('(CEO/Server Manager) List, add, delete or reactivate projects; link a repo')
 
 export async function listPayload(cfg, { db: dbArg = db } = {}) {
   // Every project, soft-deleted ones included; the list below shows the live ones.
@@ -466,6 +467,22 @@ export const PROJECT_BUSY = 'This project is being changed — try again in a mi
  */
 const busy = new Set()
 
+/**
+ * The `/projects` role gate again, for the two steps that delete or rebuild. A
+ * button or modal outlives the command that showed it (a message can be
+ * forwarded, a member's role taken away since), and the router gates commands,
+ * not components. Same rule and same refusal as the command gate; no member to
+ * check is a refusal, never a pass.
+ */
+async function mayRunProjects(interaction, cfg) {
+  const guild = interaction.guild
+  const userId = interaction.user?.id
+  const member = interaction.member?.roles
+    ? interaction.member
+    : (guild.members?.cache?.get?.(userId) ?? (await Promise.resolve(guild.members?.fetch?.(userId)).catch(() => null)))
+  return Boolean(member) && canUseCommand(member, 'projects', { clientRoleId: cfg?.clientRoleId ?? null })
+}
+
 /** Run `fn` holding the project's lock; null (and nothing run) when it is held. */
 async function withProjectLock(projectId, fn) {
   if (busy.has(projectId)) return null
@@ -476,6 +493,13 @@ async function withProjectLock(projectId, fn) {
     busy.delete(projectId)
   }
 }
+
+/**
+ * What a delete does, said before the project is picked. The section channels
+ * are deleted with their messages and pins, so it must not promise they come back.
+ */
+export const DELETE_PROMPT =
+  'Deleting hides the project and its tasks and archives task channels. Its section channels (members, docs, chat, voice…) are deleted with their messages — Reactivate rebuilds them empty.'
 
 /** `/projects` → Delete project: a select of the live projects. */
 export async function handleDeleteButton(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
@@ -493,7 +517,7 @@ export async function handleDeleteButton(interaction, { db: dbArg = db, getConfi
     .addOptions(options)
   return interaction
     .editReply({
-      content: `Delete which project? Its channels, category and role are removed and its task channels archived; every row is kept, and **Reactivate project** brings it back.${note}`,
+      content: `Delete which project? ${DELETE_PROMPT}${note}`,
       embeds: [],
       components: [new ActionRowBuilder().addComponents(select)],
     })
@@ -536,6 +560,7 @@ export async function handleDeleteModal(
   if (!guild || !(await acknowledge(interaction, 'reply'))) return
   const say = (content) => interaction.editReply({ content: cut(content, REPLY_LIMIT) }).catch(() => {})
   const cfg = await getConfig(guild.id)
+  if (!(await mayRunProjects(interaction, cfg))) return say(commandRefusal('projects'))
   const projectId = idFrom(interaction.customId)
   // Read and checked inside the lock, so the state checked is the state acted on.
   const held = await withProjectLock(projectId, async () => {
@@ -609,6 +634,7 @@ export async function handleReactivateConfirm(
   const say = (content) =>
     interaction.editReply({ content: cut(content, REPLY_LIMIT), components: [], embeds: [] }).catch(() => {})
   const cfg = await getConfig(guild.id)
+  if (!(await mayRunProjects(interaction, cfg))) return say(commandRefusal('projects'))
   const projectId = idFrom(interaction.customId)
   const held = await withProjectLock(projectId, async () => {
     const project = await projectOf(dbArg, cfg, projectId)
