@@ -624,6 +624,12 @@ See `.claude/knowledge/csaas-meeting-workflow-integration.md` ("Scope and meetin
 projects") for where the four fixed values come from on the bot/CSAAS side, and
 `.claude/state/backlog.md` for the three-repo rollout order.
 
+## Clock in and out (2026-09-30, roadmap sub-project 5 — BUILT, NOT DEPLOYED)
+
+The Team header gains a clock control, the task page a clock button and the Time tab a
+"Clocked in now" card. See `.claude/knowledge/site-clock.md` for the bot service, the
+`/internal/clock/*` routes, CSAAS's link-only endpoints and the site behaviour.
+
 ## Related
 
 [[project-docs]] (the other bot-to-site data path, UBS-Doc markdown into MySQL — this

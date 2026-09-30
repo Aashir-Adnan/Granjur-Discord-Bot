@@ -67,3 +67,8 @@
   (`CLIENT_SECTION_KEYS`, `clientIds`, `staffOnly`), requests as tasks
   (`requestedBy`, attachments, notices), `/request-report`'s filtered
   timeline, and the rollout steps.
+- [site-clock.md](site-clock.md) — clock in and out on the site (roadmap sub-project 5):
+  the bot's one clock service shared by `/clock-in`, `/clock-out` and the four
+  `/internal/clock/*` routes; CSAAS's link-only clock endpoints (no admin bypass), guild
+  resolution, `/time/active` scope and redaction; the site's header control, task-page
+  button and "Clocked in now" card, and why elapsed ticks from `elapsedSeconds`.
