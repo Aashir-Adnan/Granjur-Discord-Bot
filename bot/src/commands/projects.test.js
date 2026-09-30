@@ -603,6 +603,77 @@ test('confirming a reactivation of a live project changes nothing', async () => 
   assert.equal(it.replies.at(-1).content, '**Framework** is not deleted.')
 })
 
+test('a second delete or reactivate of the same project while one is running is refused', async () => {
+  const db = lifecycleDb()
+  let release
+  const gate = new Promise((resolve) => (release = resolve))
+  let removes = 0
+  const remove = async () => {
+    removes += 1
+    await gate
+    return { archived: 0, removed: 0, stoppedClocks: 0, failures: [] }
+  }
+  const first = componentInteraction({ customId: 'projects_delete_modal:p1', typed: 'Framework' })
+  const running = handleDeleteModal(first, { db, getConfig, remove })
+  await new Promise((r) => setImmediate(r))
+
+  // Raced against a short timer: without a lock this call would wait on the gate too.
+  const settle = (p) => Promise.race([p, new Promise((r) => setTimeout(r, 50))])
+  const second = componentInteraction({ customId: 'projects_delete_modal:p1', typed: 'Framework' })
+  await settle(handleDeleteModal(second, { db, getConfig, remove }))
+  assert.equal(second.replies.at(-1)?.content, 'This project is being changed — try again in a minute.')
+
+  let reactivated = 0
+  const pressed = componentInteraction({ customId: 'projects_reactivate_confirm:p1' })
+  await settle(handleReactivateConfirm(pressed, { db, getConfig, reactivate: async () => reactivated++ }))
+  assert.equal(pressed.replies.at(-1)?.content, 'This project is being changed — try again in a minute.')
+  assert.equal(reactivated, 0)
+  assert.equal(removes, 1, 'only the first one ran')
+
+  release()
+  await running
+  assert.match(first.replies.at(-1).content, /^Deleted \*\*Framework\*\*/)
+
+  // Released once it finished.
+  const third = componentInteraction({ customId: 'projects_delete_modal:p1', typed: 'Framework' })
+  await handleDeleteModal(third, { db, getConfig, remove })
+  assert.equal(removes, 2)
+})
+
+test('the lock is released when a delete or reactivate throws', async () => {
+  const db = lifecycleDb()
+  const boom = async () => {
+    throw new Error('db down')
+  }
+  await quiet(() => handleReactivateConfirm(componentInteraction({ customId: 'projects_reactivate_confirm:p2' }), { db, getConfig, reactivate: boom }))
+  let ran = 0
+  const again = componentInteraction({ customId: 'projects_reactivate_confirm:p2' })
+  await handleReactivateConfirm(again, { db, getConfig, reactivate: async () => (ran++, { restored: 0, failures: [] }) })
+  assert.equal(ran, 1)
+})
+
+test('the delete and reactivate pickers list 25 by name and say how many are not shown', async () => {
+  const names = Array.from({ length: 27 }, (_, i) => `Project ${String(27 - i).padStart(2, '0')}`)
+  const db = hidingDb(names.map((name, i) => ({ id: `p${i}`, name, guildConfigId: 'g1', deletedAt: null })))
+  const it = componentInteraction({ customId: 'projects_delete' })
+  await handleDeleteButton(it, { db, getConfig })
+  const reply = it.replies.at(-1)
+  const options = reply.components[0].components[0].toJSON().options
+  assert.equal(options.length, 25)
+  assert.equal(options[0].label, 'Project 01', 'sorted by name')
+  assert.equal(options[24].label, 'Project 25')
+  assert.match(reply.content, /Showing the first 25 by name — 2 more not listed\./)
+
+  const deleted = hidingDb(names.map((name, i) => ({ id: `p${i}`, name, guildConfigId: 'g1', deletedAt: DELETED_AT })))
+  const r = componentInteraction({ customId: 'projects_reactivate' })
+  await handleReactivateButton(r, { db: deleted, getConfig })
+  assert.match(r.replies.at(-1).content, /Showing the first 25 by name — 2 more not listed\./)
+
+  const few = componentInteraction({ customId: 'projects_delete' })
+  await handleDeleteButton(few, { db: lifecycleDb(), getConfig })
+  assert.doesNotMatch(few.replies.at(-1).content, /Showing the first/)
+})
+
 test('a delete or reactivate that throws still answers the operator', async () => {
   const db = lifecycleDb()
   const it = componentInteraction({ customId: 'projects_delete_modal:p1', typed: 'Framework' })

@@ -440,7 +440,42 @@ async function projectOf(dbArg, cfg, projectId) {
   return project && String(project.guildConfigId) === String(cfg.id) ? project : null
 }
 
-const projectOptions = (projects) => projects.slice(0, 25).map((p) => ({ label: p.name.slice(0, 100), value: p.id }))
+/** Discord's limit on a select's options. */
+const SELECT_LIMIT = 25
+
+/**
+ * A project picker's options (the first 25 by name) and the line that says how
+ * many more there are, empty when all fit.
+ */
+function projectPicker(projects) {
+  const sorted = [...projects].sort((a, b) => String(a.name).localeCompare(String(b.name)))
+  const hidden = sorted.length - SELECT_LIMIT
+  return {
+    options: sorted.slice(0, SELECT_LIMIT).map((p) => ({ label: p.name.slice(0, 100), value: p.id })),
+    note: hidden > 0 ? `\nShowing the first ${SELECT_LIMIT} by name — ${hidden} more not listed.` : '',
+  }
+}
+
+/** The refusal while another delete or reactivate of the same project is running. */
+export const PROJECT_BUSY = 'This project is being changed — try again in a minute.'
+
+/**
+ * Project ids with a delete or reactivate in flight, in this process. Held for
+ * the whole operation, so a Reactivate pressed while a Delete is still
+ * archiving (or two confirm-name submits) cannot overlap.
+ */
+const busy = new Set()
+
+/** Run `fn` holding the project's lock; null (and nothing run) when it is held. */
+async function withProjectLock(projectId, fn) {
+  if (busy.has(projectId)) return null
+  busy.add(projectId)
+  try {
+    return { value: await fn() }
+  } finally {
+    busy.delete(projectId)
+  }
+}
 
 /** `/projects` → Delete project: a select of the live projects. */
 export async function handleDeleteButton(interaction, { db: dbArg = db, getConfig = getOrCreateGuildConfig } = {}) {
@@ -451,13 +486,14 @@ export async function handleDeleteButton(interaction, { db: dbArg = db, getConfi
   if (!projects.length) {
     return interaction.editReply({ content: 'No projects to delete.', embeds: [], components: [] }).catch(() => {})
   }
+  const { options, note } = projectPicker(projects)
   const select = new StringSelectMenuBuilder()
     .setCustomId('projects_delete_select')
     .setPlaceholder('Choose a project to delete…')
-    .addOptions(projectOptions(projects))
+    .addOptions(options)
   return interaction
     .editReply({
-      content: 'Delete which project? Its channels, category and role are removed and its task channels archived; every row is kept, and **Reactivate project** brings it back.',
+      content: `Delete which project? Its channels, category and role are removed and its task channels archived; every row is kept, and **Reactivate project** brings it back.${note}`,
       embeds: [],
       components: [new ActionRowBuilder().addComponents(select)],
     })
@@ -500,19 +536,23 @@ export async function handleDeleteModal(
   if (!guild || !(await acknowledge(interaction, 'reply'))) return
   const say = (content) => interaction.editReply({ content: cut(content, REPLY_LIMIT) }).catch(() => {})
   const cfg = await getConfig(guild.id)
-  const project = await projectOf(dbArg, cfg, idFrom(interaction.customId))
-  if (!project) return say('That project no longer exists.')
-  // Picked before somebody else deleted it: the select hid it, the id did not.
-  if (isDeletedProject(project)) return say(PROJECT_DELETED)
-  if (fold(interaction.fields.getTextInputValue('name')) !== fold(project.name)) return say(NAME_MISMATCH)
-
-  try {
-    const result = await remove({ db: dbArg, guild, cfg, project, actorId: interaction.user?.id ?? null, now: new Date() })
-    return say(deleteReply(project.name, result))
-  } catch (e) {
-    console.error(`[projects] delete ${project.name}:`, e)
-    return say(`Could not delete **${project.name}**: ${e?.message ?? String(e)}`)
-  }
+  const projectId = idFrom(interaction.customId)
+  // Read and checked inside the lock, so the state checked is the state acted on.
+  const held = await withProjectLock(projectId, async () => {
+    const project = await projectOf(dbArg, cfg, projectId)
+    if (!project) return 'That project no longer exists.'
+    // Picked before somebody else deleted it: the select hid it, the id did not.
+    if (isDeletedProject(project)) return PROJECT_DELETED
+    if (fold(interaction.fields.getTextInputValue('name')) !== fold(project.name)) return NAME_MISMATCH
+    try {
+      const result = await remove({ db: dbArg, guild, cfg, project, actorId: interaction.user?.id ?? null, now: new Date() })
+      return deleteReply(project.name, result)
+    } catch (e) {
+      console.error(`[projects] delete ${project.name}:`, e)
+      return `Could not delete **${project.name}**: ${e?.message ?? String(e)}`
+    }
+  })
+  return say(held ? held.value : PROJECT_BUSY)
 }
 
 /** `/projects` → Reactivate project: a select of the deleted projects. */
@@ -524,12 +564,13 @@ export async function handleReactivateButton(interaction, { db: dbArg = db, getC
   if (!deleted.length) {
     return interaction.editReply({ content: 'No deleted projects.', embeds: [], components: [] }).catch(() => {})
   }
+  const { options, note } = projectPicker(deleted)
   const select = new StringSelectMenuBuilder()
     .setCustomId('projects_reactivate_select')
     .setPlaceholder('Choose a project to reactivate…')
-    .addOptions(projectOptions(deleted))
+    .addOptions(options)
   return interaction
-    .editReply({ content: 'Reactivate which project?', embeds: [], components: [new ActionRowBuilder().addComponents(select)] })
+    .editReply({ content: `Reactivate which project?${note}`, embeds: [], components: [new ActionRowBuilder().addComponents(select)] })
     .catch(() => {})
 }
 
@@ -568,16 +609,19 @@ export async function handleReactivateConfirm(
   const say = (content) =>
     interaction.editReply({ content: cut(content, REPLY_LIMIT), components: [], embeds: [] }).catch(() => {})
   const cfg = await getConfig(guild.id)
-  const project = await projectOf(dbArg, cfg, idFrom(interaction.customId))
-  if (!project) return say('That project no longer exists.')
-  // Pressed twice, or reactivated by somebody else since the select.
-  if (!isDeletedProject(project)) return say(`**${project.name}** is not deleted.`)
-
-  try {
-    const result = await reactivate({ db: dbArg, guild, cfg, project, botUserId: interaction.client?.user?.id ?? null })
-    return say(reactivateReply(project.name, result))
-  } catch (e) {
-    console.error(`[projects] reactivate ${project.name}:`, e)
-    return say(`Could not reactivate **${project.name}**: ${e?.message ?? String(e)}`)
-  }
+  const projectId = idFrom(interaction.customId)
+  const held = await withProjectLock(projectId, async () => {
+    const project = await projectOf(dbArg, cfg, projectId)
+    if (!project) return 'That project no longer exists.'
+    // Pressed twice, or reactivated by somebody else since the select.
+    if (!isDeletedProject(project)) return `**${project.name}** is not deleted.`
+    try {
+      const result = await reactivate({ db: dbArg, guild, cfg, project, botUserId: interaction.client?.user?.id ?? null })
+      return reactivateReply(project.name, result)
+    } catch (e) {
+      console.error(`[projects] reactivate ${project.name}:`, e)
+      return `Could not reactivate **${project.name}**: ${e?.message ?? String(e)}`
+    }
+  })
+  return say(held ? held.value : PROJECT_BUSY)
 }

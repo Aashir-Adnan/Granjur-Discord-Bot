@@ -64,11 +64,12 @@ function categoryById(guild, id) {
  *   2. the global Features/Bugs category.
  * `fellBack` is non-null only for 2 — the channel left the project's space,
  * so the project role's allow is not added and the reply says so. `placed`
- * says which of the two it was.
+ * says which of the two it was. Also where reactivating a project puts a task
+ * channel its rebuild left in the archive (`services/projectLifecycle.js`).
  *
  * @returns {Promise<{category: object, fellBack: 'cap'|'missing'|null, placed: 'section'|'global'}>}
  */
-async function resolveParentCategory(guild, project, categoryLabel) {
+export async function resolveParentCategory(guild, project, categoryLabel) {
   if (!project) return { category: await globalCategory(guild, categoryLabel), fellBack: null, placed: 'global' }
 
   const projectCategory = categoryById(guild, project.discordCategoryId)

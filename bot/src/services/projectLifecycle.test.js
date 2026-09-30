@@ -44,6 +44,8 @@ function unknown(code, message) {
 function fakeGuild({ log = [], channels = [], roles = [], members = {} } = {}) {
   const guild = { id: 'G1', log }
   const chanMap = new Map()
+  // A Collection's `find`, which `getOrCreateCategory` uses for the global category.
+  chanMap.find = (pred) => [...chanMap.values()].find(pred) ?? null
   const roleMap = new Map()
 
   function makeChannel({ id, name, type = ChannelType.GuildText, parentId = null, topic = null, overwrites = [], failEdit = null, failDelete = null }) {
@@ -423,7 +425,8 @@ test('deleteProject reports a failed step and still leaves the project deleted',
   const result = await quiet(() => deleteProject({ db, guild, cfg: CFG, project: db.row, actorId: 'u-ceo', now: NOW }))
   assert.equal(db.row.deletedAt, NOW, 'still deleted')
   assert.equal(result.archived, 1)
-  assert.equal(result.failures.length, 3)
+  assert.equal(result.failures.length, 4)
+  assert.match(result.failures.join('\n'), /Kept the section category because some task channels could not be archived\./)
   assert.match(result.failures.join('\n'), /feature-login.*Missing Access/)
   assert.match(result.failures.join('\n'), /apollo-members.*Missing Permissions/)
   assert.match(result.failures.join('\n'), /role.*Missing Permissions/)
@@ -447,8 +450,9 @@ test('deleteProject counts a channel lookup that failed for another reason', asy
     throw unknown(50001, 'Missing Access')
   }
   const result = await quiet(() => deleteProject({ db, guild, cfg: CFG, project: db.row, actorId: 'u-ceo', now: NOW }))
-  assert.equal(result.failures.length, 1)
+  assert.equal(result.failures.length, 2)
   assert.match(result.failures[0], /Missing Access/)
+  assert.equal(result.failures[1], 'Kept the section category because some task channels could not be archived.')
 })
 
 test('deleteProject reports a failure to clear the ids and the project stays deleted', async () => {
@@ -623,7 +627,103 @@ test('reactivateProject with a setup that throws still restores the channels and
   const tc2 = guild.channels.cache.get('tc2')
   assert.ok(tc2.edits.length >= 1, 'the channel was restored anyway')
   assert.ok(tc2.overwriteEdits.length >= 1, 'and the finished one relocked')
-  assert.ok(guild.channels.cache.has('arch1'), 'an archive category still holding channels is kept')
+  // With no section to go back to, they go where a new task channel would:
+  // the global Features category — never left open under "archived".
+  const features = [...guild.channels.cache.values()].find((c) => c.name === 'Features')
+  assert.ok(features, 'the global Features category')
+  assert.equal(tc2.parentId, features.id)
+  assert.equal(guild.channels.cache.get('tc1').parentId, features.id)
+  assert.ok(!guild.channels.cache.has('arch1'), 'the emptied archive category is gone')
+})
+
+// --- fix round 1 ------------------------------------------------------------
+
+/** A setup that rebuilds the section but moves back only `moved`, optionally filling the category and warning. */
+function partialSetup({ guild, db, moved = [], fill = 0, warnings = [] }) {
+  return async () => {
+    guild.roles.cache.set('role-new', { id: 'role-new' })
+    guild.makeChannel({ id: 'cat-new', name: '📂 APOLLO', type: ChannelType.GuildCategory })
+    for (let i = 0; i < fill; i++) guild.makeChannel({ id: `sec-${i}`, name: `apollo-${i}`, parentId: 'cat-new' })
+    Object.assign(db.row, { discordCategoryId: 'cat-new', discordRoleId: 'role-new' })
+    for (const id of moved) guild.channels.cache.get(id).parentId = 'cat-new'
+    return { block: 'ok', plan: { warnings }, result: { category: { name: '📂 APOLLO' }, warnings } }
+  }
+}
+
+test('reactivate moves a task channel the rebuild left in the archive into the project category, with the role', async () => {
+  const { guild, db } = reactivateFixture()
+  const warning = 'task channel "feature-signup": left behind — the category is full'
+  const setup = partialSetup({ guild, db, moved: ['tc1'], warnings: [warning] })
+  const result = await reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup })
+
+  const tc2 = guild.channels.cache.get('tc2')
+  assert.equal(tc2.edits.length, 1, 'parent and overwrites in ONE edit')
+  assert.equal(tc2.edits[0].parent, 'cat-new')
+  assert.ok(tc2.edits[0].permissionOverwrites.some((o) => o.id === 'role-new'), 'inside its section: the role is allowed')
+  assert.equal(guild.channels.cache.get('tc1').edits[0].parent, undefined, 'one already moved back is not moved again')
+  assert.ok(!guild.channels.cache.has('arch1'), 'the archive empties')
+  assert.deepEqual(result.failures, [`Rebuild: ${warning}`], 'the rebuild’s warnings are in the reply, once')
+})
+
+test('reactivate with a full project category sends a left-behind channel to the global category, without the role', async () => {
+  const { guild, db } = reactivateFixture()
+  const setup = partialSetup({ guild, db, moved: [], fill: 49 })
+  const result = await quiet(() => reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup }))
+
+  const features = [...guild.channels.cache.values()].find((c) => c.name === 'Features' && c.type === ChannelType.GuildCategory)
+  assert.ok(features)
+  for (const id of ['tc1', 'tc2']) {
+    const c = guild.channels.cache.get(id)
+    assert.equal(c.parentId, features.id, `${id} is out of the archive`)
+    assert.ok(!c.edits[0].permissionOverwrites.some((o) => o.id === 'role-new'), 'outside the section: no role grant')
+    assert.ok(c.edits[0].permissionOverwrites.some((o) => o.id === 'u-lead'), 'its members still see it')
+  }
+  assert.equal(result.restored, 2)
+  assert.deepEqual(result.failures, [])
+})
+
+test('reactivate names a task channel still stuck in the archive', async () => {
+  const { guild, db } = reactivateFixture()
+  const setup = partialSetup({ guild, db, moved: ['tc1'] })
+  guild.channels.cache.get('tc2').edit = async () => {
+    throw new Error('Missing Permissions')
+  }
+  const result = await quiet(() => reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup }))
+  assert.deepEqual(result.failures, [
+    'Could not restore #feature-signup: Missing Permissions',
+    '#feature-signup is still in 🗄 ARCHIVED PROJECTS — run /project-setup for it.',
+  ])
+  assert.ok(guild.channels.cache.has('arch1'), 'not empty, so kept')
+})
+
+test('delete keeps the section category (and its stored id) when the tasks could not be read', async () => {
+  const { guild, db } = deleteFixture()
+  db.task.findMany = async () => {
+    throw new Error('db down')
+  }
+  const result = await quiet(() => deleteProject({ db, guild, cfg: CFG, project: db.row, actorId: 'u-ceo', now: NOW }))
+  assert.ok(guild.channels.cache.has('cat-p1'), 'the category stays, so its task channels are not lifted out, open')
+  assert.ok(!guild.channels.cache.has('sec-general'), 'the section channels still go')
+  assert.ok(result.failures.includes('Kept the section category because some task channels could not be archived.'))
+  assert.equal(db.row.discordCategoryId, 'cat-p1', 'its id is still stored')
+  assert.equal(db.row.discordRoleId, null)
+  assert.equal(db.row.deletedAt, NOW)
+})
+
+test('delete keeps the section category when a task channel could not be archived', async () => {
+  const { guild, db } = deleteFixture({ failures: { tc1: 'Missing Access' } })
+  const result = await quiet(() => deleteProject({ db, guild, cfg: CFG, project: db.row, actorId: 'u-ceo', now: NOW }))
+  assert.ok(guild.channels.cache.has('cat-p1'))
+  assert.ok(result.failures.includes('Kept the section category because some task channels could not be archived.'))
+  assert.equal(db.row.discordCategoryId, 'cat-p1')
+})
+
+test('delete keeps the stored id of a channel or role it could not remove, and clears the rest', async () => {
+  const { log, guild, db } = deleteFixture({ failures: { members: 'Missing Permissions', role: 'Missing Permissions' } })
+  await quiet(() => deleteProject({ db, guild, cfg: CFG, project: db.row, actorId: 'u-ceo', now: NOW }))
+  assert.deepEqual(log.at(-1), ['project.update', { discordChannels: { members: 'sec-members' }, discordCategoryId: null }])
+  assert.equal(db.row.discordRoleId, 'role-p1', 'the role that could not be deleted is still tracked')
+  assert.deepEqual(db.row.discordChannels, { members: 'sec-members' })
 })
 
 // --- replies ----------------------------------------------------------------
