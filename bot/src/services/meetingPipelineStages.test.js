@@ -557,7 +557,6 @@ function reviewJob() {
 }
 
 test('awaiting_review posts a message and blocks', async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const sent = []
   const channel = { send: async (payload) => { sent.push(payload); return { id: 'msg1' } } }
   const fetched = []
@@ -579,7 +578,6 @@ test('awaiting_review posts a message and blocks', async () => {
 })
 
 test('awaiting_review posts even without html report', async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const sent = []
   const channel = { send: async (payload) => { sent.push(payload); return { id: 'msg2' } } }
   const client = { channels: { fetch: async () => channel } }
@@ -598,7 +596,6 @@ test('awaiting_review posts even without html report', async () => {
 })
 
 test('awaiting_review still blocks when channel resolution fails', async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const client = { channels: { fetch: async () => { throw new Error('no channel') } } }
   const csaasClient = { fetchNotes: async () => ({ notes: 'N', html: '<html></html>' }) }
   const db = {
@@ -1293,7 +1290,6 @@ const twoTaskJob = () => ({
 })
 
 test('awaiting_review asks for a project only where the rules settle none, and stores the choices', async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const sent = []
   const channel = { id: 'tc1', send: async (p) => { sent.push(p); return { id: 'msg1' } } }
   const client = { channels: { fetch: async () => channel } }
@@ -1308,7 +1304,6 @@ test('awaiting_review asks for a project only where the rules settle none, and s
 })
 
 test('awaiting_review asks nothing when the guild has no projects to offer', async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const sent = []
   const channel = { id: 'tc1', send: async (p) => { sent.push(p); return { id: 'msg1' } } }
   const client = { channels: { fetch: async () => channel } }
@@ -1321,7 +1316,6 @@ test('awaiting_review asks nothing when the guild has no projects to offer', asy
 })
 
 test("awaiting_review asks nothing when the meeting has a project", async () => {
-  process.env.MEETING_REPORTS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mtg-reports-'))
   const channel = { id: 'tc1', send: async () => ({ id: 'msg1' }) }
   const out = await stageRunners.awaiting_review({
     job: twoTaskJob(), db: reviewDb({ meetingProjectId: 'p1' }),
@@ -1478,6 +1472,7 @@ test('awaiting_review posts the notes message with both files before the review'
   assert.equal(m.files[0].attachment.toString('utf8'), '# Notes')
   assert.equal(m.files[1].attachment.toString('utf8'), '<html>r</html>')
   assert.equal(out.patch.dataJson.notesMessageId, 'notes-msg')
+  assert.equal(out.patch.dataJson.notesChannelId, 'tc1')
   assert.equal(out.patch.reviewMessageId, 'review-msg')
   assert.match(h.sent.at(-1).embeds[0].data.description, /Full notes are attached above\./)
   assert.equal(out.block, true)

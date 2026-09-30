@@ -48,6 +48,12 @@ export function reviewActionFor(kind, taskId, values) {
   }
 }
 
+// The notes message sits in the channel the review was first posted to; a review
+// re-posted elsewhere (or saved before notesChannelId existed) has none above it.
+export function notesAttachedIn(dataJson, channelId) {
+  return !!dataJson?.notesMessageId && dataJson.notesChannelId === channelId
+}
+
 async function handleComponentAction(interaction, kind, jobId, taskId) {
   const job = await db.meetingPipelineJob.findById(jobId).catch(() => null)
   if (!isActive(job)) {
@@ -66,7 +72,7 @@ async function handleComponentAction(interaction, kind, jobId, taskId) {
     buildReviewMessage({
       job: updatedJob,
       notes: job.dataJson.notes,
-      notesAttached: !!job.dataJson.notesMessageId,
+      notesAttached: notesAttachedIn(job.dataJson, interaction.channelId),
       state: newState,
       roster: job.dataJson.roster,
     }),
@@ -164,7 +170,7 @@ export async function execute(interaction) {
     const payload = buildReviewMessage({
       job,
       notes: job.dataJson?.notes,
-      notesAttached: !!job.dataJson?.notesMessageId,
+      notesAttached: notesAttachedIn(job.dataJson, interaction.channel.id),
       state: job.dataJson?.review,
       roster: job.dataJson?.roster,
     })

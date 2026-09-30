@@ -199,8 +199,8 @@ test('analyzeLive sends the snake_case body analyze-live expects', async () => {
   }
 })
 
-test('generateReport posts meeting_id to /report with a 180 s timeout', async () => {
-  assert.equal((await import('./csaasClient.js')).REPORT_TIMEOUT_MS, 180_000)
+test('generateReport posts meeting_id to /report with a 300 s timeout', async () => {
+  assert.equal((await import('./csaasClient.js')).REPORT_TIMEOUT_MS, 300_000)
   const realFetch = globalThis.fetch
   const realTimeout = AbortSignal.timeout
   const timeouts = []
@@ -219,7 +219,7 @@ test('generateReport posts meeting_id to /report with a 180 s timeout', async ()
     assert.equal(seen.url, 'http://csaas.test/api/meeting/workflow/report')
     assert.equal(seen.body.meeting_id, 'm1')
     assert.equal(seen.body.actionPerformerURDD, '999')
-    assert.deepEqual(timeouts, [180_000])
+    assert.deepEqual(timeouts, [300_000])
   } finally {
     globalThis.fetch = realFetch
     AbortSignal.timeout = realTimeout

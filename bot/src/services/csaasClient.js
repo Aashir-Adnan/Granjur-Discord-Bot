@@ -116,9 +116,10 @@ export const fetchNotes = async (meetingId) => {
   return { notes, html }
 }
 
-// /report has Claude write the meeting notes and the HTML report: a generation
-// call like /analyze, so it gets the same 180 s ceiling.
-export const REPORT_TIMEOUT_MS = 180_000
+// /report re-runs the transcript analysis (the work /analyze-live gets 180 s
+// for), then a codebase search and the notes and HTML generation. 300 s, still
+// under the worker default 360 s stage cap.
+export const REPORT_TIMEOUT_MS = 300_000
 
 export const generateReport = (meetingId) =>
   postJson('/meeting/workflow/report', { meeting_id: meetingId }, { timeoutMs: REPORT_TIMEOUT_MS })

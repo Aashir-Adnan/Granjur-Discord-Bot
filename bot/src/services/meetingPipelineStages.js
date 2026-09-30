@@ -277,6 +277,7 @@ async function awaitingReviewStage({ job, db, client, csaasClient }) {
         if (html) files.push(new AttachmentBuilder(Buffer.from(html, 'utf8'), { name: names.report }))
         const sentNotes = await channel.send({ content: `**Meeting notes — ${data.title || 'Meeting'}**`, files })
         data.notesMessageId = sentNotes.id
+        data.notesChannelId = channel.id
         // Saved BEFORE the review goes out: a crash between the two sends then
         // retries without posting the notes a second time. (The worker only
         // saves the patch once this whole stage returns.)

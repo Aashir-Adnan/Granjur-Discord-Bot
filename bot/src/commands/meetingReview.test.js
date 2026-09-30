@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseReviewCustomId, reviewActionFor } from './meetingReview.js'
+import { parseReviewCustomId, reviewActionFor, notesAttachedIn } from './meetingReview.js'
 
 test('parseReviewCustomId splits kind/job/task', () => {
   assert.deepEqual(parseReviewCustomId('mtg_assignee:job1:taskA'), { kind: 'mtg_assignee', jobId: 'job1', taskId: 'taskA' })
@@ -31,4 +31,16 @@ test('reviewActionFor maps each component kind to its review action', () => {
 
 test('parseReviewCustomId handles the project select', () => {
   assert.deepEqual(parseReviewCustomId('mtg_project:j:7'), { kind: 'mtg_project', jobId: 'j', taskId: '7' })
+})
+
+test('notesAttachedIn: only in the channel the notes message was posted to', () => {
+  const d = { notesMessageId: 'n1', notesChannelId: 'c1' }
+  assert.equal(notesAttachedIn(d, 'c1'), true)
+  assert.equal(notesAttachedIn(d, 'c2'), false)
+})
+
+test('notesAttachedIn: a job reviewed before notesChannelId existed, or with no notes, is false', () => {
+  assert.equal(notesAttachedIn({ notesMessageId: 'n1' }, 'c1'), false)
+  assert.equal(notesAttachedIn({ notesChannelId: 'c1' }, 'c1'), false)
+  assert.equal(notesAttachedIn(undefined, 'c1'), false)
 })
