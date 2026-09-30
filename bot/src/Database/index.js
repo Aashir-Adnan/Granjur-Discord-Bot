@@ -280,8 +280,13 @@ async function repositoryCreate({ data }) {
 }
 
 // ---------- Task (unified bugs and features: is_bug / is_feature) ----------
-async function taskFindMany({ where, orderBy, take }) {
-  if (!where || !where.guildConfigId) return [];
+// A task whose project is soft-deleted is hidden everywhere unless the caller
+// passes `includeDeleted: true` in `where`. Tasks with no project are unaffected.
+const HIDE_DELETED_PROJECT_TASKS =
+  "AND NOT EXISTS (SELECT 1 FROM `project` p WHERE p.id = task.projectId AND p.deletedAt IS NOT NULL)";
+
+export function taskFindManySql({ where, orderBy, take } = {}) {
+  if (!where || !where.guildConfigId) return null;
   let sql = "SELECT * FROM `task` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
   if (where?.type) {
@@ -320,12 +325,19 @@ async function taskFindMany({ where, orderBy, take }) {
     sql += " AND projectId = ?";
     params.push(where.projectId);
   }
+  if (where.includeDeleted !== true) sql += ` ${HIDE_DELETED_PROJECT_TASKS}`;
   const orderByField = orderBy ? Object.keys(orderBy)[0] : 'createdAt';
   const orderByDir = orderBy && orderBy[orderByField] ? orderBy[orderByField].toUpperCase() : 'DESC';
   sql += ` ORDER BY \`${orderByField}\` ${orderByDir}`;
   const limit = Number.isFinite(Number(take)) ? Number(take) : 500;
   sql += ` LIMIT ${limit}`;
-  return query(sql, params);
+  return { sql, params };
+}
+
+async function taskFindMany(args) {
+  const built = taskFindManySql(args);
+  if (!built) return [];
+  return query(built.sql, built.params);
 }
 
 async function taskFindFirst({ where }) {
@@ -347,14 +359,19 @@ async function taskFindFirst({ where }) {
   return null;
 }
 
-async function taskFindByIds({ where }) {
+export function taskFindByIdsSql(where) {
   const ids = (where?.ids || []).filter(Boolean).map(String);
-  if (!where?.guildConfigId || ids.length === 0) return [];
+  if (!where?.guildConfigId || ids.length === 0) return null;
   const placeholders = ids.map(() => "?").join(", ");
-  return query(
-    `SELECT * FROM \`task\` WHERE guildConfigId = ? AND id IN (${placeholders})`,
-    [where.guildConfigId, ...ids],
-  );
+  let sql = `SELECT * FROM \`task\` WHERE guildConfigId = ? AND id IN (${placeholders})`;
+  if (where.includeDeleted !== true) sql += ` ${HIDE_DELETED_PROJECT_TASKS}`;
+  return { sql, params: [where.guildConfigId, ...ids] };
+}
+
+async function taskFindByIds({ where }) {
+  const built = taskFindByIdsSql(where);
+  if (!built) return [];
+  return query(built.sql, built.params);
 }
 
 /**
@@ -625,18 +642,27 @@ async function ticketDocFindMany({ where, take, orderBy }) {
  * "Ticket docs" browser. Only rows that actually hold content — a feature
  * closed without a document leaves a content-less row that has nothing to show.
  */
-async function ticketDocListWithTask({ guildConfigId }) {
-  if (!guildConfigId) return [];
-  return query(
-    `SELECT d.id, d.title, d.taskId, d.ticketType, d.createdAt, d.updatedAt,
+export function ticketDocListWithTaskSql({ guildConfigId, includeDeleted } = {}) {
+  if (!guildConfigId) return null;
+  const hide = includeDeleted === true
+    ? ""
+    : "\n        AND NOT EXISTS (SELECT 1 FROM `project` p WHERE p.id = t.projectId AND p.deletedAt IS NOT NULL)";
+  return {
+    sql: `SELECT d.id, d.title, d.taskId, d.ticketType, d.createdAt, d.updatedAt,
             t.projectId, t.projectName, t.status AS taskStatus, t.title AS taskTitle
        FROM \`ticketdoc\` d
        JOIN \`task\` t ON t.id = d.taskId
-      WHERE d.guildConfigId = ? AND d.content IS NOT NULL AND d.content <> ''
+      WHERE d.guildConfigId = ? AND d.content IS NOT NULL AND d.content <> ''${hide}
       ORDER BY d.updatedAt DESC
       LIMIT 500`,
-    [guildConfigId],
-  );
+    params: [guildConfigId],
+  };
+}
+
+async function ticketDocListWithTask(args) {
+  const built = ticketDocListWithTaskSql(args);
+  if (!built) return [];
+  return query(built.sql, built.params);
 }
 
 async function ticketDocCreate({ data }) {
@@ -1040,10 +1066,16 @@ async function projectSchemaUpsert({ where, create, update }) {
 }
 
 // ---------- Project (new: name, readme, owner_emails) ----------
+// Deleted projects are hidden unless `where.includeDeleted === true` (a flag,
+// never a column). findFirst / findByName still return deleted rows.
+export function projectFindManySql(where) {
+  let sql = "SELECT * FROM `project` WHERE guildConfigId = ?";
+  if (where.includeDeleted !== true) sql += " AND deletedAt IS NULL";
+  return { sql, params: [where.guildConfigId] };
+}
 async function projectFindMany({ where }) {
-  return query("SELECT * FROM `project` WHERE guildConfigId = ?", [
-    where.guildConfigId,
-  ]);
+  const built = projectFindManySql(where);
+  return query(built.sql, built.params);
 }
 async function projectFindFirst({ where }) {
   if (where?.id)
@@ -1092,6 +1124,8 @@ const PROJECT_UPDATABLE = [
   ["discordCategoryId", (v) => v],
   ["discordRoleId", (v) => v],
   ["discordChannels", (v) => JSON.stringify(v)],
+  ["deletedAt", (v) => v],
+  ["deletedBy", (v) => v],
 ];
 
 export function projectUpdateSql(id, data = {}) {
