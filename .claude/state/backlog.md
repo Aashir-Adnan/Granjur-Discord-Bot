@@ -255,9 +255,9 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      a `/link` code; `d3a0491` — a clocked-in tag on board cards (own clock for everyone,
      other people's for `view_discord_time` holders). Showing teammates' tags to everyone
      would need a CSAAS change; not asked for.
-   - **Not yet done:** a live pass in a browser (clock in on general work, switch to a
-     task, clock out with a note, the Time tab card), and a Discord smoke test of
-     `/clock-in`, a task switch and `/clock-out` on the new service.
+   - **Used live:** the owner reported on 2026-10-01 that the team has been clocking in and
+     out on the site and it works. Still unconfirmed: a Discord smoke test of `/clock-in`, a
+     task switch and `/clock-out` on the new service.
    - **Deferred:**
      - A clock-in with no task uses the caller's first link only, so someone linked in two
        guilds can end up with a second clock running in another guild.
