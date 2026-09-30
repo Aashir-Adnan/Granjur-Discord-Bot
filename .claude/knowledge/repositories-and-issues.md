@@ -55,9 +55,12 @@ scope options all carry it too.
 **`bot/src/services/taskRepo.js`**, `resolveTaskRepo({ projectId, scope }, { links,
 repos })` → `{ repository, reason }`:
 1. the repository linked to `projectId` with `scope` (reason `'scope'`);
-2. else, if the project has exactly one link and that link has no scope, its repository
-   (reason `'only-repo'` — a project with a single untagged repository keeps working
-   until someone tags it);
+2. else, if the project has exactly one **untagged** link, its repository (reason
+   `'only-repo'`). The untagged link takes every scope no tagged link claims. Changed
+   2026-09-30 for Badar HMS: `my-destination` holds backend and frontend and a second
+   repository holds the mobile app; a link carries one scope, so `my-destination` stays
+   untagged beside the Mobile-tagged one. Before this, rule 2 required the project to
+   have exactly one link in total. Two or more untagged links still give none;
 3. else `null`, with reason `'no-project'`, `'no-scope'` or `'no-repo-for-scope'`
    (`repoReasonText(reason)` turns the last three into a sentence fragment).
 
