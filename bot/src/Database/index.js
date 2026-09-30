@@ -1928,14 +1928,26 @@ function _mpjRow(row) {
   return { ...row, dataJson };
 }
 
+/** The INSERT for a job; `dataJson` (optional) is written in the same statement. */
+export function meetingPipelineJobInsertSql(pk, data = {}) {
+  if (data.dataJson === undefined || data.dataJson === null) {
+    return {
+      sql: "INSERT INTO `meeting_pipeline_job` (id, guildConfigId, meetingId) VALUES (?, ?, ?)",
+      params: [pk, data.guildConfigId, data.meetingId],
+    };
+  }
+  return {
+    sql: "INSERT INTO `meeting_pipeline_job` (id, guildConfigId, meetingId, dataJson) VALUES (?, ?, ?, ?)",
+    params: [pk, data.guildConfigId, data.meetingId, JSON.stringify(data.dataJson)],
+  };
+}
+
 async function meetingPipelineJobCreate({ data }) {
   const existing = await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE meetingId = ?", [data.meetingId]);
   if (existing) return _mpjRow(existing);
   const pk = id();
-  await query(
-    "INSERT INTO `meeting_pipeline_job` (id, guildConfigId, meetingId) VALUES (?, ?, ?)",
-    [pk, data.guildConfigId, data.meetingId],
-  );
+  const { sql, params } = meetingPipelineJobInsertSql(pk, data);
+  await query(sql, params);
   return _mpjRow(await queryOne("SELECT * FROM `meeting_pipeline_job` WHERE id = ?", [pk]));
 }
 

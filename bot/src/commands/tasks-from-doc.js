@@ -84,10 +84,13 @@ export async function execute(
       transcript: text,
     },
   })
-  // `create` only takes the ids, so the document's keys are written right after.
-  const job = await dbArg.meetingPipelineJob.create({ data: { guildConfigId: cfg.id, meetingId: meeting.id } })
-  await dbArg.meetingPipelineJob.update(job.id, {
-    dataJson: { source: 'document', reviewChannelId: interaction.channelId, documentName: fileName, title },
+  // One write, so the worker can never claim the job before it knows it is a document job.
+  await dbArg.meetingPipelineJob.create({
+    data: {
+      guildConfigId: cfg.id,
+      meetingId: meeting.id,
+      dataJson: { source: 'document', reviewChannelId: interaction.channelId, documentName: fileName, title },
+    },
   })
 
   return interaction.editReply({

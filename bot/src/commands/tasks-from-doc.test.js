@@ -111,10 +111,11 @@ test('accepted: defers publicly, creates the meeting and the job, replies public
   assert.equal(ix.deferred, 1)
   assert.deepEqual(ix.replies, [], 'the accepted reply is the deferred one, never an ephemeral reply')
   assert.deepEqual(db.calls.meeting, [{ data: { guildConfigId: 'cfg1', channelId: 'chan1', transcript: 'the document text' } }])
-  assert.deepEqual(db.calls.job, [{ data: { guildConfigId: 'cfg1', meetingId: 'm1' } }])
-  assert.deepEqual(db.calls.jobUpdate, [['j1', {
+  assert.deepEqual(db.calls.job, [{ data: {
+    guildConfigId: 'cfg1', meetingId: 'm1',
     dataJson: { source: 'document', reviewChannelId: 'chan1', documentName: 'Sprint plan.pdf', title: 'Sprint plan' },
-  }]])
+  } }], 'exactly one create call, carrying the dataJson')
+  assert.deepEqual(db.calls.jobUpdate, [], 'no follow-up update')
   assert.deepEqual(ix.edits, [{ content: 'Reading **Sprint plan.pdf** — the proposed tasks will be posted here for review.' }])
 })
 
@@ -123,7 +124,7 @@ test('accepted with a project and a title: the project id goes on the meeting an
   const db = fakeDb({ projects: [{ id: 'p1', name: 'Apollo', guildConfigId: 'cfg1' }] })
   await execute(ix, deps(db))
   assert.equal(db.calls.meeting[0].data.projectId, 'p1')
-  assert.equal(db.calls.jobUpdate[0][1].dataJson.title, 'Kickoff')
+  assert.equal(db.calls.job[0].data.dataJson.title, 'Kickoff')
 })
 
 test('autocomplete offers the guild projects without the detach choice', async () => {
