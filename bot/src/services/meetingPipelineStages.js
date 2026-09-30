@@ -588,6 +588,27 @@ async function issueSyncingStage({ job, db, openIssue = createIssue }) {
   return { patch: { dataJson } }
 }
 
+const SUMMARY_NOTE = '… (summary shortened)'
+
+// Discord rejects an embed description over 4096 characters. Keep the text under
+// `max`, cutting at a line boundary (the leading count lines survive) and ending
+// with a note; a single line longer than the room is cut mid-line.
+export function clampSummary(lines, max = 4000) {
+  const text = lines.join('\n')
+  if (text.length <= max) return text
+  const room = max - SUMMARY_NOTE.length - 1
+  const kept = []
+  let used = 0
+  for (const line of lines) {
+    const add = line.length + (kept.length ? 1 : 0)
+    if (used + add > room) break
+    kept.push(line)
+    used += add
+  }
+  if (!kept.length) return `${text.slice(0, room)}\n${SUMMARY_NOTE}`
+  return `${kept.join('\n')}\n${SUMMARY_NOTE}`
+}
+
 // done: rewrite the review message into a final summary embed, then terminate.
 async function doneStage({ job, db, client }) {
   const dataJson = job.dataJson || {}
@@ -624,7 +645,7 @@ async function doneStage({ job, db, client }) {
 
   const summaryEmbed = new EmbedBuilder()
     .setTitle(`Meeting review complete — ${dataJson.title || 'Meeting'}`)
-    .setDescription(lines.join('\n'))
+    .setDescription(clampSummary(lines))
 
   try {
     // Prefer the channel the review was actually posted to; fall back to the

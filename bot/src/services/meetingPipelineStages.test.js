@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ChannelType } from 'discord.js'
-import { stageRunners, resolveRepoSlug } from './meetingPipelineStages.js'
+import { stageRunners, resolveRepoSlug, clampSummary } from './meetingPipelineStages.js'
 
 test('resolveRepoSlug parses ssh + https', () => {
   assert.deepEqual(resolveRepoSlug({ url: 'git@github.com:granjur/bot.git' }), { owner: 'granjur', repo: 'bot' })
@@ -335,6 +335,44 @@ test('done still renders an issue problem saved before kind/title existed, as a 
   })
   await stageRunners.done({ job: h.job, db: h.db, client: h.client, csaasClient: {} })
   assert.ok(h.description().split('\n').includes('• failed: b — boom'))
+})
+
+test('clampSummary leaves a short summary unchanged', () => {
+  const lines = ['a', 'b', '', 'c']
+  assert.equal(clampSummary(lines), lines.join('\n'))
+})
+
+test('clampSummary shortens a long summary at a line boundary and keeps the counts', () => {
+  const lines = ['✅ 3 task(s) created', '0 rejected', '0 pushed to GitHub']
+  for (let i = 0; i < 100; i++) lines.push(`• failed: ${'t'.repeat(200)} — boom ${i}`)
+  const out = clampSummary(lines)
+  assert.ok(out.length <= 4000, String(out.length))
+  const outLines = out.split('\n')
+  assert.deepEqual(outLines.slice(0, 3), lines.slice(0, 3))
+  assert.equal(outLines[outLines.length - 1], '… (summary shortened)')
+  assert.equal(outLines[3], lines[3])
+})
+
+test('clampSummary cuts a single oversized line rather than exceeding the limit', () => {
+  const out = clampSummary(['x'.repeat(9000)])
+  assert.ok(out.length <= 4000)
+  assert.ok(out.endsWith('… (summary shortened)'))
+})
+
+test('done with 40 failing issue syncs does not throw and stays within the embed limit', async () => {
+  const errors = []
+  for (let i = 0; i < 40; i++) errors.push({ csaasTaskId: `t${i}`, title: 'T'.repeat(200), kind: 'failed', reason: 'No GitHub access to granjur/bot' })
+  const h = doneHarness({
+    tasks: [{ task_id: 'a' }],
+    review: { tasks: [{ taskId: 'a', github: true }] },
+    mirrored: [{ csaasTaskId: 'a', title: 'Do A', github: true }],
+    issueSyncErrors: errors,
+  })
+  await stageRunners.done({ job: h.job, db: h.db, client: h.client, csaasClient: {} })
+  const desc = h.description()
+  assert.ok(desc.length <= 4096, String(desc.length))
+  assert.ok(desc.startsWith('✅ 0 task(s) created') || desc.startsWith('✅'))
+  assert.ok(desc.endsWith('… (summary shortened)'))
 })
 
 test('done edits the review message and terminates', async () => {
