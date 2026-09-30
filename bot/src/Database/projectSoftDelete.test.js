@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  projectFindManySql, taskFindManySql, taskFindByIdsSql, ticketDocListWithTaskSql, projectUpdateSql,
+  projectFindManySql, taskFindManySql, taskFindByIdsSql, ticketDocListWithTaskSql, projectUpdateSql, taskCountSql,
 } from './index.js'
 
 const HIDE_TASK = 'AND NOT EXISTS (SELECT 1 FROM `project` p WHERE p.id = task.projectId AND p.deletedAt IS NOT NULL)'
@@ -88,4 +88,23 @@ test('project.update can reactivate by writing null', () => {
   const { sql, params } = projectUpdateSql('p1', { deletedAt: null, deletedBy: null })
   assert.equal(sql, 'UPDATE `project` SET deletedAt = ?, deletedBy = ? WHERE id = ?')
   assert.deepEqual(params, [null, null, 'p1'])
+})
+
+// Fix round 1 (Task 2 review): task.count gets the same hiding as task.findMany.
+test('task.count hides tasks of deleted projects by default', () => {
+  const since = new Date('2026-09-01T00:00:00Z')
+  const { sql, params } = taskCountSql({ guildConfigId: 'g1', is_bug: 1, createdAtSince: since })
+  assert.equal(sql, `SELECT COUNT(*) AS c FROM \`task\` WHERE guildConfigId = ? AND is_bug = ? AND createdAt >= ? ${HIDE_TASK}`)
+  assert.deepEqual(params, ['g1', 1, since])
+})
+
+test('task.count with includeDeleted: true is the old statement, and the flag is not a column', () => {
+  const { sql, params } = taskCountSql({ guildConfigId: 'g1', is_feature: 1, status: 'open', includeDeleted: true })
+  assert.equal(sql, 'SELECT COUNT(*) AS c FROM `task` WHERE guildConfigId = ? AND is_feature = ? AND status = ?')
+  assert.deepEqual(params, ['g1', 1, 'open'])
+  assert.ok(!/includeDeleted/.test(sql))
+})
+
+test('task.count: only includeDeleted === true opts in', () => {
+  assert.ok(taskCountSql({ guildConfigId: 'g1', includeDeleted: 1 }).sql.endsWith(HIDE_TASK))
 })

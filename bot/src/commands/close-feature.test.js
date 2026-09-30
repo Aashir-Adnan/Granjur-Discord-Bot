@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execute } from './close-feature.js'
 
-function harness({ feature = { id: 'T1', title: 'Git Sync', status: 'open', projectId: 'p1', discordChannelId: 'c1', guildConfigId: 'g1' } } = {}) {
+function harness({ feature = { id: 'T1', title: 'Git Sync', status: 'open', projectId: 'p1', discordChannelId: 'c1', guildConfigId: 'g1' }, project = { id: 'p1', deletedAt: null } } = {}) {
   const log = []
   const channel = { id: 'c1', send: async (p) => { log.push(['send', p.content]) }, delete: async () => { log.push(['delete']) } }
   const interaction = {
@@ -16,6 +16,7 @@ function harness({ feature = { id: 'T1', title: 'Git Sync', status: 'open', proj
       findFirst: async ({ where }) => (where.discordChannelId === 'c1' ? feature : null),
       update: async (a) => { log.push(['update', a.data.status]) },
     },
+    project: { findFirst: async ({ where }) => (project && where.id === project.id ? project : null) },
     ticketDoc: { findFirst: async () => null, update: async () => {}, create: async () => {} },
   }
   const move = async (a) => { log.push(['move', a.task.id, a.before.status, a.updates.status, a.db === db, a.guild?.id]); return { moved: true, archived: true, reason: null } }
@@ -81,4 +82,13 @@ test('outside a feature channel, or when already closed, nothing is written or m
   await execute(h2.interaction, { db: h2.db, move: h2.move })
   assert.match(h2.interaction.replies[0].content, /already closed/)
   assert.deepEqual([...h.log, ...h2.log], [])
+})
+
+test("a ticket of a deleted project is refused: nothing is written, synced or moved, so its archived channel is never stamped", async () => {
+  const h = harness({ project: { id: 'p1', deletedAt: new Date('2026-10-01T09:00:00Z') } })
+  let synced = 0
+  await execute(h.interaction, { db: h.db, move: h.move, syncIssue: async () => { synced++; return { line: null } } })
+  assert.deepEqual(h.interaction.replies, [{ content: 'This project is deleted.' }])
+  assert.deepEqual(h.log, [], 'no update, no channel post, no move')
+  assert.equal(synced, 0)
 })

@@ -6,7 +6,7 @@ import db from '../db/index.js'
 import { isLeadershipFor, memberProjectIdsOf } from '../utils/timeAccess.js'
 import { clockableTasks } from '../utils/timeTaskPicker.js'
 import { entryMinutes } from '../utils/timeTracking.js'
-import { PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
+import { PROJECT_DELETED, projectIdIsDeleted } from '../utils/projectDeleted.js'
 
 const NOTE_MAX = 500
 const GENERAL_TITLE = 'General work'
@@ -56,7 +56,7 @@ export async function clockIn({ db: dbArg = db, cfg, guild, discordId, taskId = 
         }).length > 0
       : false
     if (!allowed) throw new ClockError('That task is not available to clock in on.')
-    if (await projectIsDeleted(dbArg, cfg, task.projectId)) throw new ClockError(PROJECT_DELETED)
+    if (await taskProjectDeleted(dbArg, task.projectId)) throw new ClockError(PROJECT_DELETED)
   }
   const wanted = task ? task.id : null
 
@@ -126,14 +126,18 @@ async function projectNamesOf(dbArg, cfg) {
 }
 
 /**
- * Whether `projectId` is one of this guild's soft-deleted projects. Read from
- * the guild's project list (deleted ones included) rather than by id, the same
- * read the names above come from. A failed read throws.
+ * Whether a task's project is soft-deleted, for clock-in and /log-time. A
+ * project that cannot be read counts as not deleted (and is logged), as a
+ * failed read does for the names above: a lookup must never turn clock-in
+ * into a crash.
  */
-export async function projectIsDeleted(dbArg, cfg, projectId) {
-  if (!projectId) return false
-  const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true } })
-  return isDeletedProject((projects || []).find((p) => String(p.id) === String(projectId)))
+export async function taskProjectDeleted(dbArg, projectId) {
+  try {
+    return await projectIdIsDeleted(dbArg, projectId)
+  } catch (e) {
+    console.error('[clock] project lookup:', e?.message ?? e)
+    return false
+  }
 }
 
 export async function clockStatus({ db: dbArg = db, cfg, guild, discordId, now = new Date() }) {

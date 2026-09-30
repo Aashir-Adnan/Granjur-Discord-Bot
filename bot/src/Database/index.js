@@ -540,7 +540,9 @@ async function taskUpdate({ where, data }) {
   return taskFindFirst({ where: { id } });
 }
 
-async function taskCount({ where }) {
+// Hides tasks of soft-deleted projects like taskFindManySql, unless
+// `where.includeDeleted === true`.
+export function taskCountSql(where) {
   let sql = "SELECT COUNT(*) AS c FROM `task` WHERE guildConfigId = ?";
   const params = [where.guildConfigId];
   if (where?.type) {
@@ -563,6 +565,12 @@ async function taskCount({ where }) {
     sql += " AND createdAt >= ?";
     params.push(where.createdAtSince);
   }
+  if (where.includeDeleted !== true) sql += ` ${HIDE_DELETED_PROJECT_TASKS}`;
+  return { sql, params };
+}
+
+async function taskCount({ where }) {
+  const { sql, params } = taskCountSql(where);
   const row = await queryOne(sql, params);
   return row?.c ?? 0;
 }

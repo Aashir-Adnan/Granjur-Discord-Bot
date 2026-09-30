@@ -2,6 +2,7 @@ import { SlashCommandBuilder, EmbedBuilder } from 'discord.js'
 import db from '../db/index.js'
 import { placeTicketForStatus } from '../services/ticketArchive.js'
 import { syncIssueState } from '../services/taskIssueState.js'
+import { PROJECT_DELETED, projectIdIsDeleted } from '../utils/projectDeleted.js'
 
 export const data = new SlashCommandBuilder()
   .setName('close-feature')
@@ -25,6 +26,9 @@ export async function execute(interaction, { db: dbArg = db, move = placeTicketF
       content: 'This command can only be used inside a **feature ticket** channel. Open one with **/create-task** (choose Feature) first.',
     })
   }
+  // A soft-deleted project's ticket channel sits archived until reactivation;
+  // finishing it here would lock it and stamp it for the retire sweeper.
+  if (await projectIdIsDeleted(dbArg, feature.projectId)) return interaction.editReply({ content: PROJECT_DELETED })
   if (feature.status === 'closed') {
     return interaction.editReply({ content: 'This feature ticket is already closed.' })
   }

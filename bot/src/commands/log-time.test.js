@@ -39,7 +39,7 @@ function fakeDb({ entries = [], tasks = [HELD] } = {}) {
       },
     },
     task: { findFirst: async ({ where }) => tasks.find((t) => t.id === where.id) ?? null, findMany: async () => tasks },
-    project: { findMany: async () => [] },
+    project: { findMany: async () => [], findFirst: async () => null },
     projectMember: { findByMember: async () => [{ projectId: 'p1' }] },
   }
 }
@@ -323,7 +323,7 @@ test('autocomplete is the /clock-in picker', () => {
 
 test('log-time on a task in a deleted project says so, and logs nothing', async () => {
   const db = fakeDb()
-  db.project.findMany = async ({ where }) => (where.includeDeleted === true ? [{ id: 'p1', name: 'Alpha', deletedAt: new Date('2026-09-20T09:00:00Z') }] : [])
+  db.project.findFirst = async ({ where }) => (where.id === 'p1' ? { id: 'p1', name: 'Alpha', deletedAt: new Date('2026-09-20T09:00:00Z') } : null)
   const it = fakeInteraction({ task: 'H', duration: '90m' })
   await execute(it, { db, getConfig, now: NOW })
   assert.deepEqual(written(db), [])

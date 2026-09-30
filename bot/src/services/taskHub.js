@@ -32,6 +32,7 @@ import { applyTaskUpdate } from './taskStatusChange.js'
 import { createSubtask } from './taskHierarchy.js'
 import { MAX_SUBTASKS, TaskRuleError, checklistText, isFinished, subtaskProgress } from '../utils/taskHierarchy.js'
 import { canSeeTask, projectMoveNote, runUpdate, sameIds } from '../commands/update-task.js'
+import { PROJECT_DELETED, projectIdIsDeleted } from '../utils/projectDeleted.js'
 
 export const EDIT_MODAL_PREFIX = 'ut_edit:'
 export const COUNTS_MODAL_PREFIX = 'ut_counts:'
@@ -66,11 +67,16 @@ export async function context(interaction, { getConfig }) {
   return { cfg, isLeadership }
 }
 
-/** The task, only if this person may see it; everything the hub draws alongside it. */
+/**
+ * The task, only if this person may see it; everything the hub draws alongside
+ * it. A task whose project is soft-deleted loads as no task, with `deleted`
+ * set, so every hub action refuses it before anything is written.
+ */
 async function loadHub(interaction, taskId, d) {
   const { cfg, isLeadership } = await context(interaction, d)
   const task = taskId ? await d.db.task.findFirst({ where: { id: taskId, guildConfigId: cfg.id } }) : null
   if (!task || !canSeeTask(task, { isLeadership, callerId: interaction.user.id })) return { cfg, task: null }
+  if (await projectIdIsDeleted(d.db, task.projectId)) return { cfg, task: null, deleted: true }
 
   const [projects, deps, recent] = await Promise.all([
     d.db.project.findMany({ where: { guildConfigId: cfg.id } }).catch(() => []),
@@ -364,6 +370,8 @@ const modalValues = (fields, id) => fields?.fields?.get?.(id)?.values ?? []
 const depsOf = (deps) => ({ db, getConfig: getOrCreateGuildConfig, notify: notifyTaskUpdate, apply: applyTaskUpdate, ...deps })
 
 const gone = { content: NOT_FOUND, embeds: [], components: [] }
+/** What to show when `loadHub` found no task: gone, or the deleted-project refusal. */
+const goneFor = (loaded) => (loaded?.deleted ? { content: PROJECT_DELETED, embeds: [], components: [] } : gone)
 const respond = (interaction, payload) =>
   (interaction.deferred || interaction.replied ? interaction.editReply(payload) : interaction.update(payload))
 
@@ -380,7 +388,7 @@ const nameForIn = (interaction) => (id) => interaction.guild.members.cache.get(i
 export async function showHub(interaction, taskId, deps = {}, notice = '') {
   const d = depsOf(deps)
   const loaded = await loadHub(interaction, taskId, d)
-  if (!loaded.task) return respond(interaction, gone)
+  if (!loaded.task) return respond(interaction, goneFor(loaded))
   return respond(interaction, buildHubPayload({ ...loaded, notice, nameFor: nameForIn(interaction) }))
 }
 
@@ -412,7 +420,7 @@ export async function handleHubComponent(interaction, deps = {}) {
   }
 
   const loaded = await loadHub(interaction, taskId, d)
-  if (!loaded.task) return respond(interaction, gone)
+  if (!loaded.task) return respond(interaction, goneFor(loaded))
   const value = interaction.values?.[0]
 
   if (action === 'parent') {
@@ -449,7 +457,7 @@ export async function handleEditSubmit(interaction, deps = {}) {
   await ack(interaction)
   const taskId = String(interaction.customId).slice(EDIT_MODAL_PREFIX.length)
   const loaded = await loadHub(interaction, taskId, d)
-  if (!loaded.task) return interaction.editReply(gone)
+  if (!loaded.task) return interaction.editReply(goneFor(loaded))
 
   const f = interaction.fields
   const updates = updatesFromModal(loaded.task, {
@@ -469,7 +477,7 @@ export async function handleCountsSubmit(interaction, deps = {}) {
   await ack(interaction)
   const taskId = String(interaction.customId).slice(COUNTS_MODAL_PREFIX.length)
   const loaded = await loadHub(interaction, taskId, d)
-  if (!loaded.task) return interaction.editReply(gone)
+  if (!loaded.task) return interaction.editReply(goneFor(loaded))
 
   const f = interaction.fields
   const { updates, error } = countsFromModal(loaded.task, {
@@ -553,7 +561,7 @@ export function checklistChanges(children, tickedIds) {
 export async function showSubtasks(interaction, parentId, deps = {}, notice = '') {
   const d = depsOf(deps)
   const loaded = await loadHub(interaction, parentId, d)
-  if (!loaded.task) return respond(interaction, gone)
+  if (!loaded.task) return respond(interaction, goneFor(loaded))
   if (loaded.task.parentTaskId) return showHub(interaction, parentId, d, '❌ A subtask cannot have subtasks of its own.')
   return respond(interaction, buildSubtasksPayload({ parent: loaded.task, children: loaded.children, notice, nameFor: nameForIn(interaction) }))
 }
@@ -567,7 +575,7 @@ export async function handleSubtasksComponent(interaction, deps = {}) {
 
   if (action === 'back') return showHub(interaction, parentId, d)
   const loaded = await loadHub(interaction, parentId, d)
-  if (!loaded.task) return respond(interaction, gone)
+  if (!loaded.task) return respond(interaction, goneFor(loaded))
   if (action === 'add') return interaction.showModal(buildSubtaskModal(loaded.task))
 
   if (action === 'toggle') {
@@ -600,7 +608,7 @@ export async function handleSubtaskSubmit(interaction, deps = {}) {
   await ack(interaction)
   const parentId = String(interaction.customId).slice(SUBTASK_MODAL_PREFIX.length)
   const loaded = await loadHub(interaction, parentId, d)
-  if (!loaded.task) return interaction.editReply(gone)
+  if (!loaded.task) return interaction.editReply(goneFor(loaded))
 
   const f = interaction.fields
   let notice

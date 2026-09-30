@@ -16,6 +16,7 @@ import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
 import { linkRepo, linkRefusalText, accessLine, SCOPE_IGNORED_TEXT } from '../services/projectRepoLinks.js'
 import { checkRepoAccess } from '../services/github.js'
 import { DELETED_SLUG_HELD, PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
+import { projectSlug } from '../services/projectSection.js'
 
 export const data = new SlashCommandBuilder()
   .setName('repos')
@@ -197,13 +198,15 @@ export async function handleConfirmAdd(
       const name = String(state.project).trim()
       // `findByName` returns a soft-deleted project too; nothing is linked to one.
       let project = await dbArg.project.findByName({ guildConfigId: cfg.id, name })
-      if (isDeletedProject(project)) throw new Error(PROJECT_DELETED)
+      if (isDeletedProject(project)) throw Object.assign(new Error(PROJECT_DELETED), { deletedProject: true })
       if (!project) {
         const { slugify } = await import('../utils/docPath.js')
         const slug = slugify(name)
         // Deleted projects included: a deleted project's slug stays reserved.
         const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true } })
-        const slugConflict = projects.find((p) => p.docsSlug === slug)
+        // Against the EFFECTIVE slug, as /projects → Add compares it: a legacy
+        // project with a NULL `docsSlug` still holds `slugify(name)`.
+        const slugConflict = projects.find((p) => projectSlug(p) === slug)
         if (isDeletedProject(slugConflict)) throw new Error(DELETED_SLUG_HELD)
         if (slugConflict) {
           throw new Error(`docs folder \`${slug}\` is already used by **${slugConflict.name}** — pick another slug`)
@@ -225,7 +228,10 @@ export async function handleConfirmAdd(
         }
       }
     } catch (e) {
-      linkNote = `\n\nLinking to project **${state.project}** did not complete (${e?.message ?? String(e)}). Finish it with **/projects** → **Link repo**.`
+      // A deleted project is not in the Link repo picker, so there is nothing to finish there.
+      linkNote = e?.deletedProject
+        ? `\n\nLinking to project **${state.project}** did not complete. ${PROJECT_DELETED}`
+        : `\n\nLinking to project **${state.project}** did not complete (${e?.message ?? String(e)}). Finish it with **/projects** → **Link repo**.`
     }
   }
 
