@@ -18,10 +18,12 @@ in. Spec `docs/superpowers/specs/2026-09-30-site-clock-in-out-design.md`, knowle
   hook (`actorIsRoleAdmin`), tolerant per-guild probe, report guild scope.
 - **Site** (worktree `UBS-Doc-site-clock`): `bde1fd8` feat(team) — clock in and out from
   the site, who is clocked in now; `d9a8c2c` fix(team) — keep the clock usable after a
-  failed refresh, reset stale dialogs, label hidden tasks.
+  failed refresh, reset stale dialogs, label hidden tasks; `2e496ac` fix(team) — refresh
+  after a failed action, after linking and on tab focus (no poll in hidden tabs), and say
+  why the clock is refused (final-review fix wave; bot doc `5ff617e`).
 - Suites, all green: bot `npm test` 1543 tests, `fail 0`; CSAAS `clock.test.js` and the
   whole `discord-tasks-test` loop clean, `portalAnyUrddPermission` jest 5/5; site
-  `npx vitest run` 403 tests in 35 files, `tsc --noEmit` clean.
+  `npx vitest run` 408 tests in 35 files, `tsc --noEmit` clean.
 - Knowledge and state docs: `.claude/knowledge/site-clock.md`, `.claude/knowledge/README.md`,
   `.claude/knowledge/project-tasks-site.md`, `.claude/state/backlog.md`,
   `.claude/state/completed.md`, `.claude/state/session.md`.

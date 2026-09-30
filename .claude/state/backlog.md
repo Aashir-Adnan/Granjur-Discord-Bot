@@ -245,7 +245,7 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
    knowledge `.claude/knowledge/site-clock.md`. Branch `feat/site-clock` in all three
    repos: bot `db00433` (one clock service for `/clock-in`, `/clock-out` and the site),
    `3059e16` (the four `/internal/clock/*` routes); CSAAS `4923a51`, `be3f821`; site
-   (worktree `UBS-Doc-site-clock`) `bde1fd8`, `d9a8c2c`. No migration.
+   (worktree `UBS-Doc-site-clock`) `bde1fd8`, `d9a8c2c`, `2e496ac`. No migration.
    - **Rollout, in order (bot → CSAAS → site), each step needing the owner's go-ahead:**
      1. Push the bot's `main` (no migration).
      2. Push CSAAS `main` (auto-deploys).
@@ -257,6 +257,14 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      - The site UI was never exercised in a browser against a live backend.
      - The "Clocked in now" card on the Time tab does not refetch after a clock action
        from the header.
+     - Nothing stops two open entries for one member: `clockIn` reads the active entry and
+       then creates one, with no unique key. A `/clock-in` and a site clock-in at the same
+       instant leave an orphan that runs until the 12 h cap (the race predates the site).
+     - The site's task picker can list a task the bot then refuses (the bot needs project
+       membership, holding the task, or leadership); the user gets the refusal sentence.
+     - The bot's clock routes accept only an approved, non-client `guildmember`; Discord's
+       `/clock-in` lets any non-client through. A pending member sees the bot's sentence
+       in the header pill instead of a clock.
 6. **JSON task import** on the site with a documented format — only into the user's projects.
 7. **Meeting docs/JSON → Claude → tasks** without a meeting, plus a document field when a
    meeting starts (today only a voice recording enqueues the pipeline; channel attachments

@@ -13,7 +13,8 @@ Nothing in this sub-project is merged or deployed.
   - Bot: `npm test` → 1543 tests, `fail 0`.
   - CSAAS: `clock.test.js` passes; every `discord-tasks-test/*.test.js` script runs clean
     with `node`; `npx jest .../portalAnyUrddPermission.test.js` → 5/5.
-  - Site (worktree `UBS-Doc-site-clock`): `npx vitest run` → 35 files, 403 tests pass;
+  - Site (worktree `UBS-Doc-site-clock`): `npx vitest run` → 35 files, 408 tests pass
+    (after the final-review fix wave, site `2e496ac`);
     `npx tsc --noEmit` clean.
 - New knowledge file `.claude/knowledge/site-clock.md`, indexed in
   `.claude/knowledge/README.md`; a pointer added in `.claude/knowledge/project-tasks-site.md`.
