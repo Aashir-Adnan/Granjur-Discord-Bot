@@ -9,6 +9,7 @@ import { config } from './config.js'
 import { RateLimiter } from './security/rateLimiter.js'
 import { getClientIp } from './security/ipUtils.js'
 import { handleCreateRequest, handleStatusRequest, handleSubtaskRequest, handleUpdateRequest } from './services/internalTaskRoute.js'
+import { handleClockActiveRequest, handleClockInRequest, handleClockOutRequest, handleClockStatusRequest } from './services/internalClockRoute.js'
 
 const { port: PORT, allowedOrigin: ALLOWED_ORIGIN, trustProxy: TRUST_PROXY, maxBodyBytes: MAX_BODY_BYTES, rateLimit: RATE_LIMIT } =
   config.verifyServer
@@ -21,6 +22,10 @@ const INTERNAL_ROUTES = {
   '/internal/tasks/update': handleUpdateRequest,
   '/internal/tasks/create': handleCreateRequest,
   '/internal/tasks/subtask': handleSubtaskRequest,
+  '/internal/clock/in': handleClockInRequest,
+  '/internal/clock/out': handleClockOutRequest,
+  '/internal/clock/status': handleClockStatusRequest,
+  '/internal/clock/active': handleClockActiveRequest,
 }
 const INTERNAL_MAX_BODY = 64 * 1024
 
