@@ -222,7 +222,10 @@ export async function handleTypeButton(interaction) {
 
     if (isFeature) {
       const refusal = emptyServerRefusal(taskType, await db.repository.findMany({ where: { guildConfigId: cfg.id } }), await db.project.findMany({ where: { guildConfigId: cfg.id } }))
-      if (refusal) return interaction.update(refusal).catch(() => {})
+      if (refusal) {
+        const payload = { ...refusal, embeds: [] }
+        return interaction.update(payload).catch(() => interaction.editReply(payload))
+      }
     }
 
     const typeState = { step: isFeature ? STEP_MODAL : STEP_BUG_PROJECT, taskType }
