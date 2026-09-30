@@ -44,7 +44,7 @@ function stringList(value) {
 
 const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x))
 
-function titleOf(value) {
+export function titleOf(value) {
   if (typeof value !== 'string' || !value.trim()) return ['A task needs a title.']
   const t = value.trim()
   if (t.length > TITLE_MAX) return [`The title can be at most ${TITLE_MAX} characters.`]

@@ -12,6 +12,7 @@ import { createTask, issueReplyLine } from './taskCreate.js'
 import { resolveTaskRepo, loadProjectLinks } from './taskRepo.js'
 import { createSubtask } from './taskHierarchy.js'
 import { notifyTaskUpdate } from './taskUpdateNotify.js'
+import { checkImport, MAX_IMPORT_TASKS } from './taskImport.js'
 
 export function safeEqual(a, b) {
   const x = Buffer.from(String(a ?? '')); const y = Buffer.from(String(b ?? ''))
@@ -250,5 +251,24 @@ export async function handleSubtaskRequest({ headers = {}, body = {}, db: dbArg 
       notify: notifyTaskUpdate, apply: applyTaskUpdate, redact: redactSetFrom(b.hiddenTaskIds),
     })
     return { status: 200, body: { ok: true, task: { id: child.id, status: child.status, parentId: child.parentTaskId ?? parent.id } } }
+  })
+}
+
+/**
+ * The site's import preview: a verdict per task of a parsed file, nothing
+ * written. `check` is the seam (a fake in tests).
+ */
+export async function handleImportCheckRequest({ headers = {}, body = {}, db: dbArg = db, client, secret, check = checkImport }) {
+  return guarded({ headers, body, secret, route: 'import-check' }, async (b) => {
+    const [idErr, projectId] = idFrom(b.projectId, 'projectId')
+    if (idErr) return bad(idErr)
+    if (!Array.isArray(b.tasks) || !b.tasks.length) return bad('The file needs a list of at least one task.')
+    if (b.tasks.length > MAX_IMPORT_TASKS) return bad(`A file can hold at most ${MAX_IMPORT_TASKS} tasks.`)
+    const project = await dbArg.project.findFirst({ where: { id: projectId } })
+    if (!project) return bad('No project matches that id.')
+    const { cfg, guild } = await guildOf(dbArg, client, project.guildConfigId)
+    if (!cfg || !guild) return { status: 500, body: { ok: false, message: 'The Discord server is not available to the bot right now.' } }
+    const { tasks } = await check({ db: dbArg, cfg, project, tasks: b.tasks, createIssues: b.createIssues !== false })
+    return { status: 200, body: { ok: true, tasks } }
   })
 }
