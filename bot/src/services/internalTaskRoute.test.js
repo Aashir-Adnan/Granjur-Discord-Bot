@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createTask } from './taskCreate.js'
 import { handleStatusRequest, handleUpdateRequest, handleCreateRequest, handleSubtaskRequest } from './internalTaskRoute.js'
 
 const task = { id: 'A', guildConfigId: 'g1', title: 'Git Sync', status: 'open' }
@@ -214,14 +215,37 @@ test('create: an unknown member is a 400', async () => {
   const r = await handleCreateRequest({ headers: H, body: { type: 'feature', title: 'x', projectId: 'P1', holderIds: ['u9'] }, db: routeDb(), client: guildClient, secret: 's3cret' })
   assert.equal(r.status, 400); assert.equal(r.body.message, 'Member …u9 is not a member of this Discord server.')
 })
-test('create: a bug with no resolvable repo and no repositoryIds is a 400, before create runs', async () => {
+test('create: a bug with no resolvable repo and no repositoryIds is accepted and reaches createTask with no repository', async () => {
+  let seen
   const r = await handleCreateRequest({
     headers: H, body: { type: 'bug', title: 'Crash', projectId: 'P1', holderIds: ['u1'] },
     db: routeDb(), client: guildClient, secret: 's3cret',
-    create: async () => { throw new Error('must not run') },
+    create: async (a) => { seen = a; return { task: { id: 'N1', type: 'bug', status: 'pending', projectId: 'P1' }, channel: { id: 'ch9' }, fellBack: null, issueUrl: '', issue: { skipped: 'the project has no repository for this scope' } } },
   })
-  assert.equal(r.status, 400)
-  assert.equal(r.body.message, 'This project has no repository for this scope — pick a repository for the bug.')
+  assert.equal(r.status, 200)
+  assert.equal(seen.repo, null)
+  assert.deepEqual(seen.fields.repositoryIds, [])
+  assert.equal(r.body.note, 'Issue: not opened — the project has no repository for this scope')
+})
+test('create: a real createTask for a bug with no repository makes the task, opens no issue, and the note says why', async () => {
+  const log = []
+  const db = routeDb({
+    bugTicket: { create: async ({ data }) => { log.push(data); return { id: 'N1', ...data } }, update: async () => {} },
+    ticketDoc: { create: async () => {} },
+  })
+  const r = await handleCreateRequest({
+    headers: H, body: { type: 'bug', title: 'Crash', scope: 'backend', projectId: 'P1', holderIds: ['u1'] },
+    db, client: guildClient, secret: 's3cret',
+    create: (a) => createTask({
+      ...a,
+      createChannel: async (g, o) => { const c = { id: 'ch9', send: async () => {} }; await o.onCreated(c); return { channel: c, fellBack: null } },
+      openIssue: async () => { throw new Error('openIssue must not be reached') },
+    }),
+  })
+  assert.equal(r.status, 200)
+  assert.equal(log[0].repositoryId, null)
+  assert.equal(r.body.channelId, 'ch9')
+  assert.equal(r.body.note, 'Issue: not opened — the project has no repository for this scope')
 })
 test('create: createIssue: false is forwarded to createTask, and the response carries issue', async () => {
   let seen

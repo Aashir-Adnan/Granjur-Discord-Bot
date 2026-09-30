@@ -158,15 +158,22 @@ test('26 subtasks are refused with one error', async () => {
   assert.equal((await one({ type: 'feature', title: 'x', subtasks: Array.from({ length: 25 }, (_, i) => ({ title: `s${i}` })) })).ok, true)
 })
 
-test('a bug needs a repository for its scope', async () => {
+test('a bug never needs a repository: with none it is ok and warned about the issue, with one it is ok and not warned', async () => {
+  const noIssue = 'No repository for this scope, so no GitHub issue will be opened.'
   const none = await one({ type: 'bug', title: 'Crash', scope: 'backend' })
-  assert.equal(none.ok, false)
-  assert.deepEqual(none.errors, ['This project has no repository for this scope.'])
+  assert.equal(none.ok, true)
+  assert.deepEqual(none.errors, [])
+  assert.deepEqual(none.warnings, [noIssue])
+  assert.deepEqual(none.fields.repositoryIds, [])
   const has = await one({ type: 'bug', title: 'Crash', scope: 'backend' }, withRepo())
   assert.equal(has.ok, true)
+  assert.deepEqual(has.warnings, [])
   assert.deepEqual(has.fields.repositoryIds, [])
-  // A done bug needs it too.
-  assert.equal((await one({ type: 'bug', title: 'Crash', status: 'done' })).ok, false)
+  // Issues off, or a done bug: no issue would be opened, so no warning.
+  assert.deepEqual((await one({ type: 'bug', title: 'Crash' }, fakeDb(), { createIssues: false })).warnings, [])
+  const done = await one({ type: 'bug', title: 'Crash', status: 'done' })
+  assert.equal(done.ok, true)
+  assert.deepEqual(done.warnings, [])
 })
 
 test('warning: a title the project already has (case-insensitive, subtasks ignored)', async () => {

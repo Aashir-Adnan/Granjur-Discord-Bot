@@ -2,6 +2,10 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-09-30 — A bug no longer needs a repository
+
+Owner-approved: the bot never refuses a bug for lack of a repository (optional picker with "No repository", skipped when nothing to offer; the site route and the JSON import accept it; no GitHub issue then). Commit `fix(bugs): a bug no longer needs a repository`; knowledge `repositories-and-issues.md`, `task-import.md`. Site side changed separately; not exercised live on Discord.
+
 ## 2026-09-30 — JSON task import on the site (MERGED AND PUSHED 2026-09-30)
 
 Merged and pushed 2026-09-30, bot first: bot `db92164` (Deploy to VM run succeeded), CSAAS

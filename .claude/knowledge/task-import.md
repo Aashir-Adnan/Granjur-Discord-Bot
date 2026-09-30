@@ -64,7 +64,9 @@ Limits and rules:
 - A done task is recorded as finished: no Discord channel, no GitHub issue. An open or
   in-progress task gets a channel and, unless "Open GitHub issues" is unticked, an issue.
 - A done task must have every subtask done (`A done task cannot have unfinished subtasks.`).
-- A bug needs a repository for its scope in the project.
+- A bug never needs a repository (changed 2026-09-30; it used to be an error). With issues
+  on and no repository for its scope, an open or in-progress task (feature or bug) gets the
+  warning `No repository for this scope, so no GitHub issue will be opened.`
 - An assignee matches by email first, then display name, then username (case-insensitive,
   trimmed), among approved non-client members of the project's guild. A name that matches
   nobody, or more than one member, makes the task invalid; the same person named twice
@@ -72,9 +74,8 @@ Limits and rules:
 - Two duplicate-title warnings, never errors: `A task with this title already exists in
   this project.` (a top-level task already in the project) and `This title appears more
   than once in the file.` They are distinct sentences.
-- A feature with no repository for its scope gets the warning `No repository for this
-  scope, so no GitHub issue will be opened.` (only when issues are on and the task is not
-  done).
+- The no-repository warning (above) is given only when issues are on and the task is not
+  done; it is never an error.
 
 ## Bot: `checkImport` and the verdict
 

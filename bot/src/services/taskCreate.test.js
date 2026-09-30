@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTask } from './taskCreate.js'
+import { createTask, issueReplyLine } from './taskCreate.js'
 import { GitHubError } from './github.js'
 
 const cfg = { id: 'g1' }
@@ -176,6 +176,39 @@ test('a bug with no project but an explicit repo: that repo is used (the Discord
   assert.deepEqual(db.log.find((l) => l[0] === 'bug.update' && l[1].discordChannelId)[1], { discordChannelId: 'bch' })
   assert.deepEqual(r.issue, { url: 'https://github.com/g/bot/issues/3' })
   assert.ok(sentMessages.some((m) => m.content === 'GitHub issue: https://github.com/g/bot/issues/3'), 'the follow-up went to the new channel')
+})
+
+// 2026-09-30: a bug never needs a repository.
+test('a bug under a project with no repository: row has none, channel made, no issue, the reply line says why', async () => {
+  const db = fakeDb({ repos: [{ id: 'R1', name: 'bot', url: 'https://github.com/g/bot' }], links: [] })
+  const { maker, calls, sent } = fakeChannelMaker()
+  const r = await createTask({
+    db, guild: { id: 'G' }, cfg, project, repo: null,
+    fields: { ...baseFields, type: 'bug', modules: [], repositoryIds: [] }, actor: { discordId: 'u-me' },
+    createChannel: maker, openIssue: async () => { throw new Error('openIssue must not be reached') },
+  })
+  assert.equal(db.log.find((l) => l[0] === 'bug.create')[1].repositoryId, null)
+  assert.equal(calls[0].fields.find((f) => f.name === 'Repository').value, '—')
+  assert.equal(r.channel.id, 'ch1')
+  assert.deepEqual(r.issue, { skipped: 'the project has no repository for this scope' })
+  assert.equal(issueReplyLine(r.issue), 'Issue: not opened — the project has no repository for this scope')
+  assert.equal(sent.length, 0, 'a skip posts nothing in the channel')
+})
+
+test('a bug with no project and no repository: global Bugs channel, topic shows no repo, no issue, the reply line says why', async () => {
+  const db = fakeDb()
+  const created = []
+  const guild = { id: 'G', channels: { create: async (o) => { created.push(o); return { id: 'bch', send: async () => {} } } } }
+  const r = await createTask({
+    db, guild, cfg, project: null, repo: null,
+    fields: { ...baseFields, type: 'bug', modules: [], repositoryIds: [] }, actor: { discordId: 'u-me' },
+    createChannel: async () => { throw new Error('unused') }, getCategory: async () => ({ id: 'bugsCat' }),
+    openIssue: async () => { throw new Error('openIssue must not be reached') },
+  })
+  assert.equal(db.log.find((l) => l[0] === 'bug.create')[1].repositoryId, null)
+  assert.match(created[0].topic, /\| Repo: —$/)
+  assert.deepEqual(r.issue, { skipped: 'the task has no project' })
+  assert.equal(issueReplyLine(r.issue), 'Issue: not opened — the task has no project')
 })
 
 // F1 (final review, 2026-09-30): a failed issue is said in the task's channel too.
