@@ -18,6 +18,8 @@ the `/projects` description and help mention Delete and Reactivate. Files:
 `config/commands.js`, `config/command-config.json`, their tests, and the knowledge file.
 Suite: bot `npm test` 1832 tests, pass 1832, `ℹ fail 0`.
 
+Follow-up (branch `fix/archive-restore-leak`): `fix(projects): never restore an archived channel outside the project's own category` — swept channels are restored only into the project's category, otherwise they stay archived and are named in the reply. Files: `services/projectLifecycle.js`, `services/taskTicketChannel.js` (`categoryHasRoom`), tests, knowledge.
+
 ## 2026-10-01 — Project soft delete (BUILT, NOT MERGED, NOT DEPLOYED)
 
 Delete project and Reactivate project in `/projects`. A deleted project and its tasks are hidden

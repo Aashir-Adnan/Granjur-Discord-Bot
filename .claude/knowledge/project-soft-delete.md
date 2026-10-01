@@ -127,10 +127,18 @@ Reply: `Deleted **<name>**. Archived N task channels; removed its section and ro
    `Section rebuild failed — run /project-setup for it.`
 3. Each `archived` id that still exists is moved back in one edit, `{ parent, lockPermissions:
    true }` (discord.js v14 copies the new parent's overwrites, so the new project role sees
-   it), into the project's category, or the global Features category via
-   `resolveParentCategory` when that is full. One that cannot be moved is a reply line
-   `Could not restore #name: ...`; one deleted by hand is skipped. The list is then cleared
-   from the row either way.
+   it), but ONLY into the project's own rebuilt category. A swept channel has no `@everyone`
+   deny of its own, so the server-wide Features category (no overwrites) would make it
+   visible to everyone. With no category (rebuild failed) or none with room
+   (`categoryHasRoom`, exported from `taskTicketChannel.js`, the same cap rule as
+   `resolveParentCategory`), the channel is not edited, stays in the archive, keeps its id
+   in `archived`, and the reply says `#name stays in 🗄 ARCHIVED PROJECTS — move it into the
+   project's category by hand.` Ids that are also in the section map (the rebuild placed
+   them) are skipped and dropped. One that cannot be moved is `Could not restore #name: ...`
+   and stays recorded; one deleted by hand is dropped. The final write re-reads the row, keeps
+   the rebuild's section ids and sets `archived` to exactly what is left (absent when none);
+   if that re-read fails nothing is written and the reply says `Could not record which
+   channels stayed archived.` Task ticket channels still may fall back to global Features/Bugs.
 4. Every task channel gets the overwrites a new one gets (`taskChannelOverwrites`) for its
    creator and holders; a client request (`requestedBy` set) also gets the project's client
    managers (`managerIdsOf` over the roster, the rule `clientRequest.js` creates the channel

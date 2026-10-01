@@ -52,6 +52,11 @@ const globalCategory = (guild, categoryLabel) =>
     orNames: [CATEGORY_BOLD_NAMES[categoryLabel]].filter(Boolean),
   })
 
+/** Does this category have room for one more channel (under the soft cap)? */
+export function categoryHasRoom(guild, categoryId) {
+  return countChannelsInCategory(guild, categoryId) < CATEGORY_SOFT_CAP
+}
+
 /** The channel with this id, only when it is a category. A text channel cannot be a parent. */
 function categoryById(guild, id) {
   const c = id ? guild?.channels?.cache?.get?.(id) ?? null : null
@@ -79,7 +84,7 @@ export async function resolveParentCategory(guild, project, categoryLabel) {
     )
     return { category: await globalCategory(guild, categoryLabel), fellBack: 'missing', placed: 'global' }
   }
-  if (countChannelsInCategory(guild, projectCategory.id) >= CATEGORY_SOFT_CAP) {
+  if (!categoryHasRoom(guild, projectCategory.id)) {
     console.warn(
       `[taskTicket] project "${project?.name}"'s category is at Discord's cap (${CATEGORY_SOFT_CAP} channels); the task channel was created in the global ${categoryLabel} category instead.`
     )
