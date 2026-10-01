@@ -13,8 +13,9 @@
 //                ids of what is gone (what could not be removed stays stored).
 //   reactivate — un-mark the row, rebuild the section with `setupOneProject`
 //                (whose task pass moves the task channels back in), move the
-//                recorded `archived` channels back with the category's
-//                overwrites and clear the list, rebuild each task channel's
+//                recorded `archived` channels back, only into the project's own
+//                category (with its overwrites; any other stays archived and is
+//                named), rebuild each task channel's
 //                overwrites the way a new one is built (moving one the rebuild
 //                left in the archive to where a new one would go; a client
 //                request's also naming the project's client managers), relock
@@ -25,7 +26,7 @@
 // regardless. Every dependency is a parameter, so tests pass fakes only.
 import { ChannelType, OverwriteType, PermissionFlagsBits } from 'discord.js'
 import { ARCHIVE_CATEGORY_BASE } from '../utils/projectDeleted.js'
-import { taskChannelOverwrites, resolveParentCategory } from './taskTicketChannel.js'
+import { taskChannelOverwrites, resolveParentCategory, categoryHasRoom } from './taskTicketChannel.js'
 import { lockTicketChannel } from '../utils/channels.js'
 import { isFinished } from '../utils/ticketArchive.js'
 import { isTicketChannel } from '../utils/taskChannelName.js'
@@ -388,31 +389,57 @@ export async function reactivateProject({ db: dbArg, guild, cfg, project, botUse
   //    the category's overwrites (so the new role sees them), or where a new
   //    task channel would go when the category is full. Before the task pass,
   //    which then gives any task channel among them its own overwrites.
+  //    A swept channel has no `@everyone` deny of its own, so it only ever goes
+  //    where `lockPermissions` gives it the project's: its own category. With no
+  //    category, or no room in it, it stays in the archive (still recorded) and
+  //    is named in the reply — never into the server-wide category, which would
+  //    show it to everyone.
+  const placedBySetup = new Set(Object.values(storedChannels(current)))
+  const projectCategory = rebuilt ? guild.channels.cache.get(current?.discordCategoryId) : null
+  const stillArchived = []
   for (const id of archivedIds) {
+    if (placedBySetup.has(id)) continue
     const found = await lookup(guild.channels, id, UNKNOWN_CHANNEL)
     if (found.gone) continue
     if (found.error) {
       fail(`find archived channel ${id}`, found.error)
+      stillArchived.push(id)
       continue
     }
     const channel = found.item
+    if (projectCategory?.type !== ChannelType.GuildCategory || !categoryHasRoom(guild, projectCategory.id)) {
+      failures.push(`#${channel.name} stays in ${ARCHIVE_CATEGORY_BASE} — move it into the project's category by hand.`)
+      stillArchived.push(id)
+      continue
+    }
     try {
-      const { category } = await resolveParentCategory(guild, current, 'Features')
-      await channel.edit({ parent: category.id, lockPermissions: true })
+      await channel.edit({ parent: projectCategory.id, lockPermissions: true })
     } catch (e) {
       fail(`restore #${channel.name}`, e)
+      stillArchived.push(id)
     }
   }
   if (archivedIds.length) {
-    // Cleared whatever happened: what could not be moved is named above.
-    const left = storedChannels(await reread(current))
+    // The rebuild's section ids stay; `archived` is exactly what is still in the archive.
+    let latest = null
     try {
-      await dbArg.project.update({
-        where: { id: project.id },
-        data: { discordChannels: Object.keys(left).length ? left : null },
-      })
-    } catch (e) {
-      fail('clear its archived channel list', e)
+      latest = await dbArg.project.findFirst({ where: { id: project.id } })
+    } catch {
+      latest = null
+    }
+    if (!latest) {
+      failures.push('Could not record which channels stayed archived.')
+    } else {
+      const next = storedChannels(latest)
+      if (stillArchived.length) next[ARCHIVED_STORE_KEY] = stillArchived
+      try {
+        await dbArg.project.update({
+          where: { id: project.id },
+          data: { discordChannels: Object.keys(next).length ? next : null },
+        })
+      } catch (e) {
+        fail('record which channels stayed archived', e)
+      }
     }
   }
 

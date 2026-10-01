@@ -808,17 +808,75 @@ test('reactivate moves each recorded archived channel back into the category wit
   assert.deepEqual(result, { restored: 2, failures: [] }, 'a recorded channel deleted by hand is simply skipped')
 })
 
-test('reactivate sends a recorded archived channel to the global category when the project category is full', async () => {
+const STAYS = (name) => `#${name} stays in ${ARCHIVE_CATEGORY_BASE} — move it into the project's category by hand.`
+
+test('reactivate leaves a recorded archived channel in the archive when the project category is full', async () => {
   const { guild, db } = archivedChildrenFixture()
   // 46 section channels and the two task channels: room for exactly one more under the 49 cap.
   const setup = partialSetup({ guild, db, moved: ['tc1', 'tc2'], fill: 46 })
   const result = await quiet(() => reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup }))
-  const features = [...guild.channels.cache.values()].find((c) => c.name === 'Features' && c.type === ChannelType.GuildCategory)
-  assert.ok(features)
   assert.equal(guild.channels.cache.get('meet-text').parentId, 'cat-new', 'the first one fits')
-  assert.equal(guild.channels.cache.get('meet-voice').parentId, features.id, 'the next goes to the global category')
-  assert.deepEqual(guild.channels.cache.get('meet-voice').edits.at(-1), { parent: features.id, lockPermissions: true })
+  const voice = guild.channels.cache.get('meet-voice')
+  assert.equal(voice.parentId, 'arch1', 'the next stays in the archive')
+  assert.deepEqual(voice.edits, [], 'and is not edited at all')
+  assert.deepEqual(result.failures, [STAYS('standup-apollo-voice')])
+  assert.deepEqual(db.row.discordChannels, { archived: ['meet-voice'] })
+})
+
+test('reactivate with a failed rebuild moves no archived channel and keeps every id', async () => {
+  for (const setup of [
+    async () => {
+      throw new Error('Missing Permissions')
+    },
+    async () => ({ block: 'ok', result: {} }),
+  ]) {
+    const { guild, db } = archivedChildrenFixture()
+    const result = await quiet(() => reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup }))
+    for (const id of ['meet-text', 'meet-voice']) {
+      const c = guild.channels.cache.get(id)
+      assert.deepEqual(c.edits, [], `${id} is not moved`)
+      assert.equal(c.parentId, 'arch1')
+    }
+    assert.deepEqual(db.row.discordChannels.archived, ['meet-text', 'meet-voice'], 'the gone one is dropped, the rest kept')
+    assert.deepEqual(result.failures.slice(0, 3), [
+      'Section rebuild failed — run /project-setup for it.',
+      STAYS('standup-apollo-text'),
+      STAYS('standup-apollo-voice'),
+    ])
+  }
+})
+
+test('reactivate skips an archived id the rebuild already placed in the section map', async () => {
+  const { log, guild, db } = archivedChildrenFixture()
+  const inner = fakeSetup({ guild, db, log, calls: [] })
+  const setup = async (...args) => {
+    const out = await inner(...args)
+    guild.channels.cache.get('meet-text').parentId = 'cat-new'
+    db.row.discordChannels = { general: 'meet-text', archived: ['meet-text', 'meet-voice'] }
+    return out
+  }
+  const result = await reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup })
+  assert.deepEqual(guild.channels.cache.get('meet-text').edits, [], 'not re-edited with lockPermissions')
+  assert.deepEqual(guild.channels.cache.get('meet-voice').edits.at(-1), { parent: 'cat-new', lockPermissions: true })
+  assert.deepEqual(db.row.discordChannels, { general: 'meet-text' }, 'the section id kept, archived dropped')
   assert.deepEqual(result.failures, [])
+})
+
+test('reactivate writes no channel map when the project cannot be re-read afterwards', async () => {
+  const { log, guild, db } = archivedChildrenFixture()
+  const inner = fakeSetup({ guild, db, log, calls: [] })
+  let reads = 0
+  db.project.findFirst = async () => {
+    reads += 1
+    // 1: before the rebuild, 2: after it (for the category), 3: before the final write.
+    if (reads >= 3) throw new Error('db down')
+    return { ...db.row }
+  }
+  const before = JSON.stringify(db.row.discordChannels)
+  const result = await quiet(() => reactivateProject({ db, guild, cfg: CFG, project: db.row, botUserId: 'bot1', setup: inner }))
+  assert.equal(JSON.stringify(db.row.discordChannels), before, 'discordChannels untouched')
+  assert.ok(!log.some((e) => e[0] === 'project.update' && 'discordChannels' in e[1]))
+  assert.deepEqual(result.failures, ['Could not record which channels stayed archived.'])
 })
 
 test('reactivate names a recorded archived channel it could not move back', async () => {
