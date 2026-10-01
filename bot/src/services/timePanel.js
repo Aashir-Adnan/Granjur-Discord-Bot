@@ -184,7 +184,7 @@ export async function showTimePanel(interaction, { ownerId, rangeKey = 'week', s
   const entries = rows || []
 
   const ids = [...new Set([...entries.map((e) => e.taskId), running?.taskId, selected?.taskId].filter(Boolean).map(String))]
-  const tasks = ids.length ? await d.db.task.findByIds({ where: { guildConfigId: config.id, ids } }) : []
+  const tasks = ids.length ? await d.db.task.findByIds({ where: { guildConfigId: config.id, ids, includeDeleted: true } }) : []
 
   return respond(interaction, buildMyTimePayload({
     entries, tasks, running, range, nameFor: nameForIn(interaction),

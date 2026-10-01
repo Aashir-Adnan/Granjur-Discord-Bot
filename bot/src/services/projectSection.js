@@ -47,7 +47,7 @@ import { CATEGORY_SOFT_CAP } from '../constants.js'
 // `clientAccess.js` imports `db/index.js`; this module already does through
 // `projectMembersPanel.js`, so this adds no new database import to a leaf.
 import { CLIENT_TEXT_ALLOW_OBJ, CLIENT_VOICE_ALLOW_OBJ, ensureManualPinned } from './clientAccess.js'
-import { cut, storedChannels } from '../utils/projectStore.js'
+import { cut, storedChannels, archivedChannelIds } from '../utils/projectStore.js'
 import {
   ARCHIVE_DIVIDER_NAME,
   ARCHIVE_DIVIDER_TOPIC,
@@ -663,6 +663,9 @@ export function claimedSectionIds(projects, exceptId) {
     if (!p || (exceptId && p.id === exceptId)) continue
     if (p.discordCategoryId) claimed.add(p.discordCategoryId)
     for (const id of Object.values(storedChannels(p))) if (id) claimed.add(id)
+    // A deleted project's archived non-task channels: never adopted by name,
+    // and /cleanup (which reads this set) leaves them alone.
+    for (const id of archivedChannelIds(p)) claimed.add(id)
   }
   return claimed
 }

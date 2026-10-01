@@ -19,6 +19,12 @@ test('project update: only the given fields are written, id is always last', () 
   assert.deepEqual(params, ['Framework', 'p2'])
 })
 
+test('project update: nulled Discord ids are written as SQL NULL, not the JSON text "null"', () => {
+  // Deleting a project clears the ids its section kept (`projectLifecycle.js`).
+  const { params } = projectUpdateSql('p4', { discordCategoryId: null, discordRoleId: null, discordChannels: null })
+  assert.deepEqual(params, [null, null, null, 'p4'])
+})
+
 test('project update: nothing to write returns null', () => {
   assert.equal(projectUpdateSql('p3', {}), null)
 })

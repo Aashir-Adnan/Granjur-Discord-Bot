@@ -13,6 +13,7 @@ import { resolveTaskRepo, loadProjectLinks } from './taskRepo.js'
 import { createSubtask } from './taskHierarchy.js'
 import { notifyTaskUpdate } from './taskUpdateNotify.js'
 import { checkImport, MAX_IMPORT_TASKS } from './taskImport.js'
+import { PROJECT_DELETED, isDeletedProject, projectIdIsDeleted } from '../utils/projectDeleted.js'
 
 export function safeEqual(a, b) {
   const x = Buffer.from(String(a ?? '')); const y = Buffer.from(String(b ?? ''))
@@ -20,6 +21,9 @@ export function safeEqual(a, b) {
 }
 
 const bad = (message) => ({ status: 400, body: { ok: false, message } })
+
+/** A soft-deleted project, or a task in one, is a conflict, not bad input (CSAAS answers 409 the same way). */
+const deletedProject = () => ({ status: 409, body: { ok: false, message: PROJECT_DELETED } })
 
 /**
  * The part every internal route shares: disabled without a secret (503),
@@ -108,6 +112,7 @@ export async function handleStatusRequest({ headers = {}, body = {}, db: dbArg =
     if (!TASK_STATUSES.includes(status)) return bad(`status must be one of ${TASK_STATUSES.join(', ')}`)
     const task = await dbArg.task.findFirst({ where: { id: taskId } })
     if (!task) return { status: 404, body: { ok: false, message: 'Task not found' } }
+    if (await projectIdIsDeleted(dbArg, task.projectId)) return deletedProject()
     if (task.status === status) return { status: 200, body: { ok: true, task: { id: task.id, status }, warning: '', unchanged: true } }
     const actor = await siteActor(dbArg, task.guildConfigId, b.actor)
     const { warning } = await apply({ db: dbArg, client, task, updates: { status }, actor, redact: redactSetFrom(b.hiddenTaskIds) })
@@ -122,6 +127,7 @@ export async function handleUpdateRequest({ headers = {}, body = {}, db: dbArg =
     if (idErr) return bad(idErr)
     const task = await dbArg.task.findFirst({ where: { id: taskId } })
     if (!task) return { status: 404, body: { ok: false, message: 'Task not found' } }
+    if (await projectIdIsDeleted(dbArg, task.projectId)) return deletedProject()
     const changes = b.changes
     const has = (k) => changes && typeof changes === 'object' && Object.prototype.hasOwnProperty.call(changes, k)
 
@@ -129,12 +135,18 @@ export async function handleUpdateRequest({ headers = {}, body = {}, db: dbArg =
     const ctx = { projectsById: new Map(), memberIds: new Set(), tasksById: new Map(), deps: [] }
     if (has('projectId') && changes.projectId) {
       const p = await dbArg.project.findFirst({ where: { id: String(changes.projectId) } })
-      if (p && p.guildConfigId === task.guildConfigId) ctx.projectsById.set(p.id, p)
+      if (p && p.guildConfigId === task.guildConfigId) {
+        // Moving a task INTO a deleted project.
+        if (isDeletedProject(p)) return deletedProject()
+        ctx.projectsById.set(p.id, p)
+      }
     }
     if (has('holderIds')) ctx.memberIds = await memberIdsOf(dbArg, task.guildConfigId)
     if (has('blockerIds') && Array.isArray(changes.blockerIds)) {
       const ids = changes.blockerIds.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim())
-      const rows = ids.length ? await dbArg.task.findByIds({ where: { guildConfigId: task.guildConfigId, ids } }) : []
+      // By id, deleted projects included: a blocker whose project was deleted
+      // still holds this task, and the cycle check must see it.
+      const rows = ids.length ? await dbArg.task.findByIds({ where: { guildConfigId: task.guildConfigId, ids, includeDeleted: true } }) : []
       ctx.tasksById = new Map(rows.map((r) => [String(r.id), r]))
       ctx.deps = await dbArg.taskDependency.findManyForGuild({ where: { guildConfigId: task.guildConfigId } })
     }
@@ -175,6 +187,7 @@ export async function handleCreateRequest({ headers = {}, body = {}, db: dbArg =
     if (idErr) return bad(idErr)
     const project = await dbArg.project.findFirst({ where: { id: projectId } })
     if (!project) return bad('No project matches that id.')
+    if (isDeletedProject(project)) return deletedProject()
     const { cfg, guild } = await guildOf(dbArg, client, project.guildConfigId)
     if (!cfg || !guild) return { status: 500, body: { ok: false, message: 'The Discord server is not available to the bot right now.' } }
 
@@ -236,6 +249,7 @@ export async function handleSubtaskRequest({ headers = {}, body = {}, db: dbArg 
     if (stErr) return bad(stErr)
     const parent = await dbArg.task.findFirst({ where: { id: parentId } })
     if (!parent) return { status: 404, body: { ok: false, message: 'Task not found' } }
+    if (await projectIdIsDeleted(dbArg, parent.projectId)) return deletedProject()
     let assigneeIds = []
     if (b.holderIds !== undefined) {
       const v = validateEdit(parent, { holderIds: b.holderIds }, { memberIds: await memberIdsOf(dbArg, parent.guildConfigId) })
@@ -264,6 +278,7 @@ export async function handleImportCheckRequest({ headers = {}, body = {}, db: db
     if (b.tasks.length > MAX_IMPORT_TASKS) return bad(`A file can hold at most ${MAX_IMPORT_TASKS} tasks.`)
     const project = await dbArg.project.findFirst({ where: { id: projectId } })
     if (!project) return bad('No project matches that id.')
+    if (isDeletedProject(project)) return deletedProject()
     const { cfg, guild } = await guildOf(dbArg, client, project.guildConfigId)
     if (!cfg || !guild) return { status: 500, body: { ok: false, message: 'The Discord server is not available to the bot right now.' } }
     const { tasks } = await check({ db: dbArg, cfg, project, tasks: b.tasks, createIssues: b.createIssues !== false })

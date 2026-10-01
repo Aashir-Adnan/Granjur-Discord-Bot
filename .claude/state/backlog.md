@@ -4,6 +4,31 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
 
 ---
 
+## Project soft delete — BUILT, NOT DEPLOYED (not merged), 2026-10-01
+Delete and Reactivate in `/projects`; a deleted project and its tasks are hidden, nothing is
+removed. Bot branch `feat/project-soft-delete` (`2c6e5e3` .. `f160bce`, the docs commit, then
+the final fix wave `fix(projects): archive every section child, restore managers, honest
+delete prompt, role check`), CSAAS branch `feat/project-soft-delete` (`605a582`). Knowledge
+`.claude/knowledge/project-soft-delete.md`.
+- **Rollout, each push needing the owner's go-ahead:** (1) merge and push the bot's `main`; the
+  deploy runs `npm run db:migrate` (031) before the restart. (2) merge and push CSAAS `main`
+  (auto-deploys). The column check makes either order safe.
+- **Then a live pass:** delete a scratch project (a clock running on a task, a few task
+  channels), check the archive category and the reply, reactivate it, check channels and
+  overwrites.
+- **Deferred (known limits):** the per-project lock is per process; a restored channel lands
+  below the archive divider until the next `/project-setup`; tasks beyond the 2000-row read are
+  not visited on delete or reactivation.
+  - Concurrent deletes of different projects share the archive categories without a lock
+    (failures are reported, and recoverable).
+  - A meeting's tasks from a project deleted mid-pipeline land in "No project" and are not
+    re-attached on reactivation.
+  - After the bot deploy CSAAS can take up to 5 minutes to notice the `deletedAt` column; its
+    one-time `Could not check granjur.project.deletedAt` warning must be checked in the CSAAS
+    log.
+  - A meeting-mirrored task's approver is not stored on the task row, so reactivation does
+    not give it back its access to that task's channel (the assignee and creator do get it).
+
 ## Owner roadmap, 2026-09-28 — seven sub-projects, in build order (each: spec → plan → build)
 1. **Identity link and access scoping — DEPLOYED (2026-09-29).** Spec
    `docs/superpowers/specs/2026-09-28-identity-link-access-scoping-design.md`, knowledge
@@ -255,9 +280,9 @@ Outstanding work, highest priority first. Move items to `completed.md` (dated) w
      a `/link` code; `d3a0491` — a clocked-in tag on board cards (own clock for everyone,
      other people's for `view_discord_time` holders). Showing teammates' tags to everyone
      would need a CSAAS change; not asked for.
-   - **Not yet done:** a live pass in a browser (clock in on general work, switch to a
-     task, clock out with a note, the Time tab card), and a Discord smoke test of
-     `/clock-in`, a task switch and `/clock-out` on the new service.
+   - **Used live:** the owner reported on 2026-10-01 that the team has been clocking in and
+     out on the site and it works. Still unconfirmed: a Discord smoke test of `/clock-in`, a
+     task switch and `/clock-out` on the new service.
    - **Deferred:**
      - A clock-in with no task uses the caller's first link only, so someone linked in two
        guilds can end up with a second clock running in another guild.

@@ -9,6 +9,9 @@ import {
   renderResult,
   staffOnly,
   clientIdsOf,
+  setupProjectSection,
+  setupOneProject,
+  prepareSectionRun,
 } from './project-setup.js'
 import { ARCHIVE_DIVIDER_NAME } from '../utils/ticketArchive.js'
 
@@ -1173,4 +1176,107 @@ test('renderResult says the order was refreshed and counts the retired tickets',
 
   // Nothing to reorder: the line is not mentioned at all.
   assert.doesNotMatch(renderResult({ name: 'Framework' }, { created: ['x'] }), /Ticket order/)
+})
+
+// ---------------------------------------------------------------------------
+// A soft-deleted project
+// ---------------------------------------------------------------------------
+
+const DELETED_AT = new Date('2026-10-01T09:00:00Z')
+
+/** fakeDb whose project and task lists hide a deleted project unless the read opts in, as the real ones do. */
+function hidingDb({ projects, tasks = [] }) {
+  const db = fakeDb({ projects, tasks })
+  const gone = new Set(projects.filter((p) => p.deletedAt).map((p) => p.id))
+  db.project.findMany = async ({ where }) => {
+    db.calls.push(['project.findMany', where])
+    return projects.filter((p) => where.includeDeleted === true || !p.deletedAt)
+  }
+  db.task.findMany = async ({ where }) => {
+    db.calls.push(['task.findMany', where])
+    return tasks.filter((t) => t.projectId === where.projectId && (where.includeDeleted === true || !gone.has(t.projectId)))
+  }
+  return db
+}
+
+test('a deleted project picked by id is refused, and nothing is built', async () => {
+  const db = hidingDb({ projects: [{ ...PROJECT, deletedAt: DELETED_AT }] })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+  await quiet(() => execute(it, { db, getConfig }))
+  assert.equal(guild.channels.calls.length, 0)
+  assert.equal(guild.roles.calls.length, 0)
+  assert.equal(it.replies.at(-1).content, 'This project is deleted.')
+})
+
+test('all:true builds only live projects', async () => {
+  const db = hidingDb({ projects: [PROJECT, { id: 'p2', name: 'Apollo', docsSlug: 'apollo', guildConfigId: 'g1', deletedAt: DELETED_AT }] })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { all: true } })
+  await quiet(() => execute(it, { db, getConfig }))
+  const content = it.replies.at(-1).content
+  assert.match(content, /\*\*Framework\*\*/)
+  assert.doesNotMatch(content, /Apollo/)
+  assert.ok(!guild.channels.calls.some((c) => /apollo/i.test(c.name)), 'no channel was made for the deleted project')
+})
+
+test("a section rebuild reads its tasks and its siblings with deleted projects included", async () => {
+  const tasks = [{ id: 't1', projectId: 'p1', title: 'Old task', status: 'open', discordChannelId: null }]
+  const db = hidingDb({ projects: [PROJECT], tasks })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { project: 'p1', preview: true } })
+  await quiet(() => execute(it, { db, getConfig }))
+  const sibling = db.calls.find((c) => c[0] === 'project.findMany')
+  const taskRead = db.calls.find((c) => c[0] === 'task.findMany')
+  assert.equal(sibling[1].includeDeleted, true)
+  assert.equal(taskRead[1].includeDeleted, true)
+})
+
+test("a live project whose slug a deleted project still holds is refused, like any slug clash", async () => {
+  const db = hidingDb({ projects: [PROJECT, { id: 'p2', name: 'Framework Old', docsSlug: 'framework', guildConfigId: 'g1', deletedAt: DELETED_AT }] })
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { project: 'p1' } })
+  await quiet(() => execute(it, { db, getConfig }))
+  assert.equal(guild.channels.calls.length, 0)
+  assert.match(it.replies.at(-1).content, /refused: its channel slug `framework` is also used by \*\*Framework Old\*\*/)
+})
+
+test('a project deleted after the walk read it is refused when its turn comes, and nothing is built', async () => {
+  // The walk's list still has it live; the fresh read says deleted.
+  const db = hidingDb({ projects: [{ ...PROJECT, deletedAt: DELETED_AT }] })
+  const guild = fakeGuild()
+  const run = await prepareSectionRun(guild, { botUserId: 'bot1' })
+  const out = await quiet(() => setupProjectSection(guild, { ...PROJECT, deletedAt: null }, { db, cfg: CFG, run }))
+  assert.equal(out.refused, true)
+  assert.equal(out.plan, null)
+  assert.match(out.block, /\*\*Framework\*\* — This project is deleted\. Nothing was changed\./)
+  assert.equal(guild.channels.calls.length, 0)
+  assert.equal(guild.roles.calls.length, 0)
+  assert.ok(!db.calls.some((c) => c[0] === 'project.update'))
+})
+
+test('the all:true walk skips a project deleted mid-walk', async () => {
+  const projects = [{ ...PROJECT }]
+  const db = hidingDb({ projects })
+  // Deleted between the walk's list read and its own turn.
+  const list = db.project.findMany
+  db.project.findMany = async (args) => {
+    const rows = (await list(args)).map((p) => ({ ...p }))
+    if (args.where.includeDeleted !== true) projects[0].deletedAt = DELETED_AT
+    return rows
+  }
+  const guild = fakeGuild()
+  const it = fakeInteraction({ guild, opts: { all: true } })
+  await quiet(() => execute(it, { db, getConfig }))
+  assert.match(it.replies.at(-1).content, /This project is deleted/)
+  assert.equal(guild.channels.calls.length, 0)
+})
+
+test('the reactivation path rebuilds a project the fresh read still shows deleted', async () => {
+  const db = hidingDb({ projects: [{ ...PROJECT, deletedAt: DELETED_AT }] })
+  const guild = fakeGuild()
+  const out = await quiet(() => setupOneProject(guild, { ...PROJECT }, { db, cfg: CFG, botUserId: 'bot1', reactivating: true }))
+  assert.ok(!out.refused)
+  assert.ok(out.result?.category, 'the section was built')
+  assert.ok(guild.channels.calls.length > 0)
 })

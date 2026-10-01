@@ -407,10 +407,13 @@ CREATE TABLE IF NOT EXISTS project (
   discordCategoryId VARCHAR(64) DEFAULT NULL,
   discordRoleId VARCHAR(64) DEFAULT NULL,
   discordChannels JSON DEFAULT NULL,
+  deletedAt DATETIME(3) NULL,
+  deletedBy VARCHAR(64) NULL,
   createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY (guildConfigId, name),
   KEY (guildConfigId),
+  KEY idx_project_guild_deleted (guildConfigId, deletedAt),
   FOREIGN KEY (guildConfigId) REFERENCES guildconfig(id) ON DELETE CASCADE
 );
 

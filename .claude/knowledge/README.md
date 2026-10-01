@@ -83,3 +83,8 @@
   `/analyze-live` text path), a document at `/record start` sent to CSAAS as
   `pre_meeting_notes` (not stored), the `reporting` stage and the notes/report files, and
   the rollout (CSAAS first).
+- [project-soft-delete.md](project-soft-delete.md) — deleting and reactivating a project from
+  `/projects` (built, not deployed): migration 031 and `includeDeleted`, what is hidden and
+  what opts in, the `This project is deleted.` refusals and name/slug reservations, delete and
+  reactivate step by step (clocks, the `🗄 ARCHIVED PROJECTS` categories, kept ids, the
+  per-project lock), the CSAAS cached column check and 409s, the rollout and known limits.

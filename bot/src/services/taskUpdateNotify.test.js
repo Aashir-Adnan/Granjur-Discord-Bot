@@ -803,3 +803,39 @@ test('unblockNotices skips a blocked task that is a client request — the block
     { channelId: 'chA', text: '✅ Blocker **Error handling** is done. This task is no longer blocked.' },
   ])
 })
+
+// --- a soft-deleted project ------------------------------------------------
+
+test("a task in a deleted project gets no new channel, even when it is newly assigned", async () => {
+  const h = harness()
+  const task = { id: h.taskId, title: 'Audit encryption', type: 'feature', status: 'open', assigneeIds: [], discordChannelId: null, projectId: 'pGone' }
+  const db = {
+    project: { findFirst: async ({ where }) => (where.id === 'pGone' ? { id: 'pGone', name: 'Apollo', deletedAt: new Date('2026-10-01T09:00:00Z') } : null) },
+  }
+  const out = await notifyTaskUpdate({
+    client: h.client, guild: h.guild, task, before: task,
+    updates: { assigneeIds: ['11'] }, actorId: '99', db,
+  })
+  assert.equal(out.created, false)
+  assert.equal(out.channelId, null)
+  assert.deepEqual(h.created, [], 'no category and no channel were created')
+})
+
+test('the unblock notice reads blocked tasks and their other blockers with deleted projects included', async () => {
+  const asked = []
+  const tasks = {
+    A: { id: 'A', title: 'Git Sync', status: 'open', discordChannelId: 'chA' },
+    D: { id: 'D', title: 'Other blocker', status: 'in_progress' },
+  }
+  const db = {
+    taskDependency: {
+      findByBlocker: async () => [{ taskId: 'A', blockedByTaskId: 'C' }],
+      findByTask: async () => [{ taskId: 'A', blockedByTaskId: 'C' }, { taskId: 'A', blockedByTaskId: 'D' }],
+    },
+    task: { findByIds: async ({ where }) => { asked.push(where); return where.ids.map((i) => tasks[i]).filter(Boolean) } },
+  }
+  const out = await unblockNotices({ db, guildConfigId: 'g1', blockerTask: { id: 'C', title: 'Error handling', status: 'done' } })
+  assert.equal(out.length, 1)
+  assert.equal(asked.length, 2)
+  assert.ok(asked.every((w) => w.includeDeleted === true))
+})

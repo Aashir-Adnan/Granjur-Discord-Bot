@@ -495,3 +495,62 @@ test('handleConfirm keeps a category whose channel failed to delete, and reports
   assert.ok(!deleteCalls.includes('cat-empty'), `category delete was called: ${deleteCalls}`)
   assert.match(final.content, /Kept 1 category\(ies\) that still had channels\./)
 })
+
+// ---------------------------------------------------------------------------
+// A soft-deleted project: its archived ticket channels and the archive
+// categories are never offered up
+// ---------------------------------------------------------------------------
+
+const DELETED_AT = new Date('2026-10-01T09:00:00Z')
+
+/** seams() whose project and task reads hide a deleted project unless they opt in, as the real ones do. */
+function hidingSeams(projects, tasks) {
+  const gone = new Set(projects.filter((p) => p.deletedAt).map((p) => p.id))
+  const reads = []
+  const db = {
+    userChannel: { findMany: async () => [] },
+    project: {
+      findMany: async ({ where }) => {
+        reads.push(['project', where])
+        return projects.filter((p) => where.includeDeleted === true || !p.deletedAt)
+      },
+    },
+    task: {
+      findMany: async ({ where }) => {
+        reads.push(['task', where])
+        return tasks.filter((t) => where.includeDeleted === true || !gone.has(t.projectId))
+      },
+    },
+  }
+  return { reads, deps: { db, getConfig: async () => CFG } }
+}
+
+async function runHiding(projects, tasks, channels) {
+  const it = fakeInteraction(fakeGuild(channels))
+  const { reads, deps } = hidingSeams(projects, tasks)
+  await execute(it, deps)
+  return { reads, reply: it.replies.at(-1) }
+}
+
+test("an archived ticket channel of a deleted project is protected by id, and so is its archive category", async () => {
+  const archive = category('arch1', '🗄 ARCHIVED PROJECTS')
+  const { reads, reply } = await runHiding(
+    [{ id: 'pGone', name: 'Apollo', guildConfigId: CFG.id, deletedAt: DELETED_AT, discordCategoryId: null }],
+    [{ id: 't1', projectId: 'pGone', discordChannelId: 'tc1' }],
+    [archive, chan('tc1', 'feature-login', { parent: archive })]
+  )
+  assert.match(reply.content, /No leftover channels found/)
+  assert.deepEqual(reads.map(([, w]) => w.includeDeleted), [true, true], 'both protected lists include deleted projects')
+})
+
+test('every archive category is protected by its name prefix, even once all it holds is going', async () => {
+  const first = category('arch1', '🗄 ARCHIVED PROJECTS')
+  const second = category('arch2', '🗄 ARCHIVED PROJECTS 2')
+  const { reply } = await runHiding([], [], [
+    first, chan('stray1', 'old-notes', { parent: first }),
+    second, chan('stray2', 'more-notes', { parent: second }),
+  ])
+  assert.deepEqual(listedForDeletion(reply), ['old-notes', 'more-notes'])
+  assert.deepEqual(categoriesListed(reply), [], 'no archive category is offered up')
+  assert.equal(confirmButtonCount(reply), 2)
+})

@@ -19,6 +19,7 @@ import { resolveTaskRepo, loadProjectLinks } from '../services/taskRepo.js'
 import { CATEGORY_SOFT_CAP } from '../constants.js'
 import { EPHEMERAL } from '../constants.js'
 import { SCOPE_CHOICES, scopeLabel, isValidScope } from '../utils/taskScope.js'
+import { PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
 
 const FLOW_KEY = 'create_task'
 
@@ -1017,6 +1018,12 @@ export async function handleCreate(
     const firstProject = projectId
       ? await dbArg.project.findFirst({ where: { id: projectId } })
       : null
+    // Picked before it was soft-deleted: the pickers hide it now, but this flow
+    // carries the id it was given.
+    if (isDeletedProject(firstProject)) {
+      flowStore.clear(interaction.user.id, guild.id, FLOW_KEY)
+      return respond(interaction, { content: PROJECT_DELETED, components: [], embeds: [] })
+    }
     const fields = {
       type: isFeature ? 'feature' : 'bug',
       title: state.title,

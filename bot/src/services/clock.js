@@ -6,6 +6,7 @@ import db from '../db/index.js'
 import { isLeadershipFor, memberProjectIdsOf } from '../utils/timeAccess.js'
 import { clockableTasks } from '../utils/timeTaskPicker.js'
 import { entryMinutes } from '../utils/timeTracking.js'
+import { PROJECT_DELETED, projectIdIsDeleted } from '../utils/projectDeleted.js'
 
 const NOTE_MAX = 500
 const GENERAL_TITLE = 'General work'
@@ -55,6 +56,7 @@ export async function clockIn({ db: dbArg = db, cfg, guild, discordId, taskId = 
         }).length > 0
       : false
     if (!allowed) throw new ClockError('That task is not available to clock in on.')
+    if (await taskProjectDeleted(dbArg, task.projectId)) throw new ClockError(PROJECT_DELETED)
   }
   const wanted = task ? task.id : null
 
@@ -113,10 +115,29 @@ export async function clockOut({ db: dbArg = db, cfg, guild, discordId, note, me
   return { minutes, task, taskTotalMinutes }
 }
 
-/** Project id -> name for the guild, empty when the lookup fails. */
+/**
+ * Project id -> name for the guild, soft-deleted projects included (a timer
+ * already running on a deleted project's task still names it), empty when the
+ * lookup fails.
+ */
 async function projectNamesOf(dbArg, cfg) {
-  const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id } }).catch(() => [])
+  const projects = await dbArg.project.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true } }).catch(() => [])
   return new Map((projects || []).map((p) => [String(p.id), String(p.name || '')]))
+}
+
+/**
+ * Whether a task's project is soft-deleted, for clock-in and /log-time. A
+ * project that cannot be read counts as not deleted (and is logged), as a
+ * failed read does for the names above: a lookup must never turn clock-in
+ * into a crash.
+ */
+export async function taskProjectDeleted(dbArg, projectId) {
+  try {
+    return await projectIdIsDeleted(dbArg, projectId)
+  } catch (e) {
+    console.error('[clock] project lookup:', e?.message ?? e)
+    return false
+  }
 }
 
 export async function clockStatus({ db: dbArg = db, cfg, guild, discordId, now = new Date() }) {

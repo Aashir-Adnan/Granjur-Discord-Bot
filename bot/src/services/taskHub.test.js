@@ -674,3 +674,63 @@ test('finishing a parent from the details modal while a subtask is open is refus
   assert.equal(db.tasks.find((t) => t.id === 'P').status, 'in_progress')
   assert.deepEqual(db.calls, [])
 })
+
+test("the hub reads a task's blockers by id with deleted projects included, so its blocked state stays right", async () => {
+  const db = fakeDb(fresh(), { deps: [{ taskId: 'H', blockedByTaskId: 'O' }] })
+  const asked = []
+  const byIds = db.task.findByIds
+  db.task.findByIds = async (q) => { asked.push(q.where); return byIds(q) }
+  await showHub(fakeInteraction(), 'H', { db, getConfig })
+  assert.equal(asked.length, 1)
+  assert.equal(asked[0].includeDeleted, true)
+})
+
+// --- a soft-deleted project: the hub refuses its tasks and writes nothing ----
+
+/** fakeDb in which the tasks' project p1 is soft-deleted. */
+function deletedProjectDb(tasks) {
+  const db = fakeDb(tasks)
+  db.project.findFirst = async ({ where }) => (where.id === 'p1' ? { id: 'p1', name: 'Framework', deletedAt: new Date('2026-10-01T09:00:00Z') } : null)
+  return db
+}
+const refusedWith = (payload) => assert.deepEqual(payload, { content: 'This project is deleted.', embeds: [], components: [] })
+
+test('the hub refuses a task whose project is deleted: drawing it, and every uth_ action, write nothing', async () => {
+  const db = deletedProjectDb(fresh())
+  const shown = fakeInteraction()
+  await showHub(shown, 'H', { db, getConfig })
+  refusedWith(shown.sent.edits[0])
+  for (const [customId, values] of [['uth_impl:H', ['done']], ['uth_proj:H', ['p2']], ['uth_block:H', ['O']], ['uth_unblock:H', ['O']]]) {
+    const it = fakeInteraction({ customId, values })
+    await handleHubComponent(it, { db, getConfig, notify })
+    refusedWith(it.sent.edits.at(-1))
+  }
+  const modal = fakeInteraction({ customId: 'uth_basics:H', deferred: false })
+  await handleHubComponent(modal, { db, getConfig, notify })
+  assert.deepEqual(modal.sent.modals, [], 'no edit form is opened')
+  assert.deepEqual(db.calls, [])
+  assert.deepEqual(db.dependencies, [])
+  assert.deepEqual(db.activity, [])
+})
+
+test('the hub modals and the subtask checklist refuse a task whose project is deleted, and write nothing', async () => {
+  const db = deletedProjectDb(fresh())
+  const edit = fakeInteraction({ customId: 'ut_edit:H', fields: detailsFields({ status: 'done' }) })
+  await handleEditSubmit(edit, { db, getConfig, notify })
+  refusedWith(edit.sent.edits.at(-1))
+  const counts = fakeInteraction({ customId: 'ut_counts:H', fields: { fields: new Map(), getTextInputValue: () => '5' } })
+  await handleCountsSubmit(counts, { db, getConfig, notify })
+  refusedWith(counts.sent.edits.at(-1))
+  assert.deepEqual(db.calls, [])
+
+  const hdb = deletedProjectDb(hier())
+  let applied = 0
+  const toggle = fakeInteraction({ customId: 'uths_toggle:P', values: ['S1', 'S2'] })
+  await handleSubtasksComponent(toggle, { db: hdb, getConfig, notify, apply: async () => { applied++ } })
+  refusedWith(toggle.sent.edits.at(-1))
+  const add = fakeInteraction({ customId: 'ut_sub:P', fields: subFields() })
+  await handleSubtaskSubmit(add, { db: hdb, getConfig, notify })
+  refusedWith(add.sent.edits.at(-1))
+  assert.equal(applied, 0)
+  assert.deepEqual(hdb.calls, [])
+})

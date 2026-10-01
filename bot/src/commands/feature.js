@@ -17,6 +17,7 @@ import * as flowStore from '../flows/store.js'
 import { getOrCreateCategory } from '../utils/categories.js'
 import { CATEGORY_BOLD_NAMES } from '../constants.js'
 import { TEXT_ALLOW } from '../utils/textAllow.js'
+import { PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
 import { EPHEMERAL } from '../constants.js'
 
 const SELECT_REPOS_PROJECTS_STEP = 1
@@ -309,6 +310,11 @@ export async function handleCreate(interaction) {
     const firstRepoId = state.repositoryIds?.[0] ?? null
     // Tasks belong to the real `project` table, not the empty `projectschema`.
     const firstProject = state.projectIds?.[0] ? await db.project.findFirst({ where: { id: state.projectIds[0] } }) : null
+    // Picked before it was soft-deleted: the select hides it now, but this flow carries its id.
+    if (isDeletedProject(firstProject)) {
+      flowStore.clear(interaction.user.id, guild.id, 'feature')
+      return interaction.editReply({ content: PROJECT_DELETED, components: [], embeds: [] }).catch(() => {})
+    }
     const projectId = firstProject?.id ?? null
     const projectName = firstProject?.name ?? null
 

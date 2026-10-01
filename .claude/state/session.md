@@ -8,6 +8,13 @@ merged and deployed. Sub-project 7 (tasks from a document, a document at `/recor
 meeting notes as files) went live 2026-10-01.
 
 ## State
+- Project soft delete: BUILT, NOT MERGED, NOT DEPLOYED. Bot `feat/project-soft-delete`
+  (`2c6e5e3`, `1ea4336`, `725f77a`, `833a0cd`, `f160bce`, the docs commit `5dbd9e3`, then the
+  final fix wave `fix(projects): archive every section child, restore managers, honest delete
+  prompt, role check`), CSAAS `feat/project-soft-delete` (`605a582`). Suites green: bot 1832
+  tests, `ℹ fail 0` (after the final fix wave); CSAAS
+  `soft-delete.test.js` OK, loop no `FAILED`, jest 5 passed. Rollout bot then CSAAS, each push
+  needs the owner's go-ahead (`backlog.md`). Knowledge `project-soft-delete.md`.
 - Sub-project 7: CSAAS `1c9eb0c` (auto-deploys; not observed); bot `4cf460d`, whose deploy
   failed at `git pull` because the VM's `package-lock.json` had npm-written local changes;
   `bfb60af` fixed `.github/workflows/deploy.yml` (`git checkout -- package-lock.json` before
@@ -16,6 +23,8 @@ meeting notes as files) went live 2026-10-01.
 - Also this session: a bug no longer needs a repository (bot `830ef92`, site `1e7c357`).
 
 ## Open items
+- Owner: decide on merging and pushing project soft delete (bot first, then CSAAS), then a live
+  delete/reactivate pass on a scratch project.
 - Owner: live passes — `/tasks-from-doc` (a small .md, then a PDF), `/record start document:`,
   a finished meeting's notes and report files; and the earlier ones still listed in
   `backlog.md` (site clock, task import, Discord clock smoke test, a bug with no repository).
@@ -27,7 +36,7 @@ meeting notes as files) went live 2026-10-01.
   (neither is from this work; left for the owner).
 
 ## Knowledge files touched this session
-- `.claude/knowledge/doc-tasks.md` (new; deploy gotcha added), `.claude/knowledge/README.md`,
+- `.claude/knowledge/project-soft-delete.md` (new), `.claude/knowledge/doc-tasks.md` (new; deploy gotcha added), `.claude/knowledge/README.md`,
   `.claude/knowledge/csaas-meeting-workflow-integration.md`
 
 ## Next steps

@@ -2,6 +2,41 @@
 
 Finished tasks, newest first. Format: `## YYYY-MM-DD — Title` + summary + files/commits.
 
+## 2026-10-01 — Project soft delete: final fix wave (NOT MERGED, NOT DEPLOYED)
+
+After the final review, one bot commit on `feat/project-soft-delete`, `fix(projects): archive
+every section child, restore managers, honest delete prompt, role check`: delete sweeps every
+other channel left in the section category into the archive and records the ids
+(`discordChannels.archived`), reactivation moves them back with the category's overwrites and
+clears the list; a client request channel gets its project's client managers back on
+reactivation; the Delete picker says section channels are deleted with their messages;
+the confirm modal and Reactivate button re-run the `/projects` role gate; `/project-setup`
+refuses a project deleted mid-walk (only `reactivateProject` passes `reactivating: true`);
+the `/projects` description and help mention Delete and Reactivate. Files:
+`services/projectLifecycle.js`, `utils/projectStore.js`, `services/projectSection.js`,
+`commands/projects.js`, `commands/project-setup.js`, `commands/index.js`,
+`config/commands.js`, `config/command-config.json`, their tests, and the knowledge file.
+Suite: bot `npm test` 1832 tests, pass 1832, `ℹ fail 0`.
+
+## 2026-10-01 — Project soft delete (BUILT, NOT MERGED, NOT DEPLOYED)
+
+Delete project and Reactivate project in `/projects`. A deleted project and its tasks are hidden
+everywhere by default, writes to them are refused (`This project is deleted.`, 409 on internal
+routes), and its task channels are archived into `🗄 ARCHIVED PROJECTS`; nothing is removed from
+the database. Knowledge `.claude/knowledge/project-soft-delete.md` (new). Rollout when approved:
+bot first (migration 031 runs in the deploy), then CSAAS.
+
+- **Bot** (`feat/project-soft-delete`): `3b155bc` spec, `e2432f6` plan; `2c6e5e3` the marker
+  (migration 031) and default hiding; `1ea4336` + `725f77a` refusals, reservations, matching,
+  docs, cleanup, `/close-feature`/`/resolve-bug`, the task hub, `task.count`; `833a0cd` +
+  `f160bce` delete and reactivate (`services/projectLifecycle.js`); plus the docs commit
+  `docs: project soft delete — knowledge and state`.
+- **CSAAS** (`feat/project-soft-delete`): `605a582` hide deleted projects and their tasks,
+  refuse writes (`DiscordTasks/projectDeletedClause.js`).
+- **Suites:** bot `npm test` 1815 tests, pass 1815, `ℹ fail 0`; CSAAS `soft-delete.test.js` all
+  assertions passed, the `discord-tasks-test/*.test.js` loop printed no `FAILED`, jest
+  `portalAnyUrddPermission.test.js` 5 passed.
+
 ## 2026-10-01 — Tasks from a document, a meeting-start document, meeting notes as files (MERGED AND DEPLOYED 2026-10-01)
 
 Merged and pushed 2026-10-01, CSAAS first: CSAAS `1c9eb0c` (auto-deploys; not observed), bot

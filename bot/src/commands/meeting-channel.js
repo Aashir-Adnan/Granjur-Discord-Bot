@@ -6,6 +6,7 @@ import { projectFromChannel } from '../services/projectSection.js'
 import { projectChoices } from './update-task.js'
 import { CATEGORY_SOFT_CAP } from '../constants.js'
 import { MANAGED_ROLES } from '../utils/roleSync.js'
+import { PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
 
 const CATEGORY_MEETINGS = '📋 Meetings'
 
@@ -71,6 +72,7 @@ async function resolveProject(interaction, cfg, dbArg) {
         refusal: `No project matches **${raw.slice(0, 80)}**. Start typing a project name and pick one from the list.`,
       }
     }
+    if (isDeletedProject(row)) return { refusal: PROJECT_DELETED }
     return { project: row }
   }
   let projects

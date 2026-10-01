@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execute } from './resolve-bug.js'
 
-function harness({ ticket = { id: 'T1', title: 'Crash on save', status: 'pending', projectId: 'p1', discordChannelId: 'c1', guildConfigId: 'g1' }, attachment = { url: 'https://x/fix.md', name: 'fix.md', contentType: 'text/markdown' } } = {}) {
+function harness({ ticket = { id: 'T1', title: 'Crash on save', status: 'pending', projectId: 'p1', discordChannelId: 'c1', guildConfigId: 'g1' }, attachment = { url: 'https://x/fix.md', name: 'fix.md', contentType: 'text/markdown' }, project = { id: 'p1', deletedAt: null } } = {}) {
   const log = []
   const channel = { id: 'c1', send: async (p) => { log.push(['send', p.content]) }, delete: async () => { log.push(['delete']) } }
   const interaction = {
@@ -16,6 +16,7 @@ function harness({ ticket = { id: 'T1', title: 'Crash on save', status: 'pending
       findFirst: async ({ where }) => (where.discordChannelId === 'c1' ? ticket : null),
       update: async (a) => { log.push(['update', a.data.status]) },
     },
+    project: { findFirst: async ({ where }) => (project && where.id === project.id ? project : null) },
     ticketDoc: { findFirst: async () => ({ id: 'd1' }), update: async () => {}, create: async () => {} },
   }
   const move = async (a) => { log.push(['move', a.task.id, a.before.status, a.updates.status, a.db === db, a.guild?.id]); return { moved: true, archived: true, reason: null } }
@@ -105,4 +106,17 @@ test('no attachment: asks for one, nothing written or moved', async () => {
   await execute(h.interaction, { db: h.db, move: h.move })
   assert.match(h.interaction.replies[0].content, /attach/)
   assert.deepEqual(h.log, [])
+})
+
+test("a ticket of a deleted project is refused: nothing is written, synced or moved, so its archived channel is never stamped", async () => {
+  const h = harness({ project: { id: 'p1', deletedAt: new Date('2026-10-01T09:00:00Z') } })
+  let synced = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => { throw new Error('the attachment must not be read') }
+  try {
+    await execute(h.interaction, { db: h.db, move: h.move, syncIssue: async () => { synced++; return { line: null } } })
+  } finally { globalThis.fetch = realFetch }
+  assert.deepEqual(h.interaction.replies, [{ content: 'This project is deleted.' }])
+  assert.deepEqual(h.log, [], 'no update, no channel post, no move')
+  assert.equal(synced, 0)
 })

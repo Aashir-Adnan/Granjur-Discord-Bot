@@ -14,6 +14,7 @@ import { holdersOf, idList } from '../utils/taskLabel.js'
 import { createTaskTicketChannel, dmTaskAssignees } from './taskTicketChannel.js'
 import { isTicketChannel } from '../utils/taskChannelName.js'
 import { isFinished } from '../utils/taskHierarchy.js'
+import { isDeletedProject } from '../utils/projectDeleted.js'
 import { openBlockers, TERMINAL_STATUSES, unblockNotice } from '../utils/taskDeps.js'
 import { formatDuration } from '../utils/timeTracking.js'
 import { requestStatusLabel } from '../utils/clientRequestView.js'
@@ -125,7 +126,7 @@ export function ownsChannel(taskId, channel, storedChannelId = null) {
 export async function unblockNotices({ db: dbArg = db, guildConfigId, blockerTask }) {
   const holding = await dbArg.taskDependency.findByBlocker({ where: { blockedByTaskId: blockerTask.id } })
   if (!holding.length) return []
-  const blocked = await dbArg.task.findByIds({ where: { guildConfigId, ids: holding.map((r) => r.taskId) } })
+  const blocked = await dbArg.task.findByIds({ where: { guildConfigId, ids: holding.map((r) => r.taskId), includeDeleted: true } })
   const out = []
   for (const t of blocked) {
     if (!t.discordChannelId) continue
@@ -133,7 +134,7 @@ export async function unblockNotices({ db: dbArg = db, guildConfigId, blockerTas
     // client in it, so that is another task's title landing in front of them.
     if (t.requestedBy) continue
     const rows = await dbArg.taskDependency.findByTask({ where: { taskId: t.id } })
-    const others = await dbArg.task.findByIds({ where: { guildConfigId, ids: rows.map((r) => r.blockedByTaskId) } })
+    const others = await dbArg.task.findByIds({ where: { guildConfigId, ids: rows.map((r) => r.blockedByTaskId), includeDeleted: true } })
     const byId = Object.fromEntries(others.map((o) => [o.id, o]))
     // The blocker is terminal now; count what else is still holding this task.
     const remaining = openBlockers(t.id, rows, byId).filter((o) => o.id !== blockerTask.id).length
@@ -187,15 +188,18 @@ export async function notifyTaskUpdate({ client, guild, task, before, updates, a
   // update. Reopening it, or finishing it in the update that first assigns it,
   // still creates the channel.
   const staysFinished = isFinished(before?.status ?? task.status) && isFinished(updates?.status ?? task.status)
-  if (!channel && !isSubtask && holders.length && !staysFinished) {
-    let project = null
-    if (task.projectId) {
-      try {
-        project = await dbArg.project.findFirst({ where: { id: task.projectId } })
-      } catch (e) {
-        console.warn('[taskUpdate] project lookup failed:', e?.message || e)
-      }
+  const wantsChannel = !channel && !isSubtask && holders.length > 0 && !staysFinished
+  let project = null
+  if (wantsChannel && task.projectId) {
+    try {
+      project = await dbArg.project.findFirst({ where: { id: task.projectId } })
+    } catch (e) {
+      console.warn('[taskUpdate] project lookup failed:', e?.message || e)
     }
+  }
+  // A soft-deleted project's tasks never get a new channel: its section is
+  // gone and its task channels are archived until it is reactivated.
+  if (wantsChannel && !isDeletedProject(project)) {
     try {
       const made = await createTaskTicketChannel(guild, {
         taskId: task.id,

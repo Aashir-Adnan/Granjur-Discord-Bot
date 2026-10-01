@@ -6,6 +6,7 @@ import { projectFromChannel, CLIENT_SECTION_KEYS, storedChannels } from '../serv
 import { CLIENT_TEXT_ALLOW_OBJ, CLIENT_VOICE_ALLOW_OBJ } from '../services/clientAccess.js'
 import { ensureMembersPanel, postMembershipChange } from '../services/projectMembersPanel.js'
 import { isClientRole } from '../utils/clientRoles.js'
+import { PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
 
 const ROLE_LABEL = {
   lead: 'Lead', developer: 'Developer', backend_developer: 'Backend Developer',
@@ -81,6 +82,10 @@ async function resolveProject(interaction, cfg, dbArg) {
   const row = await dbArg.project.findFirst({ where: { id: raw } }).catch(() => null)
   if (!row || row.guildConfigId !== cfg.id) {
     await interaction.editReply({ content: `No project matches **${raw.slice(0, 80)}**. Start typing a project name and pick one from the list.` })
+    return null
+  }
+  if (isDeletedProject(row)) {
+    await interaction.editReply({ content: PROJECT_DELETED })
     return null
   }
   return row

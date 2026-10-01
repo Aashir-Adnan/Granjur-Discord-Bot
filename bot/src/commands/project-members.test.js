@@ -611,3 +611,13 @@ test('demoting a client manager to a plain client closes the request channels bu
   assert.deepEqual(h.deletes, [], 'still a client: the support pair stays')
   assert.deepEqual(h.roleRemoves, [], 'was never a role holder — prior role is a client role, so no revoke')
 })
+
+test('execute with a deleted project refuses for every subcommand, and nothing is written', async () => {
+  for (const sub of ['add', 'remove', 'list']) {
+    const db = fakeDb({ project: { ...PROJECT, deletedAt: new Date('2026-10-01T09:00:00Z') } })
+    const it = fakeInteraction({ sub, opts: { project: 'proj1' }, users: { member: { id: 'u2', bot: false } } })
+    await execute(it, { db, getConfig })
+    assert.deepEqual(db.calls, [], `${sub}: nothing written`)
+    assert.equal(it.replies[0].content, 'This project is deleted.')
+  }
+})

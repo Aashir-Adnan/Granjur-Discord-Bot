@@ -14,6 +14,7 @@ import db, { getOrCreateGuildConfig } from '../db/index.js'
 import { MANAGED_ROLES } from '../utils/roleSync.js'
 import { cut } from '../services/projectSection.js'
 import { setupOneProject } from './project-setup.js'
+import { PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
 
 const REPLY_LIMIT = 2000
 
@@ -47,7 +48,9 @@ export const data = new SlashCommandBuilder()
  * @returns {Promise<{project: object|null, ambiguous?: string[]}>}
  */
 async function findProject(dbArg, cfg, name) {
-  const rows = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })) ?? []
+  // Soft-deleted projects included, so a deleted one is found — and refused —
+  // by its name however it is typed, rather than reported as missing.
+  const rows = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true } })) ?? []
   const matches = rows.filter((p) => loose(p?.name) === loose(name))
   // Two projects the database cannot tell apart: naming one would be a guess.
   if (matches.length > 1) return { project: null, ambiguous: matches.map((p) => String(p?.name ?? p?.id)) }
@@ -94,6 +97,7 @@ export async function execute(
       content: `No project named **${cut(projectName, 100)}**. Add it with **/projects** → Add project — a new project gets its role and private section straight away.`,
     })
   }
+  if (isDeletedProject(project)) return interaction.editReply({ content: PROJECT_DELETED })
 
   try {
     const { block, result, refused } = await setup(guild, project, {

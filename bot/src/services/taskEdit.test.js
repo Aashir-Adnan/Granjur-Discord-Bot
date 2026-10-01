@@ -75,3 +75,15 @@ test('a Discord actor records its own id on blocker rows, as before', async () =
   await applyDependencyChange({ db, cfg, task, blockedById: 'B', actorId: 'u-discord' })
   assert.deepEqual(db.log, [['dep.add', 'B', 'u-discord'], ['activity', 'u-discord', null, 'blocked_by']])
 })
+
+// A blocker whose project is soft-deleted is still found by id (includeDeleted),
+// so a dependency on it can still be added and removed by id.
+test('blocker lookups by id see a task whose project is deleted', async () => {
+  const db = fakeDb()
+  const asked = []
+  const byIds = db.task.findByIds
+  db.task.findByIds = async (q) => { asked.push(q.where); return byIds(q) }
+  await applyDependencyChange({ db, cfg, task, blockedById: 'B', unblockId: 'C', actorId: 'u1' })
+  assert.equal(asked.length, 2)
+  assert.ok(asked.every((w) => w.includeDeleted === true), 'both the block and the unblock lookups opt in')
+})

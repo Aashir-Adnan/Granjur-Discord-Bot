@@ -143,7 +143,7 @@ function fakeDb(tasks) {
       findFirst: async ({ where }) => tasks.find((t) => t.id === where.id) ?? null,
       update: async (a) => { calls.push(['update', a]); return null },
     },
-    project: { findMany: async () => projects },
+    project: { findMany: async () => projects, findFirst: async ({ where }) => projects.find((p) => p.id === where.id) ?? null },
     taskActivity: { add: async ({ data }) => { activity.push(data) } },
     taskDependency: { findManyForGuild: async () => [], findByTask: async () => [], add: async () => ({}), remove: async () => ({ removed: 0 }) },
   }

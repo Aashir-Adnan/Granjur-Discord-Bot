@@ -48,7 +48,7 @@ function fakeDb({ entries = [], tasks = [HELD] } = {}) {
       },
     },
     task: { findFirst: async ({ where }) => tasks.find((t) => t.id === where.id) ?? null, findMany: async () => tasks },
-    project: { findMany: async () => [] },
+    project: { findMany: async () => [], findFirst: async () => null },
     projectMember: { findByMember: async () => [{ projectId: 'p1' }] },
   }
 }
@@ -228,4 +228,13 @@ test('autocomplete filters by what was typed and never exceeds 25 choices', asyn
   const some = fakeInteraction({}, { focused: 'Task 3' })
   await clockInAutocomplete(some, { db, getConfig })
   assert.ok(some.responses[0].slice(1).every((c) => /Task 3/.test(c.name)))
+})
+
+test('clock-in on a task in a deleted project says so, and starts nothing', async () => {
+  const db = fakeDb()
+  db.project.findFirst = async ({ where }) => (where.id === 'p1' ? { id: 'p1', name: 'Alpha', deletedAt: new Date('2026-09-30T09:00:00Z') } : null)
+  const it = fakeInteraction({ task: 'H' })
+  await clockIn(it, { db, getConfig })
+  assert.deepEqual(db.calls, [])
+  assert.equal(it.replies[0].content, 'This project is deleted.')
 })

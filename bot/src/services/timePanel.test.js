@@ -535,3 +535,12 @@ test('a failing save says so and does not record activity', async () => {
   assert.match(noticeOf(it), /❌/)
   assert.deepEqual(db.s.activity, [])
 })
+
+test('task titles are read with deleted projects included, so time on a deleted project keeps its title', async () => {
+  const db = fakeDb()
+  let asked
+  const orig = db.task.findByIds
+  db.task.findByIds = async (q) => { asked = q; return orig(q) }
+  await showTimePanel(fakeInteraction(), { ownerId: 'u1' }, { db, getConfig, now: NOW })
+  assert.equal(asked.where.includeDeleted, true)
+})

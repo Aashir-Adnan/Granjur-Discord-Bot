@@ -195,3 +195,12 @@ test('the mover is not called without a status change, and a mover that throws d
     assert.deepEqual(out.placement, { moved: false, archived: null, reason: 'error' })
   } finally { console.error = real }
 })
+
+test('a blocker whose project is deleted still counts in the blocker warning', async () => {
+  const task = { id: 'A', guildConfigId: 'g1', title: 'Git Sync', status: 'open' }
+  const db = fakeDb({ deps: [{ taskId: 'A', blockedByTaskId: 'B' }] })
+  // As the real query does: a task of a deleted project comes back only with includeDeleted.
+  db.task.findByIds = async ({ where }) => (where.includeDeleted === true ? [{ id: 'B', title: 'Router fix', status: 'open' }] : [])
+  const out = await applyTaskUpdate({ db, client, task, updates: { status: 'in_progress' }, actor: { discordId: '55' }, notify: async () => ({ channelId: null, created: false, dmed: [] }) })
+  assert.match(out.warning, /Still blocked by: \*\*Router fix\*\*/)
+})

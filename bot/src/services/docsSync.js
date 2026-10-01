@@ -237,8 +237,13 @@ async function ensureSource(guildConfigId) {
   return db.docSource.upsert({ guildConfigId, data: DEFAULT_SOURCE })
 }
 
-async function projectsFor(guildConfigId) {
-  const rows = await db.project.findMany({ where: { guildConfigId } })
+/**
+ * Every project that can own pages, soft-deleted ones included: attribution is
+ * recomputed on every sync, and leaving a deleted project out would unhook its
+ * pages (projectId → null), so reactivating it would not bring its docs back.
+ */
+export async function projectsFor(guildConfigId, dbArg = db) {
+  const rows = await dbArg.project.findMany({ where: { guildConfigId, includeDeleted: true } })
   return rows.map((p) => ({
     id: p.id,
     docsSlug: p.docsSlug || slugify(p.name),
@@ -251,10 +256,10 @@ async function projectsFor(guildConfigId) {
  * Called right after a project is created so the manager's next /docs is
  * correct without waiting for — or forcing — a sync.
  */
-export async function reattributeGuildDocs(guildConfigId) {
-  const rows = await db.docPage.listIndexFull({ guildConfigId })
-  const projects = await projectsFor(guildConfigId)
-  return reattribute({ guildConfigId, rows, projects, database: db })
+export async function reattributeGuildDocs(guildConfigId, { db: dbArg = db } = {}) {
+  const rows = await dbArg.docPage.listIndexFull({ guildConfigId })
+  const projects = await projectsFor(guildConfigId, dbArg)
+  return reattribute({ guildConfigId, rows, projects, database: dbArg })
 }
 
 /**

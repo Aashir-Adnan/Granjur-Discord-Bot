@@ -30,6 +30,7 @@ import {
 } from '../services/projectSection.js'
 import { ensureMembersPanel } from '../services/projectMembersPanel.js'
 import { isClientRole } from '../utils/clientRoles.js'
+import { PROJECT_DELETED, isDeletedProject } from '../utils/projectDeleted.js'
 
 /** Discord's hard limit on a message. */
 const REPLY_LIMIT = 2000
@@ -447,6 +448,11 @@ async function pickProjects(interaction, cfg, dbArg, { all, picked }) {
     })
     return null
   }
+  // Reactivation rebuilds a section through `setupOneProject`, never through here.
+  if (isDeletedProject(row)) {
+    await interaction.editReply({ content: PROJECT_DELETED })
+    return null
+  }
   return [row]
 }
 
@@ -509,7 +515,7 @@ export async function prepareSectionRun(guild, { preview = false, botUserId = nu
  * @param {{db: object, cfg: {id: string}, run: Awaited<ReturnType<typeof prepareSectionRun>>}} deps
  * @returns {Promise<{block: string, plan: object, result?: object, roleSync?: object}>}
  */
-export async function setupProjectSection(guild, project, { db: dbArg, cfg, run }) {
+export async function setupProjectSection(guild, project, { db: dbArg, cfg, run, reactivating = false }) {
   const { preview, fetchFailure, rolesFetched = false, nameFor, botUserId, adoptRole = false } = run
 
   // Read fresh, per project, and never from the list the walk started with.
@@ -517,7 +523,25 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   // project A stores its brand-new category id partway through the walk, so a
   // list loaded before the walk would let project B adopt that category by
   // name, and the slug check below would miss a project added mid-run.
-  const siblings = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id } })) ?? []
+  //
+  // Soft-deleted projects included: a deleted project still holds its slug,
+  // and any stored ids it still carries are claimed. A just-reactivated project
+  // (un-marked before this runs) is read here like any other.
+  const siblings = (await dbArg.project.findMany({ where: { guildConfigId: cfg.id, includeDeleted: true } })) ?? []
+
+  // The project's own row, from that same fresh read. Deleted since the walk
+  // read it: building now would pull its archived task channels back out of the
+  // archive into a new section nobody asked for. Only the reactivation path
+  // (`reactivateProject`, through `setupOneProject`) may build it.
+  const self = siblings.find((p) => p && p.id === project.id) ?? project
+  if (!reactivating && isDeletedProject(self)) {
+    logWarnings(project, ['refused: the project was deleted, so nothing was changed.'])
+    return {
+      plan: null,
+      refused: true,
+      block: `**${project?.name}** — ${PROJECT_DELETED} Nothing was changed.`,
+    }
+  }
   const slug = projectSlug(project)
   const clashes = siblings.filter((p) => p && p.id !== project.id && projectSlug(p) === slug)
   if (clashes.length) {
@@ -546,9 +570,11 @@ export async function setupProjectSection(guild, project, { db: dbArg, cfg, run 
   }
   const claimedIds = claimedSectionIds(siblings, project.id)
 
+  // Every task of this project, whatever the project's state: a rebuild right
+  // after reactivation must see (and move back) all of its task channels.
   const tasks =
     (await dbArg.task.findMany({
-      where: { guildConfigId: cfg.id, projectId: project.id },
+      where: { guildConfigId: cfg.id, projectId: project.id, includeDeleted: true },
       take: TASK_LIMIT,
     })) ?? []
   // `taskFindMany` orders by `createdAt DESC`, so a project past the limit
@@ -726,11 +752,13 @@ async function adoptionPreview(dbArg, project, role, nameFor) {
  * project must never be able to take a role off somebody or show a new section
  * to holders of an unrelated role that happens to share its name.
  *
- * @param {{db: object, cfg: {id: string}, botUserId?: string|null}} deps
+ * @param {{db: object, cfg: {id: string}, botUserId?: string|null, reactivating?: boolean}} deps
+ *   `reactivating` is for `reactivateProject` alone: it builds the section even
+ *   if the fresh read still shows the project deleted.
  */
-export async function setupOneProject(guild, project, { db: dbArg, cfg, botUserId = null }) {
+export async function setupOneProject(guild, project, { db: dbArg, cfg, botUserId = null, reactivating = false }) {
   const run = await prepareSectionRun(guild, { preview: false, botUserId, adoptRole: false })
-  return setupProjectSection(guild, project, { db: dbArg, cfg, run })
+  return setupProjectSection(guild, project, { db: dbArg, cfg, run, reactivating })
 }
 
 /**

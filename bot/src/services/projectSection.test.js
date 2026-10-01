@@ -15,7 +15,9 @@ import {
   projectSlug,
   DIVIDER_ROLE_ALLOW,
   DIVIDER_ROLE_DENY,
+  storedChannels,
 } from './projectSection.js'
+import { archivedChannelIds } from '../utils/projectStore.js'
 
 const project = { id: 'p1', name: 'Framework', docsSlug: 'framework' }
 const empty = { roleId: null, roleCandidate: null, rolesFetched: true, categoryId: null, categoryName: null, categoryChannelCount: 0, channels: {}, tasks: [], takenNames: new Set() }
@@ -1636,6 +1638,23 @@ test('claimedSectionIds skips the project being set up and survives a JSON strin
     null,
   ]
   assert.deepEqual([...claimedSectionIds(rows, 'p1')].sort(), ['cOther', 'mOther'])
+})
+
+test('a deleted project’s `archived` list is never read as a section channel, but its ids stay claimed', () => {
+  const row = { id: 'p2', discordCategoryId: null, discordChannels: { members: 'm2', archived: ['a1', 'a2'] } }
+  assert.deepEqual(storedChannels(row), { members: 'm2' }, 'no array where a channel id belongs')
+  assert.deepEqual(storedChannels({ discordChannels: '{"archived":["a1"]}' }), {})
+  assert.deepEqual(archivedChannelIds(row), ['a1', 'a2'])
+  assert.deepEqual(archivedChannelIds({ discordChannels: '{"archived":["a3"],"members":"m"}' }), ['a3'])
+  assert.deepEqual(archivedChannelIds({ discordChannels: { archived: 'not-a-list' } }), [])
+  assert.deepEqual(archivedChannelIds({ discordChannels: null }), [])
+  // /cleanup protects what claimedSectionIds names: an archived meeting voice
+  // channel must not be offered for deletion.
+  assert.deepEqual([...claimedSectionIds([row], 'p1')].sort(), ['a1', 'a2', 'm2'])
+  // The observer never sees the list as a section key.
+  const guild = { channels: { cache: new Map() }, roles: { cache: new Map() } }
+  const observed = observeProjectSection(guild, { ...project, ...row, id: 'p1' }, [], { rolesFetched: true })
+  assert.ok(!Object.keys(observed.channels).includes('archived'))
 })
 
 test('projectSlug is the EFFECTIVE slug: the column, else one from the name', () => {

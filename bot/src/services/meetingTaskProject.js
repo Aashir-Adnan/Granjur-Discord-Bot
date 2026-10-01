@@ -25,9 +25,13 @@ export async function loadProjectContext(db, job) {
       db.repository.findMany({ where: { guildConfigId: job.guildConfigId } }),
       db.projectRepos.findMany({ where: {} }),
     ])
+    // Live projects only (the default read hides a soft-deleted one), and only
+    // their repository links: a repository linked to a deleted project must
+    // not resolve to it through `matchProject`'s repository-name rule.
     ctx.projects = projects || []
+    const live = new Set(ctx.projects.map((p) => String(p.id)))
     ctx.repos = repos || []
-    ctx.links = links || []
+    ctx.links = (links || []).filter((l) => !l?.project_id || live.has(String(l.project_id)))
   } catch (e) {
     console.warn('[meetingPipeline] project/repo lookup failed:', e?.message || e)
   }

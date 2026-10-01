@@ -293,3 +293,14 @@ test('autocomplete offers the guild projects without the detach choice', async (
   await autocomplete(ix, { db, getConfig: async () => CFG })
   assert.deepEqual(responded, [{ name: 'Apollo', value: 'p1' }])
 })
+
+test('a deleted project is refused ephemerally, before any download, and nothing is created', async () => {
+  const ix = fakeInteraction({ values: { project: 'p1' } })
+  const db = fakeDb({ projects: [{ id: 'p1', name: 'Apollo', guildConfigId: 'cfg1', deletedAt: new Date('2026-10-01T09:00:00Z') }] })
+  let downloaded = false
+  await execute(ix, deps(db, { download: async () => { downloaded = true; return Buffer.from('x') } }))
+  assertRefused(ix, 'This project is deleted.')
+  assert.equal(downloaded, false)
+  assert.equal(db.calls.meeting.length, 0)
+  assert.equal(db.calls.job.length, 0)
+})

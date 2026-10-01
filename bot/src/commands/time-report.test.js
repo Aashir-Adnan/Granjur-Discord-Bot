@@ -437,3 +437,17 @@ test('a list of 10 or fewer lines that is too long still keeps a truthful tail',
   assert.ok(m)
   assert.equal(Number(m[1]), N - lines.length)
 })
+
+test('time logged on a deleted project still reports under its name: the task and project reads include deleted ones', async () => {
+  const db = fakeDb({
+    entries: [entry({ taskId: 'H', discordId: 'u1', minutes: 90 })],
+    tasks: [{ id: 'H', title: 'My feature', projectId: 'pGone' }],
+    projects: [{ id: 'pGone', name: 'Apollo', deletedAt: new Date('2026-09-30T09:00:00Z') }],
+  })
+  const it = fakeInteraction({ project: 'pGone' }, { member: ADMIN })
+  await execute(it, { db, getConfig, now: NOW })
+  assert.equal(db.reads.find((r) => r[0] === 'task.findByIds')[1].where.includeDeleted, true)
+  assert.equal(db.reads.find((r) => r[0] === 'project.findMany')[1].where.includeDeleted, true)
+  assert.match(shown(it), /Apollo/)
+  assert.match(shown(it), /1h 30m/)
+})

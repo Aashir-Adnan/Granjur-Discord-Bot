@@ -484,3 +484,44 @@ test('execute: a parent whose subtasks are all finished can be finished', async 
   await execute(it, { db, notify: fakeNotify(), getConfig })
   assert.equal(kinds(db)[0], 'update')
 })
+
+// ---------------------------------------------------------------------------
+// A soft-deleted project: its tasks cannot be edited, and nothing moves into it
+// ---------------------------------------------------------------------------
+
+const DELETED_PROJECT = { id: 'pGone', name: 'Apollo', guildConfigId: 'g1', deletedAt: new Date('2026-10-01T09:00:00Z') }
+const withDeletedProject = (db) => {
+  db.project.findFirst = async ({ where }) => (where.id === 'pGone' ? DELETED_PROJECT : null)
+  return db
+}
+
+test('execute: a task in a deleted project is refused, and nothing is written', async () => {
+  const db = withDeletedProject(fakeDb({ tasks: [{ ...A, projectId: 'pGone' }, B] }))
+  const notify = fakeNotify()
+  const it = fakeInteraction({ task: 'A', status: 'in_progress', blocked_by: 'B' })
+  await execute(it, { db, notify, getConfig })
+  assert.equal(it.replies[0].content, 'This project is deleted.')
+  assert.deepEqual(kinds(db), [])
+  assert.equal(notify.seen.length, 0)
+})
+
+test('execute: moving a task into a deleted project is refused, and nothing is written', async () => {
+  const db = withDeletedProject(fakeDb({ tasks: [A] }))
+  const it = fakeInteraction({ task: 'A', project: 'pGone' })
+  await execute(it, { db, notify: fakeNotify(), getConfig })
+  assert.equal(it.replies[0].content, 'This project is deleted.')
+  assert.deepEqual(kinds(db), [])
+})
+
+test('autocomplete: unblock still offers a current blocker whose project is deleted', async () => {
+  const db = fakeDb({ tasks: [A, B], deps: [{ taskId: 'A', blockedByTaskId: 'B' }] })
+  const asked = []
+  const byIds = db.task.findByIds
+  db.task.findByIds = async (q) => { asked.push(q.where); return byIds(q) }
+  const it = fakeInteraction({ task: 'A' }, { focused: { name: 'unblock', value: '' } })
+  await autocomplete(it, { db, getConfig })
+  // The picked task's own read hides a deleted project's task; the blockers read opts in.
+  assert.equal(asked.length, 2)
+  assert.equal(asked[0].includeDeleted, undefined)
+  assert.equal(asked[1].includeDeleted, true)
+})
