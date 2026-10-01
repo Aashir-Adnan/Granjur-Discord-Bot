@@ -285,6 +285,41 @@ async function repositoryCreate({ data }) {
 const HIDE_DELETED_PROJECT_TASKS =
   "AND NOT EXISTS (SELECT 1 FROM `project` p WHERE p.id = task.projectId AND p.deletedAt IS NOT NULL)";
 
+// What a person types is data, not a pattern: MySQL's LIKE escape is `\`.
+const escapeLike = (s) => String(s).replace(/[\\%_]/g, (c) => `\\${c}`);
+const HOLDER_SQL = "JSON_CONTAINS(assigneeIds, ?) OR JSON_CONTAINS(taggedMemberIds, ?)";
+const MAX_SEARCH_HOLDERS = 10;
+
+// The pickers' search, in SQL. `where.search` is a term (string) or
+// `{ text, holderIds }`: one OR group matching the title, an id prefix, the
+// status, the scope, the project's name, or any of the holder ids (the caller
+// resolves typed names against the member cache; SQL knows ids, not names).
+// The pickers still run their exact in-memory filter over what comes back —
+// this only decides which rows are worth the 200-row window, so one bulk
+// import can no longer push every other project out of it.
+function taskSearchSql(where) {
+  const text = typeof where.search === "string" ? where.search : where.search?.text;
+  const term = String(text ?? "").trim().toLowerCase();
+  const holderIds = (Array.isArray(where.search?.holderIds) ? where.search.holderIds : [])
+    .map(String).filter(Boolean).slice(0, MAX_SEARCH_HOLDERS);
+  if (!term && !holderIds.length) return null;
+  const ors = [];
+  const params = [];
+  if (term) {
+    const like = escapeLike(term);
+    ors.push(
+      "LOWER(title) LIKE ?", "id LIKE ?", "LOWER(status) = ?", "LOWER(scope) LIKE ?",
+      "projectId IN (SELECT id FROM `project` WHERE guildConfigId = ? AND LOWER(name) LIKE ?)",
+    );
+    params.push(`%${like}%`, `${like}%`, term, `${like}%`, where.guildConfigId, `%${like}%`);
+  }
+  for (const id of holderIds) {
+    ors.push(HOLDER_SQL);
+    params.push(JSON.stringify(id), JSON.stringify(id));
+  }
+  return { sql: ` AND (${ors.join(" OR ")})`, params };
+}
+
 export function taskFindManySql({ where, orderBy, take } = {}) {
   if (!where || !where.guildConfigId) return null;
   let sql = "SELECT * FROM `task` WHERE guildConfigId = ?";
@@ -324,6 +359,17 @@ export function taskFindManySql({ where, orderBy, take } = {}) {
   } else if (where?.projectId) {
     sql += " AND projectId = ?";
     params.push(where.projectId);
+  }
+  const search = where?.search !== undefined ? taskSearchSql(where) : null;
+  if (search) {
+    sql += search.sql;
+    params.push(...search.params);
+  }
+  // holderId: only tasks this person holds (assigned, or tagged on a bug) — the
+  // Find panel's person filter, and a non-leadership member's own list.
+  if (where?.holderId) {
+    sql += ` AND (${HOLDER_SQL})`;
+    params.push(JSON.stringify(String(where.holderId)), JSON.stringify(String(where.holderId)));
   }
   if (where.includeDeleted !== true) sql += ` ${HIDE_DELETED_PROJECT_TASKS}`;
   const orderByField = orderBy ? Object.keys(orderBy)[0] : 'createdAt';

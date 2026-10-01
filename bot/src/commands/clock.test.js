@@ -238,3 +238,15 @@ test('clock-in on a task in a deleted project says so, and starts nothing', asyn
   assert.deepEqual(db.calls, [])
   assert.equal(it.replies[0].content, 'This project is deleted.')
 })
+
+test('autocomplete sends what was typed to the database as a search; nothing typed asks for the recent list', async () => {
+  const db = fakeDb({ tasks: [HELD] })
+  const asked = []
+  db.task.findMany = async (q) => { asked.push(q.where); return [HELD] }
+  const it = fakeInteraction({}, { focused: ' Abu ' })
+  it.guild.members.cache.set('m1', { id: 'm1', displayName: 'Abu Sakil' })
+  await clockInAutocomplete(it, { db, getConfig })
+  assert.deepEqual(asked[0], { guildConfigId: 'g1', search: { text: 'abu', holderIds: ['m1'] } })
+  await clockInAutocomplete(fakeInteraction({}, { focused: '' }), { db, getConfig })
+  assert.deepEqual(asked[1], { guildConfigId: 'g1' })
+})

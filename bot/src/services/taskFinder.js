@@ -162,8 +162,15 @@ export function buildFinderPayload({ rows, projects, state, isLeadership, caller
 
 async function panelFor(interaction, state, { db: dbArg, getConfig }) {
   const { cfg, isLeadership } = await context(interaction, { db: dbArg, getConfig })
+  // The panel's project and person filters narrow the query itself, so a
+  // project's list is its own tasks, not its share of the server's 200 most
+  // recent. A member who is not leadership only ever reads their own tasks.
+  const where = { guildConfigId: cfg.id }
+  if (state.project) where.projectId = state.project
+  if (state.person) where.holderId = state.person
+  else if (!isLeadership) where.holderId = interaction.user.id
   const [rows, projects] = await Promise.all([
-    dbArg.task.findMany({ where: { guildConfigId: cfg.id }, orderBy: { updatedAt: 'desc' }, take: 200 }),
+    dbArg.task.findMany({ where, orderBy: { updatedAt: 'desc' }, take: 200 }),
     dbArg.project.findMany({ where: { guildConfigId: cfg.id } }).catch(() => []),
   ])
   // Names come from the cache only: this must answer inside Discord's window.

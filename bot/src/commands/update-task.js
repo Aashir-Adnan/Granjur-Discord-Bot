@@ -4,6 +4,7 @@ import { taskChoiceLabel, holdersOf, idList } from '../utils/taskLabel.js'
 import { notifyTaskUpdate } from '../services/taskUpdateNotify.js'
 import { showFinder } from '../services/taskFinder.js'
 import { memberPassesRoleGate, LEADERSHIP_ROLE_NAMES } from '../utils/roleGate.js'
+import { memberIdsNamed } from '../utils/memberSearch.js'
 import { SCOPE_CHOICES, scopeLabel } from '../utils/taskScope.js'
 import { applyDependencyChange, applyEdit, projectMoveNote } from '../services/taskEdit.js'
 import { PROJECT_DELETED, isDeletedProject, projectIdIsDeleted } from '../utils/projectDeleted.js'
@@ -297,14 +298,22 @@ export async function autocomplete(interaction, { db: dbArg = db, getConfig = ge
   if (!['task', 'blocked_by', 'unblock'].includes(focused.name)) return interaction.respond([]).catch(() => {})
   try {
     const cfg = await getConfig(interaction.guild.id)
-    let rows = await dbArg.task.findMany({ where: { guildConfigId: cfg.id }, orderBy: { updatedAt: 'desc' }, take: 200 })
-    if (focused.name === 'task') {
-      // A blocker can belong to anyone — declaring "my task depends on that
-      // one" needs no permission over the blocking task, so this narrowing is
-      // for the `task` field only, never blocked_by/unblock.
-      const isLeadership = memberPassesRoleGate(interaction.guild, interaction.member, ensureStringArray(cfg.dashboardRoleIds), LEADERSHIP_ROLE_NAMES)
-      if (!isLeadership) rows = rows.filter((t) => canSeeTask(t, { isLeadership, callerId: interaction.user.id }))
-    }
+    const term = String(focused.value || '').trim().toLowerCase()
+    // A blocker can belong to anyone — declaring "my task depends on that
+    // one" needs no permission over the blocking task, so the caller-only
+    // narrowing is for the `task` field only, never blocked_by/unblock.
+    const isLeadership = focused.name === 'task'
+      ? memberPassesRoleGate(interaction.guild, interaction.member, ensureStringArray(cfg.dashboardRoleIds), LEADERSHIP_ROLE_NAMES)
+      : true
+    // The search runs in SQL so the 200-row window holds matches rather than
+    // whatever was touched last: one bulk import used to push every other
+    // project out of the picker. The in-memory filter below stays the exact
+    // rule; the query only decides which rows are worth loading.
+    const where = { guildConfigId: cfg.id }
+    if (term) where.search = { text: term, holderIds: memberIdsNamed(interaction.guild, term) }
+    else if (!isLeadership) where.holderId = interaction.user.id
+    let rows = await dbArg.task.findMany({ where, orderBy: { updatedAt: 'desc' }, take: 200 })
+    if (!isLeadership) rows = rows.filter((t) => canSeeTask(t, { isLeadership, callerId: interaction.user.id }))
     if (focused.name === 'unblock') {
       // With a real task picked, offer only its current blockers — an empty
       // list when it has none. Fall back to all tasks only when `task` is
@@ -332,7 +341,6 @@ export async function autocomplete(interaction, { db: dbArg = db, getConfig = ge
     }
     const projectNameOf = (t) => projectNames.get(String(t.projectId ?? '')) ?? null
 
-    const term = String(focused.value || '').trim().toLowerCase()
     const matches = rows.filter((t) => {
       if (!term) return true
       if (String(t.title || '').toLowerCase().includes(term)) return true

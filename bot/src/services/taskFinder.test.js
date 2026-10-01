@@ -220,3 +220,17 @@ test('the task list shows a parent\'s subtask progress and a subtask\'s parent',
   assert.equal(byValue.S1, 'open · ↳ Parent task · Ana')
   for (const o of menu.options) assert.ok(o.description.length <= 100)
 })
+
+test("the panel asks the database for what it will show: a normal member's own tasks, the chosen project, the chosen person", async () => {
+  const asked = []
+  const db = fakeDb(rows)
+  db.task.findMany = async (q) => { asked.push(q.where); return rows }
+  await showFinder(fakeInteraction({ member: plain() }), { db, getConfig })
+  assert.deepEqual(asked[0], { guildConfigId: 'g1', holderId: 'u1' })
+  await showFinder(fakeInteraction(), { db, getConfig })
+  assert.deepEqual(asked[1], { guildConfigId: 'g1' }, 'leadership with no filter: the recent list, as before')
+  await handleFinderComponent(fakeInteraction({ customId: `utf_proj:${encodeState(defaultState())}`, values: ['p2'] }), { db, getConfig })
+  assert.deepEqual(asked[2], { guildConfigId: 'g1', projectId: 'p2' })
+  await handleFinderComponent(fakeInteraction({ customId: `utf_person:${encodeState(defaultState())}`, values: ['u2'], deferred: false }), { db, getConfig })
+  assert.deepEqual(asked[3], { guildConfigId: 'g1', holderId: 'u2' })
+})

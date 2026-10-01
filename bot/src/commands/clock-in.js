@@ -4,6 +4,7 @@ import { isLeadershipFor, memberProjectIdsOf } from '../utils/timeAccess.js'
 import { ClockError, clockIn, closeEntry } from '../services/clock.js'
 import { clockableTasks } from '../utils/timeTaskPicker.js'
 import { taskChoiceLabel, holdersOf } from '../utils/taskLabel.js'
+import { memberIdsNamed } from '../utils/memberSearch.js'
 import { formatDuration } from '../utils/timeTracking.js'
 import { PROJECT_DELETED } from '../utils/projectDeleted.js'
 
@@ -63,7 +64,13 @@ export async function autocomplete(interaction, { db: dbArg = db, getConfig = ge
   try {
     const cfg = await getConfig(interaction.guild.id)
     const general = { name: 'No task — general work', value: GENERAL }
-    const rows = await dbArg.task.findMany({ where: { guildConfigId: cfg.id }, orderBy: { updatedAt: 'desc' }, take: 200 })
+    const term = String(interaction.options.getFocused() || '').trim().toLowerCase()
+    // Typed text is searched in SQL (title, id, status, scope, project, holder
+    // ids resolved from the member cache) so the 200-row window holds matches;
+    // nothing typed keeps the recent list. The filter below is still the rule.
+    const where = { guildConfigId: cfg.id }
+    if (term) where.search = { text: term, holderIds: memberIdsNamed(interaction.guild, term) }
+    const rows = await dbArg.task.findMany({ where, orderBy: { updatedAt: 'desc' }, take: 200 })
     const tasks = clockableTasks(rows, {
       memberProjectIds: await memberProjectIdsOf(dbArg, cfg, interaction.user.id),
       isLeadership: isLeadershipFor(interaction.guild, interaction.member, cfg),
@@ -77,7 +84,6 @@ export async function autocomplete(interaction, { db: dbArg = db, getConfig = ge
     const projectNames = new Map((projects || []).map((p) => [String(p.id), String(p.name || '')]))
     const projectNameOf = (t) => projectNames.get(String(t.projectId ?? '')) ?? null
 
-    const term = String(interaction.options.getFocused() || '').trim().toLowerCase()
     const matches = tasks.filter((t) => {
       if (!term) return true
       if (String(t.title || '').toLowerCase().includes(term)) return true

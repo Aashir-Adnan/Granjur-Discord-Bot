@@ -525,3 +525,50 @@ test('autocomplete: unblock still offers a current blocker whose project is dele
   assert.equal(asked[0].includeDeleted, undefined)
   assert.equal(asked[1].includeDeleted, true)
 })
+
+// The picker searches in the database, not in the 200 most recently updated
+// rows: one bulk import (Edarete, 2026-09-30) hid every other project.
+function capturingDb(opts) {
+  const db = fakeDb(opts)
+  db.asked = []
+  db.task.findMany = async (q) => { db.asked.push(q); return opts.tasks }
+  return db
+}
+
+test('autocomplete: a typed term is sent to the query as a search, with the ids of members whose name matches', async () => {
+  const db = capturingDb({ tasks: [{ ...HELD, title: 'Check Abu Sakil billing' }] })
+  const members = [{ id: 'm1', displayName: 'Abubakar', user: { username: 'abu' } }, { id: 'm2', displayName: 'Zed', user: { username: 'zed' } }]
+  const it = autocompleteInteraction([focusedTask('Abu')], { members })
+  await autocomplete(it, { db, getConfig })
+  assert.equal(db.asked.length, 1)
+  assert.deepEqual(db.asked[0].where, { guildConfigId: 'g1', search: { text: 'abu', holderIds: ['m1'] } })
+  assert.equal(db.asked[0].take, 200)
+  assert.deepEqual(it.replies[0].map((c) => c.value), ['H'])
+})
+
+test('autocomplete: nothing typed — leadership gets the recent list as before, with no search clause', async () => {
+  const db = capturingDb({ tasks: [HELD, OTHERS] })
+  const it = autocompleteInteraction([focusedTask('')])
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(db.asked[0].where, { guildConfigId: 'g1' })
+  assert.deepEqual(it.replies[0].map((c) => c.value), ['H', 'O'])
+})
+
+test('autocomplete: nothing typed — a normal member asks only for tasks they hold, so theirs are never pushed out by others', async () => {
+  const db = capturingDb({ tasks: [HELD] })
+  const it = autocompleteInteraction([focusedTask('')], { member: plainMember() })
+  await autocomplete(it, { db, getConfig })
+  assert.deepEqual(db.asked[0].where, { guildConfigId: 'g1', holderId: 'u1' })
+  assert.deepEqual(it.replies[0].map((c) => c.value), ['H'])
+})
+
+test("autocomplete: blocked_by searches too, but never narrows to the caller (a blocker can be anyone's)", async () => {
+  const db = capturingDb({ tasks: [OTHERS] })
+  const typed = autocompleteInteraction([{ name: 'blocked_by', type: T.String, value: 'some', focused: true }], { member: plainMember() })
+  await autocomplete(typed, { db, getConfig })
+  assert.deepEqual(db.asked[0].where, { guildConfigId: 'g1', search: { text: 'some', holderIds: [] } })
+  assert.deepEqual(typed.replies[0].map((c) => c.value), ['O'])
+  const empty = autocompleteInteraction([{ name: 'blocked_by', type: T.String, value: '', focused: true }], { member: plainMember() })
+  await autocomplete(empty, { db, getConfig })
+  assert.deepEqual(db.asked[1].where, { guildConfigId: 'g1' })
+})
